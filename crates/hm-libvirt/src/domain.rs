@@ -1,0 +1,330 @@
+//! Domain definitions: what the agent wants a VM to look like, rendered to
+//! libvirt domain XML.
+
+use crate::xml::El;
+
+/// XML namespace for hypermon's per-domain metadata.
+pub const METADATA_NS: &str = "https://hypermon.dev/xmlns/vm/1";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Firmware {
+    Bios,
+    Uefi,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiskDevice {
+    Disk,
+    Cdrom,
+}
+
+#[derive(Clone, Debug)]
+pub struct Disk {
+    pub device: DiskDevice,
+    pub path: String,
+    /// "qcow2" or "raw".
+    pub format: String,
+    /// "vda", "sda", ...
+    pub target: String,
+    /// "virtio" or "sata".
+    pub bus: String,
+    pub boot_order: Option<u32>,
+    pub readonly: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Nic {
+    pub mac: String,
+    /// OVS integration bridge, normally `br-int`.
+    pub bridge: String,
+    /// OVS `external_ids:iface-id`; OVN binds the logical switch port with this
+    /// name to the interface. libvirt requires a UUID here.
+    pub interface_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct DomainDef {
+    /// Libvirt domain UUID. hypermon uses the VM ID, so lookups need no mapping.
+    pub uuid: String,
+    pub tenant_id: String,
+    /// Human-readable name, shown as the domain title.
+    pub title: String,
+    pub generation: u64,
+    pub vcpus: u32,
+    pub memory_mib: u64,
+    pub firmware: Firmware,
+    pub disks: Vec<Disk>,
+    pub nics: Vec<Nic>,
+}
+
+impl DomainDef {
+    /// Libvirt domain name. Names must be unique per host, display names are
+    /// not, so the name is derived from the UUID.
+    pub fn name(&self) -> String {
+        domain_name(&self.uuid)
+    }
+
+    pub fn to_xml(&self) -> String {
+        let os = match self.firmware {
+            Firmware::Uefi => El::new("os").attr("firmware", "efi").child(
+                El::new("firmware").child(
+                    El::new("feature")
+                        .attr("enabled", "no")
+                        .attr("name", "secure-boot"),
+                ),
+            ),
+            Firmware::Bios => El::new("os"),
+        }
+        .child(
+            El::new("type")
+                .attr("arch", "x86_64")
+                .attr("machine", "q35")
+                .text("hvm"),
+        );
+
+        let disks = self.disks.iter().map(|d| {
+            let device = match d.device {
+                DiskDevice::Disk => "disk",
+                DiskDevice::Cdrom => "cdrom",
+            };
+            let mut driver = El::new("driver")
+                .attr("name", "qemu")
+                .attr("type", &d.format);
+            if d.device == DiskDevice::Disk {
+                driver = driver.attr("discard", "unmap");
+            }
+            El::new("disk")
+                .attr("type", "file")
+                .attr("device", device)
+                .child(driver)
+                .child(El::new("source").attr("file", &d.path))
+                .child(El::new("target").attr("dev", &d.target).attr("bus", &d.bus))
+                .maybe(d.readonly.then(|| El::new("readonly")))
+                .maybe(d.boot_order.map(|o| El::new("boot").attr("order", o)))
+        });
+
+        let nics = self.nics.iter().map(|n| {
+            El::new("interface")
+                .attr("type", "bridge")
+                .child(El::new("mac").attr("address", &n.mac))
+                .child(El::new("source").attr("bridge", &n.bridge))
+                .child(
+                    El::new("virtualport")
+                        .attr("type", "openvswitch")
+                        .child(El::new("parameters").attr("interfaceid", &n.interface_id)),
+                )
+                .child(El::new("model").attr("type", "virtio"))
+        });
+
+        El::new("domain")
+            .attr("type", "kvm")
+            .child(El::new("name").text(self.name()))
+            .child(El::new("uuid").text(&self.uuid))
+            .child(El::new("title").text(&self.title))
+            .child(
+                El::new("metadata").child(
+                    El::new("hm:vm")
+                        .attr("xmlns:hm", METADATA_NS)
+                        .attr("id", &self.uuid)
+                        .attr("tenant", &self.tenant_id)
+                        .attr("generation", self.generation),
+                ),
+            )
+            .child(El::new("memory").attr("unit", "MiB").text(self.memory_mib))
+            .child(El::new("vcpu").attr("placement", "static").text(self.vcpus))
+            .child(os)
+            .child(
+                El::new("features")
+                    .child(El::new("acpi"))
+                    .child(El::new("apic")),
+            )
+            // Replaced by the cluster's baseline CPU model once live migration
+            // lands; passthrough is fine while VMs never leave their host.
+            .child(El::new("cpu").attr("mode", "host-passthrough"))
+            .child(El::new("clock").attr("offset", "utc"))
+            .child(El::new("on_poweroff").text("destroy"))
+            .child(El::new("on_reboot").text("restart"))
+            .child(El::new("on_crash").text("destroy"))
+            .child(
+                El::new("devices")
+                    .children(disks)
+                    .children(nics)
+                    .child(
+                        El::new("serial")
+                            .attr("type", "pty")
+                            .child(El::new("target").attr("port", 0)),
+                    )
+                    .child(
+                        El::new("console")
+                            .attr("type", "pty")
+                            .child(El::new("target").attr("type", "serial").attr("port", 0)),
+                    )
+                    // No listener at all: the agent reaches the VNC server via
+                    // virDomainOpenGraphicsFD, so nothing is exposed on the host.
+                    .child(
+                        El::new("graphics")
+                            .attr("type", "vnc")
+                            .child(El::new("listen").attr("type", "none")),
+                    )
+                    .child(El::new("video").child(El::new("model").attr("type", "virtio")))
+                    .child(El::new("input").attr("type", "tablet").attr("bus", "usb"))
+                    .child(
+                        El::new("channel").attr("type", "unix").child(
+                            El::new("target")
+                                .attr("type", "virtio")
+                                .attr("name", "org.qemu.guest_agent.0"),
+                        ),
+                    )
+                    .child(
+                        El::new("rng").attr("model", "virtio").child(
+                            El::new("backend")
+                                .attr("model", "random")
+                                .text("/dev/urandom"),
+                        ),
+                    )
+                    .child(El::new("memballoon").attr("model", "virtio")),
+            )
+            .render()
+    }
+}
+
+pub fn domain_name(uuid: &str) -> String {
+    format!("hm-{uuid}")
+}
+
+/// hypermon metadata recovered from a domain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Metadata {
+    pub vm_id: String,
+    pub tenant_id: String,
+    pub generation: u64,
+}
+
+/// Parses the `<vm .../>` element returned by `virDomainGetMetadata`.
+pub fn parse_metadata(xml: &str) -> Option<Metadata> {
+    Some(Metadata {
+        vm_id: attr(xml, "id")?,
+        tenant_id: attr(xml, "tenant")?,
+        generation: attr(xml, "generation")?.parse().ok()?,
+    })
+}
+
+/// Extracts attribute `name` from the first element in `xml`. Only meant for
+/// the flat metadata element libvirt hands back.
+fn attr(xml: &str, name: &str) -> Option<String> {
+    let start = xml.find('<')?;
+    let end = xml[start..].find('>')? + start;
+    let tag = &xml[start..end];
+    for quote in ['"', '\''] {
+        let needle = format!(" {name}={quote}");
+        if let Some(i) = tag.find(&needle) {
+            let rest = &tag[i + needle.len()..];
+            let value = &rest[..rest.find(quote)?];
+            return Some(
+                value
+                    .replace("&quot;", "\"")
+                    .replace("&apos;", "'")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&amp;", "&"),
+            );
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> DomainDef {
+        DomainDef {
+            uuid: "0199f0a2-7b3c-7d00-8000-000000000001".into(),
+            tenant_id: "0199f0a2-7b3c-7d00-8000-0000000000aa".into(),
+            title: "web <1> & co".into(),
+            generation: 3,
+            vcpus: 2,
+            memory_mib: 2048,
+            firmware: Firmware::Uefi,
+            disks: vec![
+                Disk {
+                    device: DiskDevice::Disk,
+                    path: "/var/lib/hypermon/pools/local/vol-1.qcow2".into(),
+                    format: "qcow2".into(),
+                    target: "vda".into(),
+                    bus: "virtio".into(),
+                    boot_order: Some(1),
+                    readonly: false,
+                },
+                Disk {
+                    device: DiskDevice::Cdrom,
+                    path: "/var/lib/hypermon/cloud-init/vm-1.iso".into(),
+                    format: "raw".into(),
+                    target: "sda".into(),
+                    bus: "sata".into(),
+                    boot_order: None,
+                    readonly: true,
+                },
+            ],
+            nics: vec![Nic {
+                mac: "02:00:00:00:00:01".into(),
+                bridge: "br-int".into(),
+                interface_id: "0199f0a2-7b3c-7d00-8000-0000000000b1".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn domain_xml_matches_golden() {
+        let got = sample().to_xml();
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/domain.xml");
+        if std::env::var_os("UPDATE_GOLDEN").is_some() {
+            std::fs::write(path, &got).unwrap();
+        }
+        let want = std::fs::read_to_string(path).expect("golden file; run with UPDATE_GOLDEN=1");
+        assert_eq!(
+            got, want,
+            "domain XML changed; rerun with UPDATE_GOLDEN=1 if intended"
+        );
+    }
+
+    /// Validates against libvirt's RelaxNG schema when `virt-xml-validate` is
+    /// installed (it ships with libvirt).
+    #[test]
+    fn domain_xml_is_schema_valid() {
+        let dir = std::env::temp_dir().join(format!("hm-libvirt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("domain.xml");
+        std::fs::write(&file, sample().to_xml()).unwrap();
+        let out = match std::process::Command::new("virt-xml-validate")
+            .arg(&file)
+            .arg("domain")
+            .output()
+        {
+            Ok(out) => out,
+            Err(_) => return eprintln!("virt-xml-validate not installed; skipping"),
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn metadata_roundtrips_libvirt_style() {
+        // libvirt returns the element with double quotes and its own namespace.
+        let xml =
+            r#"<vm xmlns="https://hypermon.dev/xmlns/vm/1" id="abc" tenant="t1" generation="7"/>"#;
+        assert_eq!(
+            parse_metadata(xml),
+            Some(Metadata {
+                vm_id: "abc".into(),
+                tenant_id: "t1".into(),
+                generation: 7
+            })
+        );
+        assert_eq!(parse_metadata("<vm id='x'/>"), None);
+    }
+}

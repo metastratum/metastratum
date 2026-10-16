@@ -1,0 +1,175 @@
+// Protocol between hm-controller and hm-agent.
+//
+// Agents always dial the controller. `Enrollment` is served with server-only
+// TLS (the agent pins the CA from its join token); `AgentControl` requires the
+// client certificate issued during enrollment.
+syntax = "proto3";
+
+package hypermon.agent.v1;
+
+service Enrollment {
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+}
+
+service AgentControl {
+  // Long-lived control stream. The first agent message must be `hello`.
+  rpc Session(stream AgentMessage) returns (stream ControllerMessage);
+  // Reverse tunnel for a console session, dialled by the agent after it
+  // receives `OpenConsole`. The first chunk carries the session ID.
+  rpc ConsoleTunnel(stream TunnelChunk) returns (stream TunnelChunk);
+}
+
+message EnrollRequest {
+  string token = 1;
+  // PEM-encoded PKCS#10 certificate signing request.
+  string csr_pem = 2;
+  HostFacts facts = 3;
+}
+
+message EnrollResponse {
+  string host_id = 1;
+  string cert_pem = 2;
+  string ca_pem = 3;
+}
+
+message HostFacts {
+  string hostname = 1;
+  // Address other hosts and the controller use to reach this host.
+  string address = 2;
+  uint32 cpu_count = 3;
+  uint64 memory_mib = 4;
+  string cpu_model = 5;
+  bool kvm = 6;
+  string libvirt_version = 7;
+  string ovn_chassis = 8;
+  string agent_version = 9;
+}
+
+message AgentMessage {
+  oneof msg {
+    Hello hello = 1;
+    Heartbeat heartbeat = 2;
+    CommandResult result = 3;
+    DomainState domain_state = 4;
+  }
+}
+
+message Hello {
+  HostFacts facts = 1;
+  repeated DomainState domains = 2;
+}
+
+message Heartbeat {
+  repeated DomainState domains = 1;
+}
+
+// Observed state of a hypermon-managed libvirt domain.
+message DomainState {
+  string vm_id = 1;
+  uint64 generation = 2;
+  PowerState power = 3;
+}
+
+enum PowerState {
+  POWER_STATE_UNSPECIFIED = 0;
+  POWER_STATE_RUNNING = 1;
+  POWER_STATE_STOPPED = 2;
+  POWER_STATE_PAUSED = 3;
+  POWER_STATE_CRASHED = 4;
+  POWER_STATE_SHUTTING_DOWN = 5;
+}
+
+message ControllerMessage {
+  oneof msg {
+    Command command = 1;
+  }
+}
+
+message Command {
+  string request_id = 1;
+  oneof cmd {
+    EnsureImage ensure_image = 10;
+    EnsureVolume ensure_volume = 11;
+    DeleteVolume delete_volume = 12;
+    DefineVm define_vm = 13;
+    StartVm start_vm = 14;
+    StopVm stop_vm = 15;
+    RebootVm reboot_vm = 16;
+    UndefineVm undefine_vm = 17;
+    OpenConsole open_console = 18;
+  }
+}
+
+message CommandResult {
+  string request_id = 1;
+  // Empty on success.
+  string error = 2;
+}
+
+// Download an image into the host's image cache (idempotent).
+message EnsureImage {
+  string image_id = 1;
+  string source_url = 2;
+  // "qcow2" or "raw": the format of the downloaded file.
+  string format = 3;
+}
+
+// Create a volume, optionally as a copy-on-write overlay of a cached image.
+message EnsureVolume {
+  string volume_id = 1;
+  uint64 size_bytes = 2;
+  string image_id = 3;
+}
+
+message DeleteVolume {
+  string volume_id = 1;
+}
+
+// Define (or redefine) the domain for a VM. `spec_json` is an
+// `hm_core::vm::VmSpec`; shared Rust types avoid duplicating the schema here.
+message DefineVm {
+  string vm_id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  uint64 generation = 4;
+  string spec_json = 5;
+}
+
+message StartVm {
+  string vm_id = 1;
+}
+
+message StopVm {
+  string vm_id = 1;
+  // Pull the plug instead of an ACPI shutdown.
+  bool force = 2;
+}
+
+message RebootVm {
+  string vm_id = 1;
+}
+
+// Destroy and undefine the domain and remove its per-VM files. Volumes are
+// deleted separately.
+message UndefineVm {
+  string vm_id = 1;
+}
+
+enum ConsoleKind {
+  CONSOLE_KIND_UNSPECIFIED = 0;
+  CONSOLE_KIND_VNC = 1;
+  CONSOLE_KIND_SERIAL = 2;
+}
+
+message OpenConsole {
+  string session_id = 1;
+  string vm_id = 2;
+  ConsoleKind kind = 3;
+}
+
+message TunnelChunk {
+  oneof msg {
+    string session_id = 1;
+    bytes data = 2;
+  }
+}

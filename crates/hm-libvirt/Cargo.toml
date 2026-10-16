@@ -1,0 +1,20 @@
+[package]
+name = "hm-libvirt"
+description = "libvirt integration for the hypermon agent: domain XML and an async facade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+virt.workspace = true
+
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

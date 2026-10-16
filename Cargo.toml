@@ -11,8 +11,34 @@ rust-version = "1.85"
 [workspace.dependencies]
 hm-core = { path = "crates/hm-core" }
 hm-db = { path = "crates/hm-db" }
+hm-libvirt = { path = "crates/hm-libvirt" }
+hm-ovsdb = { path = "crates/hm-ovsdb" }
+hm-pki = { path = "crates/hm-pki" }
+hm-proto = { path = "crates/hm-proto" }
+hm-storage = { path = "crates/hm-storage" }
 
 anyhow = "1"
+async-stream = "0.3"
+base64 = "0.23"
+futures = "0.3"
+hex = "0.4"
+ipnet = { version = "2", features = ["serde"] }
+prost = "0.14"
+quick-xml = "0.42"
+rand = "0.10"
+rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+sha2 = "0.11"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-stream = "0.1"
+tonic = { version = "0.14", features = ["tls-ring"] }
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+utoipa = { version = "6", features = ["uuid", "chrono"] }
+utoipa-axum = "0.3"
+virt = "0.4"
+x509-parser = "0.18"
 axum = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 clap = { version = "4", features = ["derive", "env"] }
