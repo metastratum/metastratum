@@ -7,9 +7,10 @@ const props = defineProps<{ tenant: Tenant; parent?: Tenant }>()
 const scope = useScope()
 
 type Usable = { id: string; name: string; kind?: string }
-const offered = ref<{ clusters: Usable[]; pools: Usable[] } | null>(null)
-const usable = ref<{ clusters: Usable[]; pools: Usable[] } | null>(null)
-const picked = ref<Schemas['Grants']>({ clusters: [], storage_pools: [] })
+type Offer = { clusters: Usable[]; pools: Usable[]; externals: Usable[] }
+const offered = ref<Offer | null>(null)
+const usable = ref<Offer | null>(null)
+const picked = ref<Required<Schemas['Grants']>>({ clusters: [], storage_pools: [], external_networks: [] })
 const error = ref('')
 const saved = ref(false)
 const busy = ref(false)
@@ -17,12 +18,13 @@ const busy = ref(false)
 const editable = computed(() => !!props.parent && scope.can('grant.write', props.parent.id))
 
 async function usableAt(id: string) {
-  const [clusters, pools] = await Promise.all([
+  const [clusters, pools, externals] = await Promise.all([
     ok(api.GET('/api/v1/tenants/{id}/clusters', { params: { path: { id } } })),
     ok(api.GET('/api/v1/tenants/{id}/storage-pools', { params: { path: { id } } })),
+    ok(api.GET('/api/v1/tenants/{id}/external-networks', { params: { path: { id } } })),
   ])
   // Local storage is on every host and needs no grant.
-  return { clusters, pools: pools.filter((p) => p.kind !== 'local') }
+  return { clusters, pools: pools.filter((p) => p.kind !== 'local'), externals }
 }
 
 onMounted(async () => {
@@ -32,7 +34,10 @@ onMounted(async () => {
     if (props.parent && editable.value) {
       ;[offered.value, picked.value] = await Promise.all([
         usableAt(props.parent.id),
-        ok(api.GET('/api/v1/tenants/{id}/grants', { params: { path: { id } } })),
+        ok(api.GET('/api/v1/tenants/{id}/grants', { params: { path: { id } } })).then((g) => ({
+          ...g,
+          external_networks: g.external_networks ?? [],
+        })),
       ])
     }
   } catch (e) {
@@ -45,9 +50,10 @@ async function save() {
   saved.value = false
   busy.value = true
   try {
-    picked.value = await ok(
+    const g = await ok(
       api.PUT('/api/v1/tenants/{id}/grants', { params: { path: { id: props.tenant.id } }, body: picked.value }),
     )
+    picked.value = { ...g, external_networks: g.external_networks ?? [] }
     usable.value = await usableAt(props.tenant.id)
     saved.value = true
   } catch (e) {
@@ -87,6 +93,15 @@ async function save() {
         <p v-if="!offered.pools.length" class="muted">{{ parent.name }} has no shared storage to give.</p>
         <p class="muted hint">Local disks on each host are always available.</p>
       </fieldset>
+      <fieldset>
+        <legend class="label">External networks</legend>
+        <label v-for="e in offered.externals" :key="e.id" class="check">
+          <input v-model="picked.external_networks" type="checkbox" :value="e.id" />
+          {{ e.name }}
+        </label>
+        <p v-if="!offered.externals.length" class="muted">{{ parent.name }} has no external networks to give.</p>
+        <p class="muted hint">For routing VPCs out, and floating IPs.</p>
+      </fieldset>
       <footer>
         <span v-if="saved" class="muted" role="status">Saved.</span>
         <button class="btn primary" :disabled="busy">Save</button>
@@ -106,6 +121,13 @@ async function save() {
         <dd>
           <span v-for="p in usable.pools" :key="p.id" class="item">{{ p.name }} <span class="tag">{{ p.kind }}</span></span>
           <span v-if="!usable.pools.length" class="muted">Local disks only.</span>
+        </dd>
+      </div>
+      <div>
+        <dt class="label">External networks</dt>
+        <dd>
+          <span v-for="e in usable.externals" :key="e.id" class="item">{{ e.name }}</span>
+          <span v-if="!usable.externals.length" class="muted">None — VMs reach only each other.</span>
         </dd>
       </div>
     </dl>

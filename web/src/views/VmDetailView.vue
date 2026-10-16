@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, ApiError, ok, type Task, type Vm } from '../api/client'
+import { api, ApiError, errorText, ok, type SecurityGroup, type Task, type Vm } from '../api/client'
 import IdChip from '../components/IdChip.vue'
 import StatusLed from '../components/StatusLed.vue'
 import { ago, gib, mib, powerNote, vmState } from '../state'
@@ -37,6 +37,41 @@ async function load() {
   }
 }
 
+// Security groups of the VM's tenant, to name and change a NIC's groups.
+const groups = ref<SecurityGroup[]>([])
+const editingNic = ref<string | null>(null)
+const nicGroups = ref<string[]>([])
+const nicError = ref('')
+watch(
+  () => vm.value?.tenant_id,
+  async (tenant) => {
+    if (!tenant) return
+    groups.value = await ok(api.GET('/api/v1/security-groups', { params: { query: { tenant_id: tenant } } })).catch(
+      () => [],
+    )
+  },
+)
+const groupName = (id: string) => groups.value.find((g) => g.id === id)?.name ?? id.slice(0, 8)
+function editNic(n: Vm['nics'][number]) {
+  nicError.value = ''
+  nicGroups.value = [...n.security_group_ids]
+  editingNic.value = n.id
+}
+async function saveNic(nic: string) {
+  nicError.value = ''
+  try {
+    vm.value = await ok(
+      api.PUT('/api/v1/vms/{id}/nics/{nic}/security-groups', {
+        params: { path: { id: props.id, nic } },
+        body: { security_group_ids: nicGroups.value },
+      }),
+    )
+    editingNic.value = null
+  } catch (e) {
+    nicError.value = errorText(e)
+  }
+}
+
 // Open on the console when the VM is running; otherwise show details.
 watch(
   () => vm.value?.id,
@@ -47,7 +82,7 @@ watch(
 
 onMounted(load)
 // Task notices don't say which VM they are about; their history is cheap.
-useLiveRefresh(['vm', 'task', 'host'], load, (n) => n.kind !== 'vm' || n.id === props.id)
+useLiveRefresh(['vm', 'task', 'host', 'external_ip'], load, (n) => n.kind !== 'vm' || n.id === props.id)
 
 type Action = 'start' | 'stop' | 'force' | 'reboot'
 async function act(action: Action) {
@@ -110,6 +145,9 @@ async function remove() {
 
     <dl class="facts">
       <div><dt class="label">Address</dt><dd class="mono">{{ vm.nics[0]?.ip ?? '—' }}</dd></div>
+      <div v-if="vm.nics[0]?.floating_ip">
+        <dt class="label">Floating IP</dt><dd class="mono">{{ vm.nics[0].floating_ip }}</dd>
+      </div>
       <div><dt class="label">Host</dt><dd class="mono">{{ vm.host_name ?? '—' }}</dd></div>
       <div><dt class="label">vCPU</dt><dd class="mono">{{ vm.vcpus }}</dd></div>
       <div><dt class="label">Memory</dt><dd class="mono">{{ mib(vm.memory_mib) }}</dd></div>
@@ -142,9 +180,34 @@ async function remove() {
           <h2 class="label">Network interfaces</h2>
           <dl v-for="n in vm.nics" :key="n.id" class="kv">
             <dt>Address</dt><dd class="mono">{{ n.ip }}</dd>
+            <dt>Network</dt>
+            <dd><RouterLink to="/networks">{{ n.network_name ?? n.network_id.slice(0, 8) }}</RouterLink></dd>
+            <dt>Floating IP</dt>
+            <dd class="mono">
+              <RouterLink v-if="n.floating_ip" to="/floating-ips">{{ n.floating_ip }}</RouterLink>
+              <span v-else class="muted">None</span>
+            </dd>
+            <dt>Security groups</dt>
+            <dd>
+              <template v-if="editingNic !== n.id">
+                <span v-for="g in n.security_group_ids" :key="g" class="tag group">{{ groupName(g) }}</span>
+                <span v-if="!n.security_group_ids.length" class="error-text">None: no traffic passes</span>
+                <button v-if="groups.length" class="btn small" @click="editNic(n)">Change</button>
+              </template>
+              <form v-else class="nic-groups" @submit.prevent="saveNic(n.id)">
+                <label v-for="g in groups" :key="g.id" class="check">
+                  <input v-model="nicGroups" type="checkbox" :value="g.id" />
+                  {{ g.name }}
+                </label>
+                <span class="buttons">
+                  <button type="button" class="btn small" @click="editingNic = null">Cancel</button>
+                  <button class="btn small primary">Save</button>
+                </span>
+                <span v-if="nicError" class="error-text">{{ nicError }}</span>
+              </form>
+            </dd>
             <dt>MAC</dt><dd class="mono">{{ n.mac }}</dd>
             <dt>Interface</dt><dd><IdChip :value="n.id" short /></dd>
-            <dt>Network</dt><dd><IdChip :value="n.network_id" short /></dd>
           </dl>
         </section>
         <section>
@@ -281,5 +344,18 @@ h1 {
   gap: 12px;
   justify-items: start;
   padding-top: 48px;
+}
+.group {
+  margin-right: 6px;
+}
+.nic-groups {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+}
+.nic-groups .buttons {
+  display: flex;
+  gap: 6px;
 }
 </style>

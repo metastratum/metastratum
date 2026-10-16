@@ -20,9 +20,9 @@ use crate::state::AppState;
 
 pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
-        .routes(routes!(list, create))
-        .routes(routes!(update, delete))
-        .routes(routes!(usable))
+        .routes(routes!(list_external_networks, create_external_network))
+        .routes(routes!(update_external_network, delete_external_network))
+        .routes(routes!(usable_external_networks))
 }
 
 #[derive(Serialize, ToSchema)]
@@ -75,7 +75,7 @@ async fn views(
 
 #[utoipa::path(get, path = "/external-networks", tag = "networks",
     responses((status = 200, body = Vec<ExternalNetworkView>), (status = 403)))]
-async fn list(
+async fn list_external_networks(
     State(state): State<AppState>,
     p: Principal,
 ) -> ApiResult<Json<Vec<ExternalNetworkView>>> {
@@ -106,7 +106,7 @@ fn check_name(name: &str) -> ApiResult<&str> {
 
 #[utoipa::path(post, path = "/external-networks", tag = "networks", request_body = CreateExternalNetwork,
     responses((status = 201, body = ExternalNetworkView), (status = 400), (status = 403), (status = 409)))]
-async fn create(
+async fn create_external_network(
     State(state): State<AppState>,
     p: Principal,
     Json(req): Json<CreateExternalNetwork>,
@@ -167,7 +167,7 @@ pub struct UpdateExternalNetwork {
 #[utoipa::path(put, path = "/external-networks/{id}", tag = "networks", params(("id" = ExternalNetworkId, Path)),
     request_body = UpdateExternalNetwork,
     responses((status = 200, body = ExternalNetworkView), (status = 400), (status = 403), (status = 404)))]
-async fn update(
+async fn update_external_network(
     State(state): State<AppState>,
     p: Principal,
     Path(id): Path<ExternalNetworkId>,
@@ -197,7 +197,7 @@ async fn update(
 
 #[utoipa::path(delete, path = "/external-networks/{id}", tag = "networks", params(("id" = ExternalNetworkId, Path)),
     responses((status = 204), (status = 403), (status = 404), (status = 409, description = "Still in use")))]
-async fn delete(
+async fn delete_external_network(
     State(state): State<AppState>,
     p: Principal,
     Path(id): Path<ExternalNetworkId>,
@@ -234,7 +234,7 @@ pub struct UsableExternalNetwork {
 /// External networks the tenant's VPCs may route to.
 #[utoipa::path(get, path = "/tenants/{id}/external-networks", tag = "tenants", params(("id" = TenantId, Path)),
     responses((status = 200, body = Vec<UsableExternalNetwork>), (status = 404)))]
-async fn usable(
+async fn usable_external_networks(
     State(state): State<AppState>,
     p: Principal,
     Path(id): Path<TenantId>,

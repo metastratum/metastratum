@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { api, ApiError, ok, type Image, type Schemas, type Vm } from '../api/client'
+import { api, ApiError, ok, type Image, type Schemas, type SecurityGroup, type Vm, type Vpc } from '../api/client'
 import { useScope } from '../stores/scope'
 import ModalDialog from './ModalDialog.vue'
 
@@ -13,6 +13,10 @@ const clusters = ref<Schemas['UsableCluster'][]>([])
 const pools = ref<Schemas['UsablePool'][]>([])
 const clusterId = ref<string | null>(null)
 const poolId = ref<string | null>(null)
+const vpcs = ref<Vpc[]>([])
+const groups = ref<SecurityGroup[]>([])
+const networkId = ref<string | null>(null)
+const groupIds = ref<string[]>([])
 const loaded = ref(false)
 const name = ref('')
 const imageId = ref('')
@@ -29,11 +33,17 @@ const nameOk = computed(() => /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.te
 
 onMounted(async () => {
   const path = { params: { path: { id: tenantId } } }
-  ;[images.value, clusters.value, pools.value] = await Promise.all([
+  ;[images.value, clusters.value, pools.value, vpcs.value, groups.value] = await Promise.all([
     ok(api.GET('/api/v1/images', { params: { query: { tenant_id: tenantId } } })),
     ok(api.GET('/api/v1/tenants/{id}/clusters', path)),
     ok(api.GET('/api/v1/tenants/{id}/storage-pools', path)),
+    // Without network access the defaults apply.
+    ok(api.GET('/api/v1/vpcs', { params: { query: { tenant_id: tenantId } } })).catch(() => []),
+    ok(api.GET('/api/v1/security-groups', { params: { query: { tenant_id: tenantId } } })).catch(() => []),
   ])
+  const nets = vpcs.value.flatMap((v) => v.networks)
+  networkId.value = (nets.find((n) => n.name === 'default') ?? nets[0])?.id ?? null
+  groupIds.value = groups.value.filter((g) => g.name === 'default').map((g) => g.id)
   imageId.value = images.value[0]?.id ?? ''
   poolId.value = pools.value.find((p) => p.kind === 'local')?.id ?? pools.value[0]?.id ?? null
   loaded.value = true
@@ -49,6 +59,9 @@ async function submit() {
           tenant_id: tenantId,
           cluster_id: clusterId.value,
           storage_pool_id: poolId.value,
+          network_id: networkId.value,
+          // Leave the choice to the server when the tenant has no groups yet.
+          security_group_ids: groups.value.length ? groupIds.value : null,
           name: name.value,
           image_id: imageId.value,
           vcpus: vcpus.value,
@@ -109,6 +122,25 @@ async function submit() {
           </select>
         </label>
       </div>
+      <div v-if="vpcs.length || groups.length" class="row two">
+        <label class="field">
+          <span class="label">Network</span>
+          <select v-model="networkId">
+            <option v-if="!vpcs.some((v) => v.networks.length)" :value="null">Default network</option>
+            <optgroup v-for="v in vpcs.filter((v) => v.networks.length)" :key="v.id" :label="`VPC ${v.name}`">
+              <option v-for="n in v.networks" :key="n.id" :value="n.id">{{ n.name }} ({{ n.cidr }})</option>
+            </optgroup>
+          </select>
+        </label>
+        <fieldset v-if="groups.length" class="field groups">
+          <legend class="label">Security groups</legend>
+          <label v-for="g in groups" :key="g.id" class="check">
+            <input v-model="groupIds" type="checkbox" :value="g.id" />
+            {{ g.name }}
+          </label>
+          <span v-if="!groupIds.length" class="hint error-text">No group: the VM passes no traffic.</span>
+        </fieldset>
+      </div>
       <div class="row">
         <label class="field">
           <span class="label">vCPUs</span>
@@ -161,6 +193,15 @@ async function submit() {
 }
 .row.two {
   grid-template-columns: 1fr 1fr;
+}
+.groups {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  align-content: start;
+}
+.groups legend {
+  margin-bottom: 4px;
 }
 footer {
   display: flex;

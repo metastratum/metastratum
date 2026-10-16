@@ -19,8 +19,8 @@ use crate::state::AppState;
 
 pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
-        .routes(routes!(list, allocate))
-        .routes(routes!(update, release))
+        .routes(routes!(list_floating_ips, allocate_floating_ip))
+        .routes(routes!(update_floating_ip, release_floating_ip))
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -84,7 +84,7 @@ async fn views(
 
 #[utoipa::path(get, path = "/floating-ips", tag = "networks", params(ListQuery),
     responses((status = 200, body = Vec<FloatingIpView>)))]
-async fn list(
+async fn list_floating_ips(
     State(state): State<AppState>,
     p: Principal,
     Query(q): Query<ListQuery>,
@@ -130,7 +130,7 @@ async fn check_target(
 
 #[utoipa::path(post, path = "/floating-ips", tag = "networks", request_body = AllocateFloatingIp,
     responses((status = 201, body = FloatingIpView), (status = 400), (status = 403), (status = 409)))]
-async fn allocate(
+async fn allocate_floating_ip(
     State(state): State<AppState>,
     p: Principal,
     Json(req): Json<AllocateFloatingIp>,
@@ -187,7 +187,7 @@ pub struct UpdateFloatingIp {
 #[utoipa::path(patch, path = "/floating-ips/{id}", tag = "networks", params(("id" = ExternalIpId, Path)),
     request_body = UpdateFloatingIp,
     responses((status = 200, body = FloatingIpView), (status = 400), (status = 403), (status = 404), (status = 409)))]
-async fn update(
+async fn update_floating_ip(
     State(state): State<AppState>,
     p: Principal,
     Path(id): Path<ExternalIpId>,
@@ -225,7 +225,7 @@ async fn update(
 
 #[utoipa::path(delete, path = "/floating-ips/{id}", tag = "networks", params(("id" = ExternalIpId, Path)),
     responses((status = 204), (status = 403), (status = 404)))]
-async fn release(
+async fn release_floating_ip(
     State(state): State<AppState>,
     p: Principal,
     Path(id): Path<ExternalIpId>,

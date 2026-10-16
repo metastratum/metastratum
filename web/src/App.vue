@@ -47,6 +47,7 @@ async function signOut() {
       <nav aria-label="Main">
         <RouterLink to="/vms">Machines</RouterLink>
         <RouterLink to="/images">Images</RouterLink>
+        <RouterLink to="/networks" :class="{ 'router-link-active': $route.meta.net }">Networks</RouterLink>
         <RouterLink to="/tenants">Tenants</RouterLink>
         <RouterLink v-if="scope.can('audit.read')" to="/audit">Audit</RouterLink>
         <RouterLink v-if="session.me.provider_admin" to="/infrastructure" :class="{ 'router-link-active': $route.meta.infra }">

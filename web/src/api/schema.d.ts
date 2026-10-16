@@ -203,9 +203,9 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["list"];
+        get: operations["list_external_networks"];
         put?: never;
-        post: operations["create"];
+        post: operations["create_external_network"];
         delete?: never;
         options?: never;
         head?: never;
@@ -224,9 +224,9 @@ export interface paths {
          * Renames the network or changes its pool. Addresses already handed out
          *     stay, even outside a narrowed pool.
          */
-        put: operations["update"];
+        put: operations["update_external_network"];
         post?: never;
-        delete: operations["delete"];
+        delete: operations["delete_external_network"];
         options?: never;
         head?: never;
         patch?: never;
@@ -239,9 +239,9 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["list"];
+        get: operations["list_floating_ips"];
         put?: never;
-        post: operations["allocate"];
+        post: operations["allocate_floating_ip"];
         delete?: never;
         options?: never;
         head?: never;
@@ -258,10 +258,10 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete: operations["release"];
+        delete: operations["release_floating_ip"];
         options?: never;
         head?: never;
-        patch: operations["update"];
+        patch: operations["update_floating_ip"];
         trace?: never;
     };
     "/api/v1/hosts": {
@@ -620,7 +620,7 @@ export interface paths {
             cookie?: never;
         };
         /** External networks the tenant's VPCs may route to. */
-        get: operations["usable"];
+        get: operations["usable_external_networks"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2130,7 +2130,7 @@ export interface operations {
             };
         };
     };
-    list: {
+    list_external_networks: {
         parameters: {
             query?: never;
             header?: never;
@@ -2155,7 +2155,7 @@ export interface operations {
             };
         };
     };
-    create: {
+    create_external_network: {
         parameters: {
             query?: never;
             header?: never;
@@ -2196,7 +2196,7 @@ export interface operations {
             };
         };
     };
-    update: {
+    update_external_network: {
         parameters: {
             query?: never;
             header?: never;
@@ -2239,7 +2239,7 @@ export interface operations {
             };
         };
     };
-    delete: {
+    delete_external_network: {
         parameters: {
             query?: never;
             header?: never;
@@ -2277,7 +2277,7 @@ export interface operations {
             };
         };
     };
-    list: {
+    list_floating_ips: {
         parameters: {
             query?: {
                 /** @description Defaults to the caller's tenant. */
@@ -2300,7 +2300,7 @@ export interface operations {
             };
         };
     };
-    allocate: {
+    allocate_floating_ip: {
         parameters: {
             query?: never;
             header?: never;
@@ -2341,7 +2341,7 @@ export interface operations {
             };
         };
     };
-    release: {
+    release_floating_ip: {
         parameters: {
             query?: never;
             header?: never;
@@ -2372,7 +2372,7 @@ export interface operations {
             };
         };
     };
-    update: {
+    update_floating_ip: {
         parameters: {
             query?: never;
             header?: never;
@@ -3418,7 +3418,7 @@ export interface operations {
             };
         };
     };
-    usable: {
+    usable_external_networks: {
         parameters: {
             query?: never;
             header?: never;

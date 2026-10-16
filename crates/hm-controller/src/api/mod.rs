@@ -123,3 +123,19 @@ async fn principal_for_secret(state: &AppState, secret: &str) -> Result<Principa
     .ok_or_else(ApiError::unauthorized)?;
     Principal::load(&state.db, user_id).await
 }
+
+#[cfg(test)]
+mod tests {
+    /// Generated clients key operations by ID; duplicates silently merge.
+    #[test]
+    fn operation_ids_are_unique() {
+        let (_, doc) = super::router();
+        let mut seen = std::collections::HashSet::new();
+        for (path, item) in &doc.paths.paths {
+            for op in [&item.get, &item.put, &item.post, &item.delete, &item.patch].into_iter().flatten() {
+                let id = op.operation_id.clone().unwrap_or_default();
+                assert!(seen.insert(id.clone()), "operation ID {id} repeats (at {path})");
+            }
+        }
+    }
+}

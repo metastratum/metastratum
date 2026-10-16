@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import StatusLed from './components/StatusLed.vue'
-import { mib, powerNote, vmState } from './state'
+import { mib, powerNote, ruleText, vmState } from './state'
 
 const vm = (status: string, power: string, extra: Partial<{ active_task: string | null; host_connected: boolean }> = {}) => ({
   status,
@@ -71,5 +71,20 @@ describe('StatusLed', () => {
     const w = mount(StatusLed, { props: { tone: 'fault', label: 'Crashed' } })
     expect(w.find('.led').classes()).toContain('fault')
     expect(w.text()).toBe('Crashed')
+  })
+})
+
+describe('ruleText', () => {
+  it('says what a rule allows in words', () => {
+    expect(ruleText({ direction: 'ingress', protocol: 'tcp', port_min: 22, port_max: 22, remote_cidr: '0.0.0.0/0' })).toBe(
+      'TCP 22 from anywhere',
+    )
+    expect(ruleText({ direction: 'egress', protocol: 'udp', port_min: 53, port_max: 54, remote_cidr: '10.0.0.0/8' })).toBe(
+      'UDP 53–54 to 10.0.0.0/8',
+    )
+    expect(ruleText({ direction: 'ingress', protocol: 'any', remote_group_name: 'default' })).toBe(
+      'All traffic from members of default',
+    )
+    expect(ruleText({ direction: 'ingress', protocol: 'icmp', remote_cidr: '192.0.2.7/32' })).toBe('ICMP from 192.0.2.7')
   })
 })

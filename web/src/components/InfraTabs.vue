@@ -3,6 +3,7 @@
     <RouterLink to="/hosts">Hosts</RouterLink>
     <RouterLink to="/clusters">Clusters</RouterLink>
     <RouterLink to="/storage">Storage</RouterLink>
+    <RouterLink to="/external-networks">External networks</RouterLink>
   </nav>
 </template>
 

@@ -14,6 +14,13 @@ export type Cluster = Schemas['ClusterView']
 export type Pool = Schemas['PoolView']
 export type AuditEntry = Schemas['AuditEntry']
 export type Token = Schemas['TokenView']
+export type Vpc = Schemas['VpcView']
+export type Network = Schemas['NetworkView']
+export type SecurityGroup = Schemas['SecurityGroupView']
+export type Rule = Schemas['RuleView']
+export type FloatingIp = Schemas['FloatingIpView']
+export type Policy = Schemas['PolicyView']
+export type ExternalNetwork = Schemas['ExternalNetworkView']
 
 /** Raised for any non-2xx API response, carrying the server's message. */
 export class ApiError extends Error {

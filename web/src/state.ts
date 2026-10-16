@@ -101,3 +101,30 @@ export function ago(iso: string | null | undefined): string {
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`
   return new Date(iso).toLocaleDateString()
 }
+
+/** The traffic a security-group rule or guardrail is about, in words. */
+export type RuleLike = {
+  direction: string
+  protocol: string
+  port_min?: number | null
+  port_max?: number | null
+  remote_cidr?: string | null
+  remote_group_name?: string | null
+}
+
+export function ruleText(r: RuleLike): string {
+  const what =
+    r.protocol === 'any'
+      ? 'All traffic'
+      : r.protocol === 'icmp'
+        ? 'ICMP'
+        : `${r.protocol.toUpperCase()}${
+            r.port_min == null ? '' : r.port_min === r.port_max ? ` ${r.port_min}` : ` ${r.port_min}–${r.port_max}`
+          }`
+  const other = r.remote_group_name
+    ? `members of ${r.remote_group_name}`
+    : !r.remote_cidr || r.remote_cidr === '0.0.0.0/0'
+      ? 'anywhere'
+      : r.remote_cidr.replace(/\/32$/, '')
+  return `${what} ${r.direction === 'ingress' ? 'from' : 'to'} ${other}`
+}
