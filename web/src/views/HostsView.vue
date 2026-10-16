@@ -5,9 +5,12 @@ import FencingForm from '../components/FencingForm.vue'
 import HostFaceplate from '../components/HostFaceplate.vue'
 import InfraTabs from '../components/InfraTabs.vue'
 import ModalDialog from '../components/ModalDialog.vue'
+import TypeToConfirm from '../components/TypeToConfirm.vue'
 import { useLiveRefresh } from '../stores/live'
 
 const hosts = ref<Host[] | null>(null)
+const inService = computed(() => (hosts.value ?? []).filter((h) => h.state !== 'decommissioned'))
+const retired = computed(() => (hosts.value ?? []).filter((h) => h.state === 'decommissioned'))
 const vms = ref<Vm[]>([])
 const token = ref<{ token: string; expires_at: string } | null>(null)
 const tokenError = ref('')
@@ -30,7 +33,6 @@ const manageError = ref('')
 function manage(h: Host) {
   manageForm.value = { cluster_id: h.cluster_id ?? null, maintenance: h.state === 'maintenance' }
   manageError.value = ''
-  decommissioning.value = false
   managing.value = h
 }
 async function evacuate() {
@@ -46,18 +48,40 @@ async function evacuate() {
   }
 }
 
-// Decommissioning: asked for twice, as it cannot be undone.
-const decommissioning = ref(false)
+// Decommissioning: it can't be undone, so the host's name must be typed,
+// and what it did is shown afterwards.
+type DecommissionReport = {
+  host_cleanup: string[]
+  host_failures: string[]
+  chassis_removed?: boolean | null
+  certificates_revoked: number
+  notes: string[]
+}
+const decommissioning = ref<Host | null>(null)
+const decommissionConfirmed = ref(false)
+const decommissionBusy = ref(false)
+const decommissionError = ref('')
+const decommissionReport = ref<DecommissionReport | null>(null)
+function startDecommission(h: Host) {
+  managing.value = null
+  decommissionError.value = ''
+  decommissionReport.value = null
+  decommissioning.value = h
+}
 async function decommission() {
-  const h = managing.value
+  const h = decommissioning.value
   if (!h) return
-  manageError.value = ''
+  decommissionError.value = ''
+  decommissionBusy.value = true
   try {
-    await ok(api.POST('/api/v1/hosts/{id}/decommission', { params: { path: { id: h.id } } }))
-    managing.value = null
+    decommissionReport.value = await ok(
+      api.POST('/api/v1/hosts/{id}/decommission', { params: { path: { id: h.id } } }),
+    )
     await load()
   } catch (e) {
-    manageError.value = errorText(e)
+    decommissionError.value = errorText(e)
+  } finally {
+    decommissionBusy.value = false
   }
 }
 
@@ -122,9 +146,18 @@ async function createToken() {
       <p>No hosts are enrolled. Add a hypervisor so VMs have somewhere to run.</p>
       <button class="btn primary" @click="addHost">Add host</button>
     </div>
-    <div v-else-if="hosts" class="rack">
-      <HostFaceplate v-for="h in hosts" :key="h.id" :host="h" :vms="byHost.get(h.id) ?? []" @manage="manage(h)" />
-    </div>
+    <template v-else-if="hosts">
+      <div class="rack">
+        <HostFaceplate v-for="h in inService" :key="h.id" :host="h" :vms="byHost.get(h.id) ?? []" @manage="manage(h)" />
+      </div>
+      <template v-if="retired.length">
+        <h2 class="retired-head">Decommissioned</h2>
+        <p class="muted">Taken out of service for good, and kept here for the record.</p>
+        <div class="rack retired">
+          <HostFaceplate v-for="h in retired" :key="h.id" :host="h" :vms="[]" />
+        </div>
+      </template>
+    </template>
 
     <ModalDialog v-if="adding" title="Add host" @close="adding = false">
       <div class="body">
@@ -153,6 +186,66 @@ async function createToken() {
           <button class="btn" @click="adding = false">Done</button>
         </footer>
       </div>
+    </ModalDialog>
+
+    <ModalDialog v-if="decommissioning" :title="`Decommission ${decommissioning.name}`" @close="decommissioning = null">
+      <div v-if="decommissionReport" class="form">
+        <p>
+          <strong>{{ decommissioning.name }}</strong> is decommissioned;
+          {{ decommissionReport.certificates_revoked }} certificates were revoked.
+        </p>
+        <template v-if="decommissionReport.host_cleanup.length">
+          <span class="label">Removed from the host</span>
+          <ul class="report">
+            <li v-for="s in decommissionReport.host_cleanup" :key="s">{{ s }}</li>
+          </ul>
+        </template>
+        <template v-if="decommissionReport.host_failures.length">
+          <span class="label error-text">Failed on the host</span>
+          <ul class="report error-text">
+            <li v-for="s in decommissionReport.host_failures" :key="s">{{ s }}</li>
+          </ul>
+        </template>
+        <p v-if="decommissionReport.chassis_removed === true">Its OVN chassis is gone from the southbound database.</p>
+        <p v-else-if="decommissionReport.chassis_removed === false" class="error-text">
+          Its OVN chassis is still in the southbound database.
+        </p>
+        <ul v-if="decommissionReport.notes.length" class="report">
+          <li v-for="n in decommissionReport.notes" :key="n">{{ n }}</li>
+        </ul>
+        <footer><button class="btn primary" @click="decommissioning = null">Done</button></footer>
+      </div>
+      <form v-else class="form" @submit.prevent="decommission">
+        <p>
+          Decommission <strong>{{ decommissioning.name }}</strong>? This can’t be undone. hypermon is removed from the
+          machine:
+        </p>
+        <ul class="report">
+          <li class="error-text">
+            ovn-controller is stopped and disabled, and the host’s OVN chassis is deleted; its integration bridge
+            (<span class="mono">br-int</span>) and all <span class="mono">ovn-*</span> settings are removed from Open
+            vSwitch, including ones set up outside hypermon.
+          </li>
+          <li class="error-text">
+            Storage pools are unmounted, and cached images, local volumes, cloud-init seeds, hypermon’s TLS files and
+            libvirt secrets are deleted.
+          </li>
+          <li>The agent removes its identity and stops; the host’s certificates are revoked.</li>
+          <li>The host leaves its cluster. To use the machine again, enroll it anew (and set up OVN on it again).</li>
+          <li v-if="!decommissioning.connected">
+            The host is not connected, so nothing on it can be removed; it is only retired here. Reinstall it before
+            reuse.
+          </li>
+        </ul>
+        <TypeToConfirm v-model="decommissionConfirmed" :name="decommissioning.name" />
+        <p v-if="decommissionError" class="error-text" role="alert">{{ decommissionError }}</p>
+        <footer>
+          <button type="button" class="btn" @click="decommissioning = null">Cancel</button>
+          <button class="btn danger" :disabled="!decommissionConfirmed || decommissionBusy">
+            {{ decommissionBusy ? 'Decommissioning…' : `Decommission ${decommissioning.name}` }}
+          </button>
+        </footer>
+      </form>
     </ModalDialog>
 
     <ModalDialog v-if="managing" :title="`Manage ${managing.name}`" @close="managing = null">
@@ -196,22 +289,17 @@ async function createToken() {
           <div>
             <strong>Decommission</strong>
             <p class="muted hint">
-              Takes the host out of service for good: it leaves its cluster and its certificates are revoked, so its
-              agent can no longer connect. It must have no VMs. To use the machine again, enroll it anew.
+              Takes the host out of service for good and removes hypermon from it. It must have no VMs.
             </p>
           </div>
           <button
-            v-if="!decommissioning"
             type="button"
-            class="btn"
+            class="btn danger"
             :disabled="!!managing.vm_count"
             :title="managing.vm_count ? 'Move or delete its VMs first' : undefined"
-            @click="decommissioning = true"
+            @click="startDecommission(managing)"
           >
             Decommission…
-          </button>
-          <button v-else type="button" class="btn danger" @click="decommission">
-            Decommission {{ managing.name }} for good
           </button>
         </div>
         <p v-if="manageError" class="error-text" role="alert">{{ manageError }}</p>
@@ -226,6 +314,18 @@ async function createToken() {
 </template>
 
 <style scoped>
+.retired-head {
+  margin: 28px 0 4px;
+}
+.rack.retired {
+  opacity: 0.6;
+}
+.report {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
 .head {
   display: flex;
   align-items: baseline;

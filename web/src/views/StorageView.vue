@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { api, errorText, ok, type Cluster, type Pool } from '../api/client'
 import InfraTabs from '../components/InfraTabs.vue'
 import ModalDialog from '../components/ModalDialog.vue'
+import TypeToConfirm from '../components/TypeToConfirm.vue'
 import { useLiveRefresh } from '../stores/live'
 
 const pools = ref<Pool[] | null>(null)
@@ -21,6 +22,18 @@ useLiveRefresh(['storage_pool', 'cluster'], load)
 const clusterName = (id: string) => clusters.value.find((c) => c.id === id)?.name ?? id.slice(0, 8)
 type Config = Record<string, unknown>
 const cfg = (p: Pool) => (p.config ?? {}) as Config
+
+/** The storage behind a pool, as the controller compares them. */
+function backend(p: Pool): string | null {
+  const c = cfg(p)
+  if (p.kind === 'nfs') return `nfs:${c.server}:${String(c.export ?? '').replace(/\/+$/, '')}`
+  if (p.kind === 'rbd') return `rbd:${c.pool}@${[...((c.monitors as string[] | undefined) ?? [])].sort().join(',')}`
+  return null
+}
+/** Other pools on the same storage: deleting one leaves the data for them. */
+const sharing = (p: Pool) =>
+  (pools.value ?? []).filter((o) => o.id !== p.id && backend(o) !== null && backend(o) === backend(p))
+const confirmed = ref(false)
 function where(p: Pool): string {
   const c = cfg(p)
   if (p.kind === 'nfs') return `${c.server}:${c.export}`
@@ -147,10 +160,28 @@ async function submit() {
       @close="dialog = null"
     >
       <form class="form" @submit.prevent="submit">
-        <p v-if="dialog.kind === 'delete'">
-          Delete <strong>{{ dialog.pool.name }}</strong>? It must hold no VM disks. Nothing on the storage itself is
-          removed.
-        </p>
+        <template v-if="dialog.kind === 'delete'">
+          <p>
+            Delete <strong>{{ dialog.pool.name }}</strong>? It must hold no VM disks. This can’t be undone:
+          </p>
+          <ul class="consequences">
+            <li>Every host unmounts it and forgets its credentials.</li>
+            <li v-if="sharing(dialog.pool).length">
+              The data on its storage stays: {{ sharing(dialog.pool).map((p) => p.name).join(', ') }} uses the same
+              storage.
+            </li>
+            <li v-else-if="dialog.pool.kind === 'nfs'" class="error-text">
+              hypermon’s files on <span class="mono">{{ cfg(dialog.pool).server }}:{{ cfg(dialog.pool).export }}</span>
+              are deleted: its cached images (<span class="mono">images/</span>) and any volumes left. Other files
+              there are left alone.
+            </li>
+            <li v-else class="error-text">
+              hypermon’s images in Ceph pool <span class="mono">{{ cfg(dialog.pool).pool }}</span> are deleted
+              (<span class="mono">img-*</span>). Other images there are left alone.
+            </li>
+          </ul>
+          <TypeToConfirm v-model="confirmed" :name="dialog.pool.name" />
+        </template>
         <template v-else>
           <div class="row">
             <label class="field">
@@ -222,7 +253,11 @@ async function submit() {
         <p v-if="error" class="error-text" role="alert">{{ error }}</p>
         <footer>
           <button type="button" class="btn" @click="dialog = null">Cancel</button>
-          <button class="btn" :class="dialog.kind === 'delete' ? 'danger' : 'primary'" :disabled="busy">
+          <button
+            class="btn"
+            :class="dialog.kind === 'delete' ? 'danger' : 'primary'"
+            :disabled="busy || (dialog.kind === 'delete' && !confirmed)"
+          >
             {{ dialog.kind === 'delete' ? 'Delete pool' : 'Save' }}
           </button>
         </footer>
@@ -232,6 +267,12 @@ async function submit() {
 </template>
 
 <style scoped>
+.consequences {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
 .end .btn + .btn {
   margin-left: 6px;
 }

@@ -39,6 +39,7 @@ HM_OVN_CA_CERT=/etc/hypermon/ovn/ca.pem
 HM_OVN_CERTIFICATE=/etc/hypermon/ovn/controller.pem
 HM_OVN_PRIVATE_KEY=/run/credentials/hm-controller.service/ovn-key.pem
 HM_OVN_SB=ssl:10.0.0.31:6642,ssl:10.0.0.32:6642,ssl:10.0.0.33:6642
+HM_OVN_SB_ADMIN=ssl:10.0.0.31:6645,ssl:10.0.0.32:6645,ssl:10.0.0.33:6645
 HM_METRICS_LISTEN=10.0.0.21:9180
 HM_REDIS_URL=rediss://:...@redis.example.net:6380
 ```
@@ -188,11 +189,47 @@ QEMU and libvirt (`/etc/pki/qemu/ca-crl.pem`, `/etc/pki/CA/cacrl.pem`); the
 controller sends a new one whenever it revokes something, and with every
 welcome.
 
-To retire a machine, move its VMs off and Decommission it (Manage on the
-host). It leaves its cluster, its certificates are revoked, and its agent
-can no longer connect. To use the machine again, enroll it anew. Its OVN
-chassis stays in the southbound database until you delete it
-(`ovn-sbctl chassis-del <name>`).
+To retire a machine, move its VMs off (Evacuate) and Decommission it
+(Manage on the host; it asks for the host's name). If its agent is
+connected, it removes hypermon from the machine first:
+
+- stops `ovn-controller`, which deletes the host's chassis from the
+  southbound database, and keeps it from starting at boot (`ovn-host` and
+  `ovn-controller` disabled);
+- removes the integration bridge `br-int` and every `ovn-*` setting from
+  Open vSwitch (including ones set up outside hypermon, such as
+  `ovn-encap-ip` and `ovn-bridge-mappings`), and hypermon's TLS settings;
+- unmounts storage pools, removes libvirt secrets, cached images, local
+  volumes, cloud-init seeds and hypermon's TLS files;
+- removes the agent's identity, and stops and disables the agent.
+
+The host then leaves its cluster and its certificates are revoked. With
+`--ovn-sb-admin` the controller also makes sure the chassis is gone from the
+southbound database, which is how a host that was down at the time loses
+its chassis; without it, the report says what to check by hand. A host
+that was down keeps everything else: reinstall it before reuse. To use the
+machine again, set it up as an OVN chassis again and enroll it anew; it
+keeps its name (`deploy/lab/lab.sh ovn-host` does the OVN part on the
+lab).
+
+`--ovn-sb-admin` is a southbound remote without OVN's RBAC, using the
+northbound TLS settings. The southbound database has one TLS configuration
+for all its listeners, so its CA must also trust the controllers'
+certificate: let only the controllers reach that listener.
+
+### Deleting pools and images
+
+Deleting a storage pool (it must hold no VM disks) has every host unmount it
+and forget its credentials, and removes hypermon's data from the storage:
+its cached images, and volumes if any were left (on NFS, `images/` and
+`volumes/` files named after hypermon IDs; on Ceph, `img-*` images). Other
+files there stay. If another pool uses the same storage (the same NFS
+export, or the same Ceph pool), the data stays: that pool needs it.
+
+Deleting an image (no VM disk may be built on it) removes its cached copy
+from every host and every shared pool. Hosts that are down at the time
+clean up when they reconnect. The outcome is in the audit log
+(`storage_pool.cleanup`, `image.cleanup`).
 
 ### Limits
 

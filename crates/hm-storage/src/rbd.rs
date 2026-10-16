@@ -191,6 +191,41 @@ impl RbdPool {
         result
     }
 
+    /// Removes an imported image (and its snapshot). Fails while volumes
+    /// are cloned from it.
+    pub async fn delete_image(&self, id: &str) -> Result<()> {
+        let name = Self::image_name(id)?;
+        if !self.exists(&self.spec(&name)).await? {
+            return Ok(());
+        }
+        let snap = format!("{}@base", self.spec(&name));
+        let children = self.rbd(&["children", &snap]).await.unwrap_or_default();
+        if !String::from_utf8_lossy(&children).trim().is_empty() {
+            return Err(Error::Pool(format!(
+                "{name} still has volumes cloned from it"
+            )));
+        }
+        let _ = self.rbd(&["snap", "unprotect", &snap]).await;
+        self.rbd(&["snap", "purge", &self.spec(&name)]).await?;
+        self.rbd(&["rm", &self.spec(&name)]).await?;
+        Ok(())
+    }
+
+    /// Removes hypermon's images from the Ceph pool (`img-*`; volumes are
+    /// gone before a pool is removed, and anything else is not ours).
+    /// Returns how many were removed.
+    pub async fn purge(&self) -> Result<usize> {
+        let list = self.rbd(&["ls", &self.pool]).await?;
+        let mut removed = 0;
+        for name in String::from_utf8_lossy(&list).lines() {
+            if let Some(id) = name.trim().strip_prefix("img-") {
+                self.delete_image(id).await?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
     async fn remove_image(&self, name: &str) {
         let snap = format!("{}@base", self.spec(name));
         let _ = self.rbd(&["snap", "unprotect", &snap]).await;

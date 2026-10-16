@@ -229,9 +229,20 @@ async fn delete_pool(
             "the pool still holds {n} volumes"
         )));
     }
+    // Data on storage another pool uses stays; that pool needs it.
+    let backend = crate::cleanup::backend(&pool);
+    let shared = hm_db::storage_pools::list(&state.db)
+        .await?
+        .iter()
+        .any(|o| o.id != id && backend.is_some() && crate::cleanup::backend(o) == backend);
     let mut tx = state.db.begin().await?;
     hm_db::storage_pools::delete(&mut tx, id).await?;
     tx.commit().await?;
+    tokio::spawn(crate::cleanup::pool_deleted(
+        state.clone(),
+        pool.clone(),
+        shared,
+    ));
     audit(
         &state.db,
         Some(&p),

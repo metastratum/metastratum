@@ -6,6 +6,7 @@ import StatusLed from './StatusLed.vue'
 
 const props = defineProps<{ host: Host; vms: Vm[] }>()
 const emit = defineEmits<{ manage: [] }>()
+const retired = computed(() => props.host.state === 'decommissioned')
 
 // Bays are the host's memory: each VM occupies a share proportional to what
 // it was allocated, and the rest is blanking panel.
@@ -23,15 +24,18 @@ const usedPct = computed(() => Math.min(100, (props.host.allocated_memory_mib / 
     <div class="ears" aria-hidden="true"><span /><span /></div>
     <header>
       <span class="tape">{{ host.name }}</span>
-      <StatusLed :tone="host.connected ? 'on' : 'fault'" :label="host.connected ? 'Connected' : 'Not connected'" />
+      <span v-if="retired" class="tag retired" title="Taken out of service for good; kept for the record">
+        Decommissioned
+      </span>
+      <StatusLed v-else :tone="host.connected ? 'on' : 'fault'" :label="host.connected ? 'Connected' : 'Not connected'" />
       <span v-if="!host.kvm" class="error-text">No KVM</span>
       <span v-if="host.state === 'maintenance'" class="tag maint">Maintenance</span>
       <span v-if="host.state === 'fenced'" class="tag fenced" title="It failed and was powered off; its VMs were moved">Fenced</span>
-      <span v-if="host.connected && !host.migration_ready" class="tag stray" title="libvirt does not accept TLS connections">
+      <span v-if="host.connected && !host.migration_ready" class="tag stray" title="QEMU has no TLS certificates for migration">
         No migration
       </span>
-      <span class="tag" :class="{ stray: !host.cluster_name }">{{ host.cluster_name ?? 'No cluster' }}</span>
-      <button type="button" class="btn small manage" @click="emit('manage')">Manage</button>
+      <span v-if="!retired" class="tag" :class="{ stray: !host.cluster_name }">{{ host.cluster_name ?? 'No cluster' }}</span>
+      <button v-if="!retired" type="button" class="btn small manage" @click="emit('manage')">Manage</button>
       <dl class="specs mono">
         <div><dt>addr</dt><dd>{{ host.address }}</dd></div>
         <div><dt>cpu</dt><dd>{{ host.cpu_count }}</dd></div>
@@ -65,6 +69,9 @@ const usedPct = computed(() => Math.min(100, (props.host.allocated_memory_mib / 
 </template>
 
 <style scoped>
+.tag.retired {
+  color: var(--muted);
+}
 .plate {
   position: relative;
   display: grid;

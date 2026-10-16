@@ -397,28 +397,84 @@ async fn test_fencing(
     Ok(Json(FencingTest { power }))
 }
 
-/// Takes a host out of service for good: it leaves its cluster, its
-/// certificates are revoked (its agent can no longer connect, and other
-/// hosts refuse it), and it stays listed as decommissioned. It must have no
-/// VMs. To use the machine again, enroll it anew.
+/// What decommissioning a host did.
+#[derive(Serialize, ToSchema)]
+pub struct DecommissionReport {
+    /// What the host's agent removed from it (nothing if it could not be
+    /// reached).
+    host_cleanup: Vec<String>,
+    /// Cleanup steps that failed on the host.
+    host_failures: Vec<String>,
+    /// Whether the host's OVN chassis is gone from the southbound database;
+    /// absent when that could not be checked.
+    chassis_removed: Option<bool>,
+    certificates_revoked: usize,
+    /// What is left to do by hand.
+    notes: Vec<String>,
+}
+
+/// Takes a host out of service for good. It must have no VMs. Its agent
+/// removes hypermon from it (stops and disables ovn-controller, which deletes
+/// its OVN chassis; removes the integration bridge and OVN settings from Open
+/// vSwitch; lets go of storage pools; deletes cached images, hypermon's TLS
+/// files and its own identity, and stops). The host leaves its cluster and
+/// its certificates are revoked. To use the machine again, enroll it anew.
 #[utoipa::path(post, path = "/hosts/{id}/decommission", tag = "hosts", params(("id" = HostId, Path)),
-    responses((status = 204), (status = 403), (status = 404), (status = 409)))]
+    responses((status = 200, body = DecommissionReport), (status = 403), (status = 404), (status = 409)))]
 async fn decommission_host(
     State(state): State<AppState>,
     p: Principal,
     axum::extract::Path(id): axum::extract::Path<HostId>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Json<DecommissionReport>> {
     authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
     let host = hm_db::hosts::get(&state.db, id).await?;
     if host.state == "decommissioned" {
-        return Ok(StatusCode::NO_CONTENT);
+        return Err(ApiError::conflict("the host is already decommissioned"));
     }
     if !hm_db::vms::list_on_host(&state.db, id).await?.is_empty() {
         return Err(ApiError::conflict(
             "move or delete the host's VMs before decommissioning it",
         ));
     }
+    let mut report = DecommissionReport {
+        host_cleanup: vec![],
+        host_failures: vec![],
+        chassis_removed: None,
+        certificates_revoked: 0,
+        notes: vec![],
+    };
+
+    // The host cleans itself up while its certificate still opens a session.
+    if host.is_live() {
+        let cmd = hm_proto::command::Cmd::Decommission(hm_proto::Decommission {});
+        match state.agents.send(id, cmd, Duration::from_secs(300)).await {
+            Ok(payload) => {
+                #[derive(serde::Deserialize, Default)]
+                struct Steps {
+                    done: Vec<String>,
+                    failed: Vec<String>,
+                }
+                let steps: Steps = serde_json::from_str(&payload).unwrap_or_default();
+                report.host_cleanup = steps.done;
+                report.host_failures = steps.failed;
+            }
+            // VMs defined on the host that the controller does not know of.
+            Err(crate::agents::AgentError::Failed(e)) if e.contains("still defined") => {
+                return Err(ApiError::conflict(format!("the host refused: {e}")));
+            }
+            Err(e) => report.notes.push(format!(
+                "The host could not clean itself up ({e}): hypermon's files, mounts and settings stay on it."
+            )),
+        }
+    } else {
+        report.notes.push(
+            "The host's agent is not connected: hypermon's files, mounts and settings stay on it; reinstall it before reuse."
+                .into(),
+        );
+    }
+
     let revoked = hm_db::hosts::decommission(&state.db, id).await?;
+    report.certificates_revoked = revoked.len();
     crate::crl::revoke(&state, id, &revoked, "decommissioned").await;
     state.agents.close(id);
     tokio::spawn(crate::agents::libvirt_tls_policy(
@@ -426,16 +482,44 @@ async fn decommission_host(
         host.cluster_id,
         id,
     ));
+
+    // Its OVN chassis: gone if ovn-controller stopped cleanly; the
+    // controller's own southbound connection makes sure.
+    let chassis = host.ovn_chassis.clone();
+    if !chassis.is_empty() {
+        match &state.sb_admin {
+            Some(sb) => {
+                let result = async {
+                    if crate::cleanup::has_chassis(sb, &chassis).await? {
+                        crate::cleanup::delete_chassis(sb, &chassis).await?;
+                    }
+                    crate::cleanup::has_chassis(sb, &chassis).await
+                }
+                .await;
+                match result {
+                    Ok(left) => report.chassis_removed = Some(!left),
+                    Err(e) => report.notes.push(format!(
+                        "Could not check OVN chassis {chassis} ({e:#}); if it is still there: ovn-sbctl chassis-del {chassis}"
+                    )),
+                }
+            }
+            None => report.notes.push(format!(
+                "Check that OVN chassis {chassis} is gone (ovn-sbctl show); if not: ovn-sbctl chassis-del {chassis}. With --ovn-sb-admin the controller does this itself."
+            )),
+        }
+    }
     audit(
         &state.db,
         Some(&p),
         Some(p.tenant_id),
         "host.decommission",
         Some(("host", id.0)),
-        serde_json::json!({"name": host.name, "revoked": revoked.len()}),
+        serde_json::json!({"name": host.name, "revoked": report.certificates_revoked,
+            "host_cleanup": report.host_cleanup, "host_failures": report.host_failures,
+            "chassis_removed": report.chassis_removed, "notes": report.notes}),
     )
     .await;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(report))
 }
 
 /// Has the host's agent renew its certificate now (it also does so on its
@@ -449,6 +533,9 @@ async fn renew_certificate(
 ) -> ApiResult<StatusCode> {
     authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
     let host = hm_db::hosts::get(&state.db, id).await?;
+    if host.state == "decommissioned" {
+        return Err(ApiError::conflict("the host is decommissioned"));
+    }
     state
         .agents
         .call(

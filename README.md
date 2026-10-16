@@ -136,6 +136,7 @@ deploy/lab/lab.sh ssh hm-host1 [cmd...]
 deploy/lab/lab.sh ceph      # (re)run the Ceph setup; prints the RBD pool config
 deploy/lab/lab.sh ovn-tls   # serve OVN's northbound database over TLS too; prints the controller flags
 deploy/lab/lab.sh ovn-sb-tls # serve the southbound over TLS with RBAC, for --ovn-sb (see the script)
+deploy/lab/lab.sh ovn-host hm-host3 # make a host an OVN chassis again, after decommissioning it
 deploy/lab/lab.sh testdb    # throwaway OVN northbound databases for tests
 deploy/lab/lab.sh down      # remove VMs and networks; keeps the cached base image
 ```

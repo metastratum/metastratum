@@ -97,18 +97,44 @@ pub async fn is_usable_by(
     .await?)
 }
 
-pub async fn delete(db: impl PgExecutor<'_>, id: ImageId) -> Result<()> {
+/// Deletes an image no volume is built on.
+pub async fn delete(db: &mut sqlx::PgConnection, id: ImageId) -> Result<()> {
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM volumes WHERE image_id = $1")
+        .bind(id)
+        .fetch_one(&mut *db)
+        .await?;
+    if users > 0 {
+        let which = if users == 1 {
+            "a VM disk is".to_owned()
+        } else {
+            format!("{users} VM disks are")
+        };
+        return Err(hm_core::Error::Conflict(format!(
+            "{which} built on this image; delete those VMs first"
+        ))
+        .into());
+    }
     sqlx::query("DELETE FROM images WHERE id = $1")
         .bind(id)
-        .execute(db)
+        .execute(&mut *db)
         .await
         .map_err(|e| -> crate::Error {
             match &e {
-                sqlx::Error::Database(d) if d.is_foreign_key_violation() => {
-                    hm_core::Error::Conflict("image is in use by volumes".into()).into()
+                // A volume created meanwhile (RESTRICT: 23001).
+                sqlx::Error::Database(d)
+                    if d.is_foreign_key_violation() || d.code().as_deref() == Some("23001") =>
+                {
+                    hm_core::Error::Conflict("VM disks are built on this image".into()).into()
                 }
                 _ => e.into(),
             }
         })?;
     Ok(())
+}
+
+/// Every image's ID (for agents to tell which cached copies to keep).
+pub async fn all_ids(db: impl PgExecutor<'_>) -> Result<Vec<ImageId>> {
+    Ok(sqlx::query_scalar("SELECT id FROM images")
+        .fetch_all(db)
+        .await?)
 }

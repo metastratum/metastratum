@@ -123,8 +123,9 @@ Not fixed, and worth knowing:
 - **OVN cannot revoke certificates.** Open vSwitch has no revocation
   lists, so a decommissioned host's southbound certificate stays valid until
   it expires (up to 30 days), held by OVN's RBAC to that host's chassis.
-  Delete the chassis (`ovn-sbctl chassis-del`) after decommissioning a host
-  you no longer trust. Reinstall a host you no longer trust, and replace
+  Decommissioning deletes the chassis (through the host, or the
+  controller's own southbound connection, `--ovn-sb-admin`); the
+  certificate could register it again until it expires. Reinstall a host you no longer trust, and replace
   the CA if one was compromised (every host must then enroll again).
 - **OVN's databases need TLS configured.** Without `--ovn-sb` and TLS on
   the northbound database, anyone who reaches them controls every

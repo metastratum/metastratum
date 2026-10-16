@@ -1328,6 +1328,7 @@ dependencies = [
  "hm-proto",
  "hm-storage",
  "rustls",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-stream",

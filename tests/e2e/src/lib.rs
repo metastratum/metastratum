@@ -451,6 +451,17 @@ impl Events {
     }
 }
 
+/// Hosts from `/hosts` that are in service (not decommissioned).
+pub fn in_service(hosts: &Value) -> Vec<Value> {
+    hosts
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|h| h["state"] != "decommissioned")
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::find;

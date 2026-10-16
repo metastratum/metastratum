@@ -12,7 +12,6 @@ const images = ref<Image[] | null>(null)
 const adding = ref(false)
 const form = ref({ name: '', source_url: '', format: 'qcow2', shared: false })
 const error = ref('')
-const rowError = ref<Record<string, string>>({})
 
 async function load() {
   if (!scope.current) return
@@ -33,13 +32,22 @@ async function add() {
   }
 }
 
-async function remove(img: Image) {
-  rowError.value = {}
+// Deleting, after a confirmation that says what goes.
+const deleting = ref<Image | null>(null)
+const deleteError = ref('')
+async function remove() {
+  const img = deleting.value
+  if (!img) return
+  deleteError.value = ''
   try {
     await ok(api.DELETE('/api/v1/images/{id}', { params: { path: { id: img.id } } }))
+    deleting.value = null
     await load()
   } catch (e) {
-    rowError.value[img.id] = e instanceof ApiError && e.status === 409 ? 'Still used by VM disks.' : 'Could not delete.'
+    deleteError.value =
+      e instanceof ApiError && e.status === 409
+        ? 'VM disks are still built on this image. Delete those VMs first.'
+        : 'Could not delete the image. Try again.'
   }
 }
 
@@ -74,11 +82,36 @@ const own = (img: Image) => img.tenant_id === scope.current
         <div class="meta">
           <IdChip :value="img.id" short />
           <span class="muted">Added {{ ago(img.created_at) }}</span>
-          <button v-if="own(img) && scope.can('image.write')" class="btn danger small" @click="remove(img)">Delete</button>
-          <span v-if="rowError[img.id]" class="error-text">{{ rowError[img.id] }}</span>
+          <button
+            v-if="own(img) && scope.can('image.write')"
+            class="btn danger small"
+            @click="(deleteError = ''), (deleting = img)"
+          >
+            Delete…
+          </button>
         </div>
       </li>
     </ul>
+
+    <ModalDialog v-if="deleting" title="Delete image" @close="deleting = null">
+      <form class="body" @submit.prevent="remove">
+        <p>Delete <strong>{{ deleting.name }}</strong>? This can’t be undone:</p>
+        <ul class="consequences">
+          <li>New VMs can no longer be created from it.</li>
+          <li v-if="deleting.shared">Sub-tenants it is shared with lose it too.</li>
+          <li class="error-text">
+            Every host deletes its downloaded copy, and so does every shared storage pool. Adding the image again
+            means downloading it again.
+          </li>
+          <li>It can’t be deleted while VM disks are built on it; those keep working.</li>
+        </ul>
+        <p v-if="deleteError" class="error-text" role="alert">{{ deleteError }}</p>
+        <footer>
+          <button type="button" class="btn" @click="deleting = null">Cancel</button>
+          <button class="btn danger">Delete {{ deleting.name }}</button>
+        </footer>
+      </form>
+    </ModalDialog>
 
     <ModalDialog v-if="adding" title="Add image" @close="adding = false">
       <form class="body" @submit.prevent="add">
@@ -112,6 +145,12 @@ const own = (img: Image) => img.tenant_id === scope.current
 </template>
 
 <style scoped>
+.consequences {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
 .head {
   display: flex;
   align-items: baseline;

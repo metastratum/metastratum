@@ -88,6 +88,40 @@ pub(crate) fn group_id(names: &[&str]) -> u32 {
     0
 }
 
+/// Every file the agent puts in place for libvirt and QEMU TLS.
+const INSTALLED: [&str; 13] = [
+    "/etc/pki/CA/cacert.pem",
+    "/etc/pki/CA/cacrl.pem",
+    "/etc/pki/libvirt/servercert.pem",
+    "/etc/pki/libvirt/clientcert.pem",
+    "/etc/pki/libvirt/private/serverkey.pem",
+    "/etc/pki/libvirt/private/clientkey.pem",
+    "/etc/pki/qemu/ca-cert.pem",
+    "/etc/pki/qemu/ca-crl.pem",
+    "/etc/pki/qemu/server-cert.pem",
+    "/etc/pki/qemu/client-cert.pem",
+    "/etc/pki/qemu/server-key.pem",
+    "/etc/pki/qemu/client-key.pem",
+    "/etc/openvswitch/hypermon/key.pem",
+];
+
+/// Removes the TLS files the agent installed (decommissioning), and the
+/// directory of the OVN ones. Returns how many it removed.
+pub fn remove_installed() -> Result<usize> {
+    let mut n = 0;
+    for path in INSTALLED {
+        match std::fs::remove_file(path) {
+            Ok(()) => n += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("removing {path}")),
+        }
+    }
+    match std::fs::remove_dir_all("/etc/openvswitch/hypermon") {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(n),
+    }
+}
+
 /// Installs the host identity for libvirt and QEMU TLS. Returns whether any
 /// file changed (a running daemon then needs restarting to notice).
 pub fn install(id: &HostIdentity) -> Result<bool> {

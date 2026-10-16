@@ -220,6 +220,10 @@ impl Agent {
                     Some(controller_message::Msg::Welcome(w)) => {
                         tracing::info!(protocol = w.protocol_version, version = %w.controller_version, "controller says hello");
                         *self.ovn_sb_remote.lock().unwrap() = w.ovn_sb_remote.clone();
+                        if let Some(inventory) = w.inventory.clone() {
+                            let this = self.clone();
+                            tokio::spawn(async move { crate::cleanup::reconcile(&this, &inventory).await });
+                        }
                         if !w.crl_pem.is_empty()
                             && let Err(e) = {
                                 let _held = self.qemu_tls.lock().await;
@@ -297,17 +301,7 @@ impl Agent {
 
     /// Prepares the pool a command refers to.
     async fn pool(&self, spec: Option<&hm_proto::Pool>) -> Result<hm_storage::Pool> {
-        let spec = spec.context("command does not name a storage pool")?;
-        let config = if spec.config_json.is_empty() {
-            serde_json::json!({})
-        } else {
-            serde_json::from_str(&spec.config_json).context("invalid pool config")?
-        };
-        let spec = PoolSpec {
-            id: spec.id.clone(),
-            kind: spec.kind.clone(),
-            config,
-        };
+        let spec = pool_spec(spec.context("command does not name a storage pool")?)?;
         let pool = self.pools.get(&spec).await?;
         // QEMU authenticates to Ceph with a libvirt secret; the pool ID
         // doubles as its UUID.
@@ -471,6 +465,20 @@ impl Agent {
                     Err(hm_libvirt::conn::Error::NoDomain(_)) => {}
                     r => r?,
                 }
+            }
+            Cmd::RemovePool(c) => {
+                let spec = pool_spec(c.pool.as_ref().context("no pool named")?)?;
+                return crate::cleanup::remove_pool(self, spec, c.remove_data).await;
+            }
+            Cmd::DeleteImage(c) => {
+                let shared = c.pools.iter().map(pool_spec).collect::<Result<Vec<_>>>()?;
+                crate::cleanup::delete_image(self, &c.image_id, &shared).await?;
+            }
+            Cmd::Decommission(_) => {
+                tracing::warn!("decommissioning this host");
+                let report = crate::cleanup::decommission(self).await?;
+                crate::cleanup::stop_self();
+                return Ok(serde_json::to_string(&report)?);
             }
             Cmd::InstallCrl(c) => {
                 let _held = self.qemu_tls.lock().await;
@@ -739,4 +747,18 @@ fn disk_limits(l: Option<&hm_proto::DiskLimits>) -> hm_libvirt::DiskLimits {
         bytes_per_sec: some(l.bytes_per_sec),
     })
     .unwrap_or_default()
+}
+
+/// A pool as the controller describes it, for the storage layer.
+pub(crate) fn pool_spec(p: &hm_proto::Pool) -> Result<PoolSpec> {
+    let config = if p.config_json.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(&p.config_json).context("invalid pool config")?
+    };
+    Ok(PoolSpec {
+        id: p.id.clone(),
+        kind: p.kind.clone(),
+        config,
+    })
 }

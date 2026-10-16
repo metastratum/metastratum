@@ -65,6 +65,22 @@ impl Pool {
             Pool::Rbd(p) => p.delete_volume(id).await,
         }
     }
+
+    pub async fn delete_image(&self, id: &str) -> Result<()> {
+        match self {
+            Pool::File(p) => p.delete_image(id).await,
+            Pool::Rbd(p) => p.delete_image(id).await,
+        }
+    }
+
+    /// Removes hypermon's data from the pool's storage. Returns how many
+    /// images and volumes went.
+    pub async fn purge(&self) -> Result<usize> {
+        match self {
+            Pool::File(p) => p.purge().await,
+            Pool::Rbd(p) => p.purge().await,
+        }
+    }
 }
 
 /// The agent's pools, prepared (mounted, ...) on first use and cached.
@@ -125,6 +141,53 @@ impl Pools {
         Ok(self.data_dir.join("pools").join(id))
     }
 
+    /// Lets go of a shared pool on this host: unmounts it and removes its
+    /// directory (an NFS mountpoint, or an RBD pool's keyring). Leaves the
+    /// storage itself alone.
+    pub async fn forget(&self, id: &str) -> Result<()> {
+        self.ready.lock().await.remove(id);
+        let dir = self.mountpoint(&PoolSpec {
+            id: id.to_owned(),
+            kind: String::new(),
+            config: serde_json::Value::Null,
+        })?;
+        if is_mounted(&dir) {
+            let target = dir.to_string_lossy();
+            tracing::info!(pool = id, "unmounting pool");
+            run("umount", &[&target]).await?;
+        }
+        // Never remove anything across a mount we could not undo.
+        if is_mounted(&dir) {
+            return Err(Error::Pool(format!("{} is still mounted", dir.display())));
+        }
+        match tokio::fs::remove_dir_all(&dir).await {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// IDs of the shared pools this host has set up (has a directory for).
+    pub async fn attached(&self) -> Result<Vec<String>> {
+        let mut out = vec![];
+        let mut dir = match tokio::fs::read_dir(self.data_dir.join("pools")).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(e) = dir.next_entry().await? {
+            let id = e.file_name().to_string_lossy().into_owned();
+            if !id.is_empty() && id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
+                out.push(id);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The local pool's cache and files, for cleaning up after images.
+    pub fn local(&self) -> FilePool {
+        FilePool::new(&self.data_dir)
+    }
+
     /// Shared pools can disappear underneath us (unmounted by hand).
     async fn still_ready(&self, spec: &PoolSpec) -> bool {
         match spec.kind.as_str() {
@@ -175,6 +238,55 @@ async fn probe_writable(root: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Cleaning up removes hypermon's files and nothing else.
+    #[tokio::test]
+    async fn pools_are_purged_and_forgotten_but_foreign_files_stay() {
+        let dir = std::env::temp_dir().join(format!("hm-purge-{}", std::process::id()));
+        let pools = Pools::new(&dir);
+        let id = "01a14668-2b2e-7154-83c1-27608f10c018";
+        // An attached pool's directory, as for an RBD keyring.
+        let pool_dir = dir.join("pools").join(id);
+        std::fs::create_dir_all(pool_dir.join("tmp")).unwrap();
+        std::fs::write(pool_dir.join("keyring"), "k").unwrap();
+        assert_eq!(pools.attached().await.unwrap(), [id]);
+
+        let files = FilePool::new(dir.join("shared"));
+        files.init().await.unwrap();
+        let image = dir.join("shared/images/0199f0a2-7b3c-7d00-8000-000000000001.qcow2");
+        std::fs::write(&image, "x").unwrap();
+        std::fs::write(
+            dir.join("shared/volumes/0199f0a2-7b3c-7d00-8000-000000000002.qcow2"),
+            "x",
+        )
+        .unwrap();
+        std::fs::write(dir.join("shared/images/notes.txt"), "someone else's").unwrap();
+        let cached = files.cached_images().await.unwrap();
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].0, "0199f0a2-7b3c-7d00-8000-000000000001");
+
+        files
+            .delete_image("0199f0a2-7b3c-7d00-8000-000000000001")
+            .await
+            .unwrap();
+        assert!(!image.exists());
+        files
+            .delete_image("0199f0a2-7b3c-7d00-8000-000000000001")
+            .await
+            .unwrap();
+        assert_eq!(files.purge().await.unwrap(), 1);
+        assert!(
+            dir.join("shared/images/notes.txt").exists(),
+            "not ours: kept"
+        );
+        assert!(!dir.join("shared/volumes").exists(), "emptied: removed");
+
+        pools.forget(id).await.unwrap();
+        assert!(!pool_dir.exists());
+        assert!(pools.attached().await.unwrap().is_empty());
+        assert!(pools.forget("../etc").await.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn local_pools_are_prepared_and_cached() {

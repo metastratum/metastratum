@@ -432,6 +432,44 @@ impl Libvirt {
     /// Makes sure a Ceph secret with this UUID exists and holds `key` (the
     /// base64 key from `ceph auth get-key`), for RBD disks to authenticate
     /// with. The value is set every time, so a rotated key takes effect.
+    /// Ceph secrets whose usage name starts with `prefix`: their UUIDs.
+    pub async fn ceph_secrets(&self, prefix: &str) -> Result<Vec<String>> {
+        // virConnectListAllSecretsFlags: none; usage type 2 is Ceph.
+        const USAGE_CEPH: i32 = 2;
+        let c = self.client().await?;
+        let all = c
+            .connect_list_all_secrets(&ConnectListAllSecretsArgs {
+                need_results: 1,
+                flags: 0,
+            })
+            .await?;
+        Ok(all
+            .secrets
+            .into_iter()
+            .filter(|s| s.usage_type == USAGE_CEPH && s.usage_id.starts_with(prefix))
+            .map(|s| Uuid::from_bytes(s.uuid).to_string())
+            .collect())
+    }
+
+    /// Removes a secret, if defined.
+    pub async fn remove_secret(&self, uuid: &str) -> Result<()> {
+        let c = self.client().await?;
+        match c
+            .secret_lookup_by_uuid(&SecretLookupByUuidArgs {
+                uuid: uuid_bytes(uuid)?,
+            })
+            .await
+        {
+            Ok(r) => {
+                c.secret_undefine(&SecretUndefineArgs { secret: r.secret })
+                    .await?;
+                Ok(())
+            }
+            Err(e) if e.code() == Some(err::NO_SECRET) => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub async fn ensure_ceph_secret(&self, uuid: &str, usage: &str, key: &str) -> Result<()> {
         use base64::Engine;
         let value = base64::engine::general_purpose::STANDARD

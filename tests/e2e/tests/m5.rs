@@ -184,7 +184,7 @@ async fn failed_hosts_are_fenced_and_their_vms_restart_elsewhere() -> anyhow::Re
         eprintln!("HM_E2E_FENCE not set; skipping");
         return Ok(());
     }
-    let hosts = api.get("/hosts").await?.as_array().unwrap().clone();
+    let hosts = hm_e2e::in_service(&api.get("/hosts").await?);
     let cluster = hosts[0]["cluster_id"].as_str().unwrap().to_owned();
     let c = api
         .get("/clusters")
@@ -337,7 +337,7 @@ async fn hosts_renew_their_certificates() -> anyhow::Result<()> {
     let Some(api) = hm_e2e::connect().await? else {
         return Ok(());
     };
-    let before = api.get("/hosts").await?.as_array().unwrap().clone();
+    let before = hm_e2e::in_service(&api.get("/hosts").await?);
     let asked = chrono::Utc::now();
     for h in &before {
         let id = h["id"].as_str().unwrap();

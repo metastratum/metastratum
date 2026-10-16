@@ -1,6 +1,7 @@
 //! hypermon host agent. Runs on every hypervisor: drives libvirt, manages
 //! local storage, and keeps a session open to the controller.
 
+mod cleanup;
 mod console;
 mod enroll;
 mod facts;

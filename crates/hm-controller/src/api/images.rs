@@ -134,7 +134,8 @@ async fn delete_image(
 ) -> ApiResult<StatusCode> {
     let image = hm_db::images::get(&state.db, id).await?;
     authorize_resource(&state.db, &p, Perm::ImageWrite, image.tenant_id, "image").await?;
-    hm_db::images::delete(&state.db, id).await?;
+    hm_db::images::delete(&mut *state.db.acquire().await?, id).await?;
+    tokio::spawn(crate::cleanup::image_deleted(state.clone(), image.clone()));
     audit(
         &state.db,
         Some(&p),

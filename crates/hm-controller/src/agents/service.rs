@@ -385,6 +385,7 @@ impl AgentControl for AgentControlService {
                     protocol_version: hm_proto::PROTOCOL_VERSION,
                     controller_version: env!("CARGO_PKG_VERSION").to_owned(),
                     ovn_sb_remote: state.ovn_sb_remote.clone(),
+                    inventory: crate::cleanup::inventory(&state.db).await.ok(),
                     crl_pem: crate::crl::current(&state).await.unwrap_or_else(|e| {
                         tracing::error!(error = %format!("{e:#}"), "signing the revocation list");
                         String::new()

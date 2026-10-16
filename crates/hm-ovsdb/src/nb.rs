@@ -8,8 +8,6 @@ use tokio::sync::Mutex;
 
 use crate::client::{Client, Error, Result};
 
-const DB: &str = "OVN_Northbound";
-
 /// Geneve adds 58 bytes (IPv4 underlay with options); this keeps guests
 /// within a standard 1500-byte underlay.
 pub const DEFAULT_MTU: u32 = 1442;
@@ -21,6 +19,9 @@ pub const DEFAULT_MTU: u32 = 1442;
 /// uses the cluster's leader, so what it reads is never behind what it
 /// wrote; when the leader changes it moves on to the next remote.
 pub struct Northbound {
+    /// The database's name: `OVN_Northbound`, or `OVN_Southbound` for
+    /// [`Northbound::southbound`].
+    db: &'static str,
     remotes: Vec<String>,
     tls: Option<Arc<rustls::ClientConfig>>,
     client: Mutex<(usize, Option<Arc<Client>>)>,
@@ -30,7 +31,18 @@ impl Northbound {
     /// `remotes` as `tcp:HOST:PORT`, `ssl:HOST:PORT` or `unix:PATH`,
     /// comma-separated; `ssl:` needs `tls`.
     pub fn new(remotes: &str, tls: Option<Arc<rustls::ClientConfig>>) -> Self {
+        Self::of("OVN_Northbound", remotes, tls)
+    }
+
+    /// The southbound database, the same way (for maintenance such as
+    /// deleting a decommissioned host's chassis).
+    pub fn southbound(remotes: &str, tls: Option<Arc<rustls::ClientConfig>>) -> Self {
+        Self::of("OVN_Southbound", remotes, tls)
+    }
+
+    fn of(db: &'static str, remotes: &str, tls: Option<Arc<rustls::ClientConfig>>) -> Self {
         Self {
+            db,
             remotes: remotes
                 .split(',')
                 .map(|r| r.trim().to_owned())
@@ -83,7 +95,7 @@ impl Northbound {
             .transact(
                 "_Server",
                 vec![json!({"op": "select", "table": "Database",
-                    "where": [["name", "==", DB]], "columns": ["model", "leader", "connected"]})],
+                    "where": [["name", "==", self.db]], "columns": ["model", "leader", "connected"]})],
             )
             .await;
         let row = match &rows {
@@ -100,13 +112,13 @@ impl Northbound {
 
     async fn tx(&self, ops: Vec<Value>) -> Result<Vec<Value>> {
         let c = self.client().await?;
-        match c.transact(DB, ops.clone()).await {
+        match c.transact(self.db, ops.clone()).await {
             // The connection dropped or went silent (server restarted, NB
             // leader change). Retry once on a fresh connection; every
             // transaction here is safe to repeat.
             Err(Error::Closed | Error::Timeout(_)) => {
                 self.client.lock().await.1 = None;
-                self.client().await?.transact(DB, ops).await
+                self.client().await?.transact(self.db, ops).await
             }
             r => r,
         }

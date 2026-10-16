@@ -180,3 +180,66 @@ test('networks: a VPC with a network, a security group with a rule', async ({ pa
   await page.getByRole('dialog').getByRole('button', { name: 'Delete' }).click()
   await expect(vpc).toHaveCount(0)
 })
+
+test('destructive operations say what they remove, and ask first', async ({ page }) => {
+  await signIn(page)
+  const run = Date.now().toString(36)
+
+  // An image (never downloaded): its dialog warns, then deletes it.
+  const image = await page.request.post('/api/v1/images', {
+    data: { name: `e2e-img-${run}`, source_url: 'https://example.invalid/never.qcow2', format: 'qcow2' },
+  })
+  expect(image.ok()).toBeTruthy()
+  await page.goto('/images')
+  const row = page.getByRole('listitem').filter({ hasText: `e2e-img-${run}` })
+  await row.getByRole('button', { name: 'Delete…' }).click()
+  const imageDialog = page.getByRole('dialog')
+  await expect(imageDialog).toContainText('Every host deletes its downloaded copy')
+  await imageDialog.getByRole('button', { name: `Delete e2e-img-${run}` }).click()
+  await expect(page.getByText(`e2e-img-${run}`)).toHaveCount(0)
+
+  // A pool: deleting it needs its name typed, and says what happens to the
+  // data on its storage.
+  const pool = await page.request.post('/api/v1/storage-pools', {
+    data: {
+      name: `e2e-pool-${run}`,
+      kind: 'nfs',
+      cluster_ids: [],
+      config: { server: '10.77.0.10', export: `/srv/nfs/e2e-unused-${run}` },
+    },
+  })
+  expect(pool.ok()).toBeTruthy()
+  await page.goto('/storage')
+  await page.getByRole('row').filter({ hasText: `e2e-pool-${run}` }).getByRole('button', { name: 'Delete' }).click()
+  const poolDialog = page.getByRole('dialog')
+  await expect(poolDialog).toContainText('Every host unmounts it')
+  await expect(poolDialog).toContainText('are deleted')
+  const deletePool = poolDialog.getByRole('button', { name: 'Delete pool' })
+  await expect(deletePool).toBeDisabled()
+  await poolDialog.getByLabel(/to confirm/).fill('not the name')
+  await expect(deletePool).toBeDisabled()
+  await poolDialog.getByLabel(/to confirm/).fill(`e2e-pool-${run}`)
+  await expect(deletePool).toBeEnabled()
+  await deletePool.click()
+  await expect(page.getByText(`e2e-pool-${run}`)).toHaveCount(0)
+
+  // Decommissioning a host: everything it removes is spelled out, and it
+  // waits for the name. (Cancelled here.)
+  await page.goto('/hosts')
+  const hosts = await (await page.request.get('/api/v1/hosts')).json()
+  const idle = hosts.find((h: { vm_count: number; state: string }) => !h.vm_count && h.state !== 'decommissioned')
+  test.skip(!idle, 'no host without VMs to open the dialog for')
+  await page
+    .locator('article', { hasText: idle.name, hasNotText: 'Decommissioned' })
+    .getByRole('button', { name: 'Manage' })
+    .click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Decommission…' }).click()
+  const hostDialog = page.getByRole('dialog')
+  await expect(hostDialog).toContainText('OVN chassis is deleted')
+  await expect(hostDialog).toContainText('can’t be undone')
+  await expect(hostDialog.getByRole('button', { name: `Decommission ${idle.name}` })).toBeDisabled()
+  await hostDialog.getByLabel(/to confirm/).fill(idle.name)
+  await expect(hostDialog.getByRole('button', { name: `Decommission ${idle.name}` })).toBeEnabled()
+  await hostDialog.getByRole('button', { name: 'Cancel' }).click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+})

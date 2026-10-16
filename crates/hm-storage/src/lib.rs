@@ -223,6 +223,66 @@ impl FilePool {
         }
     }
 
+    /// Removes a cached image. Volumes built on it would break: the
+    /// controller only deletes images no volume uses.
+    pub async fn delete_image(&self, id: &str) -> Result<()> {
+        let _guard = self.image_lock(id).lock_owned().await;
+        match tokio::fs::remove_file(self.image_path(id)?).await {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// IDs of the cached images, with when each was cached.
+    pub async fn cached_images(&self) -> Result<Vec<(String, std::time::SystemTime)>> {
+        let mut out = vec![];
+        let mut dir = match tokio::fs::read_dir(self.root.join("images")).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(e) = dir.next_entry().await? {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if let Some(id) = name.strip_suffix(".qcow2")
+                && safe_id(id).is_ok()
+            {
+                out.push((id.to_owned(), e.metadata().await?.modified()?));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Removes everything of hypermon's from the pool: cached images, and
+    /// any volumes left (the controller removes pools that hold none). Only
+    /// hypermon's own files go (`<id>.qcow2` in `images/` and `volumes/`);
+    /// the directories go too if that leaves them empty. Returns how many
+    /// files were removed.
+    pub async fn purge(&self) -> Result<usize> {
+        let mut removed = 0;
+        for sub in ["images", "volumes"] {
+            let dir_path = self.root.join(sub);
+            let mut dir = match tokio::fs::read_dir(&dir_path).await {
+                Ok(d) => d,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            while let Some(e) = dir.next_entry().await? {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name
+                    .strip_suffix(".qcow2")
+                    .is_some_and(|id| safe_id(id).is_ok())
+                    && e.file_type().await?.is_file()
+                {
+                    tokio::fs::remove_file(e.path()).await?;
+                    removed += 1;
+                }
+            }
+            // Only if empty: anything else there is not ours.
+            let _ = tokio::fs::remove_dir(&dir_path).await;
+        }
+        Ok(removed)
+    }
+
     /// Format and virtual size of a volume, for checks and tests.
     pub async fn volume_info(&self, id: &str) -> Result<(String, u64)> {
         let info = img_info(&self.volume_path(id)?, None).await?;

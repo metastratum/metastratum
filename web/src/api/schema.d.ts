@@ -323,10 +323,12 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Takes a host out of service for good: it leaves its cluster, its
-         *     certificates are revoked (its agent can no longer connect, and other
-         *     hosts refuse it), and it stays listed as decommissioned. It must have no
-         *     VMs. To use the machine again, enroll it anew.
+         * Takes a host out of service for good. It must have no VMs. Its agent
+         *     removes hypermon from it (stops and disables ovn-controller, which deletes
+         *     its OVN chassis; removes the integration bridge and OVN settings from Open
+         *     vSwitch; lets go of storage pools; deletes cached images, hypermon's TLS
+         *     files and its own identity, and stops). The host leaves its cluster and
+         *     its certificates are revoked. To use the machine again, enroll it anew.
          */
         post: operations["decommission_host"];
         delete?: never;
@@ -1387,6 +1389,24 @@ export interface components {
             external_network_id?: components["schemas"]["ExternalNetworkId"] | null;
             name: string;
             tenant_id?: components["schemas"]["TenantId"] | null;
+        };
+        /** @description What decommissioning a host did. */
+        DecommissionReport: {
+            certificates_revoked: number;
+            /**
+             * @description Whether the host's OVN chassis is gone from the southbound database;
+             *     absent when that could not be checked.
+             */
+            chassis_removed?: boolean | null;
+            /**
+             * @description What the host's agent removed from it (nothing if it could not be
+             *     reached).
+             */
+            host_cleanup: string[];
+            /** @description Cleanup steps that failed on the host. */
+            host_failures: string[];
+            /** @description What is left to do by hand. */
+            notes: string[];
         };
         DiskSpec: {
             image_id?: components["schemas"]["ImageId"] | null;
@@ -2778,11 +2798,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            204: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["DecommissionReport"];
+                };
             };
             403: {
                 headers: {

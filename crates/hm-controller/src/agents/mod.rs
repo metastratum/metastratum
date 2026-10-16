@@ -159,7 +159,7 @@ impl Agents {
 
     /// Sends a command, here or via the replica holding the host's session,
     /// and waits for its result's payload.
-    async fn send(
+    pub async fn send(
         &self,
         host: HostId,
         cmd: command::Cmd,
