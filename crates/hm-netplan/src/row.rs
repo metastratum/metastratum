@@ -17,10 +17,11 @@ pub enum Table {
     DhcpOptions,
     PortGroup,
     Acl,
+    Qos,
 }
 
 impl Table {
-    pub const ALL: [Table; 10] = [
+    pub const ALL: [Table; 11] = [
         Table::LogicalSwitch,
         Table::LogicalSwitchPort,
         Table::LogicalRouter,
@@ -31,6 +32,7 @@ impl Table {
         Table::DhcpOptions,
         Table::PortGroup,
         Table::Acl,
+        Table::Qos,
     ];
 
     pub fn name(self) -> &'static str {
@@ -45,6 +47,7 @@ impl Table {
             Table::DhcpOptions => "DHCP_Options",
             Table::PortGroup => "Port_Group",
             Table::Acl => "ACL",
+            Table::Qos => "QoS",
         }
     }
 
@@ -73,7 +76,7 @@ impl Table {
     /// Columns hypermon sets; everything a comparison needs.
     pub fn columns(self) -> &'static [&'static str] {
         match self {
-            Table::LogicalSwitch => &["name", "ports", "external_ids"],
+            Table::LogicalSwitch => &["name", "ports", "qos_rules", "external_ids"],
             Table::LogicalSwitchPort => &[
                 "name",
                 "type",
@@ -93,6 +96,13 @@ impl Table {
             Table::DhcpOptions => &["cidr", "options", "external_ids"],
             Table::PortGroup => &["name", "ports", "acls", "external_ids"],
             Table::Acl => &["direction", "priority", "match", "action", "external_ids"],
+            Table::Qos => &[
+                "direction",
+                "priority",
+                "match",
+                "bandwidth",
+                "external_ids",
+            ],
         }
     }
 }
@@ -105,6 +115,8 @@ pub enum Datum {
     /// A set of strings.
     Strs(Vec<String>),
     Map(BTreeMap<String, String>),
+    /// A map of strings to integers.
+    IntMap(BTreeMap<String, i64>),
     /// An optional reference.
     Ref(Option<String>),
     /// A set of references.

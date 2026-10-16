@@ -33,7 +33,45 @@ pub struct ClusterView {
     /// When a host fails, it is fenced (powered off) and its VMs on shared
     /// storage restart on the cluster's other hosts.
     ha_enabled: bool,
+    /// Limits for each VM in the cluster, so VMs sharing hosts and storage
+    /// cannot starve each other. Absent: no limit.
+    #[serde(flatten)]
+    limits: VmLimits,
     created_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct VmLimits {
+    /// Network traffic per NIC, each way, in Mbit/s.
+    vm_net_mbps: Option<u32>,
+    /// Operations per second, per disk.
+    vm_disk_iops: Option<u32>,
+    /// Throughput per disk, in MB/s.
+    vm_disk_mbps: Option<u32>,
+}
+
+impl VmLimits {
+    fn validate(self) -> ApiResult<Self> {
+        let ok = |v: Option<u32>, max: u32| v.is_none_or(|v| (1..=max).contains(&v));
+        if !(ok(self.vm_net_mbps, 400_000)
+            && ok(self.vm_disk_iops, 10_000_000)
+            && ok(self.vm_disk_mbps, 100_000))
+        {
+            return Err(ApiError::bad_request(
+                "limits must be positive: network up to 400000 Mbit/s, disks up to 10000000 IOPS and 100000 MB/s",
+            ));
+        }
+        Ok(self)
+    }
+
+    fn db(self) -> (Option<i32>, Option<i32>, Option<i32>) {
+        let i = |v: Option<u32>| v.map(|v| v as i32);
+        (
+            i(self.vm_net_mbps),
+            i(self.vm_disk_iops),
+            i(self.vm_disk_mbps),
+        )
+    }
 }
 
 impl From<hm_db::clusters::Cluster> for ClusterView {
@@ -44,6 +82,11 @@ impl From<hm_db::clusters::Cluster> for ClusterView {
             cpu_overcommit: c.cpu_overcommit,
             memory_overcommit: c.memory_overcommit,
             ha_enabled: c.ha_enabled,
+            limits: VmLimits {
+                vm_net_mbps: c.vm_net_mbps.map(|v| v as u32),
+                vm_disk_iops: c.vm_disk_iops.map(|v| v as u32),
+                vm_disk_mbps: c.vm_disk_mbps.map(|v| v as u32),
+            },
             created_at: c.created_at,
         }
     }
@@ -75,6 +118,8 @@ pub struct ClusterSpec {
     /// fencing configured.
     #[serde(default)]
     ha_enabled: bool,
+    #[serde(flatten)]
+    limits: VmLimits,
 }
 
 fn validate(req: &ClusterSpec) -> ApiResult<(String, f32, f32)> {
@@ -101,7 +146,11 @@ async fn create_cluster(
 ) -> ApiResult<(StatusCode, Json<ClusterView>)> {
     authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
     let (name, cpu, mem) = validate(&req)?;
+    let limits = req.limits.validate()?;
     let c = hm_db::clusters::create(&state.db, &name, cpu, mem, req.ha_enabled).await?;
+    let (net, iops, mbps) = limits.db();
+    hm_db::clusters::set_limits(&state.db, c.id, net, iops, mbps).await?;
+    let c = hm_db::clusters::get(&state.db, c.id).await?;
     audit(
         &state.db,
         Some(&p),
@@ -123,16 +172,25 @@ async fn update_cluster(
     Json(req): Json<ClusterSpec>,
 ) -> ApiResult<Json<ClusterView>> {
     authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
-    hm_db::clusters::get(&state.db, id).await?;
+    let before = ClusterView::from(hm_db::clusters::get(&state.db, id).await?).limits;
     let (name, cpu, mem) = validate(&req)?;
+    let limits = req.limits.validate()?;
     hm_db::clusters::update(&state.db, id, &name, cpu, mem, req.ha_enabled).await?;
+    let (net, iops, mbps) = limits.db();
+    hm_db::clusters::set_limits(&state.db, id, net, iops, mbps).await?;
+    if limits.vm_net_mbps != before.vm_net_mbps {
+        state.net.kick();
+    }
+    if (limits.vm_disk_iops, limits.vm_disk_mbps) != (before.vm_disk_iops, before.vm_disk_mbps) {
+        tokio::spawn(crate::limits::apply_disk_limits(state.clone(), id));
+    }
     audit(
         &state.db,
         Some(&p),
         Some(p.tenant_id),
         "cluster.update",
         Some(("cluster", id.0)),
-        json!({"name": name, "cpu_overcommit": cpu, "memory_overcommit": mem}),
+        json!({"name": name, "cpu_overcommit": cpu, "memory_overcommit": mem, "limits": limits}),
     )
     .await;
     Ok(Json(hm_db::clusters::get(&state.db, id).await?.into()))

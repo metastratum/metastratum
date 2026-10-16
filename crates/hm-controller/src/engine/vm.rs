@@ -138,6 +138,7 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
             generation: vm.generation as u64,
             spec_json: serde_json::to_string(spec)?,
             pools: pools.into_values().collect(),
+            disk_limits: crate::limits::disk_limits(db, host).await?,
         }),
         QUICK,
     )

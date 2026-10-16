@@ -103,25 +103,29 @@ pub async fn load(db: &mut PgConnection, mtu: u32) -> Result<np::Model> {
         Vec<Uuid>,
         Vec<String>,
         bool,
+        Option<i32>,
     );
     let nic_ports = sqlx::query_as::<_, PortRow>(
         "SELECT n.id, n.vm_id, v.tenant_id, t.path::text, n.network_id, n.mac, host(n.ip),
                 coalesce(array_agg(g.security_group_id) FILTER (WHERE g.security_group_id IS NOT NULL), '{}'),
                 -- The VM's host, and while migrating its destination.
                 array_remove(ARRAY[nullif(h.ovn_chassis, ''), nullif(d.ovn_chassis, '')], NULL),
-                m.vm_id IS NOT NULL
+                m.vm_id IS NOT NULL,
+                -- The limit of the VM's cluster.
+                c.vm_net_mbps
          FROM nics n JOIN vms v ON v.id = n.vm_id JOIN tenants t ON t.id = v.tenant_id
          LEFT JOIN hosts h ON h.id = v.host_id
+         LEFT JOIN clusters c ON c.id = h.cluster_id
          LEFT JOIN migrations m ON m.vm_id = v.id AND m.state IN ('running', 'committing')
          LEFT JOIN hosts d ON d.id = m.dest_host_id
          LEFT JOIN nic_security_groups g ON g.nic_id = n.id
-         GROUP BY n.id, v.tenant_id, t.path, h.ovn_chassis, d.ovn_chassis, m.vm_id",
+         GROUP BY n.id, v.tenant_id, t.path, h.ovn_chassis, d.ovn_chassis, m.vm_id, c.vm_net_mbps",
     )
     .fetch_all(&mut *db)
     .await?
     .into_iter()
     .map(
-        |(id, vm_id, tenant_id, path, network_id, mac, addr, security_groups, chassis, migrating)| np::Port {
+        |(id, vm_id, tenant_id, path, network_id, mac, addr, security_groups, chassis, migrating, mbps)| np::Port {
             id,
             vm_id,
             tenant_id,
@@ -134,6 +138,9 @@ pub async fn load(db: &mut PgConnection, mtu: u32) -> Result<np::Model> {
             security_groups,
             chassis,
             migrating,
+            bandwidth: mbps.map(|m| np::Bandwidth {
+                kbps: (m as u32).saturating_mul(1000),
+            }),
         },
     )
     .collect();

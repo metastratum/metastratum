@@ -52,11 +52,14 @@ fn model() -> Model {
         security_groups: groups,
         chassis: vec![],
         migrating: false,
+        bandwidth: None,
     };
-    let ports = vec![
+    let mut ports = vec![
         port([10, 0, 0, 2], vec![sg]),
         port([10, 0, 0, 3], vec![sg, web]),
     ];
+    // One rate-limited port.
+    ports[1].bandwidth = Some(Bandwidth { kbps: 100_000 });
     let rule = |direction, protocol, ports, remote| {
         (
             id(()),
@@ -159,6 +162,7 @@ async fn plans_converge_a_real_northbound_database() {
     // A change is a small update.
     m.ports[0].ip = Ipv4Addr::new(10, 0, 0, 9);
     m.security_groups[1].rules.clear();
+    m.ports[1].bandwidth = Some(Bandwidth { kbps: 20_000 });
     let change = converge(&nb, &m).await;
     assert_eq!(change.inserts, 0, "{:#?}", change.ops);
     assert!(converge(&nb, &m).await.is_empty());

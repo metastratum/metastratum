@@ -81,12 +81,11 @@ pub fn cpu_model(c: &hm_core::vm::CpuSpec) -> hm_libvirt::CpuModel {
 pub async fn domain(
     pools: &std::collections::HashMap<String, Pool>,
     files: &VmFiles,
-    vm_id: &str,
-    tenant_id: &str,
-    name: &str,
-    generation: u64,
+    vm: &hm_proto::DefineVm,
     spec: &VmSpec,
+    disk_limits: hm_libvirt::DiskLimits,
 ) -> Result<DomainDef> {
+    let vm_id = vm.vm_id.as_str();
     let mut disks = Vec::new();
     for (i, d) in spec.disks.iter().enumerate() {
         let pool = pools
@@ -135,9 +134,9 @@ pub async fn domain(
     }
     Ok(DomainDef {
         uuid: vm_id.to_owned(),
-        tenant_id: tenant_id.to_owned(),
-        title: name.to_owned(),
-        generation,
+        tenant_id: vm.tenant_id.clone(),
+        title: vm.name.clone(),
+        generation: vm.generation,
         vcpus: spec.vcpus,
         memory_mib: spec.memory_mib,
         firmware: match spec.firmware {
@@ -148,6 +147,7 @@ pub async fn domain(
         // A VM that never migrates gets everything its host offers.
         cpu: spec.cpu.as_ref().filter(|_| spec.migratable).map(cpu_model),
         host_cache: !spec.migratable,
+        disk_limits,
         nics: spec
             .nics
             .iter()

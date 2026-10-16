@@ -304,6 +304,7 @@ async fn prepare(ctx: &TaskCtx, m: &Migration) -> Result<()> {
         generation: vm.generation as u64,
         spec_json: serde_json::to_string(&vm.spec.0)?,
         pools: pools.into_values().collect(),
+        disk_limits: crate::limits::disk_limits(db, dest).await?,
     };
     agents
         .call(

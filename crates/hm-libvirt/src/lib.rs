@@ -11,5 +11,5 @@ pub use conn::{
     StepOut, system_socket,
 };
 pub use cpu::CpuModel;
-pub use domain::{Disk, DiskDevice, DiskSource, DomainDef, Firmware, Metadata, Nic};
+pub use domain::{Disk, DiskDevice, DiskLimits, DiskSource, DomainDef, Firmware, Metadata, Nic};
 pub use hm_virtrpc::{Stream, StreamRx, StreamTx};

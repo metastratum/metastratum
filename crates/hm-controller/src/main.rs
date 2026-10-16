@@ -10,6 +10,7 @@ mod error;
 mod events;
 mod fence;
 mod ha;
+mod limits;
 mod metrics;
 mod migration;
 mod net;

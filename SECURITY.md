@@ -101,6 +101,7 @@ A review of the whole system before calling it hardened. Fixed:
 | An agent from another version could be sent commands it does not know | protocol versions and capabilities |
 | Hosts' certificates were valid for a year | 30 days, renewed automatically; longer ones are renewed at once |
 | Hosts' libvirt accepted any certificate the controller's CA issued (replicas' too) | only host certificates (`tls_allowed_dn_list`, kept by the agent) |
+| Nothing kept a VM from taking all of a host's disk or network bandwidth | per-VM disk (IOPS, MB/s) and network (Mbit/s each way) limits per cluster, enforced by QEMU and OVN, changed live |
 | Host certificates could not be revoked | the controller's CA keeps a revocation list that hosts install for QEMU and libvirt: a renewed host's previous certificate is revoked once it uses the new one, a decommissioned host's at once |
 | For live migration, each host's libvirt accepted connections from the other hosts with full control: one compromised host could take over the rest | the controller drives migrations on each host's own libvirt; libvirt's TLS listener is closed (opened only while an older agent in the cluster still migrates peer to peer) |
 | API tokens carried all of their user's rights | tokens can be limited to roles at tenants |
@@ -126,8 +127,9 @@ Not fixed, and worth knowing:
   ([operations](docs/operations.md#ovn)).
 - **Without Redis** (`--redis-url`), rate limits are per replica: N
   replicas allow N times the budget, and a restart resets it.
-- **No limits on guests' disk or network bandwidth**: a VM can slow down
-  others on the same host or storage.
+- **Limits are per cluster, and opt-in.** Without them set, a VM can slow
+  down others on the same host or storage. CPU and memory are shared by
+  the overcommit ratios alone.
 - **Networking is IPv4 only.** Port security, security groups and
   guardrails are written for IPv4; guests' IPv6 is dropped.
 - **Inline styles are allowed** by the CSP (the serial terminal and the UI

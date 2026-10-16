@@ -844,6 +844,7 @@ async fn update_vm(
         generation: generation as u64,
         spec_json: serde_json::to_string(&spec).map_err(ApiError::internal)?,
         pools: pools.into_values().collect(),
+        disk_limits: crate::limits::disk_limits(&state.db, host).await?,
     };
     state
         .agents

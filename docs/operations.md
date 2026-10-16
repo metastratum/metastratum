@@ -189,6 +189,19 @@ can no longer connect. To use the machine again, enroll it anew. Its OVN
 chassis stays in the southbound database until you delete it
 (`ovn-sbctl chassis-del <name>`).
 
+### Limits
+
+VMs on one host share its disks and network; VMs on shared storage share
+it too. Set per-VM limits on a cluster (Infrastructure → Clusters) to keep
+one from starving the rest:
+
+- network, in Mbit/s per NIC and each way: enforced by OVN, as QoS meters
+  on the VM's port (traffic above it is dropped);
+- disk operations and throughput per disk: enforced by QEMU (libvirt's
+  `<iotune>`).
+
+Changes apply at once to running VMs, as well as to new ones.
+
 Put a host in maintenance before working on it; Evacuate also live-migrates
 its running VMs to other hosts in its cluster. Stopped VMs and VMs that are
 not migratable stay where they are.

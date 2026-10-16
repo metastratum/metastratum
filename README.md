@@ -249,7 +249,9 @@ providers) cannot reach internal addresses, and that hosts renew their
 certificates and migrate with the new ones. With a second replica in
 `HM_E2E_URL2` it checks both serve every host; with `HM_E2E_FENCE=1` it
 freezes a lab host, waits for it to be fenced and its VM restarted on
-another, then starts the host again and returns it to service. `HM_E2E_DEBUG=1` prints
+another, then starts the host again and returns it to service. Cluster
+limits are checked from inside guests: a disk write and a transfer between
+two VMs run at the limits' pace, and speed up once they are lifted. `HM_E2E_DEBUG=1` prints
 console traffic. The browser suite does the VM lifecycle and tenant
 management through the UI with Playwright, using your installed Chrome.
 

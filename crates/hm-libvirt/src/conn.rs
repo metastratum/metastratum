@@ -624,6 +624,40 @@ impl Libvirt {
         })
     }
 
+    /// Changes the throttling of a domain's disks, now (if it runs) and in
+    /// its definition. 0 lifts a limit.
+    pub async fn set_disk_limits(
+        &self,
+        uuid: &str,
+        targets: &[String],
+        limits: crate::DiskLimits,
+    ) -> Result<()> {
+        // virDomainModificationImpact
+        const AFFECT_LIVE: u32 = 1;
+        const AFFECT_CONFIG: u32 = 2;
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        let running = self.dom_state(&c, &dom).await?.power == Power::Running;
+        let flags = AFFECT_CONFIG | if running { AFFECT_LIVE } else { 0 };
+        let ullong = |field: &str, v: Option<u64>| TypedParam {
+            field: field.into(),
+            value: TypedParamValue::VirTypedParamUllong(v.unwrap_or(0)),
+        };
+        for disk in targets {
+            c.domain_set_block_io_tune(&DomainSetBlockIoTuneArgs {
+                dom: dom.clone(),
+                disk: disk.clone(),
+                params: vec![
+                    ullong("total_bytes_sec", limits.bytes_per_sec),
+                    ullong("total_iops_sec", limits.iops),
+                ],
+                flags,
+            })
+            .await?;
+        }
+        Ok(())
+    }
+
     /// Progress of the domain's current job (a migration), if any.
     pub async fn job_stats(&self, uuid: &str) -> Result<JobStats> {
         let c = self.client().await?;

@@ -1216,7 +1216,7 @@ export interface components {
         };
         /** Format: uuid */
         ClusterId: string;
-        ClusterSpec: {
+        ClusterSpec: components["schemas"]["VmLimits"] & {
             /**
              * Format: float
              * @description Default 4.
@@ -1234,7 +1234,7 @@ export interface components {
             memory_overcommit?: number | null;
             name: string;
         };
-        ClusterView: {
+        ClusterView: components["schemas"]["VmLimits"] & {
             /**
              * Format: float
              * @description vCPUs the scheduler may allocate per physical CPU.
@@ -1908,6 +1908,23 @@ export interface components {
         };
         /** Format: uuid */
         VmId: string;
+        VmLimits: {
+            /**
+             * Format: int32
+             * @description Operations per second, per disk.
+             */
+            vm_disk_iops?: number | null;
+            /**
+             * Format: int32
+             * @description Throughput per disk, in MB/s.
+             */
+            vm_disk_mbps?: number | null;
+            /**
+             * Format: int32
+             * @description Network traffic per NIC, each way, in Mbit/s.
+             */
+            vm_net_mbps?: number | null;
+        };
         VmView: {
             /** @description Kind of the task in flight for this VM, e.g. `vm.start`. */
             active_task?: string | null;

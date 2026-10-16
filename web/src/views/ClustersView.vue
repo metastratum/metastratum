@@ -30,12 +30,24 @@ const capacity = (hs: Host[]) => ({
 // Create, edit, delete.
 type Dialog = { kind: 'edit'; cluster?: Cluster } | { kind: 'delete'; cluster: Cluster }
 const dialog = ref<Dialog | null>(null)
-const form = ref({ name: '', cpu_overcommit: 4, memory_overcommit: 1, ha_enabled: false })
+type Limit = number | '' | null
+const blank = { vm_net_mbps: null as Limit, vm_disk_iops: null as Limit, vm_disk_mbps: null as Limit }
+const form = ref({ name: '', cpu_overcommit: 4, memory_overcommit: 1, ha_enabled: false, ...blank })
+/** An empty field: no limit. */
+const limit = (v: Limit) => (typeof v === 'number' && v > 0 ? v : null)
 const busy = ref(false)
 function edit(c?: Cluster) {
   form.value = c
-    ? { name: c.name, cpu_overcommit: c.cpu_overcommit, memory_overcommit: c.memory_overcommit, ha_enabled: c.ha_enabled }
-    : { name: '', cpu_overcommit: 4, memory_overcommit: 1, ha_enabled: false }
+    ? {
+        name: c.name,
+        cpu_overcommit: c.cpu_overcommit,
+        memory_overcommit: c.memory_overcommit,
+        ha_enabled: c.ha_enabled,
+        vm_net_mbps: c.vm_net_mbps ?? null,
+        vm_disk_iops: c.vm_disk_iops ?? null,
+        vm_disk_mbps: c.vm_disk_mbps ?? null,
+      }
+    : { name: '', cpu_overcommit: 4, memory_overcommit: 1, ha_enabled: false, ...blank }
   error.value = ''
   dialog.value = { kind: 'edit', cluster: c }
 }
@@ -45,12 +57,19 @@ async function submit() {
   error.value = ''
   busy.value = true
   try {
+    const f = form.value
+    const body = {
+      ...f,
+      vm_net_mbps: limit(f.vm_net_mbps),
+      vm_disk_iops: limit(f.vm_disk_iops),
+      vm_disk_mbps: limit(f.vm_disk_mbps),
+    }
     if (d.kind === 'delete') {
       await ok(api.DELETE('/api/v1/clusters/{id}', { params: { path: { id: d.cluster.id } } }))
     } else if (d.cluster) {
-      await ok(api.PUT('/api/v1/clusters/{id}', { params: { path: { id: d.cluster.id } }, body: form.value }))
+      await ok(api.PUT('/api/v1/clusters/{id}', { params: { path: { id: d.cluster.id } }, body }))
     } else {
-      await ok(api.POST('/api/v1/clusters', { body: form.value }))
+      await ok(api.POST('/api/v1/clusters', { body }))
     }
     dialog.value = null
     await load()
@@ -88,6 +107,10 @@ async function submit() {
           </span>
           <span class="tag">cpu ×{{ c.cpu_overcommit }}</span>
           <span class="tag">mem ×{{ c.memory_overcommit }}</span>
+          <span v-if="c.vm_net_mbps" class="tag" title="Network limit per VM NIC, each way">net {{ c.vm_net_mbps }} Mbit/s</span>
+          <span v-if="c.vm_disk_iops || c.vm_disk_mbps" class="tag" title="Disk limits per VM disk">
+            disk {{ [c.vm_disk_iops && `${c.vm_disk_iops} IOPS`, c.vm_disk_mbps && `${c.vm_disk_mbps} MB/s`].filter(Boolean).join(' · ') }}
+          </span>
           <span v-if="c.ha_enabled" class="tag ha" title="Failed hosts are fenced and their VMs restarted elsewhere">HA</span>
           <div class="buttons">
             <button class="btn small" @click="edit(c)">Edit</button>
@@ -143,6 +166,27 @@ async function submit() {
           <p class="hint muted">
             Needs fencing on every host (Hosts → Manage). Only VMs on shared storage can restart elsewhere.
           </p>
+          <fieldset class="limits">
+            <legend>Limits for each VM</legend>
+            <p class="hint muted">So VMs sharing hosts and storage can’t starve each other. Leave empty for no limit.</p>
+            <div class="row">
+              <label class="field">
+                <span class="label">Network (Mbit/s)</span>
+                <input v-model.number="form.vm_net_mbps" type="number" min="1" max="400000" placeholder="No limit" />
+                <span class="hint">Per NIC, each way.</span>
+              </label>
+              <label class="field">
+                <span class="label">Disk IOPS</span>
+                <input v-model.number="form.vm_disk_iops" type="number" min="1" max="10000000" placeholder="No limit" />
+                <span class="hint">Per disk.</span>
+              </label>
+              <label class="field">
+                <span class="label">Disk (MB/s)</span>
+                <input v-model.number="form.vm_disk_mbps" type="number" min="1" max="100000" placeholder="No limit" />
+                <span class="hint">Per disk.</span>
+              </label>
+            </div>
+          </fieldset>
         </template>
         <p v-if="error" class="error-text" role="alert">{{ error }}</p>
         <footer>
@@ -157,6 +201,16 @@ async function submit() {
 </template>
 
 <style scoped>
+.limits {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 10px 14px 14px;
+  margin: 0;
+}
+.limits legend {
+  padding: 0 6px;
+  font-weight: 600;
+}
 .clusters {
   display: grid;
   gap: 10px;

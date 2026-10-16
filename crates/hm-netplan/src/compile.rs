@@ -30,6 +30,8 @@ pub const PRIO_DEFAULT_DROP: i64 = 1000;
 pub const PRIO_ALLOW: i64 = 1001;
 pub const PRIO_GUARDRAIL: i64 = 2000;
 pub const PRIO_DHCP: i64 = 3000;
+/// QoS rules (a table of their own; one rule per port and direction).
+pub const PRIO_QOS: i64 = 100;
 
 /// At most this many hosts back each VPC gateway (one active, the rest
 /// standing by).
@@ -405,11 +407,44 @@ pub fn compile(m: &Model) -> Desired {
                 .filter(|p| p.network_id == n.id)
                 .map(|p| format!("lsp/{}", p.id)),
         );
+        // Rate limits: metered in both directions, per limited port.
+        let mut qos = vec![];
+        for p in m.ports.iter().filter(|p| p.network_id == n.id) {
+            let Some(bw) = p.bandwidth else { continue };
+            for (dir, direction, matcher) in [
+                ("out", "from-lport", format!("inport == \"{}\"", p.id)),
+                ("in", "to-lport", format!("outport == \"{}\"", p.id)),
+            ] {
+                let key = format!("qos/{}/{dir}", p.id);
+                b.add(
+                    Table::Qos,
+                    key.clone(),
+                    Some(p.tenant_id),
+                    vec![
+                        ("direction", s(direction)),
+                        ("priority", Datum::Int(PRIO_QOS)),
+                        ("match", s(matcher)),
+                        (
+                            "bandwidth",
+                            Datum::IntMap(BTreeMap::from([
+                                ("rate".to_owned(), i64::from(bw.kbps)),
+                                ("burst".to_owned(), i64::from(bw.burst_kbit())),
+                            ])),
+                        ),
+                    ],
+                );
+                qos.push(key);
+            }
+        }
         b.add(
             Table::LogicalSwitch,
             format!("ls/{}", n.id),
             Some(n.tenant_id),
-            vec![("name", s(switch_name(n.id))), ("ports", refs(sw_ports))],
+            vec![
+                ("name", s(switch_name(n.id))),
+                ("ports", refs(sw_ports)),
+                ("qos_rules", refs(qos)),
+            ],
         );
         if !vpcs.contains_key(&n.vpc_id) {
             warnings.push(format!("network {} belongs to an unknown VPC", n.id));
@@ -632,6 +667,7 @@ mod tests {
             security_groups: vec![sg],
             chassis: vec![],
             migrating: false,
+            bandwidth: None,
         };
         Model {
             external_networks: vec![ExternalNetwork {
@@ -693,6 +729,33 @@ mod tests {
                 })
                 .into(),
         }
+    }
+
+    #[test]
+    fn rate_limits_meter_each_limited_port_both_ways() {
+        let mut m = model();
+        m.ports[0].bandwidth = Some(Bandwidth { kbps: 50_000 });
+        let d = compile(&m);
+        let (port, net) = (m.ports[0].id, m.ports[0].network_id);
+        let out = d.find(&format!("qos/{port}/out")).expect("egress rule");
+        assert_eq!(out.str("direction"), Some("from-lport"));
+        assert_eq!(
+            out.str("match"),
+            Some(format!("inport == \"{port}\"").as_str())
+        );
+        assert_eq!(
+            out.get("bandwidth"),
+            Some(&Datum::IntMap(BTreeMap::from([
+                ("rate".to_owned(), 50_000),
+                ("burst".to_owned(), 12_500),
+            ])))
+        );
+        let inbound = d.find(&format!("qos/{port}/in")).expect("ingress rule");
+        assert_eq!(inbound.str("direction"), Some("to-lport"));
+        // Hung off the port's switch; the unlimited port gets none.
+        let switch = d.find(&format!("ls/{net}")).unwrap();
+        assert_eq!(switch.refs("qos_rules").len(), 2);
+        assert!(d.find(&format!("qos/{}/out", m.ports[1].id)).is_none());
     }
 
     #[test]

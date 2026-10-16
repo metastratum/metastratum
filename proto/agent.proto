@@ -181,6 +181,7 @@ message Command {
     MigrationStep migration_step = 26;
     LibvirtTls libvirt_tls = 27;
     InstallCrl install_crl = 28;
+    SetDiskLimits set_disk_limits = 29;
   }
 }
 
@@ -237,6 +238,22 @@ message DefineVm {
   string spec_json = 5;
   // Pools the VM's disks live in.
   repeated Pool pools = 6;
+  // Limits for each of its disks (its cluster's).
+  DiskLimits disk_limits = 7;
+}
+
+// Throttling for a disk; 0: none.
+message DiskLimits {
+  uint64 iops = 1;
+  uint64 bytes_per_sec = 2;
+}
+
+// Changes the limits of a VM's disks, live and in its definition.
+message SetDiskLimits {
+  string vm_id = 1;
+  // Disk targets (vda, ...).
+  repeated string targets = 2;
+  DiskLimits limits = 3;
 }
 
 message StartVm {

@@ -78,6 +78,15 @@ pub struct DomainDef {
     /// Let disks use the host's page cache (`writeback`). Faster, but unsafe
     /// for live migration of shared disks, which need `none`.
     pub host_cache: bool,
+    /// Throttling for each disk (not CD-ROMs).
+    pub disk_limits: DiskLimits,
+}
+
+/// Disk throttling; `None`: no limit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DiskLimits {
+    pub iops: Option<u64>,
+    pub bytes_per_sec: Option<u64>,
 }
 
 impl DomainDef {
@@ -151,6 +160,15 @@ impl DomainDef {
                 .child(driver)
                 .child(source)
                 .child(El::new("target").attr("dev", &d.target).attr("bus", &d.bus))
+                .maybe(
+                    (d.device == DiskDevice::Disk && self.disk_limits != DiskLimits::default())
+                        .then(|| {
+                            let l = self.disk_limits;
+                            El::new("iotune")
+                                .maybe(l.bytes_per_sec.map(|b| El::new("total_bytes_sec").text(b)))
+                                .maybe(l.iops.map(|i| El::new("total_iops_sec").text(i)))
+                        }),
+                )
                 .maybe(d.readonly.then(|| El::new("readonly")))
                 .maybe(d.boot_order.map(|o| El::new("boot").attr("order", o)))
         });
@@ -342,6 +360,7 @@ mod tests {
                 },
             ],
             host_cache: false,
+            disk_limits: DiskLimits::default(),
             cpu: Some(crate::cpu::CpuModel {
                 model: "EPYC-Milan".into(),
                 vendor: Some("AMD".into()),
@@ -370,6 +389,30 @@ mod tests {
             got, want,
             "domain XML changed; rerun with UPDATE_GOLDEN=1 if intended"
         );
+    }
+
+    #[test]
+    fn disks_are_throttled_to_their_limits() {
+        let mut d = sample();
+        d.disk_limits = DiskLimits {
+            iops: Some(500),
+            bytes_per_sec: Some(50 << 20),
+        };
+        let xml = d.to_xml();
+        assert_eq!(
+            xml.matches("<iotune>").count(),
+            2,
+            "both disks, not the CD-ROM: {xml}"
+        );
+        assert!(
+            xml.contains("<total_bytes_sec>52428800</total_bytes_sec>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<total_iops_sec>500</total_iops_sec>"),
+            "{xml}"
+        );
+        assert!(!sample().to_xml().contains("iotune"));
     }
 
     #[test]

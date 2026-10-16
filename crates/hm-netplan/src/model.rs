@@ -96,6 +96,21 @@ pub struct Port {
     /// Live-migrating: the destination takes over once the guest announces
     /// itself there (RARP), so traffic follows the VM with no gap.
     pub migrating: bool,
+    /// Limit on the VM's traffic, each way.
+    pub bandwidth: Option<Bandwidth>,
+}
+
+/// A rate limit: traffic beyond it is dropped (policed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bandwidth {
+    pub kbps: u32,
+}
+
+impl Bandwidth {
+    /// How much may pass at once above the rate: a quarter second's worth.
+    pub fn burst_kbit(self) -> u32 {
+        (self.kbps / 4).max(1000)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

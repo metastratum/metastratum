@@ -14,6 +14,11 @@ pub struct Cluster {
     pub memory_overcommit: f32,
     /// Restart failed hosts' VMs elsewhere (after fencing the host).
     pub ha_enabled: bool,
+    /// Per-VM limits (none when unset): network Mbit/s each way per NIC,
+    /// disk operations and MB/s per disk.
+    pub vm_net_mbps: Option<i32>,
+    pub vm_disk_iops: Option<i32>,
+    pub vm_disk_mbps: Option<i32>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -26,7 +31,7 @@ pub async fn create(
 ) -> Result<Cluster> {
     sqlx::query_as(
         "INSERT INTO clusters (id, name, cpu_overcommit, memory_overcommit, ha_enabled) VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, name, cpu_overcommit, memory_overcommit, ha_enabled, created_at",
+         RETURNING id, name, cpu_overcommit, memory_overcommit, ha_enabled, vm_net_mbps, vm_disk_iops, vm_disk_mbps, created_at",
     )
     .bind(ClusterId::new())
     .bind(name)
@@ -39,7 +44,7 @@ pub async fn create(
 }
 
 pub async fn get(db: impl PgExecutor<'_>, id: ClusterId) -> Result<Cluster> {
-    sqlx::query_as("SELECT id, name, cpu_overcommit, memory_overcommit, ha_enabled, created_at FROM clusters WHERE id = $1")
+    sqlx::query_as("SELECT id, name, cpu_overcommit, memory_overcommit, ha_enabled, vm_net_mbps, vm_disk_iops, vm_disk_mbps, created_at FROM clusters WHERE id = $1")
         .bind(id)
         .fetch_optional(db)
         .await?
@@ -47,7 +52,7 @@ pub async fn get(db: impl PgExecutor<'_>, id: ClusterId) -> Result<Cluster> {
 }
 
 pub async fn list(db: impl PgExecutor<'_>) -> Result<Vec<Cluster>> {
-    Ok(sqlx::query_as("SELECT id, name, cpu_overcommit, memory_overcommit, ha_enabled, created_at FROM clusters ORDER BY name")
+    Ok(sqlx::query_as("SELECT id, name, cpu_overcommit, memory_overcommit, ha_enabled, vm_net_mbps, vm_disk_iops, vm_disk_mbps, created_at FROM clusters ORDER BY name")
         .fetch_all(db)
         .await?)
 }
@@ -72,6 +77,41 @@ pub async fn update(
     .await
     .map_err(|e| conflict_on_unique(e, "a cluster with this name"))?;
     Ok(())
+}
+
+/// Sets the per-VM limits (`None`: no limit).
+pub async fn set_limits(
+    db: impl PgExecutor<'_>,
+    id: ClusterId,
+    net_mbps: Option<i32>,
+    disk_iops: Option<i32>,
+    disk_mbps: Option<i32>,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE clusters SET vm_net_mbps = $2, vm_disk_iops = $3, vm_disk_mbps = $4 WHERE id = $1",
+    )
+    .bind(id)
+    .bind(net_mbps)
+    .bind(disk_iops)
+    .bind(disk_mbps)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// The disk limits of the cluster a host is in: (IOPS, MB/s) per disk.
+pub async fn disk_limits_of_host(
+    db: impl PgExecutor<'_>,
+    host: HostId,
+) -> Result<(Option<i32>, Option<i32>)> {
+    Ok(sqlx::query_as(
+        "SELECT c.vm_disk_iops, c.vm_disk_mbps FROM hosts h JOIN clusters c ON c.id = h.cluster_id
+         WHERE h.id = $1",
+    )
+    .bind(host)
+    .fetch_optional(db)
+    .await?
+    .unwrap_or((None, None)))
 }
 
 /// Deletes an empty cluster, and grants of it. Hosts must be moved out

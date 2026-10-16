@@ -417,6 +417,15 @@ impl Agent {
                     "uri": out.uri,
                 }))?);
             }
+            Cmd::SetDiskLimits(c) => {
+                let limits = disk_limits(c.limits.as_ref());
+                tracing::info!(vm = %c.vm_id, ?limits, "setting disk limits");
+                match self.lv.set_disk_limits(&c.vm_id, &c.targets, limits).await {
+                    // Not here (any more): its next definition carries them.
+                    Err(hm_libvirt::conn::Error::NoDomain(_)) => {}
+                    r => r?,
+                }
+            }
             Cmd::InstallCrl(c) => {
                 crate::tls::install_crl(&c.crl_pem).await?;
                 tracing::info!("installed a new revocation list");
@@ -641,11 +650,9 @@ impl Agent {
         vm::domain(
             &pools,
             &self.files,
-            &c.vm_id,
-            &c.tenant_id,
-            &c.name,
-            c.generation,
+            c,
             &spec,
+            disk_limits(c.disk_limits.as_ref()),
         )
         .await
     }
@@ -664,4 +671,14 @@ fn session_power_name(p: Power) -> &'static str {
 
 fn this_in_flight(n: &std::sync::atomic::AtomicIsize, d: isize) {
     n.fetch_add(d, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Disk limits as libvirt takes them (0 in the protocol: none).
+fn disk_limits(l: Option<&hm_proto::DiskLimits>) -> hm_libvirt::DiskLimits {
+    let some = |v: u64| (v > 0).then_some(v);
+    l.map(|l| hm_libvirt::DiskLimits {
+        iops: some(l.iops),
+        bytes_per_sec: some(l.bytes_per_sec),
+    })
+    .unwrap_or_default()
 }

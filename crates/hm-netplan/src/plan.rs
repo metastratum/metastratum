@@ -121,6 +121,10 @@ fn encode(d: &Datum, targets: &HashMap<&str, Target>) -> Value {
             "map",
             m.iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>()
         ]),
+        Datum::IntMap(m) => json!([
+            "map",
+            m.iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>()
+        ]),
         Datum::Ref(r) => json!(["set", r.iter().filter_map(resolve).collect::<Vec<_>>()]),
         Datum::Refs(v) => json!(["set", v.iter().filter_map(resolve).collect::<Vec<_>>()]),
     }
@@ -255,6 +259,7 @@ mod tests {
                 security_groups: vec![],
                 chassis: vec![],
                 migrating: false,
+                bandwidth: None,
             }],
             ..Model::default()
         }
