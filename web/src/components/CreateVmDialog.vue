@@ -1,0 +1,142 @@
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import { api, ApiError, ok, type Image, type Vm } from '../api/client'
+import ModalDialog from './ModalDialog.vue'
+
+const emit = defineEmits<{ close: []; created: [vm: Vm] }>()
+
+const images = ref<Image[]>([])
+const loaded = ref(false)
+const name = ref('')
+const imageId = ref('')
+const vcpus = ref(2)
+const memory = ref(2048)
+const disk = ref(10)
+const sshKey = ref('')
+const password = ref('')
+const error = ref('')
+const busy = ref(false)
+
+const MEMORY = [512, 1024, 2048, 4096, 8192, 16384]
+const nameOk = computed(() => /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(name.value))
+
+onMounted(async () => {
+  images.value = await ok(api.GET('/api/v1/images', { params: { query: {} } }))
+  imageId.value = images.value[0]?.id ?? ''
+  loaded.value = true
+})
+
+async function submit() {
+  error.value = ''
+  busy.value = true
+  try {
+    const res = await ok(
+      api.POST('/api/v1/vms', {
+        body: {
+          name: name.value,
+          image_id: imageId.value,
+          vcpus: vcpus.value,
+          memory_mib: memory.value,
+          disk_gib: disk.value,
+          ssh_authorized_keys: sshKey.value.split('\n').map((k) => k.trim()).filter(Boolean),
+          password: password.value || null,
+        },
+      }),
+    )
+    emit('created', res as unknown as Vm)
+  } catch (e) {
+    error.value = e instanceof ApiError ? e.message : 'The controller isn’t responding. Try again.'
+  } finally {
+    busy.value = false
+  }
+}
+</script>
+
+<template>
+  <ModalDialog title="Create VM" @close="emit('close')">
+    <p v-if="loaded && !images.length" class="body empty">
+      There are no images to boot from yet.
+      <RouterLink to="/images" @click="emit('close')">Add an image</RouterLink> first.
+    </p>
+    <form v-else class="body" @submit.prevent="submit">
+      <label class="field">
+        <span class="label">Name</span>
+        <input v-model="name" required maxlength="63" placeholder="web-1" autofocus />
+        <span class="hint" :class="{ 'error-text': name && !nameOk }">
+          Letters, digits and hyphens. Also used as the guest’s hostname.
+        </span>
+      </label>
+      <label class="field">
+        <span class="label">Image</span>
+        <select v-model="imageId" required>
+          <option v-for="i in images" :key="i.id" :value="i.id">{{ i.name }}</option>
+        </select>
+      </label>
+      <div class="row">
+        <label class="field">
+          <span class="label">vCPUs</span>
+          <select v-model.number="vcpus">
+            <option v-for="n in [1, 2, 4, 8, 16]" :key="n" :value="n">{{ n }}</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="label">Memory</span>
+          <select v-model.number="memory">
+            <option v-for="m in MEMORY" :key="m" :value="m">{{ m >= 1024 ? `${m / 1024} GiB` : `${m} MiB` }}</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="label">Disk (GiB)</span>
+          <input v-model.number="disk" type="number" min="1" max="16384" required />
+        </label>
+      </div>
+      <label class="field">
+        <span class="label">SSH public keys</span>
+        <textarea v-model="sshKey" rows="3" placeholder="ssh-ed25519 AAAA… one per line" />
+      </label>
+      <label class="field">
+        <span class="label">Console password</span>
+        <input v-model="password" type="password" autocomplete="new-password" />
+        <span class="hint">Optional. Lets you sign in on the serial console as the image’s default user.</span>
+      </label>
+      <p v-if="error" class="error-text" role="alert">{{ error }}</p>
+      <footer>
+        <button type="button" class="btn" @click="emit('close')">Cancel</button>
+        <button class="btn primary" :disabled="busy || !nameOk || !imageId">
+          {{ busy ? 'Creating…' : 'Create VM' }}
+        </button>
+      </footer>
+    </form>
+  </ModalDialog>
+</template>
+
+<style scoped>
+.body {
+  display: grid;
+  gap: 16px;
+  margin: 0;
+  padding: 18px;
+}
+.row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+.empty {
+  color: var(--muted);
+}
+.error-text {
+  margin: 0;
+}
+@media (max-width: 520px) {
+  .row {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+</style>

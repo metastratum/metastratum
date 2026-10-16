@@ -1,0 +1,44 @@
+/*
+ * Design tokens. The palette borrows from the machine room: a cool
+ * cold-aisle grey, faceplate white, ink-dark silkscreen, label-tape yellow for
+ * the actions that change things, and status LEDs that mean what they mean on
+ * real hardware.
+ */
+:root {
+  --aisle: #eef1f3;
+  --panel: #fbfcfd;
+  --sunken: #e4e8eb;
+  --ink: #1c2329;
+  --muted: #5d6974;
+  --rule: #d3d9de;
+  --tape: #f2c230;
+  --tape-ink: #1c2329;
+  --bar: #1c2329;
+  --bar-ink: #e3e8ec;
+
+  --led-on: #23a15f;
+  --led-busy: #e0901e;
+  --led-fault: #d2443a;
+  --led-off: #a7b0b8;
+
+  --font-label: 'Chakra Petch', 'Arial Narrow', sans-serif;
+  --font-body: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'Martian Mono', ui-monospace, monospace;
+
+  --radius: 3px;
+  --shadow: 0 1px 0 rgb(28 35 41 / 6%), 0 8px 24px -12px rgb(28 35 41 / 18%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --aisle: #121619;
+    --panel: #1a1f24;
+    --sunken: #0e1214;
+    --ink: #e3e8ec;
+    --muted: #93a0ab;
+    --rule: #2c343b;
+    --led-off: #3d464e;
+    --bar: #0b0e10;
+    --shadow: 0 1px 0 rgb(0 0 0 / 30%), 0 8px 24px -12px rgb(0 0 0 / 60%);
+  }
+}
