@@ -68,6 +68,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/methods": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * How users of a tenant can sign in. Unknown tenants look like tenants
+         *     without an identity provider, so this cannot be used to probe for them.
+         */
+        get: operations["methods"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/oidc/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Where the identity provider sends the browser back. */
+        get: operations["callback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/oidc/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sends the browser to the tenant's identity provider. */
+        get: operations["start"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clusters": {
         parameters: {
             query?: never;
@@ -368,6 +422,26 @@ export interface paths {
         put: operations["set_grants"];
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{id}/identity-provider": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_provider"];
+        /**
+         * Configures the tenant's identity provider. The issuer must be reachable:
+         *     its discovery document is fetched before saving.
+         */
+        put: operations["put_provider"];
+        post?: never;
+        delete: operations["delete_provider"];
         options?: never;
         head?: never;
         patch?: never;
@@ -678,6 +752,10 @@ export interface components {
             user_id?: components["schemas"]["UserId"] | null;
             username?: string | null;
         };
+        AuthMethods: {
+            /** @description Name of the tenant's identity provider, if it has one. */
+            oidc?: string | null;
+        };
         BindingView: {
             /** Format: date-time */
             created_at: string;
@@ -890,6 +968,10 @@ export interface components {
             tenant?: string | null;
             username: string;
         };
+        MappingView: {
+            group: string;
+            role: string;
+        };
         Me: {
             display_name: string;
             /** @description Whether the user administers the provider (hosts, enrollment). */
@@ -947,6 +1029,23 @@ export interface components {
             name: string;
             /** Format: int64 */
             volumes: number;
+        };
+        ProviderView: {
+            client_id: string;
+            /** @description Role for users with no mapped group; omit to refuse them. */
+            default_role?: string | null;
+            /** @description Claim holding group names (default `groups`). */
+            groups_claim?: string | null;
+            issuer: string;
+            /** @description Shown on the sign-in button. */
+            name: string;
+            /** @description URL to register with the identity provider. */
+            redirect_uri?: string;
+            role_mappings?: components["schemas"]["MappingView"][];
+            /** @description Space-separated; `openid` is implied. Default `openid profile email`. */
+            scopes?: string | null;
+            /** @description Claim holding the username (default `preferred_username`). */
+            username_claim?: string | null;
         };
         Quotas: {
             /** @description The tightest limit an ancestor imposes, where one does. */
@@ -1232,6 +1331,71 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    methods: {
+        parameters: {
+            query?: {
+                /** @description Slug path of the tenant (`acme/dev`); empty for the provider. */
+                tenant?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthMethods"];
+                };
+            };
+        };
+    };
+    callback: {
+        parameters: {
+            query?: {
+                code?: string;
+                state?: string;
+                error?: string;
+                error_description?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            303: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    start: {
+        parameters: {
+            query?: {
+                tenant?: string;
+                /** @description Path to return to after signing in. */
+                return_to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            303: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2125,6 +2289,101 @@ export interface operations {
                 content?: never;
             };
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    put_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderView"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

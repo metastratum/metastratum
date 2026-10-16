@@ -12,5 +12,13 @@ services:
       - "127.0.0.1:55432:5432"
     volumes:
       - pgdata:/var/lib/postgresql
+  # Identity provider for OIDC sign-in (see dex.yaml).
+  dex:
+    image: ghcr.io/dexidp/dex:v2.46.0
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    volumes:
+      - ./dex.yaml:/etc/dex/config.yaml:ro
+    ports:
+      - "127.0.0.1:5556:5556"
 volumes:
   pgdata:

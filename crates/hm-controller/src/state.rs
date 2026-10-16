@@ -20,6 +20,8 @@ pub struct Inner {
     pub replica: String,
     /// Mark session cookies `Secure` (set when served over HTTPS).
     pub secure_cookies: bool,
+    /// Base URL users reach the controller at, for OIDC redirect URIs.
+    pub public_url: String,
 }
 
 impl AppState {

@@ -11,6 +11,7 @@ pub mod hosts;
 pub mod images;
 pub mod join_tokens;
 pub mod networks;
+pub mod oidc;
 pub mod pki;
 pub mod quotas;
 pub mod rbac;

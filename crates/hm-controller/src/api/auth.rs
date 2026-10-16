@@ -139,6 +139,17 @@ async fn login(
         }
     };
 
+    let headers = open_session(&state, &user, "password").await?;
+    Ok((StatusCode::NO_CONTENT, headers))
+}
+
+/// Starts a session for a user who just proved who they are, and returns the
+/// `Set-Cookie` header carrying it.
+pub async fn open_session(
+    state: &AppState,
+    user: &hm_db::users::User,
+    method: &str,
+) -> ApiResult<HeaderMap> {
     let secret = hm_pki::random_hex(32);
     hm_db::sessions::create(
         &state.db,
@@ -147,7 +158,7 @@ async fn login(
         SESSION_TTL,
     )
     .await?;
-    tracing::info!(user = %user.username, tenant = %user.tenant_id, "login");
+    tracing::info!(user = %user.username, tenant = %user.tenant_id, method, "login");
     let entry = hm_db::audit::Entry {
         user_id: Some(user.id),
         username: Some(&user.username),
@@ -155,12 +166,11 @@ async fn login(
         action: "auth.login",
         target: None,
         success: true,
-        details: serde_json::json!({"method": "password"}),
+        details: serde_json::json!({"method": method}),
     };
     if let Err(e) = hm_db::audit::record(&state.db, entry).await {
         tracing::error!(error = %e, "writing audit log");
     }
-
     let secure = if state.secure_cookies { "; Secure" } else { "" };
     let cookie = format!(
         "{SESSION_COOKIE}={secret}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{secure}",
@@ -171,7 +181,15 @@ async fn login(
         header::SET_COOKIE,
         HeaderValue::from_str(&cookie).map_err(ApiError::internal)?,
     );
-    Ok((StatusCode::NO_CONTENT, headers))
+    Ok(headers)
+}
+
+/// Resolves a slug path below the root (`acme/dev`) to a tenant.
+pub async fn tenant_by_path(
+    state: &AppState,
+    path: Option<&str>,
+) -> ApiResult<Option<hm_db::tenants::Tenant>> {
+    resolve_tenant(state, path).await
 }
 
 #[utoipa::path(post, path = "/auth/logout", tag = "auth", responses((status = 204)))]

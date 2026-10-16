@@ -82,6 +82,10 @@ struct ServeArgs {
     /// Mark session cookies Secure (when served over HTTPS).
     #[arg(long, env = "HM_SECURE_COOKIES")]
     secure_cookies: bool,
+    /// Base URL users reach the API and UI at (for OIDC redirect URIs).
+    /// Defaults to http://<listen address>.
+    #[arg(long, env = "HM_PUBLIC_URL")]
+    public_url: Option<String>,
 }
 
 #[tokio::main]
@@ -189,6 +193,10 @@ async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
         nb: hm_ovsdb::Northbound::new(args.ovn_nb.clone()),
         replica: replica.clone(),
         secure_cookies: args.secure_cookies,
+        public_url: args
+            .public_url
+            .clone()
+            .unwrap_or_else(|| format!("http://{}", args.listen)),
     });
     tracing::info!(%replica, fingerprint = %state.ca.fingerprint(), "controller starting");
 
@@ -232,6 +240,9 @@ async fn housekeeping(state: AppState) {
     loop {
         if let Err(e) = hm_db::sessions::purge_expired(&state.db).await {
             tracing::warn!(error = %e, "purging sessions");
+        }
+        if let Err(e) = hm_db::oidc::purge_expired(&state.db).await {
+            tracing::warn!(error = %e, "purging OIDC logins");
         }
         tokio::time::sleep(Duration::from_secs(600)).await;
     }

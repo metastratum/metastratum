@@ -1,0 +1,22 @@
+# Dex as a stand-in identity provider for developing and testing per-tenant
+# OIDC sign-in. Its mock connector signs everyone in as "Kilgore Trout"
+# (username kilgore, groups ["authors"]) without asking for a password.
+issuer: http://127.0.0.1:5556/dex
+storage:
+  type: memory
+web:
+  http: 0.0.0.0:5556
+oauth2:
+  skipApprovalScreen: true
+staticClients:
+  - id: hypermon
+    name: hypermon
+    # Development only.
+    secret: hypermon-dev-secret
+    redirectURIs:
+      - http://127.0.0.1:18080/api/v1/auth/oidc/callback
+      - http://127.0.0.1:5173/api/v1/auth/oidc/callback
+connectors:
+  - type: mockCallback
+    id: mock
+    name: Example

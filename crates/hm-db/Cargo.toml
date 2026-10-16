@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 chrono.workspace = true
 hm-core = { workspace = true, features = ["sqlx"] }
+serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true

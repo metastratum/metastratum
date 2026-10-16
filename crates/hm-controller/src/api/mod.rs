@@ -6,6 +6,7 @@ mod clusters;
 mod console;
 mod hosts;
 mod images;
+mod oidc;
 mod storage_pools;
 mod tasks;
 mod tenants;
@@ -42,6 +43,7 @@ struct ApiDoc;
 fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(ApiDoc::openapi())
         .merge(auth::routes())
+        .merge(oidc::routes())
         .merge(vms::routes())
         .merge(console::routes())
         .merge(images::routes())
