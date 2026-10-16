@@ -70,6 +70,6 @@ pub async fn gather(lv: &Libvirt, address: IpAddr) -> Result<HostFacts> {
         kvm: std::path::Path::new("/dev/kvm").exists(),
         libvirt_version: node.libvirt_version,
         ovn_chassis: ovn_chassis().await,
-        agent_version: env!("CARGO_PKG_VERSION").to_owned(),
+        agent_version: crate::VERSION.to_owned(),
     })
 }

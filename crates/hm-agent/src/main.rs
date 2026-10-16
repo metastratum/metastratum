@@ -17,8 +17,16 @@ use hm_libvirt::Libvirt;
 use hm_storage::LocalPool;
 use tracing_subscriber::EnvFilter;
 
+/// Crate version and the source revision it was built from.
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("HM_SOURCE_REVISION"),
+    ")"
+);
+
 #[derive(Parser)]
-#[command(version, about)]
+#[command(version = VERSION, about)]
 struct Args {
     /// Controller agent endpoint.
     #[arg(long, env = "HM_CONTROLLER")]
@@ -51,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
     let args = Args::parse();
+    tracing::info!(version = VERSION, "hm-agent starting");
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let socket = args

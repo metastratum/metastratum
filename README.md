@@ -169,3 +169,11 @@ The Rust suite creates two VMs, checks both consoles, pings across the overlay
 network between hosts, power-cycles and deletes them. `HM_E2E_DEBUG=1` prints
 console traffic. The browser suite does the same through the UI with Playwright,
 using your installed Chrome.
+
+## License
+
+MIT; see [LICENSE](LICENSE). The exception is libvirt's protocol definition in
+`crates/hm-virtrpc/proto/`, which keeps its LGPL-2.1-or-later licence and ends
+up in `hm-agent`. [LICENSING.md](LICENSING.md) explains how the two fit
+together, what distributing agent binaries involves, and how to rebuild the
+agent with a modified protocol definition.

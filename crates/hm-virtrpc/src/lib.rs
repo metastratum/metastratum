@@ -3,8 +3,9 @@
 //! libvirt daemons (`libvirtd`, `virtqemud`, ...) speak an XDR-encoded RPC
 //! protocol over a unix socket; the C library is one client of it. This crate
 //! is another: the protocol types and a typed method per procedure are
-//! generated from libvirt's `remote_protocol.x` (vendored in `proto/`, LGPL-2.1
-//! or later like the rest of libvirt), and the connection is plain tokio. No C
+//! generated from libvirt's `remote_protocol.x` (vendored in `proto/` under its
+//! own licence, LGPL-2.1 or later; see LICENSING.md at the repository root),
+//! and the connection is plain tokio. No C
 //! library is linked.
 //!
 //! The protocol is not formally documented, but it is stable in practice:
