@@ -21,6 +21,8 @@ pub enum Error {
     Address(String),
     #[error("connection closed")]
     Closed,
+    #[error("no reply within {0:?}")]
+    Timeout(std::time::Duration),
     #[error("rpc error: {0}")]
     Rpc(Value),
     #[error("transaction failed: {0}")]
@@ -31,7 +33,24 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>>;
+/// Requests awaiting replies. `None` once the connection is closed: closing
+/// takes the map in the same step that marks the connection dead, so a
+/// request can never be registered on a connection nobody reads any more.
+type Pending = Arc<Mutex<Option<HashMap<u64, oneshot::Sender<Result<Value>>>>>>;
+
+/// Replies normally arrive in milliseconds; this bounds the wait when the
+/// server vanished without the connection noticing.
+const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Marks the connection closed and fails everything still waiting.
+fn close(pending: &Pending) {
+    if let Some(waiters) = pending.lock().unwrap().take() {
+        for (_, waiter) in waiters {
+            let _ = waiter.send(Err(Error::Closed));
+        }
+    }
+}
 
 pub struct Client {
     next_id: AtomicU64,
@@ -43,7 +62,9 @@ impl Client {
     /// Connects to `tcp:HOST:PORT` or `unix:PATH`.
     pub async fn connect(addr: &str) -> Result<Self> {
         if let Some(hostport) = addr.strip_prefix("tcp:") {
-            let s = tokio::net::TcpStream::connect(hostport).await?;
+            let s = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(hostport))
+                .await
+                .map_err(|_| Error::Timeout(CONNECT_TIMEOUT))??;
             s.set_nodelay(true)?;
             let (r, w) = s.into_split();
             Ok(Self::start(r, w))
@@ -60,9 +81,10 @@ impl Client {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let pending: Pending = Arc::default();
+        let pending: Pending = Arc::new(Mutex::new(Some(HashMap::new())));
         let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
 
+        let p = pending.clone();
         tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
                 let bytes = serde_json::to_vec(&msg).expect("JSON values always serialise");
@@ -70,6 +92,7 @@ impl Client {
                     break;
                 }
             }
+            close(&p);
         });
 
         let reply = tx.clone();
@@ -78,10 +101,7 @@ impl Client {
             if let Err(e) = read_loop(reader, &p, &reply).await {
                 tracing::debug!(error = %e, "ovsdb connection ended");
             }
-            // Fail everything still waiting so callers can reconnect.
-            for (_, waiter) in p.lock().unwrap().drain() {
-                let _ = waiter.send(Err(Error::Closed));
-            }
+            close(&p);
         });
 
         Self {
@@ -92,22 +112,33 @@ impl Client {
     }
 
     pub fn is_closed(&self) -> bool {
-        self.tx.is_closed()
+        self.pending.lock().unwrap().is_none()
     }
 
     pub async fn call(&self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (done, wait) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id, done);
+        match self.pending.lock().unwrap().as_mut() {
+            Some(waiters) => waiters.insert(id, done),
+            None => return Err(Error::Closed),
+        };
         if self
             .tx
             .send(json!({"method": method, "params": params, "id": id}))
             .is_err()
         {
-            self.pending.lock().unwrap().remove(&id);
+            close(&self.pending);
             return Err(Error::Closed);
         }
-        wait.await.map_err(|_| Error::Closed)?
+        match tokio::time::timeout(CALL_TIMEOUT, wait).await {
+            Ok(reply) => reply.map_err(|_| Error::Closed)?,
+            Err(_) => {
+                if let Some(waiters) = self.pending.lock().unwrap().as_mut() {
+                    waiters.remove(&id);
+                }
+                Err(Error::Timeout(CALL_TIMEOUT))
+            }
+        }
     }
 
     /// Runs a transaction. Returns one result per operation, or an error
@@ -181,7 +212,7 @@ fn dispatch(msg: Value, pending: &Pending, reply: &mpsc::UnboundedSender<Value>)
             let Some(id) = msg.get("id").and_then(Value::as_u64) else {
                 return;
             };
-            let Some(waiter) = pending.lock().unwrap().remove(&id) else {
+            let Some(waiter) = pending.lock().unwrap().as_mut().and_then(|w| w.remove(&id)) else {
                 return;
             };
             let result = match msg.get("error").filter(|e| !e.is_null()) {
@@ -310,6 +341,24 @@ mod tests {
                 .contains("operation 1: \"constraint violation\" duplicate name"),
             "{err}"
         );
+    }
+
+    /// A request made after the server went away must fail, not wait forever.
+    #[tokio::test]
+    async fn requests_on_a_dead_connection_fail_promptly() {
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let (cr, cw) = tokio::io::split(client_io);
+        let client = Client::start(cr, cw);
+        drop(server_io);
+        // Let the reader notice.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(client.is_closed());
+        let res = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.call("echo", json!([])),
+        )
+        .await;
+        assert!(matches!(res, Ok(Err(Error::Closed))), "{res:?}");
     }
 
     #[test]

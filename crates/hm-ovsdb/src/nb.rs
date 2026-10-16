@@ -86,9 +86,13 @@ impl Northbound {
     async fn tx(&self, ops: Vec<Value>) -> Result<Vec<Value>> {
         let c = self.client().await?;
         match c.transact(DB, ops.clone()).await {
-            // The connection dropped (e.g. NB leader change). Retry once on a
-            // fresh connection; every transaction here is safe to repeat.
-            Err(Error::Closed) => self.client().await?.transact(DB, ops).await,
+            // The connection dropped or went silent (server restarted, NB
+            // leader change). Retry once on a fresh connection; every
+            // transaction here is safe to repeat.
+            Err(Error::Closed | Error::Timeout(_)) => {
+                *self.client.lock().await = None;
+                self.client().await?.transact(DB, ops).await
+            }
             r => r,
         }
     }
