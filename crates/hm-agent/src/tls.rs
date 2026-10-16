@@ -89,7 +89,7 @@ pub(crate) fn group_id(names: &[&str]) -> u32 {
 }
 
 /// Every file the agent puts in place for libvirt and QEMU TLS.
-const INSTALLED: [&str; 13] = [
+const INSTALLED: [&str; 12] = [
     "/etc/pki/CA/cacert.pem",
     "/etc/pki/CA/cacrl.pem",
     "/etc/pki/libvirt/servercert.pem",
@@ -102,11 +102,11 @@ const INSTALLED: [&str; 13] = [
     "/etc/pki/qemu/client-cert.pem",
     "/etc/pki/qemu/server-key.pem",
     "/etc/pki/qemu/client-key.pem",
-    "/etc/openvswitch/hypermon/key.pem",
 ];
 
-/// Removes the TLS files the agent installed (decommissioning), and the
-/// directory of the OVN ones. Returns how many it removed.
+/// Removes the TLS files the agent installed for libvirt and QEMU
+/// (decommissioning; the OVN ones go with [`crate::ovn::restore`]). Returns
+/// how many it removed.
 pub fn remove_installed() -> Result<usize> {
     let mut n = 0;
     for path in INSTALLED {
@@ -116,10 +116,7 @@ pub fn remove_installed() -> Result<usize> {
             Err(e) => return Err(e).with_context(|| format!("removing {path}")),
         }
     }
-    match std::fs::remove_dir_all("/etc/openvswitch/hypermon") {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
-        _ => Ok(n),
-    }
+    Ok(n)
 }
 
 /// Installs the host identity for libvirt and QEMU TLS. Returns whether any

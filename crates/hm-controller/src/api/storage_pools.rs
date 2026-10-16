@@ -211,12 +211,16 @@ async fn update_pool(
     Ok(Json(view(&state, pool).await?))
 }
 
-#[utoipa::path(delete, path = "/storage-pools/{id}", tag = "hosts", params(("id" = StoragePoolId, Path)),
+/// Removes a pool that holds no VM disks. By default it is only unlinked:
+/// hosts unmount it and forget its credentials, and its storage is left as
+/// it is; with `delete_data` hypermon's data on the storage goes too.
+#[utoipa::path(delete, path = "/storage-pools/{id}", tag = "hosts", params(("id" = StoragePoolId, Path), DeletePool),
     responses((status = 204), (status = 403), (status = 404), (status = 409, description = "Has volumes")))]
 async fn delete_pool(
     State(state): State<AppState>,
     p: Principal,
     Path(id): Path<StoragePoolId>,
+    axum::extract::Query(q): axum::extract::Query<DeletePool>,
 ) -> ApiResult<StatusCode> {
     authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
     let pool = hm_db::storage_pools::get(&state.db, id).await?;
@@ -241,6 +245,7 @@ async fn delete_pool(
     tokio::spawn(crate::cleanup::pool_deleted(
         state.clone(),
         pool.clone(),
+        q.delete_data,
         shared,
     ));
     audit(
@@ -249,10 +254,21 @@ async fn delete_pool(
         Some(p.tenant_id),
         "storage_pool.delete",
         Some(("storage_pool", id.0)),
-        json!({"name": pool.name}),
+        json!({"name": pool.name, "delete_data": q.delete_data}),
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct DeletePool {
+    /// Also remove hypermon's data from the pool's storage (cached images,
+    /// volumes left). Without it the pool is only unlinked: hosts let go of
+    /// it, and the storage is left as it is. Data on storage another pool
+    /// uses always stays.
+    #[serde(default)]
+    delete_data: bool,
 }
 
 #[derive(Serialize, ToSchema)]

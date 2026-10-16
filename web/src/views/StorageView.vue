@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { api, errorText, ok, type Cluster, type Pool } from '../api/client'
 import InfraTabs from '../components/InfraTabs.vue'
 import ModalDialog from '../components/ModalDialog.vue'
+import SplitButton from '../components/SplitButton.vue'
 import TypeToConfirm from '../components/TypeToConfirm.vue'
 import { useLiveRefresh } from '../stores/live'
 
@@ -42,7 +43,12 @@ function where(p: Pool): string {
 }
 
 // Add, edit, delete.
-type Dialog = { kind: 'edit'; pool?: Pool } | { kind: 'delete'; pool: Pool }
+type Dialog = { kind: 'edit'; pool?: Pool } | { kind: 'unlink' | 'delete'; pool: Pool }
+function remove(pool: Pool, kind: 'unlink' | 'delete') {
+  error.value = ''
+  confirmed.value = false
+  dialog.value = { kind, pool }
+}
 const dialog = ref<Dialog | null>(null)
 const busy = ref(false)
 const form = ref({
@@ -91,8 +97,12 @@ async function submit() {
   error.value = ''
   busy.value = true
   try {
-    if (d.kind === 'delete') {
-      await ok(api.DELETE('/api/v1/storage-pools/{id}', { params: { path: { id: d.pool.id } } }))
+    if (d.kind === 'unlink' || d.kind === 'delete') {
+      await ok(
+        api.DELETE('/api/v1/storage-pools/{id}', {
+          params: { path: { id: d.pool.id }, query: { delete_data: d.kind === 'delete' } },
+        }),
+      )
     } else {
       const body = { name: form.value.name, kind: form.value.kind, cluster_ids: form.value.cluster_ids, config: config() }
       if (d.pool) await ok(api.PUT('/api/v1/storage-pools/{id}', { params: { path: { id: d.pool.id } }, body }))
@@ -146,7 +156,14 @@ async function submit() {
             <td class="end">
               <template v-if="p.kind !== 'local'">
                 <button class="btn small" @click="edit(p)">Edit</button>
-                <button class="btn small danger" @click="(error = ''), (dialog = { kind: 'delete', pool: p })">Delete</button>
+                <SplitButton
+                  label="Unlink…"
+                  small
+                  :items="[{ key: 'delete', label: 'Delete…', danger: true }]"
+                  :menu-label="`More ways to remove ${p.name}`"
+                  @main="remove(p, 'unlink')"
+                  @select="remove(p, 'delete')"
+                />
               </template>
             </td>
           </tr>
@@ -156,16 +173,36 @@ async function submit() {
 
     <ModalDialog
       v-if="dialog"
-      :title="dialog.kind === 'delete' ? 'Delete storage pool' : dialog.pool ? `Edit ${dialog.pool.name}` : 'Add storage pool'"
+      :title="
+        dialog.kind === 'unlink'
+          ? `Unlink ${dialog.pool.name}`
+          : dialog.kind === 'delete'
+            ? `Delete ${dialog.pool.name}`
+            : dialog.pool
+              ? `Edit ${dialog.pool.name}`
+              : 'Add storage pool'
+      "
       @close="dialog = null"
     >
       <form class="form" @submit.prevent="submit">
-        <template v-if="dialog.kind === 'delete'">
+        <template v-if="dialog.kind === 'unlink'">
+          <p>Unlink <strong>{{ dialog.pool.name }}</strong>? It must hold no VM disks.</p>
+          <ul class="consequences">
+            <li>hypermon forgets the pool: tenants can no longer put disks on it.</li>
+            <li>Every host unmounts it and forgets its credentials.</li>
+            <li>
+              Its storage is left exactly as it is: hypermon’s cached images and anything else on
+              <span class="mono">{{ where(dialog.pool) }}</span> stay. Adding the pool again later finds them there.
+            </li>
+          </ul>
+          <p class="muted">To also remove hypermon’s data from the storage, choose Delete instead.</p>
+        </template>
+        <template v-else-if="dialog.kind === 'delete'">
           <p>
             Delete <strong>{{ dialog.pool.name }}</strong>? It must hold no VM disks. This can’t be undone:
           </p>
           <ul class="consequences">
-            <li>Every host unmounts it and forgets its credentials.</li>
+            <li>hypermon forgets the pool, and every host unmounts it and forgets its credentials.</li>
             <li v-if="sharing(dialog.pool).length">
               The data on its storage stays: {{ sharing(dialog.pool).map((p) => p.name).join(', ') }} uses the same
               storage.
@@ -180,6 +217,7 @@ async function submit() {
               (<span class="mono">img-*</span>). Other images there are left alone.
             </li>
           </ul>
+          <p class="muted">To keep the data, choose Unlink instead.</p>
           <TypeToConfirm v-model="confirmed" :name="dialog.pool.name" />
         </template>
         <template v-else>
@@ -258,7 +296,7 @@ async function submit() {
             :class="dialog.kind === 'delete' ? 'danger' : 'primary'"
             :disabled="busy || (dialog.kind === 'delete' && !confirmed)"
           >
-            {{ dialog.kind === 'delete' ? 'Delete pool' : 'Save' }}
+            {{ dialog.kind === 'delete' ? 'Delete pool' : dialog.kind === 'unlink' ? 'Unlink pool' : 'Save' }}
           </button>
         </footer>
       </form>

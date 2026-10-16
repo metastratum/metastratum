@@ -1,7 +1,6 @@
 //! Cleaning up on hosts and storage after deletions, which the database
 //! alone would leave behind: a deleted pool stays mounted and its data
-//! stays on the storage, a deleted image stays cached, a decommissioned
-//! host stays an OVN chassis.
+//! stays on the storage, a deleted image stays cached.
 //!
 //! Hosts connected at the time clean up at once; the others when they next
 //! connect (the controller's welcome lists what still exists).
@@ -77,9 +76,14 @@ async fn record(
     crate::authz::audit(&state.db, None, root, action, Some(target), details).await;
 }
 
-/// After a pool was deleted: hosts let go of it, and one removes
-/// hypermon's data from its storage unless another pool still uses it.
-pub async fn pool_deleted(state: AppState, pool: hm_db::storage_pools::Pool, shared: bool) {
+/// After a pool was deleted: hosts let go of it, and, if asked to (and no
+/// other pool uses the storage), one removes hypermon's data from it.
+pub async fn pool_deleted(
+    state: AppState,
+    pool: hm_db::storage_pools::Pool,
+    remove_data: bool,
+    shared: bool,
+) {
     let spec = match crate::api::agent_pool(&pool) {
         Ok(s) => s,
         Err(e) => {
@@ -89,7 +93,9 @@ pub async fn pool_deleted(state: AppState, pool: hm_db::storage_pools::Pool, sha
     let hosts = live_hosts(&state).await;
     let mut done = vec![];
     let mut failed = vec![];
-    let mut data = if shared {
+    let mut data = if !remove_data {
+        json!("kept: the pool was unlinked")
+    } else if shared {
         json!("kept: another pool uses the same storage")
     } else if hosts.is_empty() {
         json!("kept: no host was connected to remove it")
@@ -164,27 +170,6 @@ pub async fn image_deleted(state: AppState, image: hm_db::images::Image) {
         json!({"name": image.name, "hosts": done, "failed": failed, "shared_pools_cleaned": shared_done}),
     )
     .await;
-}
-
-/// Deletes a chassis from the southbound database, through the controller's
-/// own connection to it (`--ovn-sb-admin`).
-pub async fn delete_chassis(sb: &hm_ovsdb::Northbound, name: &str) -> anyhow::Result<()> {
-    sb.transact(vec![
-        json!({"op": "delete", "table": "Chassis_Private", "where": [["name", "==", name]]}),
-        json!({"op": "delete", "table": "Chassis", "where": [["name", "==", name]]}),
-        json!({"op": "delete", "table": "Encap", "where": [["chassis_name", "==", name]]}),
-    ])
-    .await?;
-    Ok(())
-}
-
-/// Whether the southbound database still has the chassis.
-pub async fn has_chassis(sb: &hm_ovsdb::Northbound, name: &str) -> anyhow::Result<bool> {
-    let r = sb
-        .transact(vec![json!({"op": "select", "table": "Chassis",
-            "where": [["name", "==", name]], "columns": ["name"]})])
-        .await?;
-    Ok(r[0]["rows"].as_array().is_some_and(|r| !r.is_empty()))
 }
 
 #[cfg(test)]

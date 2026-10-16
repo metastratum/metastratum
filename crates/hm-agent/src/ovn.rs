@@ -14,6 +14,39 @@ use hm_proto::agent_control_client::AgentControlClient;
 use crate::tls::{Access, group_id, write_if_changed};
 
 const DIR: &str = "/etc/openvswitch/hypermon";
+/// The southbound remote the host had before hypermon changed it.
+const ORIGINAL_REMOTE: &str = "/etc/openvswitch/hypermon/ovn-remote.orig";
+
+/// Undoes what [`ensure`] changed, leaving the rest of the admin's OVN set-up
+/// alone: puts the original southbound remote back and removes hypermon's TLS
+/// settings and certificates. Without a record of the original remote (it
+/// was changed before hypermon kept one), changes nothing, as ovn-controller
+/// would lose the southbound database.
+pub async fn restore() -> Result<String> {
+    let Ok(original) = std::fs::read_to_string(ORIGINAL_REMOTE) else {
+        let ours = vsctl(&["get-ssl"]).await.unwrap_or_default().contains(DIR);
+        return Ok(if ours {
+            "left as they are: hypermon has no record of the southbound remote they replaced".into()
+        } else {
+            "hypermon had not changed them".into()
+        });
+    };
+    let original = original.trim();
+    vsctl(&[
+        "set",
+        "Open_vSwitch",
+        ".",
+        &format!("external_ids:ovn-remote=\"{original}\""),
+    ])
+    .await?;
+    if vsctl(&["get-ssl"]).await?.contains(DIR) {
+        vsctl(&["del-ssl"]).await?;
+    }
+    std::fs::remove_dir_all(DIR)?;
+    Ok(format!(
+        "ovn-remote is {original} again; hypermon's TLS settings removed"
+    ))
+}
 
 fn path(file: &str) -> String {
     format!("{DIR}/{file}")
@@ -69,6 +102,13 @@ pub async fn ensure(agent: &crate::session::Agent, remote: &str) -> Result<()> {
     .trim_matches('"')
     .to_owned();
     if current_remote != remote {
+        // OVN is the admin's: remember what they had, to put it back when
+        // the host leaves hypermon.
+        let saved = std::path::Path::new(ORIGINAL_REMOTE);
+        if !saved.exists() && !current_remote.is_empty() {
+            std::fs::create_dir_all(DIR)?;
+            std::fs::write(saved, &current_remote)?;
+        }
         vsctl(&[
             "set",
             "Open_vSwitch",

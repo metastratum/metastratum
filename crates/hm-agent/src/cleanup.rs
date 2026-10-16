@@ -131,69 +131,11 @@ pub async fn decommission(agent: &Agent) -> Result<Report> {
     }
     let mut report = Report::default();
 
-    // OVN: a clean stop deletes this chassis from the southbound database.
-    // Then it must not start again at boot (Debian starts it through
-    // ovn-host.service).
+    // OVN is the admin's, and stays: only what hypermon changed goes back.
     report.step(
-        "stopped ovn-controller, which deleted its chassis",
-        run("systemctl", &["stop", "ovn-controller.service"]).await,
+        "restored OVN's southbound settings",
+        crate::ovn::restore().await,
     );
-    let mut disabled = vec![];
-    for unit in ["ovn-host.service", "ovn-controller.service"] {
-        if run("systemctl", &["disable", unit]).await.is_ok() {
-            disabled.push(unit);
-        }
-    }
-    report.step(
-        "kept ovn-controller from starting at boot",
-        if disabled.is_empty() {
-            Err(anyhow::anyhow!(
-                "could not disable ovn-host or ovn-controller"
-            ))
-        } else {
-            Ok(format!("disabled {}", disabled.join(", ")))
-        },
-    );
-    // Open vSwitch: no longer an OVN chassis. Its integration bridge, the
-    // OVN settings, and hypermon's TLS configuration for it go.
-    report.step(
-        "removed the integration bridge br-int",
-        run("ovs-vsctl", &["--if-exists", "del-br", "br-int"]).await,
-    );
-    let ovn_keys = run(
-        "ovs-vsctl",
-        &["--if-exists", "get", "Open_vSwitch", ".", "external_ids"],
-    )
-    .await
-    .map(|ids| {
-        ids.trim_matches(['{', '}'])
-            .split(", ")
-            .filter_map(|kv| {
-                kv.split_once('=')
-                    .map(|(k, _)| k.trim_matches('"').to_owned())
-            })
-            .filter(|k| k.starts_with("ovn-"))
-            .collect::<Vec<_>>()
-    });
-    report.step(
-        "removed the OVN settings from Open vSwitch",
-        match ovn_keys {
-            Ok(keys) if keys.is_empty() => Ok("none were set".into()),
-            Ok(keys) => {
-                let mut args = vec!["remove", "Open_vSwitch", ".", "external_ids"];
-                args.extend(keys.iter().map(String::as_str));
-                run("ovs-vsctl", &args).await.map(|_| keys.join(", "))
-            }
-            Err(e) => Err(e),
-        },
-    );
-    let ssl = run("ovs-vsctl", &["get-ssl"]).await.unwrap_or_default();
-    if ssl.contains("/etc/openvswitch/hypermon/") {
-        report.step(
-            "removed hypermon's TLS settings from Open vSwitch",
-            run("ovs-vsctl", &["del-ssl"]).await,
-        );
-    }
 
     // Storage: every pool let go of, and hypermon's local files.
     for id in agent.pools.attached().await.unwrap_or_default() {

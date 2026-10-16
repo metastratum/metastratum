@@ -323,12 +323,14 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Takes a host out of service for good. It must have no VMs. Its agent
-         *     removes hypermon from it (stops and disables ovn-controller, which deletes
-         *     its OVN chassis; removes the integration bridge and OVN settings from Open
-         *     vSwitch; lets go of storage pools; deletes cached images, hypermon's TLS
-         *     files and its own identity, and stops). The host leaves its cluster and
-         *     its certificates are revoked. To use the machine again, enroll it anew.
+         * Takes a host out of service for good; it must have no VMs. It leaves its
+         *     cluster and its certificates are revoked, so its agent cannot connect
+         *     again. With `wipe`, its agent first removes hypermon from the machine:
+         *     lets go of storage pools, deletes cached images, local volumes, seeds,
+         *     hypermon's TLS files and libvirt secrets, puts back the OVN southbound
+         *     settings hypermon changed (OVN itself, which the admin set up, stays),
+         *     removes its own identity and stops. To use the machine again, enroll it
+         *     anew.
          */
         post: operations["decommission_host"];
         delete?: never;
@@ -620,6 +622,11 @@ export interface paths {
         get?: never;
         put: operations["update_pool"];
         post?: never;
+        /**
+         * Removes a pool that holds no VM disks. By default it is only unlinked:
+         *     hosts unmount it and forget its credentials, and its storage is left as
+         *     it is; with `delete_data` hypermon's data on the storage goes too.
+         */
         delete: operations["delete_pool"];
         options?: never;
         head?: never;
@@ -1394,13 +1401,8 @@ export interface components {
         DecommissionReport: {
             certificates_revoked: number;
             /**
-             * @description Whether the host's OVN chassis is gone from the southbound database;
-             *     absent when that could not be checked.
-             */
-            chassis_removed?: boolean | null;
-            /**
-             * @description What the host's agent removed from it (nothing if it could not be
-             *     reached).
+             * @description What the host's agent removed from it, when wiped (nothing if it
+             *     could not be reached).
              */
             host_cleanup: string[];
             /** @description Cleanup steps that failed on the host. */
@@ -2789,7 +2791,14 @@ export interface operations {
     };
     decommission_host: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Also remove hypermon from the machine (its agent does, if
+                 *     connected). Without it the host is only unlinked: retired in
+                 *     hypermon, the machine left as it is.
+                 */
+                wipe?: boolean;
+            };
             header?: never;
             path: {
                 id: components["schemas"]["HostId"];
@@ -3648,7 +3657,15 @@ export interface operations {
     };
     delete_pool: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Also remove hypermon's data from the pool's storage (cached images,
+                 *     volumes left). Without it the pool is only unlinked: hosts let go of
+                 *     it, and the storage is left as it is. Data on storage another pool
+                 *     uses always stays.
+                 */
+                delete_data?: boolean;
+            };
             header?: never;
             path: {
                 id: components["schemas"]["StoragePoolId"];

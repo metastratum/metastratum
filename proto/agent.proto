@@ -365,11 +365,10 @@ message DeleteImage {
   repeated Pool pools = 2;
 }
 
-// The host is being decommissioned: remove hypermon from it. Stops
-// ovn-controller cleanly (which deletes its chassis from the southbound
-// database) and disables it, removes hypermon's settings from Open vSwitch
-// and its integration bridge, lets go of pools, removes cached images,
-// hypermon's TLS files and libvirt secrets, and finally the agent's identity
+// The host is being decommissioned and wiped: remove hypermon from it. Lets
+// go of pools; removes cached images, local volumes, seeds, hypermon's TLS
+// files and libvirt secrets; puts back the OVN southbound settings hypermon
+// changed (OVN itself is the admin's and stays); then the agent's identity
 // and service. Returns a report (JSON).
 message Decommission {}
 

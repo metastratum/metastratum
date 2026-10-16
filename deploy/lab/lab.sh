@@ -11,13 +11,12 @@
 #   hm-lab  10.77.0.0/24  management + Geneve underlay (NAT to the internet)
 #   hm-ext  10.78.0.0/24  "external" provider network for floating IPs (NAT)
 #
-# Usage: deploy/lab/lab.sh up | down | status | ceph | ovn-tls | ovn-sb-tls | ovn-host <vm> | testdb | ssh <vm> [cmd...] | ip <vm>
+# Usage: deploy/lab/lab.sh up | down | status | ceph | ovn-tls | ovn-sb-tls | testdb | ssh <vm> [cmd...] | ip <vm>
 #
 #   ovn-tls also serves the northbound database over TLS (ssl:10.77.0.10:6643)
 #           and prints the controller's flags for it
 #   ovn-sb-tls  serves the southbound database over TLS with OVN's RBAC
 #           (ssl:10.77.0.10:6644), with a certificate from the controller
-#   ovn-host  sets a hypervisor up as an OVN chassis again (after decommissioning)
 #   testdb  (re)starts empty, unused OVN northbound databases on hm-ctl for
 #           integration tests (plain, TLS and a three-server cluster) and
 #           prints the variables that point the tests at them
@@ -382,24 +381,6 @@ ovn-sbctl --columns=target,role list Connection
 REMOTE
 }
 
-# Sets a hypervisor VM up as an OVN chassis again, as cloud-init did when it
-# was created: for re-enrolling a host after decommissioning it (which
-# removes that setup).
-cmd_ovn_host() { # cmd_ovn_host <vm>
-  local name=$1 ip
-  ip=$(vm_field "$name" 1)
-  log "setting $name up as an OVN chassis again"
-  ssh_vm "$name" sudo bash -s -- "$name" "$ip" <<'REMOTE'
-set -euo pipefail
-name=$1 ip=$2
-ovs-vsctl set open_vswitch . "external_ids:system-id=$name" \
-  "external_ids:ovn-remote=tcp:10.77.0.10:6642" "external_ids:ovn-encap-type=geneve" \
-  "external_ids:ovn-encap-ip=$ip" "external_ids:ovn-bridge-mappings=external:br-ext"
-systemctl enable -q --now ovn-host.service
-systemctl restart ovn-controller.service
-REMOTE
-}
-
 cmd_testdb() {
   log "starting scratch OVN northbound databases on 10.77.0.10"
   { echo "$MAKE_PKI"; cat <<'REMOTE'; } | ssh_vm hm-ctl sudo bash -s
@@ -483,10 +464,9 @@ main() {
     testdb) cmd_testdb ;;
     ovn-tls) cmd_ovn_tls ;;
     ovn-sb-tls) cmd_ovn_sb_tls ;;
-    ovn-host) cmd_ovn_host "$2" ;;
     ssh) shift; ssh_vm "$@" ;;
     ip) vm_field "$2" 1 ;;
-    *) sed -n '2,28p' "$0"; exit 1 ;;
+    *) sed -n '2,27p' "$0"; exit 1 ;;
   esac
 }
 

@@ -19,8 +19,7 @@ pub const DEFAULT_MTU: u32 = 1442;
 /// uses the cluster's leader, so what it reads is never behind what it
 /// wrote; when the leader changes it moves on to the next remote.
 pub struct Northbound {
-    /// The database's name: `OVN_Northbound`, or `OVN_Southbound` for
-    /// [`Northbound::southbound`].
+    /// The database's name.
     db: &'static str,
     remotes: Vec<String>,
     tls: Option<Arc<rustls::ClientConfig>>,
@@ -32,12 +31,6 @@ impl Northbound {
     /// comma-separated; `ssl:` needs `tls`.
     pub fn new(remotes: &str, tls: Option<Arc<rustls::ClientConfig>>) -> Self {
         Self::of("OVN_Northbound", remotes, tls)
-    }
-
-    /// The southbound database, the same way (for maintenance such as
-    /// deleting a decommissioned host's chassis).
-    pub fn southbound(remotes: &str, tls: Option<Arc<rustls::ClientConfig>>) -> Self {
-        Self::of("OVN_Southbound", remotes, tls)
     }
 
     fn of(db: &'static str, remotes: &str, tls: Option<Arc<rustls::ClientConfig>>) -> Self {

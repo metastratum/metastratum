@@ -5,6 +5,7 @@ import FencingForm from '../components/FencingForm.vue'
 import HostFaceplate from '../components/HostFaceplate.vue'
 import InfraTabs from '../components/InfraTabs.vue'
 import ModalDialog from '../components/ModalDialog.vue'
+import SplitButton from '../components/SplitButton.vue'
 import TypeToConfirm from '../components/TypeToConfirm.vue'
 import { useLiveRefresh } from '../stores/live'
 
@@ -53,16 +54,20 @@ async function evacuate() {
 type DecommissionReport = {
   host_cleanup: string[]
   host_failures: string[]
-  chassis_removed?: boolean | null
   certificates_revoked: number
   notes: string[]
 }
+// Unlink retires the host in hypermon only; Delete also wipes hypermon from
+// the machine.
 const decommissioning = ref<Host | null>(null)
+const wipe = ref(false)
 const decommissionConfirmed = ref(false)
 const decommissionBusy = ref(false)
 const decommissionError = ref('')
 const decommissionReport = ref<DecommissionReport | null>(null)
-function startDecommission(h: Host) {
+function startDecommission(h: Host, wiping: boolean) {
+  wipe.value = wiping
+  decommissionConfirmed.value = false
   managing.value = null
   decommissionError.value = ''
   decommissionReport.value = null
@@ -75,7 +80,7 @@ async function decommission() {
   decommissionBusy.value = true
   try {
     decommissionReport.value = await ok(
-      api.POST('/api/v1/hosts/{id}/decommission', { params: { path: { id: h.id } } }),
+      api.POST('/api/v1/hosts/{id}/decommission', { params: { path: { id: h.id }, query: { wipe: wipe.value } } }),
     )
     await load()
   } catch (e) {
@@ -188,7 +193,11 @@ async function createToken() {
       </div>
     </ModalDialog>
 
-    <ModalDialog v-if="decommissioning" :title="`Decommission ${decommissioning.name}`" @close="decommissioning = null">
+    <ModalDialog
+      v-if="decommissioning"
+      :title="`${wipe ? 'Delete' : 'Unlink'} ${decommissioning.name}`"
+      @close="decommissioning = null"
+    >
       <div v-if="decommissionReport" class="form">
         <p>
           <strong>{{ decommissioning.name }}</strong> is decommissioned;
@@ -206,43 +215,61 @@ async function createToken() {
             <li v-for="s in decommissionReport.host_failures" :key="s">{{ s }}</li>
           </ul>
         </template>
-        <p v-if="decommissionReport.chassis_removed === true">Its OVN chassis is gone from the southbound database.</p>
-        <p v-else-if="decommissionReport.chassis_removed === false" class="error-text">
-          Its OVN chassis is still in the southbound database.
-        </p>
         <ul v-if="decommissionReport.notes.length" class="report">
           <li v-for="n in decommissionReport.notes" :key="n">{{ n }}</li>
         </ul>
         <footer><button class="btn primary" @click="decommissioning = null">Done</button></footer>
       </div>
       <form v-else class="form" @submit.prevent="decommission">
-        <p>
-          Decommission <strong>{{ decommissioning.name }}</strong>? This can’t be undone. hypermon is removed from the
-          machine:
-        </p>
-        <ul class="report">
-          <li class="error-text">
-            ovn-controller is stopped and disabled, and the host’s OVN chassis is deleted; its integration bridge
-            (<span class="mono">br-int</span>) and all <span class="mono">ovn-*</span> settings are removed from Open
-            vSwitch, including ones set up outside hypermon.
-          </li>
-          <li class="error-text">
-            Storage pools are unmounted, and cached images, local volumes, cloud-init seeds, hypermon’s TLS files and
-            libvirt secrets are deleted.
-          </li>
-          <li>The agent removes its identity and stops; the host’s certificates are revoked.</li>
-          <li>The host leaves its cluster. To use the machine again, enroll it anew (and set up OVN on it again).</li>
-          <li v-if="!decommissioning.connected">
-            The host is not connected, so nothing on it can be removed; it is only retired here. Reinstall it before
-            reuse.
-          </li>
-        </ul>
+        <template v-if="!wipe">
+          <p>
+            Unlink <strong>{{ decommissioning.name }}</strong>? This can’t be undone: hypermon retires the host, and
+            leaves the machine as it is.
+          </p>
+          <ul class="report">
+            <li>The host leaves its cluster and is listed as decommissioned.</li>
+            <li class="error-text">
+              Its certificates are revoked: its agent can no longer connect, and other hosts no longer trust it.
+            </li>
+            <li>
+              Nothing on the machine changes: hypermon’s files, mounts, TLS settings and its agent stay, and so does
+              OVN.
+            </li>
+            <li>
+              To use the machine with hypermon again, remove the agent’s identity
+              (<span class="mono">/var/lib/hypermon-agent</span>) and enroll it anew.
+            </li>
+          </ul>
+          <p class="muted">To also remove hypermon from the machine, choose Delete instead.</p>
+        </template>
+        <template v-else>
+          <p>
+            Delete <strong>{{ decommissioning.name }}</strong>? This can’t be undone: hypermon retires the host and is
+            removed from the machine.
+          </p>
+          <ul class="report">
+            <li>The host leaves its cluster and its certificates are revoked.</li>
+            <li class="error-text">
+              Storage pools are unmounted, and cached images, local volumes, cloud-init seeds, hypermon’s TLS files
+              and libvirt secrets are deleted.
+            </li>
+            <li>
+              OVN stays as you set it up; only what hypermon changed goes back (the southbound address, and
+              hypermon’s TLS settings).
+            </li>
+            <li>The agent removes its identity, then stops and disables itself.</li>
+            <li v-if="!decommissioning.connected">
+              The host is not connected, so nothing on the machine can be removed now; it is only retired here.
+            </li>
+          </ul>
+          <p class="muted">To leave the machine as it is, choose Unlink instead.</p>
+        </template>
         <TypeToConfirm v-model="decommissionConfirmed" :name="decommissioning.name" />
         <p v-if="decommissionError" class="error-text" role="alert">{{ decommissionError }}</p>
         <footer>
           <button type="button" class="btn" @click="decommissioning = null">Cancel</button>
           <button class="btn danger" :disabled="!decommissionConfirmed || decommissionBusy">
-            {{ decommissionBusy ? 'Decommissioning…' : `Decommission ${decommissioning.name}` }}
+            {{ decommissionBusy ? 'Working…' : `${wipe ? 'Delete' : 'Unlink'} ${decommissioning.name}` }}
           </button>
         </footer>
       </form>
@@ -289,18 +316,19 @@ async function createToken() {
           <div>
             <strong>Decommission</strong>
             <p class="muted hint">
-              Takes the host out of service for good and removes hypermon from it. It must have no VMs.
+              Takes the host out of service for good. Unlink retires it here and leaves the machine alone; Delete also
+              removes hypermon from the machine. It must have no VMs.
             </p>
           </div>
-          <button
-            type="button"
-            class="btn danger"
+          <SplitButton
+            label="Unlink…"
+            :items="[{ key: 'delete', label: 'Delete…', danger: true }]"
+            :menu-label="`More ways to decommission ${managing.name}`"
             :disabled="!!managing.vm_count"
             :title="managing.vm_count ? 'Move or delete its VMs first' : undefined"
-            @click="startDecommission(managing)"
-          >
-            Decommission…
-          </button>
+            @main="startDecommission(managing, false)"
+            @select="startDecommission(managing, true)"
+          />
         </div>
         <p v-if="manageError" class="error-text" role="alert">{{ manageError }}</p>
         <footer>

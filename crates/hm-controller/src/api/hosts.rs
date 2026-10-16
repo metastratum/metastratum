@@ -400,31 +400,41 @@ async fn test_fencing(
 /// What decommissioning a host did.
 #[derive(Serialize, ToSchema)]
 pub struct DecommissionReport {
-    /// What the host's agent removed from it (nothing if it could not be
-    /// reached).
+    /// What the host's agent removed from it, when wiped (nothing if it
+    /// could not be reached).
     host_cleanup: Vec<String>,
     /// Cleanup steps that failed on the host.
     host_failures: Vec<String>,
-    /// Whether the host's OVN chassis is gone from the southbound database;
-    /// absent when that could not be checked.
-    chassis_removed: Option<bool>,
     certificates_revoked: usize,
     /// What is left to do by hand.
     notes: Vec<String>,
 }
 
-/// Takes a host out of service for good. It must have no VMs. Its agent
-/// removes hypermon from it (stops and disables ovn-controller, which deletes
-/// its OVN chassis; removes the integration bridge and OVN settings from Open
-/// vSwitch; lets go of storage pools; deletes cached images, hypermon's TLS
-/// files and its own identity, and stops). The host leaves its cluster and
-/// its certificates are revoked. To use the machine again, enroll it anew.
-#[utoipa::path(post, path = "/hosts/{id}/decommission", tag = "hosts", params(("id" = HostId, Path)),
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct DecommissionQuery {
+    /// Also remove hypermon from the machine (its agent does, if
+    /// connected). Without it the host is only unlinked: retired in
+    /// hypermon, the machine left as it is.
+    #[serde(default)]
+    wipe: bool,
+}
+
+/// Takes a host out of service for good; it must have no VMs. It leaves its
+/// cluster and its certificates are revoked, so its agent cannot connect
+/// again. With `wipe`, its agent first removes hypermon from the machine:
+/// lets go of storage pools, deletes cached images, local volumes, seeds,
+/// hypermon's TLS files and libvirt secrets, puts back the OVN southbound
+/// settings hypermon changed (OVN itself, which the admin set up, stays),
+/// removes its own identity and stops. To use the machine again, enroll it
+/// anew.
+#[utoipa::path(post, path = "/hosts/{id}/decommission", tag = "hosts", params(("id" = HostId, Path), DecommissionQuery),
     responses((status = 200, body = DecommissionReport), (status = 403), (status = 404), (status = 409)))]
 async fn decommission_host(
     State(state): State<AppState>,
     p: Principal,
     axum::extract::Path(id): axum::extract::Path<HostId>,
+    axum::extract::Query(q): axum::extract::Query<DecommissionQuery>,
 ) -> ApiResult<Json<DecommissionReport>> {
     authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
     let host = hm_db::hosts::get(&state.db, id).await?;
@@ -439,13 +449,17 @@ async fn decommission_host(
     let mut report = DecommissionReport {
         host_cleanup: vec![],
         host_failures: vec![],
-        chassis_removed: None,
         certificates_revoked: 0,
         notes: vec![],
     };
 
-    // The host cleans itself up while its certificate still opens a session.
-    if host.is_live() {
+    if !q.wipe {
+        report.notes.push(
+            "The machine was left as it is: hypermon's files, mounts, TLS settings and agent stay on it. Its agent can no longer connect; before enrolling it again, remove its identity (/var/lib/hypermon-agent)."
+                .into(),
+        );
+    } else if host.is_live() {
+        // The host wipes itself while its certificate still opens a session.
         let cmd = hm_proto::command::Cmd::Decommission(hm_proto::Decommission {});
         match state.agents.send(id, cmd, Duration::from_secs(300)).await {
             Ok(payload) => {
@@ -463,12 +477,12 @@ async fn decommission_host(
                 return Err(ApiError::conflict(format!("the host refused: {e}")));
             }
             Err(e) => report.notes.push(format!(
-                "The host could not clean itself up ({e}): hypermon's files, mounts and settings stay on it."
+                "The host could not remove hypermon ({e}): its files, mounts and settings stay on it."
             )),
         }
     } else {
         report.notes.push(
-            "The host's agent is not connected: hypermon's files, mounts and settings stay on it; reinstall it before reuse."
+            "The host's agent is not connected, so nothing on the machine was removed; reinstall it before reuse."
                 .into(),
         );
     }
@@ -482,41 +496,15 @@ async fn decommission_host(
         host.cluster_id,
         id,
     ));
-
-    // Its OVN chassis: gone if ovn-controller stopped cleanly; the
-    // controller's own southbound connection makes sure.
-    let chassis = host.ovn_chassis.clone();
-    if !chassis.is_empty() {
-        match &state.sb_admin {
-            Some(sb) => {
-                let result = async {
-                    if crate::cleanup::has_chassis(sb, &chassis).await? {
-                        crate::cleanup::delete_chassis(sb, &chassis).await?;
-                    }
-                    crate::cleanup::has_chassis(sb, &chassis).await
-                }
-                .await;
-                match result {
-                    Ok(left) => report.chassis_removed = Some(!left),
-                    Err(e) => report.notes.push(format!(
-                        "Could not check OVN chassis {chassis} ({e:#}); if it is still there: ovn-sbctl chassis-del {chassis}"
-                    )),
-                }
-            }
-            None => report.notes.push(format!(
-                "Check that OVN chassis {chassis} is gone (ovn-sbctl show); if not: ovn-sbctl chassis-del {chassis}. With --ovn-sb-admin the controller does this itself."
-            )),
-        }
-    }
     audit(
         &state.db,
         Some(&p),
         Some(p.tenant_id),
         "host.decommission",
         Some(("host", id.0)),
-        serde_json::json!({"name": host.name, "revoked": report.certificates_revoked,
+        serde_json::json!({"name": host.name, "wipe": q.wipe, "revoked": report.certificates_revoked,
             "host_cleanup": report.host_cleanup, "host_failures": report.host_failures,
-            "chassis_removed": report.chassis_removed, "notes": report.notes}),
+            "notes": report.notes}),
     )
     .await;
     Ok(Json(report))

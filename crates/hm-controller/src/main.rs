@@ -121,12 +121,6 @@ struct ServeArgs {
     /// need certificates from that CA too: see `ovn-certificate`.
     #[arg(long, env = "HM_OVN_SB")]
     ovn_sb: Option<String>,
-    /// The southbound database again, for the controller itself, without
-    /// OVN's RBAC: to delete the chassis of a decommissioned host that could
-    /// not remove its own (it was down). Uses the northbound TLS settings.
-    /// Let only the controllers reach this listener.
-    #[arg(long, env = "HM_OVN_SB_ADMIN")]
-    ovn_sb_admin: Option<String>,
     /// CA certificate that signed the northbound servers' certificates
     /// (PEM), for ssl: remotes.
     #[arg(long, env = "HM_OVN_CA_CERT", requires_all = ["ovn_certificate", "ovn_private_key"])]
@@ -338,17 +332,12 @@ async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
             "ssl: OVN remotes need --ovn-ca-cert, --ovn-certificate and --ovn-private-key"
         );
     }
-    let sb_admin = args
-        .ovn_sb_admin
-        .as_deref()
-        .map(|r| std::sync::Arc::new(hm_ovsdb::Northbound::southbound(r, ovn_tls.clone())));
     let nb = std::sync::Arc::new(hm_ovsdb::Northbound::new(&args.ovn_nb, ovn_tls));
     let state = AppState::new(Inner {
         db: db.clone(),
         ca,
         ovn_ca,
         ovn_sb_remote: args.ovn_sb.clone().unwrap_or_default(),
-        sb_admin,
         agents: Agents::default(),
         net: net::Reconciler::new(db.clone(), nb),
         replica: replica.clone(),

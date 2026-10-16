@@ -198,30 +198,36 @@ test('destructive operations say what they remove, and ask first', async ({ page
   await imageDialog.getByRole('button', { name: `Delete e2e-img-${run}` }).click()
   await expect(page.getByText(`e2e-img-${run}`)).toHaveCount(0)
 
-  // A pool: deleting it needs its name typed, and says what happens to the
-  // data on its storage.
-  const pool = await page.request.post('/api/v1/storage-pools', {
-    data: {
-      name: `e2e-pool-${run}`,
-      kind: 'nfs',
-      cluster_ids: [],
-      config: { server: '10.77.0.10', export: `/srv/nfs/e2e-unused-${run}` },
-    },
-  })
-  expect(pool.ok()).toBeTruthy()
+  // Pools: Unlink (the main action) leaves the storage alone and says so;
+  // Delete (in the menu) says what it removes and needs the name typed.
+  const addPool = async (name: string) => {
+    const r = await page.request.post('/api/v1/storage-pools', {
+      data: { name, kind: 'nfs', cluster_ids: [], config: { server: '10.77.0.10', export: `/srv/nfs/e2e-unused-${run}` } },
+    })
+    expect(r.ok()).toBeTruthy()
+  }
+  await addPool(`e2e-keep-${run}`)
+  await addPool(`e2e-drop-${run}`)
   await page.goto('/storage')
-  await page.getByRole('row').filter({ hasText: `e2e-pool-${run}` }).getByRole('button', { name: 'Delete' }).click()
+  await page.getByRole('row').filter({ hasText: `e2e-keep-${run}` }).getByRole('button', { name: 'Unlink…' }).click()
+  const unlinkDialog = page.getByRole('dialog')
+  await expect(unlinkDialog).toContainText('Its storage is left exactly as it is')
+  await unlinkDialog.getByRole('button', { name: 'Unlink pool' }).click()
+  await expect(page.getByText(`e2e-keep-${run}`)).toHaveCount(0)
+
+  const dropRow = page.getByRole('row').filter({ hasText: `e2e-drop-${run}` })
+  await dropRow.getByRole('button', { name: `More ways to remove e2e-drop-${run}` }).click()
+  await page.getByRole('menuitem', { name: 'Delete…' }).click()
   const poolDialog = page.getByRole('dialog')
-  await expect(poolDialog).toContainText('Every host unmounts it')
   await expect(poolDialog).toContainText('are deleted')
   const deletePool = poolDialog.getByRole('button', { name: 'Delete pool' })
   await expect(deletePool).toBeDisabled()
   await poolDialog.getByLabel(/to confirm/).fill('not the name')
   await expect(deletePool).toBeDisabled()
-  await poolDialog.getByLabel(/to confirm/).fill(`e2e-pool-${run}`)
+  await poolDialog.getByLabel(/to confirm/).fill(`e2e-drop-${run}`)
   await expect(deletePool).toBeEnabled()
   await deletePool.click()
-  await expect(page.getByText(`e2e-pool-${run}`)).toHaveCount(0)
+  await expect(page.getByText(`e2e-drop-${run}`)).toHaveCount(0)
 
   // Decommissioning a host: everything it removes is spelled out, and it
   // waits for the name. (Cancelled here.)
@@ -233,13 +239,39 @@ test('destructive operations say what they remove, and ask first', async ({ page
     .locator('article', { hasText: idle.name, hasNotText: 'Decommissioned' })
     .getByRole('button', { name: 'Manage' })
     .click()
-  await page.getByRole('dialog').getByRole('button', { name: 'Decommission…' }).click()
-  const hostDialog = page.getByRole('dialog')
-  await expect(hostDialog).toContainText('OVN chassis is deleted')
-  await expect(hostDialog).toContainText('can’t be undone')
-  await expect(hostDialog.getByRole('button', { name: `Decommission ${idle.name}` })).toBeDisabled()
-  await hostDialog.getByLabel(/to confirm/).fill(idle.name)
-  await expect(hostDialog.getByRole('button', { name: `Decommission ${idle.name}` })).toBeEnabled()
-  await hostDialog.getByRole('button', { name: 'Cancel' }).click()
-  await expect(page.getByRole('dialog')).toHaveCount(0)
+  // Unlink: the machine is left alone; Delete: hypermon is removed from it,
+  // OVN stays. Both wait for the name. (Cancelled here.)
+  for (const [action, says] of [
+    ['Unlink', 'Nothing on the machine changes'],
+    ['Delete', 'OVN stays as you set it up'],
+  ]) {
+    if (action === 'Unlink') {
+      await page.getByRole('dialog').getByRole('button', { name: 'Unlink…' }).click()
+    } else {
+      await page
+        .locator('article', { hasText: idle.name, hasNotText: 'Decommissioned' })
+        .getByRole('button', { name: 'Manage' })
+        .click()
+      const more = page.getByRole('dialog').getByRole('button', { name: `More ways to decommission ${idle.name}` })
+      // Escape closes the menu, not the dialog around it.
+      await more.click()
+      await expect(page.getByRole('menuitem', { name: 'Delete…' })).toBeVisible()
+      await page.keyboard.press('Escape')
+      await expect(page.getByRole('menu')).toHaveCount(0)
+      await expect(page.getByRole('dialog')).toBeVisible()
+      // The keyboard opens it too.
+      await more.press('ArrowDown')
+      await expect(page.getByRole('menuitem', { name: 'Delete…' })).toBeFocused()
+      await page.keyboard.press('Enter')
+    }
+    const hostDialog = page.getByRole('dialog')
+    await expect(hostDialog).toContainText(says)
+    await expect(hostDialog).toContainText('can’t be undone')
+    const go = hostDialog.getByRole('button', { name: `${action} ${idle.name}` })
+    await expect(go).toBeDisabled()
+    await hostDialog.getByLabel(/to confirm/).fill(idle.name)
+    await expect(go).toBeEnabled()
+    await hostDialog.getByRole('button', { name: 'Cancel' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+  }
 })

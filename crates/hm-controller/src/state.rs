@@ -19,9 +19,6 @@ pub struct Inner {
     /// Southbound remote(s) agents point ovn-controller at, over TLS; empty
     /// when southbound access is left to the deployment.
     pub ovn_sb_remote: String,
-    /// The controller's own connection to the southbound database, if it
-    /// has one (`--ovn-sb-admin`).
-    pub sb_admin: Option<std::sync::Arc<hm_ovsdb::Northbound>>,
     pub agents: Agents,
     /// Keeps OVN in line with the network model.
     pub net: Reconciler,
