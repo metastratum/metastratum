@@ -24,6 +24,8 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(get_tenant, update_tenant, delete_tenant))
         .routes(routes!(get_quotas, set_quotas))
         .routes(routes!(get_grants, set_grants))
+        .routes(routes!(bind_domain))
+        .routes(routes!(unbind_domain))
 }
 
 #[derive(Serialize, ToSchema)]
@@ -37,6 +39,8 @@ pub struct TenantView {
     slug_path: String,
     /// 1 for the root.
     depth: usize,
+    /// Domain names bound to the tenant: signing in at one starts here.
+    domains: Vec<String>,
     created_at: DateTime<Utc>,
 }
 
@@ -46,10 +50,12 @@ async fn views(
 ) -> ApiResult<Vec<TenantView>> {
     let ids: Vec<_> = tenants.iter().map(|t| t.id).collect();
     let paths = mst_db::tenants::slug_paths(&state.db, &ids).await?;
+    let mut domains = mst_db::tenants::domains(&state.db, &ids).await?;
     Ok(tenants
         .into_iter()
         .map(|t| TenantView {
             slug_path: paths.get(&t.id).cloned().unwrap_or_default(),
+            domains: domains.remove(&t.id).unwrap_or_default(),
             depth: t.path.depth(),
             id: t.id,
             parent_id: t.parent_id,
@@ -190,6 +196,99 @@ async fn update_tenant(
     .await;
     let t = mst_db::tenants::get(&state.db, id).await?;
     Ok(Json(views(&state, vec![t]).await?.remove(0)))
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct BindDomain {
+    /// Host name people reach the controllers at for this tenant, e.g.
+    /// `mst.acme.com`. Its DNS, and the HTTPS proxy's certificate, must lead
+    /// to the controllers.
+    domain: String,
+}
+
+/// A domain name in the form it is bound in: lower case, without trailing
+/// dot, labels of letters, digits and inner hyphens.
+fn valid_domain(domain: &str) -> ApiResult<String> {
+    let d = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+    let label = |l: &str| {
+        !l.is_empty()
+            && l.len() <= 63
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    };
+    if d.len() > 253 || !d.split('.').all(label) {
+        return Err(ApiError::bad_request(
+            "a domain is a host name such as mst.example.com, without scheme, port or path",
+        ));
+    }
+    Ok(d)
+}
+
+/// Only the provider's administrators bind domains: they decide which names
+/// lead to the controllers, and a tenant must not claim another's (or the
+/// provider's) sign-in page.
+async fn authorize_domains(state: &AppState, p: &Principal) -> ApiResult<()> {
+    let root = mst_db::tenants::root(&state.db)
+        .await?
+        .ok_or_else(|| ApiError::not_found("tenant"))?;
+    authorize(&state.db, p, Perm::InfraWrite, root.id).await
+}
+
+/// Binds a domain name to a tenant. Signing in at that name starts from the
+/// tenant: people of the tenant leave the tenant empty, and those of its
+/// sub-tenants enter a path below it.
+#[utoipa::path(post, path = "/tenants/{id}/domains", tag = "tenants", params(("id" = TenantId, Path)), request_body = BindDomain,
+    responses((status = 200, body = TenantView), (status = 400), (status = 403), (status = 404),
+        (status = 409, description = "The domain is bound already")))]
+async fn bind_domain(
+    State(state): State<AppState>,
+    p: Principal,
+    Path(id): Path<TenantId>,
+    Json(req): Json<BindDomain>,
+) -> ApiResult<Json<TenantView>> {
+    authorize_domains(&state, &p).await?;
+    let domain = valid_domain(&req.domain)?;
+    mst_db::tenants::get(&state.db, id).await?;
+    mst_db::tenants::bind_domain(&state.db, id, &domain).await?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(id),
+        "tenant.domain.bind",
+        Some(("tenant", id.0)),
+        json!({"domain": domain}),
+    )
+    .await;
+    let t = mst_db::tenants::get(&state.db, id).await?;
+    Ok(Json(views(&state, vec![t]).await?.remove(0)))
+}
+
+/// Removes a domain name from a tenant; signing in there starts from the
+/// provider again.
+#[utoipa::path(delete, path = "/tenants/{id}/domains/{domain}", tag = "tenants",
+    params(("id" = TenantId, Path), ("domain" = String, Path)),
+    responses((status = 204), (status = 403), (status = 404)))]
+async fn unbind_domain(
+    State(state): State<AppState>,
+    p: Principal,
+    Path((id, domain)): Path<(TenantId, String)>,
+) -> ApiResult<StatusCode> {
+    authorize_domains(&state, &p).await?;
+    let domain = valid_domain(&domain)?;
+    if !mst_db::tenants::unbind_domain(&state.db, id, &domain).await? {
+        return Err(ApiError::not_found("domain"));
+    }
+    audit(
+        &state.db,
+        Some(&p),
+        Some(id),
+        "tenant.domain.unbind",
+        Some(("tenant", id.0)),
+        json!({"domain": domain}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Deletes an empty tenant (no sub-tenants, VMs or images), with its users and
@@ -378,6 +477,30 @@ async fn set_grants(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn domains_are_plain_host_names() {
+        assert_eq!(
+            super::valid_domain(" Mst.Acme.COM. ").unwrap(),
+            "mst.acme.com"
+        );
+        assert_eq!(
+            super::valid_domain("acme.localhost").unwrap(),
+            "acme.localhost"
+        );
+        for bad in [
+            "",
+            "https://mst.acme.com",
+            "mst.acme.com:443",
+            "mst.acme.com/x",
+            "-a.com",
+            "a..com",
+            "a_b.com",
+            "*.acme.com",
+        ] {
+            assert!(super::valid_domain(bad).is_err(), "{bad:?}");
+        }
+    }
+
     use super::*;
 
     #[test]

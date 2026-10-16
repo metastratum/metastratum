@@ -11,6 +11,7 @@ const t = (id: string, parent: string | null, name: string, path: string): Tenan
   slug: path.split('/').pop() ?? '',
   slug_path: path,
   depth: path ? path.split('/').length + 1 : 1,
+  domains: [],
   created_at: '',
 })
 const TENANTS = [t('acme2', 'root', 'Acme Two', 'acme2'), t('dev', 'acme', 'Dev', 'acme/dev'), t('root', null, 'Provider', ''), t('acme', 'root', 'Acme', 'acme')]

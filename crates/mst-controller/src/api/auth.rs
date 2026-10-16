@@ -16,7 +16,7 @@ use utoipa_axum::routes;
 use super::SESSION_COOKIE;
 use crate::authz::Principal;
 use crate::error::{ApiError, ApiResult};
-use crate::ratelimit::{ClientIp, Https};
+use crate::ratelimit::{ClientIp, Https, Site};
 use crate::state::AppState;
 
 const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
@@ -41,6 +41,7 @@ fn verify_password(password: &str, hash: &str) -> bool {
 
 pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
+        .routes(routes!(site_info))
         .routes(routes!(login))
         .routes(routes!(logout))
         .routes(routes!(me))
@@ -50,8 +51,9 @@ pub fn routes() -> OpenApiRouter<AppState> {
 pub struct LoginRequest {
     username: String,
     password: String,
-    /// Tenant as a slug path below the provider, e.g. `acme/dev`. Omit for
-    /// provider users.
+    /// Tenant as a slug path, e.g. `acme/dev`. It starts from the tenant
+    /// the site's domain is bound to, else from the provider; omit it for
+    /// that tenant itself.
     #[serde(default)]
     tenant: Option<String>,
 }
@@ -83,11 +85,29 @@ pub struct Me {
     local: bool,
 }
 
+/// The tenant this site is bound to by its domain name, if any.
+async fn bound_tenant(state: &AppState, site: &Site) -> ApiResult<Option<mst_db::tenants::Tenant>> {
+    match site.host() {
+        Some(host) => Ok(mst_db::tenants::by_domain(&state.db, &host).await?),
+        None => Ok(None),
+    }
+}
+
+/// Where tenant paths entered at this site start: the tenant its domain is
+/// bound to, or else the provider.
+async fn base_tenant(state: &AppState, site: &Site) -> ApiResult<Option<mst_db::tenants::Tenant>> {
+    match bound_tenant(state, site).await? {
+        Some(t) => Ok(Some(t)),
+        None => Ok(mst_db::tenants::root(&state.db).await?),
+    }
+}
+
 async fn resolve_tenant(
     state: &AppState,
+    site: &Site,
     path: Option<&str>,
 ) -> ApiResult<Option<mst_db::tenants::Tenant>> {
-    let Some(mut tenant) = mst_db::tenants::root(&state.db).await? else {
+    let Some(mut tenant) = base_tenant(state, site).await? else {
         return Ok(None);
     };
     for slug in path.unwrap_or("").split('/').filter(|s| !s.is_empty()) {
@@ -99,6 +119,38 @@ async fn resolve_tenant(
     Ok(Some(tenant))
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct SiteView {
+    /// Name of the tenant this site's domain is bound to; null when it is
+    /// bound to none, and sign-ins start from the provider.
+    tenant_name: Option<String>,
+    /// Whether the tenant sign-ins start from has sub-tenants: whether the
+    /// sign-in page needs to ask for one.
+    sub_tenants: bool,
+}
+
+/// What the sign-in page at this address needs to know: which tenant its
+/// domain is bound to, and whether there are sub-tenants to choose from.
+#[utoipa::path(get, path = "/auth/site", tag = "auth", responses((status = 200, body = SiteView)))]
+async fn site_info(
+    State(state): State<AppState>,
+    Extension(site): Extension<Site>,
+) -> ApiResult<Json<SiteView>> {
+    let bound = bound_tenant(&state, &site).await?;
+    let base = match &bound {
+        Some(t) => Some(t.clone()),
+        None => mst_db::tenants::root(&state.db).await?,
+    };
+    let sub_tenants = match &base {
+        Some(t) => mst_db::tenants::has_children(&state.db, t.id).await?,
+        None => false,
+    };
+    Ok(Json(SiteView {
+        tenant_name: bound.map(|t| t.name),
+        sub_tenants,
+    }))
+}
+
 #[utoipa::path(post, path = "/auth/login", tag = "auth", request_body = LoginRequest,
     responses((status = 204, description = "Logged in; session cookie set"), (status = 401),
         (status = 429, description = "Too many attempts; see Retry-After")))]
@@ -106,22 +158,28 @@ async fn login(
     State(state): State<AppState>,
     Extension(ClientIp(ip)): Extension<ClientIp>,
     Extension(Https(https)): Extension<Https>,
+    Extension(site): Extension<Site>,
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<Response> {
-    // Failures count against the account wherever they come from.
-    let account = format!(
-        "{}/{}",
-        req.tenant.as_deref().unwrap_or("").trim_matches('/'),
-        req.username.to_lowercase()
-    );
-    let allowed = match state.limits.logins.take(&ip).await {
-        Ok(()) => state.limits.login_failures.check(&account).await,
-        refused => refused,
-    };
-    if let Err(retry) = allowed {
+    if let Err(retry) = state.limits.logins.take(&ip).await {
         return Ok(crate::ratelimit::too_many(retry));
     }
-    let user = match resolve_tenant(&state, req.tenant.as_deref()).await? {
+    let tenant = resolve_tenant(&state, &site, req.tenant.as_deref()).await?;
+    // Failures count against the account wherever they come from, under
+    // whichever domain.
+    let username = req.username.to_lowercase();
+    let account = match &tenant {
+        Some(t) => format!("{}/{username}", t.id),
+        None => format!(
+            "{}/{}/{username}",
+            site.host().unwrap_or_default(),
+            req.tenant.as_deref().unwrap_or("").trim_matches('/')
+        ),
+    };
+    if let Err(retry) = state.limits.login_failures.check(&account).await {
+        return Ok(crate::ratelimit::too_many(retry));
+    }
+    let user = match &tenant {
         Some(t) => mst_db::users::find_by_username(&state.db, t.id, &req.username).await?,
         None => None,
     };
@@ -149,7 +207,7 @@ async fn login(
                 action: "auth.login",
                 target: None,
                 success: false,
-                details: serde_json::json!({"tenant": req.tenant}),
+                details: serde_json::json!({"tenant": req.tenant, "site": site.host()}),
             };
             if let Err(e) = mst_db::audit::record(&state.db, entry).await {
                 tracing::error!(error = %e, "writing audit log");
@@ -210,12 +268,14 @@ pub async fn open_session(
     Ok(headers)
 }
 
-/// Resolves a slug path below the root (`acme/dev`) to a tenant.
+/// Resolves a slug path (`acme/dev`) to a tenant, starting from the tenant
+/// the site's domain is bound to, or else the provider.
 pub async fn tenant_by_path(
     state: &AppState,
+    site: &Site,
     path: Option<&str>,
 ) -> ApiResult<Option<mst_db::tenants::Tenant>> {
-    resolve_tenant(state, path).await
+    resolve_tenant(state, site, path).await
 }
 
 #[utoipa::path(post, path = "/auth/logout", tag = "auth", responses((status = 204)))]

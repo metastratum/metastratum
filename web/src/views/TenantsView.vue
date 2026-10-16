@@ -7,6 +7,7 @@ import ModalDialog from '../components/ModalDialog.vue'
 import GrantsPanel from '../components/tenant/GrantsPanel.vue'
 import PeoplePanel from '../components/tenant/PeoplePanel.vue'
 import QuotaPanel from '../components/tenant/QuotaPanel.vue'
+import DomainsPanel from '../components/tenant/DomainsPanel.vue'
 import SignInPanel from '../components/tenant/SignInPanel.vue'
 import { ago } from '../state'
 import { useScope } from '../stores/scope'
@@ -169,7 +170,10 @@ async function submit() {
           <QuotaPanel v-if="tab === 'quotas'" :key="`q${selected.id}`" :tenant="selected" :parent="parent" />
           <PeoplePanel v-else-if="tab === 'people'" :key="`p${selected.id}`" :tenant="selected" />
           <GrantsPanel v-else-if="tab === 'resources'" :key="`g${selected.id}`" :tenant="selected" :parent="parent" />
-          <SignInPanel v-else :key="`s${selected.id}`" :tenant="selected" />
+          <div v-else class="sign-in">
+            <SignInPanel :key="`s${selected.id}`" :tenant="selected" />
+            <DomainsPanel :key="`d${selected.id}`" :tenant="selected" />
+          </div>
         </div>
       </article>
     </div>
@@ -365,6 +369,10 @@ async function submit() {
 .tabs button.on {
   border-bottom-color: var(--tape);
   color: var(--ink);
+}
+.sign-in {
+  display: grid;
+  gap: 24px;
 }
 .tab-body {
   padding: 20px;

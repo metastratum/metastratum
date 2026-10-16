@@ -289,3 +289,54 @@ test('the account page uses the full width, on desktop and phone', async ({ page
     expect(box!.width).toBeGreaterThan(width * 0.8)
   }
 })
+
+test('a domain name signs in to its tenant', async ({ page, browser, baseURL }) => {
+  const id = Date.now().toString(36)
+  const name = `E2E ${id}`
+  await signIn(page)
+  const api = page.request
+  const me = await (await api.get('/api/v1/auth/me')).json()
+  const created = await api.post('/api/v1/tenants', { data: { parent_id: me.tenant_id, slug: `e2e-${id}`, name } })
+  const tenant = await created.json()
+  let sub: { id: string } | null = null
+  try {
+    await api.post('/api/v1/users', {
+      data: {
+        tenant_id: tenant.id,
+        username: 'dora',
+        display_name: 'Dora',
+        password: 'dora-password-1',
+        role: 'viewer',
+      },
+    })
+    // Bind a name to it on its Sign-in tab. Chrome sends *.localhost here.
+    const domain = `e2e-${id}.localhost`
+    await page.goto(`/tenants/${tenant.id}`)
+    await page.getByRole('tab', { name: 'Sign-in' }).click()
+    await page.getByLabel('Domain name').fill(domain)
+    await page.getByRole('button', { name: 'Bind domain' }).click()
+    await expect(page.getByText(domain, { exact: true })).toBeVisible()
+
+    // There, the page signs in to the tenant, and without sub-tenants it
+    // doesn't ask for one.
+    const there = `http://${domain}:${new URL(baseURL!).port}/login`
+    const visitor = await (await browser.newContext()).newPage()
+    await visitor.goto(there)
+    await expect(visitor.getByRole('heading', { name: `Sign in to ${name}` })).toBeVisible()
+    await expect(visitor.getByLabel(/tenant/i)).toHaveCount(0)
+    await visitor.getByLabel('Username').fill('dora')
+    await visitor.getByLabel('Password').fill('dora-password-1')
+    await visitor.getByRole('button', { name: 'Sign in' }).click()
+    await expect(visitor.getByRole('heading', { name: 'Virtual machines' })).toBeVisible()
+
+    // With a sub-tenant, it asks for one below the tenant.
+    sub = await (await api.post('/api/v1/tenants', { data: { parent_id: tenant.id, slug: 'dev', name: 'Dev' } })).json()
+    const later = await (await browser.newContext()).newPage()
+    await later.goto(there)
+    await expect(later.getByLabel('Sub-tenant')).toBeVisible()
+    await expect(later.getByText(`Leave empty to sign in to ${name} itself.`)).toBeVisible()
+  } finally {
+    if (sub) await api.delete(`/api/v1/tenants/${sub.id}`)
+    await api.delete(`/api/v1/tenants/${tenant.id}`)
+  }
+})

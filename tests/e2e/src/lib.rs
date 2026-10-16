@@ -82,6 +82,26 @@ impl Api {
         })
     }
 
+    /// A client without a session that reaches the controller at `base` under
+    /// another host name (`domain`), as a browser at that name would.
+    pub fn anonymous_at(base: &str, domain: &str) -> Result<Api> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let url = reqwest::Url::parse(base)?;
+        let addr = url
+            .socket_addrs(|| None)?
+            .into_iter()
+            .next()
+            .context("controller address")?;
+        let http = reqwest::Client::builder()
+            .cookie_store(true)
+            .resolve(domain, addr)
+            .build()?;
+        Ok(Api {
+            base: format!("{}://{domain}:{}", url.scheme(), addr.port()),
+            http,
+        })
+    }
+
     /// Like `send`, but returns error statuses instead of failing.
     pub async fn try_send(
         &self,

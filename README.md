@@ -225,6 +225,11 @@ controller builds its redirect URI from the address the browser reached it
 at, so both `http://127.0.0.1:18080` and the Vite dev server
 (`http://127.0.0.1:5173`) work; Dex lists both.
 
+A tenant can also get its own address (Tenants → Sign-in → Domains), whose
+sign-in page starts from that tenant. Browsers send `*.localhost` names to
+your own machine, so binding `acme.localhost` to a tenant and opening
+`http://acme.localhost:18080` tries it out.
+
 ### End-to-end tests
 
 Both suites run against the controller above and skip unless pointed at it:

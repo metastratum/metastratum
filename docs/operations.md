@@ -66,6 +66,21 @@ The proxy must:
   with identity providers (Tenants → Sign-in shows it);
 - reach `/healthz`, which answers 200 while the replica can reach Postgres.
 
+**Tenant domains.** A tenant can have its own address, such as
+`mst.acme.com` for Acme (Tenants → Acme → Sign-in → Domains; provider
+administrators only). The sign-in page there starts from Acme: Acme's people
+leave the tenant empty, and those of its sub-tenants enter the path below
+it (`dev` for `acme/dev`). The page asks for a tenant only when there are
+sub-tenants to choose from. Nothing above or beside Acme can be signed in
+to at that address. For each domain:
+
+- point its DNS at the proxy, and give the proxy a certificate for it;
+- if the tenant signs in through an identity provider, register
+  `https://mst.acme.com/api/v1/auth/oidc/callback` with it as well.
+
+The controllers need no setting: they read the name from the request, as
+for the redirect URI above.
+
 **Agent traffic** does not go through that proxy. Each host dials a
 replica's agent endpoint (`--agent-listen`, gRPC with mutual TLS against
 the controller's own CA) and keeps one session open. Give the agents every

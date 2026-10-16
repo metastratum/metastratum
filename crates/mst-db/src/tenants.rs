@@ -216,3 +216,68 @@ pub async fn slug_paths(
     .await?;
     Ok(rows.into_iter().collect())
 }
+
+/// Whether a tenant has sub-tenants.
+pub async fn has_children(db: impl PgExecutor<'_>, id: TenantId) -> Result<bool> {
+    Ok(
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM tenants WHERE parent_id = $1)")
+            .bind(id)
+            .fetch_one(db)
+            .await?,
+    )
+}
+
+/// The tenant a domain name is bound to (`domain` in lower case).
+pub async fn by_domain(db: impl PgExecutor<'_>, domain: &str) -> Result<Option<Tenant>> {
+    Ok(sqlx::query_as::<_, Row>(concat!(
+        "SELECT ",
+        tenant_columns!(),
+        " FROM tenants WHERE id = (SELECT tenant_id FROM tenant_domains WHERE domain = $1)"
+    ))
+    .bind(domain)
+    .fetch_optional(db)
+    .await?
+    .map(Into::into))
+}
+
+/// Domain names bound to each of `ids`, sorted.
+pub async fn domains(
+    db: impl PgExecutor<'_>,
+    ids: &[TenantId],
+) -> Result<std::collections::HashMap<TenantId, Vec<String>>> {
+    let rows: Vec<(TenantId, String)> = sqlx::query_as(
+        "SELECT tenant_id, domain FROM tenant_domains WHERE tenant_id = ANY($1) ORDER BY domain",
+    )
+    .bind(ids.iter().map(|t| t.0).collect::<Vec<_>>())
+    .fetch_all(db)
+    .await?;
+    let mut out = std::collections::HashMap::<TenantId, Vec<String>>::new();
+    for (tenant, domain) in rows {
+        out.entry(tenant).or_default().push(domain);
+    }
+    Ok(out)
+}
+
+/// Binds a domain name (lower case) to a tenant. A domain names one tenant.
+pub async fn bind_domain(db: impl PgExecutor<'_>, id: TenantId, domain: &str) -> Result<()> {
+    sqlx::query("INSERT INTO tenant_domains (domain, tenant_id) VALUES ($1, $2)")
+        .bind(domain)
+        .bind(id)
+        .execute(db)
+        .await
+        .map_err(|e| conflict_on_unique(e, "a binding for that domain"))?;
+    Ok(())
+}
+
+/// Removes a domain from a tenant; false if it was not bound to it.
+pub async fn unbind_domain(db: impl PgExecutor<'_>, id: TenantId, domain: &str) -> Result<bool> {
+    Ok(
+        sqlx::query("DELETE FROM tenant_domains WHERE domain = $1 AND tenant_id = $2")
+            .bind(domain)
+            .bind(id)
+            .execute(db)
+            .await?
+            .rows_affected()
+            > 0,
+    )
+}

@@ -122,6 +122,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/site": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the sign-in page at this address needs to know: which tenant its
+         *     domain is bound to, and whether there are sub-tenants to choose from.
+         */
+        get: operations["site_info"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clusters": {
         parameters: {
             query?: never;
@@ -719,6 +739,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tenants/{id}/domains": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Binds a domain name to a tenant. Signing in at that name starts from the
+         *     tenant: people of the tenant leave the tenant empty, and those of its
+         *     sub-tenants enter a path below it.
+         */
+        post: operations["bind_domain"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{id}/domains/{domain}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Removes a domain name from a tenant; signing in there starts from the
+         *     provider again.
+         */
+        delete: operations["unbind_domain"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tenants/{id}/external-networks": {
         parameters: {
             query?: never;
@@ -1207,6 +1268,14 @@ export interface components {
             /** @description Name of the tenant's identity provider, if it has one. */
             oidc?: string | null;
         };
+        BindDomain: {
+            /**
+             * @description Host name people reach the controllers at for this tenant, e.g.
+             *     `mst.acme.com`. Its DNS, and the HTTPS proxy's certificate, must lead
+             *     to the controllers.
+             */
+            domain: string;
+        };
         BindingView: {
             /** Format: date-time */
             created_at: string;
@@ -1558,8 +1627,9 @@ export interface components {
         LoginRequest: {
             password: string;
             /**
-             * @description Tenant as a slug path below the provider, e.g. `acme/dev`. Omit for
-             *     provider users.
+             * @description Tenant as a slug path, e.g. `acme/dev`. It starts from the tenant
+             *     the site's domain is bound to, else from the provider; omit it for
+             *     that tenant itself.
              */
             tenant?: string | null;
             username: string;
@@ -1785,6 +1855,18 @@ export interface components {
         };
         /** Format: uuid */
         SecurityRuleId: string;
+        SiteView: {
+            /**
+             * @description Whether the tenant sign-ins start from has sub-tenants: whether the
+             *     sign-in page needs to ask for one.
+             */
+            sub_tenants: boolean;
+            /**
+             * @description Name of the tenant this site's domain is bound to; null when it is
+             *     bound to none, and sign-ins start from the provider.
+             */
+            tenant_name?: string | null;
+        };
         /** Format: uuid */
         StoragePoolId: string;
         /** Format: uuid */
@@ -1821,6 +1903,8 @@ export interface components {
             created_at: string;
             /** @description 1 for the root. */
             depth: number;
+            /** @description Domain names bound to the tenant: signing in at one starts here. */
+            domains: string[];
             id: components["schemas"]["TenantId"];
             name: string;
             parent_id?: components["schemas"]["TenantId"] | null;
@@ -2139,7 +2223,10 @@ export interface operations {
     methods: {
         parameters: {
             query?: {
-                /** @description Slug path of the tenant (`acme/dev`); empty for the provider. */
+                /**
+                 * @description Slug path of the tenant (`acme/dev`), from the tenant the site's
+                 *     domain is bound to; empty for that tenant (or the provider).
+                 */
                 tenant?: string;
             };
             header?: never;
@@ -2198,6 +2285,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    site_info: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SiteView"];
+                };
             };
         };
     };
@@ -3936,6 +4042,88 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["UsableCluster"][];
                 };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    bind_domain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BindDomain"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The domain is bound already */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    unbind_domain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             404: {
                 headers: {

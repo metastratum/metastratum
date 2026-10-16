@@ -54,6 +54,12 @@ The boundaries metastratum enforces:
   proxy says the client came over HTTPS. Sessions end after 12
   hours, at sign-out, or when the user's password changes or the account is
   disabled.
+- **Tenant domains** are bound by provider administrators only: they
+  decide which names lead to the controllers, and a tenant must not take
+  over another's sign-in page, or the provider's. At a bound domain, only
+  that tenant and its sub-tenants can be signed in to. The sign-in page
+  there tells anyone the tenant's name and whether it has sub-tenants
+  (never their names); elsewhere, only whether the provider has any.
 - **Sign-in through identity providers** uses the authorization code flow
   with PKCE, a nonce and a state value, verifies the ID token's signature,
   issuer and audience, and follows no redirects.

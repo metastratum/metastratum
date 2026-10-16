@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api, ApiError } from '../api/client'
+import { api, ApiError, type Schemas } from '../api/client'
 import { useSession } from '../stores/session'
 
 const session = useSession()
@@ -16,6 +16,22 @@ const error = ref(typeof route.query.error === 'string' ? route.query.error : ''
 const busy = ref(false)
 const provider = ref<string | null>(null)
 
+// The tenant this address is bound to, and whether there are sub-tenants to
+// ask for. Until that is known (or if it can't be), the field is offered.
+const site = ref<Schemas['SiteView'] | null>(null)
+const ready = ref(false)
+const usernameInput = ref<HTMLInputElement | null>(null)
+onMounted(async () => {
+  const { data } = await api.GET('/api/v1/auth/site').catch(() => ({ data: undefined }))
+  site.value = data ?? null
+  ready.value = true
+  await nextTick()
+  usernameInput.value?.focus()
+})
+const askTenant = computed(() => site.value?.sub_tenants ?? true)
+const bound = computed(() => site.value?.tenant_name ?? null)
+const chosen = computed(() => (askTenant.value ? tenant.value.trim() : ''))
+
 const next = computed(() =>
   typeof route.query.next === 'string' && route.query.next.startsWith('/') && !route.query.next.startsWith('//')
     ? route.query.next
@@ -25,28 +41,27 @@ const next = computed(() =>
 // Offer the tenant's identity provider once the tenant is known.
 let timer = 0
 watch(
-  tenant,
+  chosen,
   (t) => {
     clearTimeout(timer)
     provider.value = null
     timer = window.setTimeout(async () => {
-      const { data } = await api.GET('/api/v1/auth/methods', { params: { query: { tenant: t.trim() } } })
-      if (t === tenant.value) provider.value = data?.oidc ?? null
+      const { data } = await api.GET('/api/v1/auth/methods', { params: { query: { tenant: t } } })
+      if (t === chosen.value) provider.value = data?.oidc ?? null
     }, 300)
   },
   { immediate: true },
 )
 
 const ssoHref = computed(
-  () =>
-    `/api/v1/auth/oidc/start?${new URLSearchParams({ tenant: tenant.value.trim(), return_to: next.value })}`,
+  () => `/api/v1/auth/oidc/start?${new URLSearchParams({ tenant: chosen.value, return_to: next.value })}`,
 )
 
 async function submit() {
   error.value = ''
   busy.value = true
   try {
-    await session.login(username.value, password.value, tenant.value)
+    await session.login(username.value, password.value, chosen.value)
     await router.replace(next.value)
   } catch (e) {
     error.value =
@@ -63,19 +78,21 @@ async function submit() {
 
 <template>
   <div class="page">
-    <form class="card" @submit.prevent="submit">
+    <form v-if="ready" class="card" @submit.prevent="submit">
       <span class="tape">metastratum</span>
-      <h1>Sign in</h1>
-      <label class="field">
-        <span class="label">Tenant</span>
-        <input v-model="tenant" placeholder="acme/dev" autocomplete="organization" />
-        <span class="hint">Leave empty if your account belongs to the provider.</span>
+      <h1>{{ bound ? `Sign in to ${bound}` : 'Sign in' }}</h1>
+      <label v-if="askTenant" class="field">
+        <span class="label">{{ bound ? 'Sub-tenant' : 'Tenant' }}</span>
+        <input v-model="tenant" :placeholder="bound ? 'dev' : 'acme/dev'" autocomplete="organization" />
+        <span class="hint">{{
+          bound ? `Leave empty to sign in to ${bound} itself.` : 'Leave empty if your account belongs to the provider.'
+        }}</span>
       </label>
       <a v-if="provider" class="btn primary sso" :href="ssoHref">Continue with {{ provider }}</a>
       <div v-if="provider" class="or label" aria-hidden="true">or with a password</div>
       <label class="field">
         <span class="label">Username</span>
-        <input v-model="username" autocomplete="username" :required="!provider" autofocus />
+        <input ref="usernameInput" v-model="username" autocomplete="username" :required="!provider" />
       </label>
       <label class="field">
         <span class="label">Password</span>

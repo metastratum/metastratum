@@ -177,7 +177,8 @@ fn safe_return_to(r: Option<&str>) -> String {
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct MethodsQuery {
-    /// Slug path of the tenant (`acme/dev`); empty for the provider.
+    /// Slug path of the tenant (`acme/dev`), from the tenant the site's
+    /// domain is bound to; empty for that tenant (or the provider).
     tenant: Option<String>,
 }
 
@@ -192,9 +193,10 @@ pub struct AuthMethods {
 #[utoipa::path(get, path = "/auth/methods", tag = "auth", params(MethodsQuery), responses((status = 200, body = AuthMethods)))]
 async fn methods(
     State(state): State<AppState>,
+    Extension(site): Extension<Site>,
     Query(q): Query<MethodsQuery>,
 ) -> ApiResult<Json<AuthMethods>> {
-    let oidc = match tenant_by_path(&state, q.tenant.as_deref()).await? {
+    let oidc = match tenant_by_path(&state, &site, q.tenant.as_deref()).await? {
         Some(t) => mst_db::oidc::get(&state.db, t.id).await?.map(|p| p.name),
         None => None,
     };
@@ -237,7 +239,7 @@ async fn start(
             "The request did not say which host it was sent to. Sign in again from the login page.",
         ));
     };
-    let Some(tenant) = tenant_by_path(&state, q.tenant.as_deref()).await? else {
+    let Some(tenant) = tenant_by_path(&state, &site, q.tenant.as_deref()).await? else {
         return Ok(login_error(
             "That tenant does not sign in with an identity provider.",
         ));

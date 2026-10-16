@@ -386,6 +386,19 @@ pub struct Https(pub bool);
 #[derive(Clone)]
 pub struct Site(pub Option<String>);
 
+impl Site {
+    /// The host name the client used, in lower case, without port or
+    /// trailing dot (`mst.acme.com`): what tenant domains are bound to.
+    pub fn host(&self) -> Option<String> {
+        let authority = self.0.as_deref()?.split_once("://")?.1;
+        let host = match authority.strip_prefix('[') {
+            Some(v6) => v6.split(']').next()?,
+            None => authority.split(':').next()?,
+        };
+        Some(host.trim_end_matches('.').to_ascii_lowercase()).filter(|h| !h.is_empty())
+    }
+}
+
 /// Limits requests per client, and records for handlers the client's
 /// address, whether it came over HTTPS and where it reached us.
 pub async fn limit(
@@ -573,6 +586,17 @@ mod tests {
             assert_eq!(site(direct, &[("host", bad)]), None, "{bad:?}");
         }
         assert_eq!(site(direct, &[]), None);
+        let host = |url: &str| Site(Some(url.to_owned())).host();
+        assert_eq!(
+            host("https://Mst.Acme.com").as_deref(),
+            Some("mst.acme.com")
+        );
+        assert_eq!(
+            host("http://mst.acme.com.:8080").as_deref(),
+            Some("mst.acme.com")
+        );
+        assert_eq!(host("http://[::1]:8080").as_deref(), Some("::1"));
+        assert_eq!(Site(None).host(), None);
     }
 
     #[test]
