@@ -275,3 +275,17 @@ test('destructive operations say what they remove, and ask first', async ({ page
     await expect(page.getByRole('dialog')).toHaveCount(0)
   }
 })
+
+test('the account page uses the full width, on desktop and phone', async ({ page }) => {
+  await signIn(page)
+  for (const width of [1280, 400]) {
+    await page.setViewportSize({ width, height: 800 })
+    await page.goto('/account')
+    const roles = page.getByRole('heading', { name: 'Your roles' })
+    await expect(roles).toBeVisible()
+    // The header's styles once leaked onto this page (it shared a class with
+    // the header's account link), squeezing it to 160px or hiding it.
+    const box = await page.locator('main > section').boundingBox()
+    expect(box!.width).toBeGreaterThan(width * 0.8)
+  }
+})

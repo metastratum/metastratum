@@ -57,7 +57,7 @@ async function signOut() {
       <div class="right">
         <TenantPicker class="tenant" />
         <TaskTray />
-        <RouterLink to="/account" class="account" :title="`Signed in as ${session.me.username}`">
+        <RouterLink to="/account" class="me" :title="`Signed in as ${session.me.username}`">
           {{ session.me.display_name || session.me.username }}
         </RouterLink>
         <button type="button" class="signout" @click="signOut">Sign out</button>
@@ -126,7 +126,7 @@ nav a.router-link-active {
   gap: 14px;
   margin-left: auto;
 }
-.account {
+.me {
   max-width: 160px;
   overflow: hidden;
   color: var(--bar-ink);
@@ -135,8 +135,8 @@ nav a.router-link-active {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.account:hover,
-.account.router-link-active {
+.me:hover,
+.me.router-link-active {
   text-decoration: underline;
   text-underline-offset: 4px;
 }
@@ -175,7 +175,7 @@ main {
     overflow-x: auto;
   }
   .tenant :deep(.label),
-  .account {
+  .me {
     display: none;
   }
   main {
