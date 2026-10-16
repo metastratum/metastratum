@@ -52,7 +52,9 @@ macro_rules! id_type {
     )*};
 }
 
-id_type!(TenantId, UserId, TaskId, HostId, VmId);
+id_type!(
+    TenantId, UserId, TaskId, HostId, VmId, ImageId, VolumeId, NetworkId, NicId
+);
 
 #[cfg(test)]
 mod tests {
