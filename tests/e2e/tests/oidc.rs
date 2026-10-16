@@ -2,8 +2,9 @@
 //! connector signs everyone in as Kilgore Trout, member of `authors`.
 //!
 //! Runs when MST_E2E_DEX holds Dex's issuer URL, e.g.
-//! `MST_E2E_DEX=http://127.0.0.1:5556/dex`. The controller's public URL must
-//! be one of the redirect URIs registered in deploy/dev/dex.yaml, and as
+//! `MST_E2E_DEX=http://127.0.0.1:5556/dex`. The address the tests reach the
+//! controller at (`MST_E2E_URL`) must give one of the redirect URIs
+//! registered in deploy/dev/dex.yaml, and as
 //! Dex is on an internal address, the controller must trust it for
 //! sub-tenants (`--trusted-oidc-issuers`).
 

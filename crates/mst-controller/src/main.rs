@@ -145,9 +145,10 @@ struct ServeArgs {
     #[arg(long, env = "MST_REDIS_URL", hide_env_values = true)]
     redis_url: Option<String>,
     /// Load balancers in front of the API (addresses or CIDRs). Their
-    /// X-Forwarded-For header gives the client's address for rate limits,
-    /// and X-Forwarded-Proto: https marks the session cookie Secure and
-    /// turns on Strict-Transport-Security.
+    /// X-Forwarded-For header gives the client's address for rate limits;
+    /// X-Forwarded-Proto: https marks the session cookie Secure and turns on
+    /// Strict-Transport-Security; X-Forwarded-Host, if they set it, is the
+    /// host in the OIDC redirect URI (else the request's Host).
     #[arg(long, env = "MST_TRUSTED_PROXIES", value_delimiter = ',')]
     trusted_proxies: Vec<ratelimit::Cidr>,
     /// Identity provider issuer URLs that sub-tenants may use although they
@@ -155,10 +156,6 @@ struct ServeArgs {
     /// the provider tenant's may be anywhere).
     #[arg(long, env = "MST_TRUSTED_OIDC_ISSUERS", value_delimiter = ',')]
     trusted_oidc_issuers: Vec<String>,
-    /// Base URL users reach the API and UI at (for OIDC redirect URIs).
-    /// Defaults to http://<listen address>.
-    #[arg(long, env = "MST_PUBLIC_URL")]
-    public_url: Option<String>,
 }
 
 #[tokio::main]
@@ -340,10 +337,6 @@ async fn serve(db: mst_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> 
         agents: Agents::default(),
         net: net::Reconciler::new(db.clone(), nb),
         replica: replica.clone(),
-        public_url: args
-            .public_url
-            .clone()
-            .unwrap_or_else(|| format!("http://{}", args.listen)),
         events: events::Hub::default(),
         limits: ratelimit::Limits::new(
             args.redis_url

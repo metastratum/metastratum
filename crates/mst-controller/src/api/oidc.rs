@@ -31,7 +31,7 @@ use utoipa_axum::routes;
 use super::auth::{open_session, tenant_by_path};
 use crate::authz::{Perm, Principal, Role, audit, authorize_resource};
 use crate::error::{ApiError, ApiResult};
-use crate::ratelimit::Https;
+use crate::ratelimit::{Https, Site};
 use crate::state::AppState;
 
 pub fn routes() -> OpenApiRouter<AppState> {
@@ -159,11 +159,11 @@ async fn discover(issuer: &str, reach: Reach) -> Result<CoreProviderMetadata, St
     Ok(meta)
 }
 
-fn redirect_uri(state: &AppState) -> String {
-    format!(
-        "{}/api/v1/auth/oidc/callback",
-        state.public_url.trim_end_matches('/')
-    )
+/// Where the identity provider sends the browser back: this site, as the
+/// browser reached it. The provider accepts only the URIs registered with
+/// it, so a request naming another host gets nowhere.
+fn redirect_uri(site: &Site) -> Option<String> {
+    Some(format!("{}/api/v1/auth/oidc/callback", site.0.as_deref()?))
 }
 
 /// Only paths on this site, to avoid an open redirect.
@@ -227,7 +227,16 @@ fn url_encode(s: &str) -> String {
 
 /// Sends the browser to the tenant's identity provider.
 #[utoipa::path(get, path = "/auth/oidc/start", tag = "auth", params(StartQuery), responses((status = 303)))]
-async fn start(State(state): State<AppState>, Query(q): Query<StartQuery>) -> ApiResult<Response> {
+async fn start(
+    State(state): State<AppState>,
+    Extension(site): Extension<Site>,
+    Query(q): Query<StartQuery>,
+) -> ApiResult<Response> {
+    let Some(redirect) = redirect_uri(&site) else {
+        return Ok(login_error(
+            "The request did not say which host it was sent to. Sign in again from the login page.",
+        ));
+    };
     let Some(tenant) = tenant_by_path(&state, q.tenant.as_deref()).await? else {
         return Ok(login_error(
             "That tenant does not sign in with an identity provider.",
@@ -259,7 +268,7 @@ async fn start(State(state): State<AppState>, Query(q): Query<StartQuery>) -> Ap
             .map_err(ApiError::internal)?,
         )),
     )
-    .set_redirect_uri(RedirectUrl::new(redirect_uri(&state)).map_err(ApiError::internal)?);
+    .set_redirect_uri(RedirectUrl::new(redirect).map_err(ApiError::internal)?);
     let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
     let mut req = client.authorize_url(
         CoreAuthenticationFlow::AuthorizationCode,
@@ -303,6 +312,7 @@ pub struct CallbackQuery {
 async fn callback(
     State(state): State<AppState>,
     Extension(Https(https)): Extension<Https>,
+    Extension(site): Extension<Site>,
     Query(q): Query<CallbackQuery>,
 ) -> ApiResult<Response> {
     if let Some(e) = &q.error {
@@ -322,8 +332,15 @@ async fn callback(
             "That sign-in expired or was already used. Start again.",
         ));
     };
+    // The browser came back to the redirect URI the sign-in started with.
+    let Some(redirect) = redirect_uri(&site) else {
+        return Ok(login_error(
+            "The sign-in came back without a host. Start again.",
+        ));
+    };
     match finish(
         &state,
+        &redirect,
         pending.tenant_id,
         code,
         pending.nonce,
@@ -356,6 +373,7 @@ async fn callback(
 /// Errors are messages for the person signing in.
 async fn finish(
     state: &AppState,
+    redirect: &str,
     tenant_id: TenantId,
     code: String,
     nonce: String,
@@ -384,7 +402,7 @@ async fn finish(
             .map_err(|e| e.to_string())?,
         )),
     )
-    .set_redirect_uri(RedirectUrl::new(redirect_uri(state)).map_err(|e| e.to_string())?);
+    .set_redirect_uri(RedirectUrl::new(redirect.to_owned()).map_err(|e| e.to_string())?);
     let tokens = client
         .exchange_code(AuthorizationCode::new(code))
         .map_err(|e| format!("The identity provider has no token endpoint: {e}"))?
@@ -527,7 +545,8 @@ pub struct ProviderView {
     default_role: Option<Role>,
     #[serde(default)]
     role_mappings: Vec<MappingView>,
-    /// URL to register with the identity provider.
+    /// URL to register with the identity provider: this site, as the
+    /// caller reached it.
     #[serde(default)]
     redirect_uri: String,
 }
@@ -543,6 +562,7 @@ pub struct MappingView {
     responses((status = 200, body = ProviderView), (status = 404)))]
 async fn get_provider(
     State(state): State<AppState>,
+    Extension(site): Extension<Site>,
     p: Principal,
     Path(id): Path<TenantId>,
 ) -> ApiResult<Json<ProviderView>> {
@@ -570,7 +590,7 @@ async fn get_provider(
                 })
             })
             .collect(),
-        redirect_uri: redirect_uri(&state),
+        redirect_uri: redirect_uri(&site).unwrap_or_default(),
     }))
 }
 
@@ -580,6 +600,7 @@ async fn get_provider(
     request_body = ProviderView, responses((status = 200, body = ProviderView), (status = 400), (status = 403)))]
 async fn put_provider(
     State(state): State<AppState>,
+    site: Extension<Site>,
     p: Principal,
     Path(id): Path<TenantId>,
     Json(req): Json<ProviderView>,
@@ -645,7 +666,7 @@ async fn put_provider(
         json!({"issuer": provider.issuer, "client_id": provider.client_id}),
     )
     .await;
-    get_provider(State(state), p, Path(id)).await
+    get_provider(State(state), site, p, Path(id)).await
 }
 
 #[utoipa::path(delete, path = "/tenants/{id}/identity-provider", tag = "tenants", params(("id" = TenantId, Path)),

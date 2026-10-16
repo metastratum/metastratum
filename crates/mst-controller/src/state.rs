@@ -25,8 +25,6 @@ pub struct Inner {
     /// Identifies this controller replica (agent session ownership, task
     /// leases).
     pub replica: String,
-    /// Base URL users reach the controller at, for OIDC redirect URIs.
-    pub public_url: String,
     /// Change notifications for live updates.
     pub events: Hub,
     pub limits: crate::ratelimit::Limits,

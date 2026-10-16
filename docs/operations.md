@@ -28,7 +28,6 @@ is a unit for them; settings go in `/etc/metastratum/controller.env`:
 DATABASE_URL=postgres://metastratum:...@db.example.net/metastratum?sslmode=verify-full
 MST_MASTER_KEY_FILE=/run/credentials/mst-controller.service/master.key
 MST_LISTEN=127.0.0.1:8080              # behind the HTTPS proxy
-MST_PUBLIC_URL=https://cloud.example.net
 MST_TRUSTED_PROXIES=127.0.0.1
 MST_AGENT_LISTEN=0.0.0.0:8443
 MST_AGENT_NAMES=ctl1.example.net,10.0.0.21
@@ -60,6 +59,11 @@ The proxy must:
   limits see clients rather than the proxy) and `X-Forwarded-Proto`,
   replacing whatever the client sent. `X-Forwarded-Proto: https` marks the
   session cookie `Secure` and turns on Strict-Transport-Security;
+- pass the browser's `Host` header on (HAProxy does; nginx needs
+  `proxy_set_header Host $host`), or set `X-Forwarded-Host`. With
+  `X-Forwarded-Proto` it makes the redirect URI for OIDC sign-in,
+  `https://<host>/api/v1/auth/oidc/callback`, which is what to register
+  with identity providers (Tenants → Sign-in shows it);
 - reach `/healthz`, which answers 200 while the replica can reach Postgres.
 
 **Agent traffic** does not go through that proxy. Each host dials a

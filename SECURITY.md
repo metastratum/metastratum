@@ -137,7 +137,7 @@ A review of the whole system before calling it hardened. Fixed:
   *Mitigation:* put a TLS-terminating proxy in front of it, listen on
   localhost or a private address only, list the proxy in
   `--trusted-proxies` and have it set `X-Forwarded-Proto` (then cookies are
-  `Secure` and HSTS is on), and set `--public-url https://...`.
+  `Secure`, HSTS is on and OIDC redirect URIs use `https`).
 - **A compromised controller compromises everything.** It holds the master
   key, both CAs and the database credentials, and drives every host.
   *Mitigation:* treat controllers like the CA they are: dedicated machines,
@@ -193,8 +193,7 @@ A review of the whole system before calling it hardened. Fixed:
 What metastratum offers but leaves to the deployment to switch on:
 
 - HTTPS in front of the controllers, with `X-Forwarded-Proto` from a proxy
-  in `--trusted-proxies`; `--public-url`; the API listening on a private
-  address.
+  in `--trusted-proxies`; the API listening on a private address.
 - TLS for OVN's northbound database and `--ovn-sb` for the southbound one,
   with the plain listeners removed.
 - `--redis-url` with more than one controller.

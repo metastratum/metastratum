@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
@@ -234,8 +234,8 @@ impl Limits {
     }
 }
 
-/// Networks whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed
-/// (the load balancers).
+/// Networks whose `X-Forwarded-For`, `X-Forwarded-Proto` and
+/// `X-Forwarded-Host` are believed (the load balancers).
 #[derive(Clone, Debug)]
 pub struct Cidr {
     net: IpAddr,
@@ -321,6 +321,44 @@ pub fn forwarded_https(peer: SocketAddr, headers: &HeaderMap, trusted: &[Cidr]) 
         .is_some_and(|p| p.trim().eq_ignore_ascii_case("https"))
 }
 
+/// Where the client reached us, as `scheme://host[:port]`, for links that
+/// must lead back here (the OIDC redirect URI). The host is the one a
+/// trusted proxy forwarded (`X-Forwarded-Host`, the last one), or else the
+/// request's own. None without a host, or with one that is not a plain name
+/// or address and port: it ends up in a URL.
+pub fn site_url(
+    peer: SocketAddr,
+    headers: &HeaderMap,
+    uri: &Uri,
+    trusted: &[Cidr],
+) -> Option<String> {
+    let last = |name: &str| {
+        headers
+            .get_all(name)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(','))
+            .last()
+            .map(|v| v.trim().to_owned())
+    };
+    let proxied = trusted.iter().any(|c| c.contains(peer.ip()));
+    let host = proxied
+        .then(|| last("x-forwarded-host"))
+        .flatten()
+        .or_else(|| last(header::HOST.as_str()))
+        .or_else(|| uri.authority().map(|a| a.as_str().to_owned()))?;
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']');
+    if host.is_empty() || host.len() > 255 || !host.chars().all(plain) {
+        return None;
+    }
+    let scheme = if forwarded_https(peer, headers, trusted) {
+        "https"
+    } else {
+        "http"
+    };
+    Some(format!("{scheme}://{host}"))
+}
+
 pub fn too_many(retry: Duration) -> Response {
     let mut resp = crate::error::ApiError::new(
         StatusCode::TOO_MANY_REQUESTS,
@@ -344,8 +382,12 @@ pub struct ClientIp(pub IpAddr);
 #[derive(Clone, Copy)]
 pub struct Https(pub bool);
 
-/// Limits requests per client, and records the client's address, and
-/// whether it came over HTTPS, for handlers.
+/// Where the client reached us (see `site_url`).
+#[derive(Clone)]
+pub struct Site(pub Option<String>);
+
+/// Limits requests per client, and records for handlers the client's
+/// address, whether it came over HTTPS and where it reached us.
 pub async fn limit(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -357,8 +399,10 @@ pub async fn limit(
         return too_many(retry);
     }
     let https = forwarded_https(peer, req.headers(), &state.trusted_proxies);
+    let site = site_url(peer, req.headers(), req.uri(), &state.trusted_proxies);
     req.extensions_mut().insert(ClientIp(ip));
     req.extensions_mut().insert(Https(https));
+    req.extensions_mut().insert(Site(site));
     next.run(req).await
 }
 
@@ -474,6 +518,61 @@ mod tests {
         assert!(https("10.0.0.5:1000", &["http", "https"]));
         // Not from a proxy: the header is ignored.
         assert!(!https("8.8.8.8:1000", &["https"]));
+    }
+
+    #[test]
+    fn site_url_comes_from_the_request_or_a_trusted_proxy() {
+        let trusted: Vec<Cidr> = vec!["10.0.0.0/8".parse().unwrap()];
+        let site = |peer: &str, headers: &[(&str, &str)]| {
+            let mut h = HeaderMap::new();
+            for (k, v) in headers {
+                h.append(
+                    HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                    v.parse().unwrap(),
+                );
+            }
+            site_url(peer.parse().unwrap(), &h, &Uri::from_static("/"), &trusted)
+        };
+        let direct = "192.0.2.1:1000";
+        let proxy = "10.0.0.5:1000";
+        assert_eq!(
+            site(direct, &[("host", "127.0.0.1:18080")]).as_deref(),
+            Some("http://127.0.0.1:18080")
+        );
+        assert_eq!(
+            site(direct, &[("host", "[::1]:8080")]).as_deref(),
+            Some("http://[::1]:8080")
+        );
+        // Only a trusted proxy can say where the client went, and how.
+        let forwarded = [
+            ("host", "10.0.0.7:8080"),
+            ("x-forwarded-host", "cloud.example.net"),
+            ("x-forwarded-proto", "https"),
+        ];
+        assert_eq!(
+            site(proxy, &forwarded).as_deref(),
+            Some("https://cloud.example.net")
+        );
+        assert_eq!(
+            site(direct, &forwarded).as_deref(),
+            Some("http://10.0.0.7:8080")
+        );
+        assert_eq!(
+            site(
+                proxy,
+                &[
+                    ("host", "cloud.example.net"),
+                    ("x-forwarded-proto", "https")
+                ]
+            )
+            .as_deref(),
+            Some("https://cloud.example.net")
+        );
+        // Nothing that would change the URL's shape.
+        for bad in ["evil.example/x?", "a@b", "a b", "", "x\\y"] {
+            assert_eq!(site(direct, &[("host", bad)]), None, "{bad:?}");
+        }
+        assert_eq!(site(direct, &[]), None);
     }
 
     #[test]

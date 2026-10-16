@@ -1694,7 +1694,10 @@ export interface components {
             issuer: string;
             /** @description Shown on the sign-in button. */
             name: string;
-            /** @description URL to register with the identity provider. */
+            /**
+             * @description URL to register with the identity provider: this site, as the
+             *     caller reached it.
+             */
             redirect_uri?: string;
             role_mappings?: components["schemas"]["MappingView"][];
             /** @description Space-separated; `openid` is implied. Default `openid profile email`. */

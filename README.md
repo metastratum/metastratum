@@ -221,9 +221,9 @@ Sign-in). For trying that out, the dev compose file runs
 [Dex](https://dexidp.io/) at `http://127.0.0.1:5556/dex`, with client ID
 `metastratum`, secret `metastratum-dev-secret`, and a mock login that signs everyone
 in as Kilgore Trout in group `authors` (add `groups` to the scopes). The
-controller builds its redirect URI from `--public-url` (default
-`http://<listen address>`); set it when users reach the controller under
-another address.
+controller builds its redirect URI from the address the browser reached it
+at, so both `http://127.0.0.1:18080` and the Vite dev server
+(`http://127.0.0.1:5173`) work; Dex lists both.
 
 ### End-to-end tests
 
