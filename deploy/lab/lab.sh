@@ -266,11 +266,18 @@ cmd_status() {
   virsh net-list --all | grep -E 'Name|---|hm-' || true
 }
 
-case ${1:-} in
-  up) cmd_up ;;
-  down) cmd_down ;;
-  status) cmd_status ;;
-  ssh) shift; ssh_vm "$@" ;;
-  ip) vm_field "$2" 1 ;;
-  *) sed -n '2,20p' "$0"; exit 1 ;;
-esac
+main() {
+  case ${1:-} in
+    up) cmd_up ;;
+    down) cmd_down ;;
+    status) cmd_status ;;
+    ssh) shift; ssh_vm "$@" ;;
+    ip) vm_field "$2" 1 ;;
+    *) sed -n '2,20p' "$0"; exit 1 ;;
+  esac
+}
+
+# Bash reads scripts incrementally; parsing everything into main() and exiting
+# on the same line keeps an edit made while the lab is building from being
+# executed as a stray fragment.
+main "$@"; exit
