@@ -23,20 +23,23 @@ jobs:
           --health-cmd "pg_isready -U hypermon" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y libvirt-dev protobuf-compiler
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libvirt-clients qemu-utils
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all
+      # The agent ships as a static binary.
+      - run: cargo build --release -p hm-agent --target x86_64-unknown-linux-musl
 
   web:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y libvirt-dev protobuf-compiler
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4

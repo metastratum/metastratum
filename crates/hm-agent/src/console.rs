@@ -82,42 +82,25 @@ pub async fn relay(
             tokio::select! { () = up => {}, () = down => {} }
         }
         Source::Serial(stream) => {
-            // libvirt streams are blocking: bridge them with threads. The
-            // reader exits when the stream ends; a later session opened with
-            // the force flag also ends this one.
-            let stream = std::sync::Arc::new(stream);
-            let reader = {
-                let (stream, to_ctl) = (stream.clone(), to_ctl.clone());
-                std::thread::spawn(move || {
-                    let mut buf = vec![0u8; 16 * 1024];
-                    while let Ok(n) = stream.recv(&mut buf) {
-                        if n == 0 || to_ctl.blocking_send(data(buf[..n].to_vec())).is_err() {
-                            break;
-                        }
+            // Dropping `tx` when either side ends aborts the console stream.
+            let (mut rx, tx) = stream.split();
+            let up = async {
+                while let Some(Ok(d)) = rx.recv().await {
+                    if to_ctl.send(data(d)).await.is_err() {
+                        break;
                     }
-                })
-            };
-            let (in_tx, mut in_rx) = mpsc::channel::<Vec<u8>>(64);
-            let writer = {
-                let stream = stream.clone();
-                std::thread::spawn(move || {
-                    while let Some(d) = in_rx.blocking_recv() {
-                        if stream.send(&d).is_err() {
-                            break;
-                        }
-                    }
-                })
-            };
-            while let Ok(Some(chunk)) = from_ctl.message().await {
-                if let Some(tunnel_chunk::Msg::Data(d)) = chunk.msg
-                    && in_tx.send(d).await.is_err()
-                {
-                    break;
                 }
-            }
-            drop(in_tx);
-            let _ = tokio::task::spawn_blocking(move || writer.join()).await;
-            drop(reader);
+            };
+            let down = async {
+                while let Ok(Some(chunk)) = from_ctl.message().await {
+                    if let Some(tunnel_chunk::Msg::Data(d)) = chunk.msg
+                        && tx.send(&d).await.is_err()
+                    {
+                        break;
+                    }
+                }
+            };
+            tokio::select! { () = up => {}, () = down => {} }
         }
     }
     Ok(())

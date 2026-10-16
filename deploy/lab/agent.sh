@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Builds hm-agent for the lab's Debian 13 hosts and installs it as a systemd
-# service. Hosts that are not enrolled yet get a fresh join token.
+# Builds hm-agent as a static (musl) binary and installs it on the lab hosts
+# as a systemd service. Hosts that are not enrolled yet get a fresh join token.
 #
 # Usage: deploy/lab/agent.sh [host...]          (default: all three hosts)
 #
@@ -13,22 +13,17 @@ LAB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$LAB_DIR/../.." && pwd)"
 LAB="$LAB_DIR/lab.sh"
 CONTROLLER=${HM_CONTROLLER:-https://10.77.0.1:8443}
-IMAGE=hypermon-agent-build:trixie
-TARGET=target/debian13
+TARGET=x86_64-unknown-linux-musl
 HOSTS=("$@")
 [[ ${#HOSTS[@]} -gt 0 ]] || HOSTS=(hm-host1 hm-host2 hm-host3)
 
 log() { printf '\e[1;34m==>\e[0m %s\n' "$*"; }
 
 main() {
-  log "building hm-agent for Debian 13"
-  docker build -q -t "$IMAGE" -f "$LAB_DIR/agent-build.Dockerfile" "$LAB_DIR" >/dev/null
-  # Run as the invoking user so target/ stays writable; keep cargo's caches
-  # inside the target directory.
-  docker run --rm --user "$(id -u):$(id -g)" -v "$ROOT:/src" -w /src \
-    -e CARGO_HOME=/src/$TARGET/cargo-home -e CARGO_TARGET_DIR=/src/$TARGET \
-    "$IMAGE" cargo build --release --locked -p hm-agent
-  local bin="$ROOT/$TARGET/release/hm-agent"
+  log "building a static hm-agent"
+  # A static binary runs on any x86-64 Linux host, whatever its libc.
+  (cd "$ROOT" && cargo build --release --locked -p hm-agent --target "$TARGET")
+  local bin="$ROOT/target/$TARGET/release/hm-agent"
 
   local host token
   for host in "${HOSTS[@]}"; do
@@ -48,7 +43,8 @@ install -d -m 0755 /etc/hypermon
 {
   echo "HM_CONTROLLER=$1"
   # The token is single-use; it is only needed until the host is enrolled.
-  [[ -n $2 ]] && echo "HM_JOIN_TOKEN=$2"
+  # (ssh drops an empty argument, so it may be missing entirely.)
+  [[ -n ${2:-} ]] && echo "HM_JOIN_TOKEN=$2"
 } > /etc/hypermon/agent.env
 chmod 0600 /etc/hypermon/agent.env
 systemctl daemon-reload

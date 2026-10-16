@@ -1,0 +1,5 @@
+[env]
+# The static (musl) agent build compiles ring's C and assembly. ring uses no
+# libc headers, so the host gcc works when no musl cross compiler is
+# installed. Set CC_x86_64_unknown_linux_musl to use a different compiler.
+CC_x86_64_unknown_linux_musl = { value = "gcc", force = false }

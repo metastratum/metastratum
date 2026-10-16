@@ -38,6 +38,10 @@ struct Args {
     data_dir: PathBuf,
     #[arg(long, env = "HM_LIBVIRT_URI", default_value = "qemu:///system")]
     libvirt_uri: String,
+    /// libvirt daemon socket. Defaults to virtqemud's, or libvirtd's on
+    /// monolithic installs.
+    #[arg(long, env = "HM_LIBVIRT_SOCKET")]
+    libvirt_socket: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -49,7 +53,11 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let lv = Libvirt::new(&args.libvirt_uri);
+    let socket = args
+        .libvirt_socket
+        .clone()
+        .unwrap_or_else(hm_libvirt::system_socket);
+    let lv = Libvirt::new(socket, &args.libvirt_uri);
     let address = match args.address {
         Some(a) => a,
         None => facts::detect_address(&args.controller)?,
@@ -80,11 +88,12 @@ async fn main() -> anyhow::Result<()> {
         controller: args.controller,
         identity,
         facts,
-        lv,
+        lv: lv.clone(),
         pool,
         files: vm::VmFiles {
             cloud_init_dir: args.data_dir.join("cloud-init"),
         },
+        changes: tokio::sync::Mutex::new(lv.watch()),
     });
     tokio::select! {
         () = agent.run() => {},

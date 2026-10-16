@@ -114,6 +114,7 @@ async fn unauthenticated_requests_are_rejected() -> anyhow::Result<()> {
     let Ok(base) = std::env::var("HM_E2E_URL") else {
         return Ok(());
     };
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let anon = reqwest::Client::new();
     for path in ["/vms", "/hosts", "/images", "/tasks"] {
         let status = anon

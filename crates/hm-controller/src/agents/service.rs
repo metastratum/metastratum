@@ -251,7 +251,7 @@ impl AgentControl for AgentControlService {
                 match msg.msg {
                     Some(agent_message::Msg::Heartbeat(hb)) => {
                         let _ = hm_db::hosts::touch(&state.db, host).await;
-                        observe_domains(&state, host, &hb.domains, true).await;
+                        observe_domains(&state, host, &hb.domains, hb.complete).await;
                     }
                     Some(agent_message::Msg::DomainState(d)) => {
                         observe_domains(&state, host, std::slice::from_ref(&d), false).await;

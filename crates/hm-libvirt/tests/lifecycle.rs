@@ -1,55 +1,96 @@
-//! Lifecycle against libvirt's in-process test driver (no daemon or KVM
-//! needed). Each `test:///default` connection gets a fresh mock host.
+//! Against a real libvirt daemon, when `HM_TEST_LIBVIRT_SOCKET` is set (e.g.
+//! `/run/libvirt/virtqemud-sock`). Defines, starts and removes a small
+//! throwaway domain with no disks or NICs.
 
-use hm_libvirt::{DomainDef, Firmware, Libvirt, Power};
+use std::time::Duration;
+
+use hm_libvirt::{Change, DomainDef, Firmware, Libvirt, Power};
+use tokio::sync::mpsc::Receiver;
 
 fn def(uuid: &str) -> DomainDef {
     DomainDef {
         uuid: uuid.into(),
         tenant_id: "0199f0a2-7b3c-7d00-8000-0000000000aa".into(),
-        title: "lifecycle".into(),
+        title: "hm-libvirt lifecycle test".into(),
         generation: 1,
         vcpus: 1,
-        memory_mib: 256,
-        // The test driver has no firmware descriptors to autoselect from.
+        memory_mib: 64,
         firmware: Firmware::Bios,
         disks: vec![],
         nics: vec![],
     }
 }
 
+async fn expect_change(rx: &mut Receiver<Change>, uuid: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let c = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("no change event")
+            .unwrap();
+        if c == Change::Domain(uuid.into()) {
+            return;
+        }
+    }
+}
+
 #[tokio::test]
-async fn define_start_stop_undefine() {
-    let lv = Libvirt::new("test:///default");
-    let uuid = "0199f0a2-7b3c-7d00-8000-000000000042";
+async fn define_start_stop_undefine_with_events() {
+    let Ok(socket) = std::env::var("HM_TEST_LIBVIRT_SOCKET") else {
+        return eprintln!("HM_TEST_LIBVIRT_SOCKET not set; skipping");
+    };
+    let lv = Libvirt::new(socket, "qemu:///system");
+    let uuid = uuid::Uuid::now_v7().to_string();
+    let mut changes = lv.watch();
+    assert_eq!(changes.recv().await, Some(Change::Resync));
 
-    lv.define(
-        def(uuid)
-            .to_xml()
-            .replace("<domain type='kvm'>", "<domain type='test'>"),
-    )
-    .await
-    .unwrap();
+    let facts = lv.node_facts().await.unwrap();
+    assert!(facts.cpus > 0 && facts.memory_mib > 0, "{facts:?}");
 
-    let managed = lv.list_managed().await.unwrap();
-    let ours: Vec<_> = managed.iter().filter(|d| d.meta.vm_id == uuid).collect();
-    assert_eq!(ours.len(), 1, "metadata must be readable back: {managed:?}");
-    assert_eq!(ours[0].meta.generation, 1);
-    assert_eq!(ours[0].power, Power::Stopped);
-    // The driver's built-in "test" domain carries no hypermon metadata.
-    assert!(managed.iter().all(|d| d.meta.vm_id == uuid));
+    lv.define(def(&uuid).to_xml()).await.unwrap();
+    expect_change(&mut changes, &uuid).await;
+    // Run the scenario in a task so a failed assertion still cleans up.
+    let result = tokio::spawn({
+        let (lv, uuid) = (lv.clone(), uuid.clone());
+        async move {
+            let managed = lv.list_managed().await.unwrap();
+            let ours: Vec<_> = managed.iter().filter(|d| d.meta.vm_id == uuid).collect();
+            assert_eq!(ours.len(), 1, "metadata must be readable back");
+            assert_eq!(
+                (ours[0].meta.generation, ours[0].power),
+                (1, Power::Stopped)
+            );
 
-    lv.start(uuid).await.unwrap();
-    lv.start(uuid).await.unwrap(); // idempotent
-    assert_eq!(lv.power(uuid).await.unwrap(), Power::Running);
+            lv.start(&uuid).await.unwrap();
+            lv.start(&uuid).await.unwrap(); // idempotent
+            assert_eq!(lv.power(&uuid).await.unwrap(), Power::Running);
 
-    lv.destroy(uuid).await.unwrap();
-    assert_eq!(lv.power(uuid).await.unwrap(), Power::Stopped);
+            let vnc = std::os::unix::net::UnixStream::from(lv.open_vnc(&uuid).await.unwrap());
+            vnc.set_nonblocking(true).unwrap();
+            let mut vnc = tokio::net::UnixStream::from_std(vnc).unwrap();
+            let mut banner = [0u8; 12];
+            tokio::io::AsyncReadExt::read_exact(&mut vnc, &mut banner)
+                .await
+                .unwrap();
+            assert!(banner.starts_with(b"RFB 003."));
 
-    lv.undefine(uuid).await.unwrap();
-    lv.undefine(uuid).await.unwrap(); // idempotent
+            let serial = lv.open_serial(&uuid).await.unwrap();
+            serial.tx.send(b"\r").await.unwrap();
+
+            lv.destroy(&uuid).await.unwrap();
+            assert_eq!(lv.power(&uuid).await.unwrap(), Power::Stopped);
+        }
+    })
+    .await;
+    lv.undefine(&uuid).await.unwrap();
+    lv.undefine(&uuid).await.unwrap(); // idempotent
     assert!(matches!(
-        lv.power(uuid).await,
+        lv.power(&uuid).await,
         Err(hm_libvirt::conn::Error::NoDomain(_))
     ));
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic.into_panic());
+    }
+    // Start, stop and undefine each produced events too.
+    expect_change(&mut changes, &uuid).await;
 }

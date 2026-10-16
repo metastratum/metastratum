@@ -12,7 +12,8 @@ a web UI with a virtual console.
 | `crates/hm-db` | Postgres repositories |
 | `crates/hm-pki` | Internal CA, certificate issuance, join tokens |
 | `crates/hm-proto` | gRPC protocol between controller and agents (`proto/agent.proto`) |
-| `crates/hm-libvirt` | Domain XML and an async libvirt facade |
+| `crates/hm-virtrpc` | Native async client for libvirt's RPC protocol, generated from `remote_protocol.x` |
+| `crates/hm-libvirt` | Domain XML and the agent's libvirt facade (events, consoles) |
 | `crates/hm-ovsdb` | OVSDB client and OVN northbound operations |
 | `crates/hm-storage` | Host storage pools (local qcow2 for now) |
 | `crates/hm-controller` | Control plane: REST API, agent endpoint, task engine, console relay |
@@ -26,19 +27,26 @@ a web UI with a virtual console.
 
 ## Development
 
-Building needs a Rust toolchain, the libvirt development headers and `protoc`.
-The tests need Postgres, which `deploy/dev/compose.yaml` provides in Docker:
+Building needs a Rust toolchain and `protoc`; nothing links libvirt's C
+library. The agent ships as a static binary, which needs the musl target. The
+tests need Postgres, which `deploy/dev/compose.yaml` provides in Docker:
 
 ```sh
-sudo pacman -S --needed rustup libvirt protobuf docker   # Arch; Debian: libvirt-dev protobuf-compiler
+sudo pacman -S --needed rustup protobuf docker   # Arch; Debian: protobuf-compiler
+rustup target add x86_64-unknown-linux-musl
 docker compose -p hypermon -f deploy/dev/compose.yaml up -d
 export DATABASE_URL=postgres://hypermon:hypermon@127.0.0.1:55432/hypermon
 cargo test
 ```
 
-Some tests need extra tools and skip themselves without them: `virt-xml-validate`
-and `qemu-img` (both ship with libvirt and QEMU), or a reachable OVN northbound
-database (`HM_TEST_OVN_NB=tcp:10.77.0.10:6641` with the lab running).
+Some tests need extra tools or services and skip themselves without them:
+
+- `virt-xml-validate` and `qemu-img` (ship with libvirt and QEMU)
+- a libvirt daemon: `HM_TEST_LIBVIRT_SOCKET=/run/libvirt/virtqemud-sock`
+  (your user needs `qemu:///system` access; the tests create and remove
+  small throwaway domains)
+- an OVN northbound database: `HM_TEST_OVN_NB=tcp:10.77.0.10:6641` with the
+  lab running
 
 The web UI lives in `web/`:
 
@@ -136,9 +144,9 @@ target/debug/hm-controller serve --listen 127.0.0.1:18080 \
   --ovn-nb tcp:10.77.0.10:6641 --web-dir web/dist
 ```
 
-Then build and install the agent on the three hosts. The script builds in a
-Debian 13 container, so Docker is required, and enrolls each host with a fresh
-join token:
+Then build and install the agent on the three hosts. It is a static binary, so
+it runs on any distribution; hosts that are not enrolled yet get a fresh join
+token:
 
 ```sh
 DATABASE_URL=... deploy/lab/agent.sh

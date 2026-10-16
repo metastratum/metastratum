@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use hm_libvirt::{Libvirt, Power};
+use hm_libvirt::{Change, Libvirt, Power};
 use hm_proto::agent_control_client::AgentControlClient;
 use hm_proto::command::Cmd;
 use hm_proto::{
@@ -20,6 +20,9 @@ use crate::enroll::HostIdentity;
 use crate::{console, vm};
 
 const HEARTBEAT: Duration = Duration::from_secs(5);
+/// Every this many heartbeats carries the full domain list, a safety net for
+/// anything the event stream missed.
+const FULL_SYNC_EVERY: u32 = 6;
 
 pub struct Agent {
     pub controller: String,
@@ -28,6 +31,8 @@ pub struct Agent {
     pub lv: Libvirt,
     pub pool: LocalPool,
     pub files: vm::VmFiles,
+    /// Domain lifecycle changes from libvirt, forwarded while a session is up.
+    pub changes: tokio::sync::Mutex<mpsc::Receiver<Change>>,
 }
 
 fn power(p: Power) -> PowerState {
@@ -102,20 +107,44 @@ impl Agent {
         let heartbeat = {
             let (this, tx) = (self.clone(), tx.clone());
             tokio::spawn(async move {
-                loop {
+                for beat in 1u32.. {
                     tokio::time::sleep(HEARTBEAT).await;
-                    let domains = match this.domains().await {
-                        Ok(d) => d,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "listing domains");
-                            continue;
-                        }
-                    };
-                    let msg = AgentMessage {
-                        msg: Some(agent_message::Msg::Heartbeat(Heartbeat { domains })),
-                    };
-                    if tx.send(msg).await.is_err() {
+                    let complete = beat % FULL_SYNC_EVERY == 0;
+                    if complete && this.full_sync(&tx).await.is_err() {
                         break;
+                    }
+                    if !complete {
+                        let hb = Heartbeat {
+                            domains: vec![],
+                            complete: false,
+                        };
+                        if tx
+                            .send(AgentMessage {
+                                msg: Some(agent_message::Msg::Heartbeat(hb)),
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            })
+        };
+
+        // Push power changes the moment libvirt reports them.
+        let forward = {
+            let (this, tx) = (self.clone(), tx.clone());
+            tokio::spawn(async move {
+                let mut changes = this.changes.lock().await;
+                while let Some(change) = changes.recv().await {
+                    match change {
+                        Change::Domain(uuid) => this.report_power(&uuid, &tx).await,
+                        Change::Resync => {
+                            if this.full_sync(&tx).await.is_err() {
+                                break;
+                            }
+                        }
                     }
                 }
             })
@@ -156,7 +185,30 @@ impl Agent {
         }
         .await;
         heartbeat.abort();
+        forward.abort();
         result
+    }
+
+    /// Sends the full list of managed domains. Errs only if the session is
+    /// gone; libvirt errors are logged and retried next time.
+    async fn full_sync(&self, tx: &mpsc::Sender<AgentMessage>) -> Result<(), ()> {
+        match self.domains().await {
+            Ok(domains) => {
+                let hb = Heartbeat {
+                    domains,
+                    complete: true,
+                };
+                tx.send(AgentMessage {
+                    msg: Some(agent_message::Msg::Heartbeat(hb)),
+                })
+                .await
+                .map_err(|_| ())
+            }
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "listing domains");
+                Ok(())
+            }
+        }
     }
 
     async fn report_power(&self, vm_id: &str, tx: &mpsc::Sender<AgentMessage>) {

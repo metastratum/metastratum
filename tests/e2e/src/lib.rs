@@ -21,6 +21,8 @@ pub async fn connect() -> Result<Option<Api>> {
         eprintln!("HM_E2E_URL not set; skipping");
         return Ok(None);
     };
+    // reqwest uses the process-wide rustls provider.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let http = reqwest::Client::builder().cookie_store(true).build()?;
     let api = Api {
         base: base.trim_end_matches('/').to_owned(),

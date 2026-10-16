@@ -61,6 +61,10 @@ message Hello {
 
 message Heartbeat {
   repeated DomainState domains = 1;
+  // True when `domains` lists every managed domain on the host. Changes are
+  // pushed as `DomainState` the moment libvirt reports them; full lists are a
+  // periodic safety net.
+  bool complete = 2;
 }
 
 // Observed state of a hypermon-managed libvirt domain.
