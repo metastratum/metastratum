@@ -50,6 +50,9 @@ pub struct Agent {
     pub ovn_sb_remote: std::sync::Mutex<String>,
     /// Domain lifecycle changes from libvirt, forwarded while a session is up.
     pub changes: tokio::sync::Mutex<mpsc::Receiver<Change>>,
+    /// Whether libvirt should listen for TLS connections, as the controller
+    /// last asked (see `apply_libvirt_tls`).
+    pub libvirt_tls: tokio::sync::watch::Sender<Option<bool>>,
 }
 
 fn power(p: Power) -> PowerState {
@@ -486,20 +489,7 @@ impl Agent {
                 tracing::info!("installed a new revocation list");
             }
             Cmd::LibvirtTls(c) => {
-                // Changing it restarts libvirt, which would cut off a
-                // migration (going either way): wait for those to end.
-                let this = self.clone();
-                tokio::spawn(async move {
-                    for _ in 0..720 {
-                        if !this.migrations_running().await {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_secs(10)).await;
-                    }
-                    if let Err(e) = crate::tls::set_listening(c.listen).await {
-                        tracing::warn!(error = %format!("{e:#}"), "changing libvirt's TLS listener");
-                    }
-                });
+                self.libvirt_tls.send_replace(Some(c.listen));
             }
             Cmd::MigrationStats(c) => {
                 let st = match self.lv.job_stats(&c.vm_id).await {
@@ -632,6 +622,29 @@ impl Agent {
         let id = self.identity.read().unwrap().clone();
         if let Err(e) = crate::tls::restore_qemu_identity(&id) {
             tracing::error!(error = %format!("{e:#}"), "restoring QEMU's TLS files");
+        }
+    }
+
+    /// Opens or closes libvirt's TLS listener as the controller asks. One
+    /// change at a time, and only the latest request: those that arrive
+    /// while one waits or runs replace each other.
+    pub async fn apply_libvirt_tls(self: Arc<Self>) {
+        let mut wanted = self.libvirt_tls.subscribe();
+        while wanted.changed().await.is_ok() {
+            // Changing it restarts libvirt, which would cut off a migration
+            // (going either way): wait for those to end.
+            for _ in 0..720 {
+                if !self.migrations_running().await {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+            let Some(listen) = *wanted.borrow_and_update() else {
+                continue;
+            };
+            if let Err(e) = crate::tls::set_listening(listen).await {
+                tracing::warn!(error = %format!("{e:#}"), "changing libvirt's TLS listener");
+            }
         }
     }
 

@@ -5,3 +5,4 @@
 *.qcow2
 *.iso
 .env
+.claude/scheduled_tasks.lock

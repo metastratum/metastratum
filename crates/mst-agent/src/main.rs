@@ -132,8 +132,10 @@ async fn main() -> anyhow::Result<()> {
             cloud_init_dir: args.data_dir.join("cloud-init"),
         },
         changes: tokio::sync::Mutex::new(lv.watch()),
+        libvirt_tls: tokio::sync::watch::Sender::new(None),
     });
     tokio::spawn(agent.clone().keep_certificate_fresh());
+    tokio::spawn(agent.clone().apply_libvirt_tls());
     tokio::select! {
         () = agent.run() => {},
         _ = tokio::signal::ctrl_c() => tracing::info!("shutting down"),

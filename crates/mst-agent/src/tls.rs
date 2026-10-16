@@ -339,11 +339,35 @@ pub async fn set_listening(listen: bool) -> Result<()> {
         .is_ok_and(|s| s.success());
     let daemon = if modular { "virtproxyd" } else { "libvirtd" };
     let socket = format!("{daemon}-tls.socket");
+    // systemd hands a socket only to a daemon it starts, and a running daemon
+    // keeps the listeners it was given: stop it around the change, with the
+    // sockets that would start it again (any libvirt client, this agent
+    // too). Running VMs carry on.
+    let mut running = Vec::new();
+    for unit in [
+        format!("{daemon}.socket"),
+        format!("{daemon}-ro.socket"),
+        format!("{daemon}-admin.socket"),
+        format!("{daemon}.service"),
+    ] {
+        let active = tokio::process::Command::new("systemctl")
+            .args(["is-active", "-q", &unit])
+            .status()
+            .await
+            .is_ok_and(|s| s.success());
+        if active {
+            running.push(unit);
+        }
+    }
+    if !running.is_empty() {
+        systemctl([vec!["stop".into()], running.clone()].concat()).await?;
+    }
     let verb = if listen { "enable" } else { "disable" };
-    systemctl(vec![verb.into(), "--now".into(), socket]).await?;
-    // A running daemon keeps the listener it was handed (or never got the
-    // new one): restart it. Running VMs carry on.
-    systemctl(vec!["restart".into(), format!("{daemon}.service")]).await?;
+    let changed = systemctl(vec![verb.into(), "--now".into(), socket]).await;
+    if !running.is_empty() {
+        systemctl([vec!["start".into()], running].concat()).await?;
+    }
+    changed?;
     if listening().await != listen {
         anyhow::bail!(
             "libvirt's TLS listener did not {}",

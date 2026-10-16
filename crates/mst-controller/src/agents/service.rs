@@ -517,7 +517,11 @@ pub async fn libvirt_tls_policy(
         })
         .collect();
     let driven = crate::engine::DRIVEN_PROTOCOL as i32;
-    let listen = members.iter().any(|h| h.agent_protocol < driven);
+    // A host enrolled a moment ago has not said which protocol it speaks
+    // yet: it does once its session starts, and this runs again then.
+    let listen = members
+        .iter()
+        .any(|h| h.last_seen_at.is_some() && h.agent_protocol < driven);
     for h in members
         .iter()
         .filter(|h| h.is_live() && h.agent_protocol >= driven)
