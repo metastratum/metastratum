@@ -2,6 +2,7 @@
 
 mod audit;
 mod auth;
+mod clusters;
 mod console;
 mod hosts;
 mod images;
@@ -44,6 +45,7 @@ fn api() -> OpenApiRouter<AppState> {
         .merge(images::routes())
         .merge(hosts::routes())
         .merge(tasks::routes())
+        .merge(clusters::routes())
         .merge(tenants::routes())
         .merge(users::routes())
         .merge(tokens::routes())

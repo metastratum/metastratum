@@ -4,7 +4,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use hm_core::ids::{HostId, ImageId, NicId, TaskId, TenantId, VmId, VolumeId};
+use hm_core::ids::{ClusterId, HostId, ImageId, NicId, TaskId, TenantId, VmId, VolumeId};
 use hm_core::vm::{CloudInit, DiskSpec, Firmware, NicSpec, VmSpec, mac_for};
 use hm_db::vms::Vm;
 use serde::{Deserialize, Serialize};
@@ -179,6 +179,8 @@ pub struct CreateVm {
     user_data: Option<String>,
     /// Start the VM once created (default true).
     start: Option<bool>,
+    /// Cluster to place the VM in; any cluster the tenant may use otherwise.
+    cluster_id: Option<ClusterId>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -275,9 +277,7 @@ async fn create_vm(
     }
 
     let mut tx = state.db.begin().await?;
-    let host = hm_db::hosts::pick_for(&mut *tx, req.memory_mib as i64)
-        .await?
-        .ok_or_else(|| ApiError::unavailable("no connected host has enough free memory"))?;
+    let host = place(&state, &mut tx, tenant, &req).await?;
     let delta: hm_db::quotas::Amounts = [
         ("vms", 1),
         ("vcpus", i64::from(req.vcpus)),
@@ -373,6 +373,53 @@ async fn create_vm(
             item: view(vm, &context(&state).await?),
         }),
     ))
+}
+
+/// Picks a host for a new VM. Hosts are locked until the transaction ends,
+/// so concurrent creations see each other's allocations.
+async fn place(
+    state: &AppState,
+    tx: &mut hm_db::sqlx::PgConnection,
+    tenant: TenantId,
+    req: &CreateVm,
+) -> ApiResult<hm_scheduler::Host> {
+    let mut clusters = super::clusters::allowed_clusters(state, tenant).await?;
+    if let Some(want) = req.cluster_id {
+        if clusters.as_ref().is_some_and(|c| !c.contains(&want)) {
+            return Err(ApiError::not_found("cluster"));
+        }
+        clusters = Some([want].into_iter().collect());
+    }
+    let hosts: Vec<hm_scheduler::Host> = hm_db::clusters::candidates_locked(tx)
+        .await?
+        .into_iter()
+        .map(|c| hm_scheduler::Host {
+            id: c.id,
+            name: c.name,
+            cluster: c.cluster_id,
+            live: c.live,
+            state: c.state,
+            kvm: c.kvm,
+            cpus: c.cpu_count.max(0) as u32,
+            memory_mib: c.memory_mib.max(0) as u64,
+            cpu_overcommit: f64::from(c.cpu_overcommit),
+            memory_overcommit: f64::from(c.memory_overcommit),
+            used_vcpus: c.used_vcpus.max(0) as u64,
+            used_memory_mib: c.used_memory_mib.max(0) as u64,
+        })
+        .collect();
+    let request = hm_scheduler::Request {
+        vcpus: req.vcpus,
+        memory_mib: req.memory_mib,
+        clusters,
+        host: None,
+    };
+    let id =
+        hm_scheduler::place(&request, &hosts).map_err(|e| ApiError::unavailable(e.to_string()))?;
+    Ok(hosts
+        .into_iter()
+        .find(|h| h.id == id)
+        .expect("placed on a candidate"))
 }
 
 async fn enqueue(

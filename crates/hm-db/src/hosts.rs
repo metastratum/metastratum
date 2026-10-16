@@ -19,6 +19,7 @@ pub struct Host {
     pub agent_version: String,
     pub cert_fingerprint: String,
     pub cert_expires_at: DateTime<Utc>,
+    pub cluster_id: Option<hm_core::ids::ClusterId>,
     pub connected_to: Option<String>,
     pub last_seen_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -39,7 +40,7 @@ macro_rules! host_columns {
     () => {
         "id, name, host(address) AS address, state, cpu_count, memory_mib, cpu_model, kvm, \
          libvirt_version, ovn_chassis, agent_version, cert_fingerprint, cert_expires_at, \
-         connected_to, last_seen_at, created_at"
+         cluster_id, connected_to, last_seen_at, created_at"
     };
 }
 
@@ -169,23 +170,26 @@ pub async fn disconnect_all(db: impl PgExecutor<'_>, replica: &str) -> Result<()
     Ok(())
 }
 
-/// M1 placement: the connected, schedulable, KVM-capable host with the most
-/// unreserved memory that still fits the request. "Connected" also requires
-/// a recent heartbeat, so hosts whose controller replica died are skipped.
-/// The scheduler crate replaces this in M2.
-pub async fn pick_for(db: impl PgExecutor<'_>, memory_mib: i64) -> Result<Option<Host>> {
-    Ok(sqlx::query_as(concat!(
-        "SELECT ",
-        host_columns!(),
-        " FROM (SELECT h.*, h.memory_mib - (SELECT coalesce(sum((v.spec->>'memory_mib')::bigint), 0)
-                                            FROM vms v WHERE v.host_id = h.id) AS free_mib
-                FROM hosts h) AS hosts
-         WHERE state = 'ready' AND connected_to IS NOT NULL AND kvm AND free_mib >= $1
-           AND last_seen_at > now() - interval '30 seconds'
-         ORDER BY free_mib DESC, name
-         LIMIT 1"
-    ))
-    .bind(memory_mib)
-    .fetch_optional(db)
-    .await?)
+/// Moves a host into a cluster (or out of any, with `None`).
+pub async fn set_cluster(
+    db: impl PgExecutor<'_>,
+    id: HostId,
+    cluster: Option<hm_core::ids::ClusterId>,
+) -> Result<()> {
+    sqlx::query("UPDATE hosts SET cluster_id = $2, updated_at = now() WHERE id = $1")
+        .bind(id)
+        .bind(cluster)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// `ready` or `maintenance` (no new VMs are placed on hosts in maintenance).
+pub async fn set_state(db: impl PgExecutor<'_>, id: HostId, state: &str) -> Result<()> {
+    sqlx::query("UPDATE hosts SET state = $2, updated_at = now() WHERE id = $1")
+        .bind(id)
+        .bind(state)
+        .execute(db)
+        .await?;
+    Ok(())
 }

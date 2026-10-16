@@ -68,6 +68,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/clusters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_clusters"];
+        put?: never;
+        post: operations["create_cluster"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/clusters/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["update_cluster"];
+        post?: never;
+        delete: operations["delete_cluster"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/console/{ticket}": {
         parameters: {
             query?: never;
@@ -116,6 +148,22 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/hosts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["update_host"];
         trace?: never;
     };
     "/api/v1/images": {
@@ -254,6 +302,23 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["update_tenant"];
+        trace?: never;
+    };
+    "/api/v1/tenants/{id}/clusters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Clusters the tenant may place VMs in. */
+        get: operations["usable_clusters"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/tenants/{id}/grants": {
@@ -572,6 +637,37 @@ export interface components {
             user_id: components["schemas"]["UserId"];
             username: string;
         };
+        /** Format: uuid */
+        ClusterId: string;
+        ClusterSpec: {
+            /**
+             * Format: float
+             * @description Default 4.
+             */
+            cpu_overcommit?: number | null;
+            /**
+             * Format: float
+             * @description Default 1 (no memory overcommit).
+             */
+            memory_overcommit?: number | null;
+            name: string;
+        };
+        ClusterView: {
+            /**
+             * Format: float
+             * @description vCPUs the scheduler may allocate per physical CPU.
+             */
+            cpu_overcommit: number;
+            /** Format: date-time */
+            created_at: string;
+            id: components["schemas"]["ClusterId"];
+            /**
+             * Format: float
+             * @description Memory the scheduler may allocate per MiB of host memory.
+             */
+            memory_overcommit: number;
+            name: string;
+        };
         ConsoleRequest: {
             kind: components["schemas"]["Kind"];
         };
@@ -596,6 +692,7 @@ export interface components {
             tenant_id?: components["schemas"]["TenantId"] | null;
         };
         CreateJoinToken: {
+            cluster_id?: components["schemas"]["ClusterId"] | null;
             /**
              * Format: int32
              * @description Validity in minutes (default 60, max 1440).
@@ -626,6 +723,7 @@ export interface components {
             username: string;
         };
         CreateVm: {
+            cluster_id?: components["schemas"]["ClusterId"] | null;
             /**
              * Format: int64
              * @description Size of the boot disk. Must be at least the image's size.
@@ -677,6 +775,8 @@ export interface components {
             allocated_memory_mib: number;
             /** Format: date-time */
             cert_expires_at: string;
+            cluster_id?: components["schemas"]["ClusterId"] | null;
+            cluster_name?: string | null;
             /** @description Whether the host's agent has a live session (and heartbeated recently). */
             connected: boolean;
             /** Format: int32 */
@@ -840,6 +940,15 @@ export interface components {
             last_used_at?: string | null;
             name: string;
         };
+        UpdateHost: {
+            /**
+             * Format: uuid
+             * @description Move the host to this cluster; `null` removes it from any cluster.
+             */
+            cluster_id?: string | null;
+            /** @description `ready`, or `maintenance` to stop placing new VMs on the host. */
+            state?: string | null;
+        };
         UpdateTenant: {
             name: string;
         };
@@ -853,6 +962,10 @@ export interface components {
             /** @description `null` clears it. */
             email?: string | null;
             password?: string | null;
+        };
+        UsableCluster: {
+            id: components["schemas"]["ClusterId"];
+            name: string;
         };
         /** Format: uuid */
         UserId: string;
@@ -1032,6 +1145,153 @@ export interface operations {
             };
         };
     };
+    list_clusters: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClusterView"][];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_cluster: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClusterSpec"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClusterView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_cluster: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["ClusterId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClusterSpec"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClusterView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_cluster: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["ClusterId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Still has hosts */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     console_socket: {
         parameters: {
             query?: never;
@@ -1111,6 +1371,47 @@ export interface operations {
                 };
             };
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_host: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["HostId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateHost"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1490,6 +1791,33 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    usable_clusters: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsableCluster"][];
+                };
             };
             404: {
                 headers: {

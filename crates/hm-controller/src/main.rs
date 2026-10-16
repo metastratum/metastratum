@@ -54,6 +54,9 @@ enum Cmd {
         /// Validity in minutes.
         #[arg(long, default_value_t = 60)]
         ttl_minutes: u64,
+        /// Name of the cluster the host joins.
+        #[arg(long)]
+        cluster: Option<String>,
     },
     /// Print the OpenAPI document.
     Openapi,
@@ -111,11 +114,33 @@ async fn main() -> anyhow::Result<()> {
             admin_user,
             admin_password,
         } => bootstrap(db, &admin_user, &admin_password).await,
-        Cmd::JoinToken { ttl_minutes } => {
+        Cmd::JoinToken {
+            ttl_minutes,
+            cluster,
+        } => {
             let ca = ca::load_or_create(&db).await?;
+            let cluster = match cluster {
+                Some(name) => Some(
+                    hm_db::clusters::list(&db)
+                        .await?
+                        .into_iter()
+                        .find(|c| c.name == name)
+                        .with_context(|| format!("no cluster named {name}"))?
+                        .id,
+                ),
+                None => None,
+            };
             let token = hm_pki::JoinToken::generate(&ca.fingerprint());
             let expires = chrono::Utc::now() + chrono::Duration::minutes(ttl_minutes as i64);
-            hm_db::join_tokens::create(&db, &token.id, &token.secret_hash(), None, expires).await?;
+            hm_db::join_tokens::create(
+                &db,
+                &token.id,
+                &token.secret_hash(),
+                None,
+                expires,
+                cluster,
+            )
+            .await?;
             println!("{token}");
             Ok(())
         }

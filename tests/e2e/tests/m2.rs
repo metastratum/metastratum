@@ -184,6 +184,67 @@ async fn scenario(admin: &Api, base: &str, run: &str, w: &World) -> anyhow::Resu
         )
         .await?;
 
+    // Tenants can only place VMs in clusters granted to them, down the tree.
+    let (st, denied) = create_vm(&otto, &w.a1, &image, "otto-0").await?;
+    assert_eq!(st, 503, "{denied}");
+    assert!(
+        denied["message"]
+            .as_str()
+            .unwrap()
+            .contains("cluster not available to this tenant"),
+        "{denied}"
+    );
+    let clusters = admin.get("/clusters").await?;
+    let default = clusters
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "default")
+        .unwrap()["id"]
+        .clone();
+    let grant = json!({"clusters": [default], "storage_pools": []});
+    assert_eq!(
+        status(
+            &alice,
+            Method::PUT,
+            &format!("/tenants/{}/grants", w.a),
+            Some(grant.clone())
+        )
+        .await,
+        403
+    );
+    admin
+        .send(
+            Method::PUT,
+            &format!("/tenants/{}/grants", w.a),
+            Some(grant.clone()),
+        )
+        .await?;
+    alice
+        .send(
+            Method::PUT,
+            &format!("/tenants/{}/grants", w.a1),
+            Some(grant.clone()),
+        )
+        .await?;
+    assert_eq!(
+        alice
+            .get(&format!("/tenants/{}/clusters", w.a1))
+            .await?
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        bob.get(&format!("/tenants/{}/clusters", w.b))
+            .await?
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+
     let (st, vm1) = create_vm(&otto, &w.a1, &image, "otto-1").await?;
     assert_eq!(st, 202, "{vm1}");
     let (st, vm2) = create_vm(&alice, &w.a, &image, "alice-1").await?;

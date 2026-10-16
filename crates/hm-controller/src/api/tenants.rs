@@ -340,6 +340,9 @@ async fn set_grants(
 ) -> ApiResult<Json<Grants>> {
     let t = load(&state, &p, id, Perm::TenantRead).await?;
     authorize(&state.db, &p, Perm::GrantWrite, parent_of(&t)?).await?;
+    for c in &req.clusters {
+        hm_db::clusters::get(&state.db, hm_core::ids::ClusterId(*c)).await?;
+    }
     let mut tx = state.db.begin().await?;
     hm_db::grants::set(&mut tx, id, "cluster", &req.clusters).await?;
     hm_db::grants::set(&mut tx, id, "storage_pool", &req.storage_pools).await?;

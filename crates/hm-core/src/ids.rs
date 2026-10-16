@@ -54,7 +54,17 @@ macro_rules! id_type {
 }
 
 id_type!(
-    TenantId, UserId, TaskId, HostId, VmId, ImageId, VolumeId, NetworkId, NicId
+    TenantId,
+    UserId,
+    TaskId,
+    HostId,
+    VmId,
+    ImageId,
+    VolumeId,
+    NetworkId,
+    NicId,
+    ClusterId,
+    StoragePoolId,
 );
 
 #[cfg(test)]

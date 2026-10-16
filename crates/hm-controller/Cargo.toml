@@ -19,6 +19,7 @@ hm-db.workspace = true
 hm-ovsdb.workspace = true
 hm-pki.workspace = true
 hm-proto.workspace = true
+hm-scheduler.workspace = true
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true

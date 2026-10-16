@@ -16,6 +16,7 @@ hm-libvirt = { path = "crates/hm-libvirt" }
 hm-ovsdb = { path = "crates/hm-ovsdb" }
 hm-pki = { path = "crates/hm-pki" }
 hm-proto = { path = "crates/hm-proto" }
+hm-scheduler = { path = "crates/hm-scheduler" }
 hm-storage = { path = "crates/hm-storage" }
 hm-virtrpc = { path = "crates/hm-virtrpc" }
 

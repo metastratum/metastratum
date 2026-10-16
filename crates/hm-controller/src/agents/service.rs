@@ -98,12 +98,12 @@ impl Enrollment for EnrollmentService {
         let not_after = hm_pki::not_after(&der).map_err(internal)?;
 
         let mut tx = state.db.begin().await.map_err(internal)?;
-        if !hm_db::join_tokens::consume(&mut *tx, &token.id, &token.secret_hash())
+        let Some(cluster) = hm_db::join_tokens::consume(&mut *tx, &token.id, &token.secret_hash())
             .await
             .map_err(internal)?
-        {
+        else {
             return Err(Status::unauthenticated("invalid join token"));
-        }
+        };
         let host = hm_db::hosts::create(
             &mut *tx,
             host_id,
@@ -121,6 +121,9 @@ impl Enrollment for EnrollmentService {
             )),
             e => internal(e),
         })?;
+        hm_db::hosts::set_cluster(&mut *tx, host.id, cluster)
+            .await
+            .map_err(internal)?;
         hm_db::join_tokens::attach_host(&mut *tx, &token.id, host.id)
             .await
             .map_err(internal)?;

@@ -176,33 +176,40 @@ async fn concurrent_ip_allocation_never_duplicates(pool: PgPool) {
 #[sqlx::test(migrator = "hm_db::MIGRATOR")]
 async fn join_tokens_are_single_use_and_expire(pool: PgPool) {
     root(&pool).await;
-    join_tokens::create(
-        &pool,
-        "t1",
-        "hash",
-        None,
-        Utc::now() + chrono::Duration::hours(1),
-    )
-    .await
-    .unwrap();
+    let cluster = hm_db::clusters::create(&pool, "c1", 4.0, 1.0)
+        .await
+        .unwrap();
+    let hour = Utc::now() + chrono::Duration::hours(1);
+    join_tokens::create(&pool, "t1", "hash", None, hour, Some(cluster.id))
+        .await
+        .unwrap();
     join_tokens::create(
         &pool,
         "t2",
         "hash",
         None,
         Utc::now() - chrono::Duration::seconds(1),
+        None,
     )
     .await
     .unwrap();
 
-    assert!(!join_tokens::consume(&pool, "t1", "wrong").await.unwrap());
-    assert!(join_tokens::consume(&pool, "t1", "hash").await.unwrap());
-    assert!(
-        !join_tokens::consume(&pool, "t1", "hash").await.unwrap(),
+    assert_eq!(
+        join_tokens::consume(&pool, "t1", "wrong").await.unwrap(),
+        None
+    );
+    assert_eq!(
+        join_tokens::consume(&pool, "t1", "hash").await.unwrap(),
+        Some(Some(cluster.id))
+    );
+    assert_eq!(
+        join_tokens::consume(&pool, "t1", "hash").await.unwrap(),
+        None,
         "reuse"
     );
-    assert!(
-        !join_tokens::consume(&pool, "t2", "hash").await.unwrap(),
+    assert_eq!(
+        join_tokens::consume(&pool, "t2", "hash").await.unwrap(),
+        None,
         "expired"
     );
 }
@@ -335,45 +342,21 @@ async fn vm_listing_by_subtree_and_power_observation(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "hm_db::MIGRATOR")]
-async fn placement_prefers_free_memory_and_skips_unavailable_hosts(pool: PgPool) {
+async fn scheduling_snapshot_reports_allocations_and_liveness(pool: PgPool) {
     let t = root(&pool).await;
-    let mk = |name: &'static str, mem: i64, kvm: bool| {
-        let pool = pool.clone();
-        async move {
-            let facts = hosts::Facts {
-                name,
-                address: "10.77.0.11",
-                cpu_count: 4,
-                memory_mib: mem,
-                cpu_model: "",
-                kvm,
-                libvirt_version: "",
-                ovn_chassis: name,
-                agent_version: "",
-            };
-            let h = hosts::create(&pool, HostId::new(), &facts, "fp", Utc::now())
-                .await
-                .unwrap();
-            hosts::set_connected(&pool, h.id, Some("replica"))
-                .await
-                .unwrap();
-            h
-        }
-    };
-    let small = mk("small", 4096, true).await;
-    let big = mk("big", 8192, true).await;
-    let nokvm = mk("nokvm", 65536, false).await;
-    let offline = mk("offline", 65536, true).await;
-    hosts::set_connected(&pool, offline.id, None).await.unwrap();
-
-    assert_eq!(
-        hosts::pick_for(&pool, 1024).await.unwrap().unwrap().id,
-        big.id
-    );
-    // Fill `big` with a 6 GiB VM: `small` now has more room.
+    let h = host(&pool).await;
+    let cluster = hm_db::clusters::create(&pool, "c1", 2.0, 1.5)
+        .await
+        .unwrap();
+    hosts::set_cluster(&pool, h.id, Some(cluster.id))
+        .await
+        .unwrap();
+    hosts::set_connected(&pool, h.id, Some("replica"))
+        .await
+        .unwrap();
     let spec = VmSpec {
-        vcpus: 1,
-        memory_mib: 6144,
+        vcpus: 3,
+        memory_mib: 1024,
         firmware: Default::default(),
         disks: vec![],
         nics: vec![],
@@ -384,8 +367,8 @@ async fn placement_prefers_free_memory_and_skips_unavailable_hosts(pool: PgPool)
         vms::NewVm {
             id: VmId::new(),
             tenant_id: t.id,
-            name: "big-vm",
-            host_id: big.id,
+            name: "a",
+            host_id: h.id,
             spec: &spec,
             desired_power: "running",
             created_by: None,
@@ -393,15 +376,25 @@ async fn placement_prefers_free_memory_and_skips_unavailable_hosts(pool: PgPool)
     )
     .await
     .unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let c = hm_db::clusters::candidates_locked(&mut tx).await.unwrap();
+    assert_eq!(c.len(), 1);
     assert_eq!(
-        hosts::pick_for(&pool, 1024).await.unwrap().unwrap().id,
-        small.id
+        (
+            c[0].cluster_id,
+            c[0].live,
+            c[0].used_vcpus,
+            c[0].used_memory_mib
+        ),
+        (Some(cluster.id), true, 3, 1024)
     );
-    assert!(
-        hosts::pick_for(&pool, 5000).await.unwrap().is_none(),
-        "nothing fits"
-    );
-    let _ = nokvm;
+    assert_eq!((c[0].cpu_overcommit, c[0].memory_overcommit), (2.0, 1.5));
+    tx.commit().await.unwrap();
+
+    // A cluster with hosts cannot be deleted.
+    let mut tx = pool.begin().await.unwrap();
+    assert!(hm_db::clusters::delete(&mut tx, cluster.id).await.is_err());
 }
 
 #[sqlx::test(migrator = "hm_db::MIGRATOR")]
