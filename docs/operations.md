@@ -76,7 +76,12 @@ to at that address. For each domain:
 
 - point its DNS at the proxy, and give the proxy a certificate for it;
 - if the tenant signs in through an identity provider, register
-  `https://mst.acme.com/api/v1/auth/oidc/callback` with it as well.
+  `https://mst.acme.com/api/v1/auth/oidc/callback` with it.
+
+A tenant's Sign-in tab shows where its people sign in, and the redirect URI
+to register: at the domain bound nearest above it (or to it), so for
+`acme/dev` that is `https://mst.acme.com/login?tenant=dev`. Without a
+domain, both are at the address you are using.
 
 The controllers need no setting: they read the name from the request, as
 for the redirect URI above.

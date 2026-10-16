@@ -397,6 +397,19 @@ impl Site {
         };
         Some(host.trim_end_matches('.').to_ascii_lowercase()).filter(|h| !h.is_empty())
     }
+
+    /// This site's URL with another host name, keeping scheme and port
+    /// (`https://mst.acme.com`): where the same controllers answer under
+    /// that name.
+    pub fn with_host(&self, host: &str) -> Option<String> {
+        let (scheme, authority) = self.0.as_deref()?.split_once("://")?;
+        let after_host = match authority.strip_prefix('[') {
+            Some(v6) => v6.split_once(']')?.1,
+            None => authority.find(':').map_or("", |i| &authority[i..]),
+        };
+        let port = after_host.strip_prefix(':').map(|p| format!(":{p}"));
+        Some(format!("{scheme}://{host}{}", port.unwrap_or_default()))
+    }
 }
 
 /// Limits requests per client, and records for handlers the client's
@@ -597,6 +610,19 @@ mod tests {
         );
         assert_eq!(host("http://[::1]:8080").as_deref(), Some("::1"));
         assert_eq!(Site(None).host(), None);
+        let moved = |url: &str| Site(Some(url.to_owned())).with_host("mst.acme.com");
+        assert_eq!(
+            moved("https://cloud.example.net").as_deref(),
+            Some("https://mst.acme.com")
+        );
+        assert_eq!(
+            moved("http://127.0.0.1:18080").as_deref(),
+            Some("http://mst.acme.com:18080")
+        );
+        assert_eq!(
+            moved("http://[::1]:8080").as_deref(),
+            Some("http://mst.acme.com:8080")
+        );
     }
 
     #[test]

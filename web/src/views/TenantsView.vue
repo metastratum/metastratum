@@ -18,6 +18,7 @@ const router = useRouter()
 
 const selected = computed<Tenant | undefined>(() => scope.byId.get(props.id || scope.current) ?? scope.tenants[0])
 const parent = computed(() => (selected.value?.parent_id ? scope.byId.get(selected.value.parent_id) : undefined))
+const domainsKey = computed(() => scope.tenants.flatMap((t) => t.domains).join())
 const top = computed(() => Math.min(...scope.tenants.map((t) => t.depth)))
 
 const TABS = [
@@ -171,7 +172,8 @@ async function submit() {
           <PeoplePanel v-else-if="tab === 'people'" :key="`p${selected.id}`" :tenant="selected" />
           <GrantsPanel v-else-if="tab === 'resources'" :key="`g${selected.id}`" :tenant="selected" :parent="parent" />
           <div v-else class="sign-in">
-            <SignInPanel :key="`s${selected.id}`" :tenant="selected" />
+            <!-- A domain bound here or above changes where people sign in. -->
+            <SignInPanel :key="`s${selected.id}:${domainsKey}`" :tenant="selected" />
             <DomainsPanel :key="`d${selected.id}`" :tenant="selected" />
           </div>
         </div>

@@ -40,6 +40,7 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(start))
         .routes(routes!(callback))
         .routes(routes!(get_provider, put_provider, delete_provider))
+        .routes(routes!(get_sign_in))
 }
 
 const LOGIN_TTL: Duration = Duration::from_secs(600);
@@ -164,6 +165,71 @@ async fn discover(issuer: &str, reach: Reach) -> Result<CoreProviderMetadata, St
 /// it, so a request naming another host gets nowhere.
 fn redirect_uri(site: &Site) -> Option<String> {
     Some(format!("{}/api/v1/auth/oidc/callback", site.0.as_deref()?))
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct SignInView {
+    /// The tenant's sign-in page. At the domain bound nearest above the
+    /// tenant (or to it), with the path below that tenant; else at the
+    /// address the caller used, with the tenant's full path.
+    page: String,
+    /// Where an identity provider sends people back, at that same address:
+    /// the URI to register with it.
+    redirect_uri: String,
+    /// The domain both are at, if one is bound to the tenant or above it.
+    domain: Option<String>,
+}
+
+/// Where a tenant's people sign in, seen from `site`: at the nearest domain
+/// (bound to the tenant at `depth`, 1 for the root) with the path below it,
+/// keeping the caller's scheme and port, or else at the caller's address.
+fn sign_in_at(
+    site: &Site,
+    slug_path: &str,
+    nearest: Option<(String, usize)>,
+) -> Option<SignInView> {
+    let (base, below, domain) = match nearest {
+        Some((domain, depth)) => {
+            let below: Vec<_> = slug_path
+                .split('/')
+                .filter(|s| !s.is_empty())
+                .skip(depth.saturating_sub(1))
+                .collect();
+            (site.with_host(&domain)?, below.join("/"), Some(domain))
+        }
+        None => (site.0.clone()?, slug_path.to_owned(), None),
+    };
+    let page = if below.is_empty() {
+        format!("{base}/login")
+    } else {
+        format!("{base}/login?tenant={below}")
+    };
+    Some(SignInView {
+        page,
+        redirect_uri: format!("{base}/api/v1/auth/oidc/callback"),
+        domain,
+    })
+}
+
+async fn sign_in_for(state: &AppState, site: &Site, id: TenantId) -> ApiResult<SignInView> {
+    let paths = mst_db::tenants::slug_paths(&state.db, &[id]).await?;
+    let nearest = mst_db::tenants::nearest_domain(&state.db, id).await?;
+    sign_in_at(site, paths.get(&id).map_or("", String::as_str), nearest)
+        .ok_or_else(|| ApiError::bad_request("the request does not say which host it was sent to"))
+}
+
+/// Where the tenant's people sign in, and the redirect URI to register with
+/// its identity provider.
+#[utoipa::path(get, path = "/tenants/{id}/sign-in", tag = "tenants", params(("id" = TenantId, Path)),
+    responses((status = 200, body = SignInView), (status = 404)))]
+async fn get_sign_in(
+    State(state): State<AppState>,
+    Extension(site): Extension<Site>,
+    p: Principal,
+    Path(id): Path<TenantId>,
+) -> ApiResult<Json<SignInView>> {
+    authorize_resource(&state.db, &p, Perm::TenantRead, id, "tenant").await?;
+    Ok(Json(sign_in_for(&state, &site, id).await?))
 }
 
 /// Only paths on this site, to avoid an open redirect.
@@ -547,8 +613,7 @@ pub struct ProviderView {
     default_role: Option<Role>,
     #[serde(default)]
     role_mappings: Vec<MappingView>,
-    /// URL to register with the identity provider: this site, as the
-    /// caller reached it.
+    /// URL to register with the identity provider (see `SignInView`).
     #[serde(default)]
     redirect_uri: String,
 }
@@ -592,7 +657,10 @@ async fn get_provider(
                 })
             })
             .collect(),
-        redirect_uri: redirect_uri(&site).unwrap_or_default(),
+        redirect_uri: sign_in_for(&state, &site, id)
+            .await
+            .map(|s| s.redirect_uri)
+            .unwrap_or_default(),
     }))
 }
 
@@ -694,6 +762,42 @@ async fn delete_provider(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sign_in_is_at_the_nearest_domain() {
+        let site = super::Site(Some("https://cloud.example.net".into()));
+        let at = |path: &str, nearest: Option<(&str, usize)>| {
+            let v =
+                super::sign_in_at(&site, path, nearest.map(|(d, n)| (d.to_owned(), n))).unwrap();
+            (v.page, v.redirect_uri)
+        };
+        // No domain: this address, the full path.
+        assert_eq!(
+            at("acme/dev", None),
+            (
+                "https://cloud.example.net/login?tenant=acme/dev".into(),
+                "https://cloud.example.net/api/v1/auth/oidc/callback".into()
+            )
+        );
+        assert_eq!(at("", None).0, "https://cloud.example.net/login");
+        // Bound to acme (depth 2): the path below it.
+        assert_eq!(
+            at("acme/dev/web", Some(("mst.acme.com", 2))),
+            (
+                "https://mst.acme.com/login?tenant=dev/web".into(),
+                "https://mst.acme.com/api/v1/auth/oidc/callback".into()
+            )
+        );
+        assert_eq!(
+            at("acme", Some(("mst.acme.com", 2))).0,
+            "https://mst.acme.com/login"
+        );
+        // Bound to the root: like no domain, at that name.
+        assert_eq!(
+            at("acme", Some(("cloud.example.org", 1))).0,
+            "https://cloud.example.org/login?tenant=acme"
+        );
+    }
+
     use super::*;
 
     #[test]

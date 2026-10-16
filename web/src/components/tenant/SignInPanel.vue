@@ -31,17 +31,24 @@ const blank = (): Form => ({
 const form = ref(blank())
 
 const canManage = computed(() => scope.can('user.write', props.tenant.id))
-// The controller reports its redirect URI once a provider exists.
-const redirectUri = computed(() => existing.value?.redirect_uri || `${location.origin}/api/v1/auth/oidc/callback`)
-const signInPath = computed(() => `/login?tenant=${encodeURIComponent(props.tenant.slug_path)}`)
+// Where the tenant's people sign in: at the nearest domain bound to it or
+// above it, else at this address.
+const signIn = ref<Schemas['SignInView'] | null>(null)
+const redirectUri = computed(() => signIn.value?.redirect_uri ?? `${location.origin}/api/v1/auth/oidc/callback`)
 
 const params = () => ({ params: { path: { id: props.tenant.id } } })
 
 onMounted(async () => {
   try {
-    existing.value = await ok(api.GET('/api/v1/tenants/{id}/identity-provider', params()))
+    ;[existing.value, signIn.value] = await Promise.all([
+      ok(api.GET('/api/v1/tenants/{id}/identity-provider', params())).catch((e) => {
+        if (e instanceof ApiError && e.status === 404) return null
+        throw e
+      }),
+      ok(api.GET('/api/v1/tenants/{id}/sign-in', params())),
+    ])
   } catch (e) {
-    if (!(e instanceof ApiError && e.status === 404)) error.value = errorText(e)
+    error.value = errorText(e)
   }
   loaded.value = true
 })
@@ -105,12 +112,14 @@ async function remove() {
             </div>
           </dd>
         </div>
-        <div>
-          <dt class="label">Sign-in page</dt>
-          <dd><a :href="signInPath" class="mono">{{ signInPath }}</a></dd>
-        </div>
       </dl>
       <p v-else class="muted">{{ tenant.name }} signs in with passwords only.</p>
+      <dl v-if="signIn" class="summary">
+        <div>
+          <dt class="label">Sign-in page</dt>
+          <dd><a :href="signIn.page" class="mono">{{ signIn.page }}</a></dd>
+        </div>
+      </dl>
 
       <div v-if="canManage" class="buttons">
         <button class="btn" :class="{ primary: !existing }" @click="edit">

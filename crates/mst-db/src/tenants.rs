@@ -281,3 +281,24 @@ pub async fn unbind_domain(db: impl PgExecutor<'_>, id: TenantId, domain: &str) 
             > 0,
     )
 }
+
+/// The domain bound nearest above a tenant (or to it), with the depth of the
+/// tenant it is bound to (1 for the root). Of several, the first by name.
+pub async fn nearest_domain(
+    db: impl PgExecutor<'_>,
+    id: TenantId,
+) -> Result<Option<(String, usize)>> {
+    let row: Option<(String, i32)> = sqlx::query_as(
+        "SELECT d.domain, nlevel(a.path)
+         FROM tenants t
+         JOIN tenants a ON a.path @> t.path
+         JOIN tenant_domains d ON d.tenant_id = a.id
+         WHERE t.id = $1
+         ORDER BY nlevel(a.path) DESC, d.domain
+         LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.map(|(d, depth)| (d, depth.max(1) as usize)))
+}

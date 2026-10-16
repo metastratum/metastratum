@@ -68,6 +68,26 @@ async fn scenario(admin: &Api, run: &str, acme: &str, dev: &str) -> anyhow::Resu
     admin.post("/users", user(dev, "bob", "operator")).await?;
     let domain = format!("{run}.example.test");
     let at = || Api::anonymous_at(&admin.base, &domain);
+    let port = reqwest::Url::parse(&admin.base)?.port().unwrap_or(80);
+    // Where a tenant's people sign in, as the Sign-in tab shows it.
+    let sign_in_urls = |tenant: &str| {
+        let path = format!("/tenants/{tenant}/sign-in");
+        async move {
+            let v = admin.get(&path).await?;
+            anyhow::Ok((
+                v["page"].as_str().unwrap().to_owned(),
+                v["redirect_uri"].as_str().unwrap().to_owned(),
+            ))
+        }
+    };
+    let base = &admin.base;
+    assert_eq!(
+        sign_in_urls(dev).await?,
+        (
+            format!("{base}/login?tenant={run}/dev"),
+            format!("{base}/api/v1/auth/oidc/callback")
+        )
+    );
 
     // Not bound yet: the name leads to the provider's sign-in.
     let site = at()?.get("/auth/site").await?;
@@ -103,6 +123,17 @@ async fn scenario(admin: &Api, run: &str, acme: &str, dev: &str) -> anyhow::Resu
         .await?;
     assert_eq!(st, 409, "a domain names one tenant");
 
+    // Sign-in is at the domain now, with paths below its tenant.
+    let there = format!("http://{domain}:{port}");
+    assert_eq!(
+        sign_in_urls(dev).await?,
+        (
+            format!("{there}/login?tenant=dev"),
+            format!("{there}/api/v1/auth/oidc/callback")
+        )
+    );
+    assert_eq!(sign_in_urls(acme).await?.0, format!("{there}/login"));
+
     // Bound: the sign-in page knows the tenant, and that it has sub-tenants.
     let site = at()?.get("/auth/site").await?;
     assert_eq!(site["tenant_name"], run, "{site}");
@@ -135,6 +166,11 @@ async fn scenario(admin: &Api, run: &str, acme: &str, dev: &str) -> anyhow::Resu
         .await?;
     assert_eq!(site["tenant_name"], "dev", "{site}");
     assert_eq!(site["sub_tenants"], false, "{site}");
+    // The nearest domain wins.
+    assert_eq!(
+        sign_in_urls(dev).await?.0,
+        format!("http://{dev_domain}:{port}/login")
+    );
 
     // Unbound, the name leads to the provider again.
     let (st, _) = admin
@@ -150,5 +186,9 @@ async fn scenario(admin: &Api, run: &str, acme: &str, dev: &str) -> anyhow::Resu
         serde_json::Value::Null
     );
     assert_eq!(sign_in(&at()?, "alice", None).await?, 401);
+    assert_eq!(
+        sign_in_urls(acme).await?.0,
+        format!("{base}/login?tenant={run}")
+    );
     Ok(())
 }

@@ -316,10 +316,12 @@ test('a domain name signs in to its tenant', async ({ page, browser, baseURL }) 
     await page.getByLabel('Domain name').fill(domain)
     await page.getByRole('button', { name: 'Bind domain' }).click()
     await expect(page.getByText(domain, { exact: true })).toBeVisible()
+    // The tab now points people there.
+    const there = `http://${domain}:${new URL(baseURL!).port}/login`
+    await expect(page.getByRole('link', { name: there })).toBeVisible()
 
     // There, the page signs in to the tenant, and without sub-tenants it
     // doesn't ask for one.
-    const there = `http://${domain}:${new URL(baseURL!).port}/login`
     const visitor = await (await browser.newContext()).newPage()
     await visitor.goto(there)
     await expect(visitor.getByRole('heading', { name: `Sign in to ${name}` })).toBeVisible()

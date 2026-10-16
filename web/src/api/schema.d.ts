@@ -893,6 +893,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tenants/{id}/sign-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where the tenant's people sign in, and the redirect URI to register with
+         *     its identity provider.
+         */
+        get: operations["get_sign_in"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tenants/{id}/storage-pools": {
         parameters: {
             query?: never;
@@ -1764,10 +1784,7 @@ export interface components {
             issuer: string;
             /** @description Shown on the sign-in button. */
             name: string;
-            /**
-             * @description URL to register with the identity provider: this site, as the
-             *     caller reached it.
-             */
+            /** @description URL to register with the identity provider (see `SignInView`). */
             redirect_uri?: string;
             role_mappings?: components["schemas"]["MappingView"][];
             /** @description Space-separated; `openid` is implied. Default `openid profile email`. */
@@ -1855,6 +1872,21 @@ export interface components {
         };
         /** Format: uuid */
         SecurityRuleId: string;
+        SignInView: {
+            /** @description The domain both are at, if one is bound to the tenant or above it. */
+            domain?: string | null;
+            /**
+             * @description The tenant's sign-in page. At the domain bound nearest above the
+             *     tenant (or to it), with the path below that tenant; else at the
+             *     address the caller used, with the tenant's full path.
+             */
+            page: string;
+            /**
+             * @description Where an identity provider sends people back, at that same address:
+             *     the URI to register with it.
+             */
+            redirect_uri: string;
+        };
         SiteView: {
             /**
              * @description Whether the tenant sign-ins start from has sub-tenants: whether the
@@ -4466,6 +4498,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BindingView"][];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_sign_in: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignInView"];
                 };
             };
             404: {
