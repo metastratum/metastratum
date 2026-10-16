@@ -67,6 +67,9 @@ The boundaries hypermon enforces:
   database (a host's current or just-renewed certificate; a live replica).
   Hosts' certificates last 30 days and are renewed automatically; their
   subjects are chosen by the controller, not taken from the request.
+  Replaced and decommissioned hosts' certificates are revoked: the
+  controllers refuse them, and so do the other hosts' QEMU and libvirt,
+  which install the CA's revocation list.
   Hosts' libvirt does not listen on the network: the controller drives
   live migrations on each host's own libvirt, and only QEMU sends the VM
   over, with TLS and host certificates. The controller reaches
@@ -98,6 +101,7 @@ A review of the whole system before calling it hardened. Fixed:
 | An agent from another version could be sent commands it does not know | protocol versions and capabilities |
 | Hosts' certificates were valid for a year | 30 days, renewed automatically; longer ones are renewed at once |
 | Hosts' libvirt accepted any certificate the controller's CA issued (replicas' too) | only host certificates (`tls_allowed_dn_list`, kept by the agent) |
+| Host certificates could not be revoked | the controller's CA keeps a revocation list that hosts install for QEMU and libvirt: a renewed host's previous certificate is revoked once it uses the new one, a decommissioned host's at once |
 | For live migration, each host's libvirt accepted connections from the other hosts with full control: one compromised host could take over the rest | the controller drives migrations on each host's own libvirt; libvirt's TLS listener is closed (opened only while an older agent in the cluster still migrates peer to peer) |
 | API tokens carried all of their user's rights | tokens can be limited to roles at tenants |
 | Hosts' ovn-controller used the southbound database with no TLS or RBAC: any host could rewrite every host's flows | agents set up TLS with a certificate per chassis from a separate OVN CA, under OVN's RBAC (`--ovn-sb`) |
@@ -110,9 +114,11 @@ Not fixed, and worth knowing:
   controller replicas'), not only the source's. Another host that is taken over could race to send a VM of
   its own instead, for the seconds a migration takes to start. Keep hosts
   off networks guests or tenants reach.
-- **No certificate revocation.** A decommissioned host's certificate is
-  refused by the controllers, but stays valid for migration streams until
-  it expires (up to 30 days). Reinstall a host you no longer trust, and replace
+- **OVN cannot revoke certificates.** Open vSwitch has no revocation
+  lists, so a decommissioned host's southbound certificate stays valid until
+  it expires (up to 30 days), held by OVN's RBAC to that host's chassis.
+  Delete the chassis (`ovn-sbctl chassis-del`) after decommissioning a host
+  you no longer trust. Reinstall a host you no longer trust, and replace
   the CA if one was compromised (every host must then enroll again).
 - **OVN's databases need TLS configured.** Without `--ovn-sb` and TLS on
   the northbound database, anyone who reaches them controls every

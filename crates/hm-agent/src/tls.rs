@@ -204,6 +204,22 @@ pub async fn reload_libvirt() {
     );
 }
 
+/// Installs the controller CA's revocation list where QEMU (migration
+/// streams) and libvirt look for it, so they refuse revoked certificates.
+pub async fn install_crl(pem: &str) -> Result<()> {
+    if !pem.trim_start().starts_with("-----BEGIN X509 CRL-----") {
+        anyhow::bail!("not a revocation list");
+    }
+    let mut changed = false;
+    for path in ["/etc/pki/CA/cacrl.pem", "/etc/pki/qemu/ca-crl.pem"] {
+        changed |= write_if_changed(Path::new(path), pem, Access::Public)?;
+    }
+    if changed && listening().await {
+        reload_libvirt().await;
+    }
+    Ok(())
+}
+
 /// Whether this host can take part in live migrations the controller drives:
 /// QEMU has its TLS certificates (the migration stream is encrypted).
 pub fn ready_for_migration() -> bool {

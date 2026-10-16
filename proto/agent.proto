@@ -154,6 +154,9 @@ message Welcome {
   // OVN southbound remote(s) for ovn-controller, over TLS (ssl:...); empty
   // when the controller leaves southbound access to the deployment.
   string ovn_sb_remote = 3;
+  // The controller CA's revocation list (PEM), for QEMU and libvirt to
+  // refuse revoked host certificates.
+  string crl_pem = 4;
 }
 
 message Command {
@@ -177,6 +180,7 @@ message Command {
     RenewCertificate renew_certificate = 25;
     MigrationStep migration_step = 26;
     LibvirtTls libvirt_tls = 27;
+    InstallCrl install_crl = 28;
   }
 }
 
@@ -305,6 +309,11 @@ message MigrationStep {
 // before MigrationStep).
 message LibvirtTls {
   bool listen = 1;
+}
+
+// A newer revocation list of the controller's CA.
+message InstallCrl {
+  string crl_pem = 1;
 }
 
 message MigrateVm {

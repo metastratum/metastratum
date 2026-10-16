@@ -44,7 +44,7 @@ async fn host(pool: &PgPool) -> hosts::Host {
         cpu_json: "",
         migration_ready: false,
     };
-    hosts::create(pool, HostId::new(), &facts, "fp", Utc::now())
+    hosts::create(pool, HostId::new(), &facts, "fp", Utc::now(), "01")
         .await
         .unwrap()
 }
@@ -482,5 +482,74 @@ async fn active_tasks_by_target(pool: PgPool) {
     assert_eq!(
         hm_db::tasks::active_by_target(&pool).await.unwrap(),
         vec![(v.id.0, "vm.start".to_owned())]
+    );
+}
+
+/// A renewed certificate's predecessor is retired once the host connects
+/// with the new one; decommissioning hands back what is left to revoke.
+#[sqlx::test(migrator = "hm_db::MIGRATOR")]
+async fn host_certificates_are_retired_and_revoked(pool: PgPool) {
+    let h = host(&pool).await;
+    let first_expiry = h.cert_expires_at;
+    let later = Utc::now() + chrono::Duration::days(30);
+    hosts::renew_cert(&pool, h.id, "fp2", later, "02")
+        .await
+        .unwrap();
+    // Still on the old certificate: nothing to retire yet.
+    assert!(
+        hosts::retire_previous_cert(&pool, h.id, "fp")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(hosts::accepts_cert(&pool, h.id, "fp").await.unwrap());
+    let old = hosts::retire_previous_cert(&pool, h.id, "fp2")
+        .await
+        .unwrap();
+    assert_eq!(
+        old.map(|(s, e)| (s, e.timestamp())),
+        Some(("01".into(), first_expiry.timestamp()))
+    );
+    assert!(!hosts::accepts_cert(&pool, h.id, "fp").await.unwrap());
+    assert!(
+        hosts::retire_previous_cert(&pool, h.id, "fp2")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let left = hosts::decommission(&pool, h.id).await.unwrap();
+    assert_eq!(
+        left.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(),
+        ["02"]
+    );
+    for (serial, expires) in &left {
+        hm_db::pki::revoke(&pool, serial, Some(h.id), "decommissioned", *expires)
+            .await
+            .unwrap();
+    }
+    // Twice is fine; expired ones drop out of the list.
+    hm_db::pki::revoke(&pool, "02", Some(h.id), "again", later)
+        .await
+        .unwrap();
+    hm_db::pki::revoke(
+        &pool,
+        "03",
+        None,
+        "old",
+        Utc::now() - chrono::Duration::days(1),
+    )
+    .await
+    .unwrap();
+    let listed: Vec<String> = hm_db::pki::revoked(&pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect();
+    assert_eq!(listed, ["02"]);
+    assert_eq!(
+        hosts::get(&pool, h.id).await.unwrap().state,
+        "decommissioned"
     );
 }

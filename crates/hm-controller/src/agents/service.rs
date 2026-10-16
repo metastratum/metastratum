@@ -117,6 +117,7 @@ impl Enrollment for EnrollmentService {
             Utc.timestamp_opt(not_after, 0)
                 .single()
                 .unwrap_or_else(Utc::now),
+            &hm_pki::serial_of(&der).map_err(internal)?,
         )
         .await
         .map_err(|e| match e {
@@ -275,9 +276,15 @@ impl AgentControl for AgentControlService {
             .timestamp_opt(not_after, 0)
             .single()
             .ok_or_else(|| Status::internal("bad expiry"))?;
-        hm_db::hosts::renew_cert(&state.db, host_id, &hm_pki::fingerprint(&der), expires)
-            .await
-            .map_err(internal)?;
+        hm_db::hosts::renew_cert(
+            &state.db,
+            host_id,
+            &hm_pki::fingerprint(&der),
+            expires,
+            &hm_pki::serial_of(&der).map_err(internal)?,
+        )
+        .await
+        .map_err(internal)?;
         tracing::info!(host = %host_id, %expires, "host certificate renewed");
         crate::authz::audit(
             &state.db,
@@ -342,6 +349,10 @@ impl AgentControl for AgentControlService {
     ) -> Result<Response<Self::SessionStream>, Status> {
         let host = self.authenticate(&req).await?;
         let state = self.0.clone();
+        let presented = req.peer_certs().and_then(|c| {
+            c.first()
+                .map(|leaf| (hm_pki::fingerprint(leaf), hm_pki::serial_of(leaf).ok()))
+        });
         let mut inbound = req.into_inner();
 
         let hello = match tokio::time::timeout(SESSION_IDLE_TIMEOUT, inbound.message()).await {
@@ -374,6 +385,10 @@ impl AgentControl for AgentControlService {
                     protocol_version: hm_proto::PROTOCOL_VERSION,
                     controller_version: env!("CARGO_PKG_VERSION").to_owned(),
                     ovn_sb_remote: state.ovn_sb_remote.clone(),
+                    crl_pem: crate::crl::current(&state).await.unwrap_or_else(|e| {
+                        tracing::error!(error = %format!("{e:#}"), "signing the revocation list");
+                        String::new()
+                    }),
                 },
             )),
         };
@@ -389,14 +404,30 @@ impl AgentControl for AgentControlService {
         observe_domains(&state, host, &hello.domains, true).await;
         tracing::info!(%host, "agent session established");
         renew_if_outlived(&state, host).await;
+        // Connected with its current certificate: the one it replaced is
+        // no longer needed.
+        if let Some((fp, serial)) = &presented {
+            if let Some(serial) = serial {
+                let _ = hm_db::hosts::note_cert_serial(&state.db, host, fp, serial).await;
+            }
+            if let Ok(Some(old)) = hm_db::hosts::retire_previous_cert(&state.db, host, fp).await {
+                crate::crl::revoke(&state, host, &[old], "superseded").await;
+            }
+        }
         if let Ok(h) = hm_db::hosts::get(&state.db, host).await {
             tokio::spawn(libvirt_tls_policy(state.clone(), h.cluster_id, host));
         }
 
         tokio::spawn(async move {
             loop {
-                let msg = match tokio::time::timeout(SESSION_IDLE_TIMEOUT, inbound.message()).await
-                {
+                let next = tokio::select! {
+                    m = tokio::time::timeout(SESSION_IDLE_TIMEOUT, inbound.message()) => m,
+                    () = conn.close.notified() => {
+                        tracing::info!(%host, "ending the agent session");
+                        break;
+                    }
+                };
+                let msg = match next {
                     Ok(Ok(Some(m))) => m,
                     Ok(Ok(None)) => break,
                     Ok(Err(e)) => {

@@ -217,6 +217,11 @@ impl Agent {
                     Some(controller_message::Msg::Welcome(w)) => {
                         tracing::info!(protocol = w.protocol_version, version = %w.controller_version, "controller says hello");
                         *self.ovn_sb_remote.lock().unwrap() = w.ovn_sb_remote.clone();
+                        if !w.crl_pem.is_empty()
+                            && let Err(e) = crate::tls::install_crl(&w.crl_pem).await
+                        {
+                            tracing::warn!(error = %format!("{e:#}"), "installing the revocation list");
+                        }
                         if !w.ovn_sb_remote.is_empty() {
                             let this = self.clone();
                             tokio::spawn(async move { this.keep_ovn_access().await });
@@ -411,6 +416,10 @@ impl Agent {
                     "xml": out.xml,
                     "uri": out.uri,
                 }))?);
+            }
+            Cmd::InstallCrl(c) => {
+                crate::tls::install_crl(&c.crl_pem).await?;
+                tracing::info!("installed a new revocation list");
             }
             Cmd::LibvirtTls(c) => {
                 // Changing it restarts libvirt, which would cut off a

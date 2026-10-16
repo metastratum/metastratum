@@ -18,8 +18,9 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use rcgen::{
-    BasicConstraints, CertificateParams, CertificateSigningRequestParams, DistinguishedName,
-    DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose, SerialNumber,
+    BasicConstraints, CertificateParams, CertificateRevocationListParams,
+    CertificateSigningRequestParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
+    Issuer, KeyIdMethod, KeyPair, KeyUsagePurpose, RevokedCertParams, SerialNumber,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -124,6 +125,42 @@ impl Ca {
         fingerprint(&self.cert_der)
     }
 
+    /// A revocation list naming `revoked` (serial in hex, revoked at as a
+    /// Unix time), signed by this CA, valid for `valid_for`. `number`
+    /// orders lists: a later one has a larger number.
+    pub fn crl(
+        &self,
+        number: u64,
+        revoked: &[(String, i64)],
+        valid_for: Duration,
+    ) -> Result<String> {
+        let now = OffsetDateTime::now_utc();
+        let revoked_certs = revoked
+            .iter()
+            .map(|(serial, at)| {
+                Ok(RevokedCertParams {
+                    serial_number: SerialNumber::from(
+                        hex::decode(serial)
+                            .map_err(|e| Error::InvalidCertificate(e.to_string()))?,
+                    ),
+                    revocation_time: OffsetDateTime::from_unix_timestamp(*at)
+                        .map_err(|e| Error::InvalidCertificate(e.to_string()))?,
+                    reason_code: None,
+                    invalidity_date: None,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let params = CertificateRevocationListParams {
+            this_update: now - time::Duration::minutes(5),
+            next_update: now + valid_for,
+            crl_number: SerialNumber::from(number.to_be_bytes().to_vec()),
+            issuing_distribution_point: None,
+            revoked_certs,
+            key_identifier_method: KeyIdMethod::Sha256,
+        };
+        Ok(params.signed_by(&self.issuer()?)?.pem()?)
+    }
+
     fn issuer(&self) -> Result<Issuer<'_, &KeyPair>> {
         Ok(Issuer::from_ca_cert_der(
             &self.cert_der.as_slice().into(),
@@ -222,6 +259,13 @@ pub fn common_name(cert_der: &[u8]) -> Result<String> {
 }
 
 /// Not-after time of a DER certificate, as a Unix timestamp.
+/// A certificate's serial number, as lowercase hex.
+pub fn serial_of(cert_der: &[u8]) -> Result<String> {
+    let (_, cert) = x509_parser::parse_x509_certificate(cert_der)
+        .map_err(|e| Error::InvalidCertificate(e.to_string()))?;
+    Ok(hex::encode(cert.raw_serial()))
+}
+
 pub fn not_after(cert_der: &[u8]) -> Result<i64> {
     let (_, cert) = x509_parser::parse_x509_certificate(cert_der)
         .map_err(|e| Error::InvalidCertificate(e.to_string()))?;
@@ -305,6 +349,29 @@ impl FromStr for JoinToken {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn revocation_lists_name_revoked_serials() {
+        let ca = Ca::generate("test CA", Duration::from_secs(3600)).unwrap();
+        let (cert, _) = ca.issue_client("host-1", Duration::from_secs(600)).unwrap();
+        let serial = serial_of(&pem_to_der(&cert).unwrap()).unwrap();
+        let crl = ca
+            .crl(
+                7,
+                &[(serial.clone(), 1_800_000_000)],
+                Duration::from_secs(86400),
+            )
+            .unwrap();
+        let der = pem_to_der(&crl).unwrap();
+        let (_, parsed) = x509_parser::parse_x509_crl(&der).unwrap();
+        let listed: Vec<String> = parsed
+            .iter_revoked_certificates()
+            .map(|r| hex::encode(r.raw_serial()))
+            .collect();
+        assert_eq!(listed, [serial]);
+        assert_eq!(parsed.crl_number().map(|n| n.to_string()), Some("7".into()));
+    }
+
     use super::*;
 
     const DAY: Duration = Duration::from_secs(86400);

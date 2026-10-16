@@ -167,6 +167,7 @@ async fn the_model_snapshot_has_everything_the_compiler_needs(pool: PgPool) {
         },
         "fp",
         Utc::now(),
+        "01",
     )
     .await
     .unwrap();

@@ -23,6 +23,7 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(get_fencing, set_fencing))
         .routes(routes!(test_fencing))
         .routes(routes!(renew_certificate))
+        .routes(routes!(decommission_host))
 }
 
 #[derive(Serialize, ToSchema)]
@@ -394,6 +395,47 @@ async fn test_fencing(
         .await
         .map_err(|e| ApiError::unavailable(format!("{e:#}")))?;
     Ok(Json(FencingTest { power }))
+}
+
+/// Takes a host out of service for good: it leaves its cluster, its
+/// certificates are revoked (its agent can no longer connect, and other
+/// hosts refuse it), and it stays listed as decommissioned. It must have no
+/// VMs. To use the machine again, enroll it anew.
+#[utoipa::path(post, path = "/hosts/{id}/decommission", tag = "hosts", params(("id" = HostId, Path)),
+    responses((status = 204), (status = 403), (status = 404), (status = 409)))]
+async fn decommission_host(
+    State(state): State<AppState>,
+    p: Principal,
+    axum::extract::Path(id): axum::extract::Path<HostId>,
+) -> ApiResult<StatusCode> {
+    authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
+    let host = hm_db::hosts::get(&state.db, id).await?;
+    if host.state == "decommissioned" {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    if !hm_db::vms::list_on_host(&state.db, id).await?.is_empty() {
+        return Err(ApiError::conflict(
+            "move or delete the host's VMs before decommissioning it",
+        ));
+    }
+    let revoked = hm_db::hosts::decommission(&state.db, id).await?;
+    crate::crl::revoke(&state, id, &revoked, "decommissioned").await;
+    state.agents.close(id);
+    tokio::spawn(crate::agents::libvirt_tls_policy(
+        state.clone(),
+        host.cluster_id,
+        id,
+    ));
+    audit(
+        &state.db,
+        Some(&p),
+        Some(p.tenant_id),
+        "host.decommission",
+        Some(("host", id.0)),
+        serde_json::json!({"name": host.name, "revoked": revoked.len()}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Has the host's agent renew its certificate now (it also does so on its

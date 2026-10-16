@@ -30,6 +30,7 @@ const manageError = ref('')
 function manage(h: Host) {
   manageForm.value = { cluster_id: h.cluster_id ?? null, maintenance: h.state === 'maintenance' }
   manageError.value = ''
+  decommissioning.value = false
   managing.value = h
 }
 async function evacuate() {
@@ -38,6 +39,21 @@ async function evacuate() {
   manageError.value = ''
   try {
     await ok(api.POST('/api/v1/hosts/{id}/evacuate', { params: { path: { id: h.id } } }))
+    managing.value = null
+    await load()
+  } catch (e) {
+    manageError.value = errorText(e)
+  }
+}
+
+// Decommissioning: asked for twice, as it cannot be undone.
+const decommissioning = ref(false)
+async function decommission() {
+  const h = managing.value
+  if (!h) return
+  manageError.value = ''
+  try {
+    await ok(api.POST('/api/v1/hosts/{id}/decommission', { params: { path: { id: h.id } } }))
     managing.value = null
     await load()
   } catch (e) {
@@ -174,6 +190,28 @@ async function createToken() {
             @click="evacuate"
           >
             Evacuate {{ managing.name }}
+          </button>
+        </div>
+        <div v-if="managing.state !== 'decommissioned'" class="evacuate">
+          <div>
+            <strong>Decommission</strong>
+            <p class="muted hint">
+              Takes the host out of service for good: it leaves its cluster and its certificates are revoked, so its
+              agent can no longer connect. It must have no VMs. To use the machine again, enroll it anew.
+            </p>
+          </div>
+          <button
+            v-if="!decommissioning"
+            type="button"
+            class="btn"
+            :disabled="!!managing.vm_count"
+            :title="managing.vm_count ? 'Move or delete its VMs first' : undefined"
+            @click="decommissioning = true"
+          >
+            Decommission…
+          </button>
+          <button v-else type="button" class="btn danger" @click="decommission">
+            Decommission {{ managing.name }} for good
           </button>
         </div>
         <p v-if="manageError" class="error-text" role="alert">{{ manageError }}</p>

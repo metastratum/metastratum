@@ -43,6 +43,7 @@ pub fn capability(cmd: &command::Cmd) -> &'static str {
         RenewCertificate(_) => "renew_certificate",
         MigrationStep(_) => "migration_step",
         LibvirtTls(_) => "libvirt_tls",
+        InstallCrl(_) => "install_crl",
     }
 }
 
@@ -66,6 +67,7 @@ pub const CAPABILITIES: &[&str] = &[
     "renew_certificate",
     "migration_step",
     "libvirt_tls",
+    "install_crl",
 ];
 
 #[cfg(test)]
@@ -74,7 +76,7 @@ mod tests {
     fn every_command_is_a_capability() {
         // A new command added to the protocol must be named here too; this
         // count is a reminder (prost has no variant list to check against).
-        assert_eq!(super::CAPABILITIES.len(), 18);
+        assert_eq!(super::CAPABILITIES.len(), 19);
         let unique: std::collections::HashSet<_> = super::CAPABILITIES.iter().collect();
         assert_eq!(unique.len(), super::CAPABILITIES.len());
     }

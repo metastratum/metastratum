@@ -46,6 +46,8 @@ pub struct AgentConn {
     /// capabilities, which get everything they always got.
     capabilities: std::collections::HashSet<String>,
     pending: Mutex<HashMap<String, oneshot::Sender<Result<String, String>>>>,
+    /// Ends the session from this side.
+    close: tokio::sync::Notify,
 }
 
 impl AgentConn {
@@ -108,9 +110,17 @@ impl Agents {
             tx,
             capabilities: capabilities.iter().cloned().collect(),
             pending: Mutex::default(),
+            close: tokio::sync::Notify::new(),
         });
         self.conns.lock().unwrap().insert(host, conn.clone());
         conn
+    }
+
+    /// Ends the host's session, if it is held here.
+    pub fn close(&self, host: HostId) {
+        if let Some(c) = self.conns.lock().unwrap().get(&host) {
+            c.close.notify_one();
+        }
     }
 
     /// Removes the session unless a newer one has already replaced it.

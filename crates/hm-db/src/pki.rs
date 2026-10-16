@@ -41,3 +41,35 @@ pub async fn set_key(db: impl PgExecutor<'_>, name: &str, key_pem: &str) -> Resu
         .await?;
     Ok(())
 }
+
+/// Revokes a certificate of the controller's CA.
+pub async fn revoke(
+    db: impl PgExecutor<'_>,
+    serial: &str,
+    host: Option<hm_core::ids::HostId>,
+    reason: &str,
+    expires_at: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO revoked_certificates (serial, host_id, reason, expires_at)
+         VALUES ($1, $2, $3, $4) ON CONFLICT (serial) DO NOTHING",
+    )
+    .bind(serial)
+    .bind(host)
+    .bind(reason)
+    .bind(expires_at)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Revoked certificates not yet expired: serial and when revoked.
+pub async fn revoked(
+    db: impl PgExecutor<'_>,
+) -> Result<Vec<(String, chrono::DateTime<chrono::Utc>)>> {
+    Ok(sqlx::query_as(
+        "SELECT serial, revoked_at FROM revoked_certificates WHERE expires_at > now() ORDER BY revoked_at",
+    )
+    .fetch_all(db)
+    .await?)
+}

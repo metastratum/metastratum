@@ -4,6 +4,7 @@ mod agents;
 mod api;
 mod authz;
 mod ca;
+mod crl;
 mod engine;
 mod error;
 mod events;

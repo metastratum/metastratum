@@ -313,6 +313,28 @@ export interface paths {
         patch: operations["update_host"];
         trace?: never;
     };
+    "/api/v1/hosts/{id}/decommission": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Takes a host out of service for good: it leaves its cluster, its
+         *     certificates are revoked (its agent can no longer connect, and other
+         *     hosts refuse it), and it stays listed as decommissioned. It must have no
+         *     VMs. To use the machine again, enroll it anew.
+         */
+        post: operations["decommission_host"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/hosts/{id}/evacuate": {
         parameters: {
             query?: never;
@@ -2721,6 +2743,43 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    decommission_host: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["HostId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

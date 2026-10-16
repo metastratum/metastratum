@@ -76,12 +76,13 @@ pub async fn create(
     f: &Facts<'_>,
     cert_fingerprint: &str,
     cert_expires_at: DateTime<Utc>,
+    cert_serial: &str,
 ) -> Result<Host> {
     sqlx::query_as(concat!(
         "INSERT INTO hosts (id, name, address, cpu_count, memory_mib, cpu_model, kvm, libvirt_version,
                             ovn_chassis, agent_version, cert_fingerprint, cert_expires_at, physical_networks,
-                            cpu_json, migration_ready)
-         VALUES ($1, $2, $3::inet, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING ",
+                            cpu_json, migration_ready, cert_serial)
+         VALUES ($1, $2, $3::inet, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING ",
         host_columns!()
     ))
     .bind(id)
@@ -99,6 +100,7 @@ pub async fn create(
     .bind(f.physical_networks)
     .bind(f.cpu_json)
     .bind(f.migration_ready)
+    .bind(cert_serial)
     .fetch_one(db)
     .await
     .map_err(|e| conflict_on_unique(e, "host"))
@@ -257,23 +259,98 @@ pub async fn set_fencing(
     Ok(())
 }
 
-/// Records a renewed certificate; the previous one stays valid as well.
+/// Records a renewed certificate; the previous one stays valid as well,
+/// until the host shows it has the new one ([`retire_previous_cert`]).
 pub async fn renew_cert(
     db: impl PgExecutor<'_>,
     id: HostId,
     fingerprint: &str,
     expires_at: DateTime<Utc>,
+    serial: &str,
 ) -> Result<()> {
     sqlx::query(
-        "UPDATE hosts SET previous_cert_fingerprint = cert_fingerprint, cert_fingerprint = $2,
-                cert_expires_at = $3, updated_at = now() WHERE id = $1",
+        "UPDATE hosts SET previous_cert_fingerprint = cert_fingerprint,
+                previous_cert_serial = cert_serial, previous_cert_expires_at = cert_expires_at,
+                cert_fingerprint = $2, cert_expires_at = $3, cert_serial = $4, updated_at = now()
+         WHERE id = $1",
     )
     .bind(id)
     .bind(fingerprint)
     .bind(expires_at)
+    .bind(serial)
     .execute(db)
     .await?;
     Ok(())
+}
+
+/// Records the serial of a host's current certificate, for certificates
+/// issued before serials were kept (so they can be revoked later).
+pub async fn note_cert_serial(
+    db: impl PgExecutor<'_>,
+    id: HostId,
+    fingerprint: &str,
+    serial: &str,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE hosts SET cert_serial = $3
+         WHERE id = $1 AND cert_fingerprint = $2 AND cert_serial IS NULL",
+    )
+    .bind(id)
+    .bind(fingerprint)
+    .bind(serial)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// A certificate to revoke: serial (hex) and when it expires.
+pub type Revocable = (String, DateTime<Utc>);
+
+/// Once the host connects with its current certificate, the one it
+/// replaced is no longer needed: forgets it, and returns it for revoking
+/// (if its serial is known).
+pub async fn retire_previous_cert(
+    db: impl PgExecutor<'_>,
+    id: HostId,
+    current_fingerprint: &str,
+) -> Result<Option<Revocable>> {
+    let row: Option<(Option<String>, Option<DateTime<Utc>>)> = sqlx::query_as(
+        "WITH old AS (
+             SELECT previous_cert_serial AS serial, previous_cert_expires_at AS expires
+             FROM hosts WHERE id = $1 AND cert_fingerprint = $2
+               AND previous_cert_fingerprint IS NOT NULL FOR UPDATE)
+         UPDATE hosts SET previous_cert_fingerprint = NULL, previous_cert_serial = NULL,
+                previous_cert_expires_at = NULL
+         FROM old WHERE id = $1 RETURNING old.serial, old.expires",
+    )
+    .bind(id)
+    .bind(current_fingerprint)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.and_then(|(s, e)| Some((s?, e?))))
+}
+
+/// Takes a host out of service for good, and returns its certificates for
+/// revoking (those whose serial is known).
+pub async fn decommission(db: impl PgExecutor<'_>, id: HostId) -> Result<Vec<Revocable>> {
+    let row: (Option<String>, DateTime<Utc>, Option<String>, Option<DateTime<Utc>>) =
+        sqlx::query_as(
+            "UPDATE hosts SET state = 'decommissioned', cluster_id = NULL, connected_to = NULL,
+                    previous_cert_fingerprint = NULL, updated_at = now()
+             WHERE id = $1
+             RETURNING cert_serial, cert_expires_at, previous_cert_serial, previous_cert_expires_at",
+        )
+        .bind(id)
+        .fetch_one(db)
+        .await?;
+    let mut out = vec![];
+    if let Some(s) = row.0 {
+        out.push((s, row.1));
+    }
+    if let (Some(s), Some(e)) = (row.2, row.3) {
+        out.push((s, e));
+    }
+    Ok(out)
 }
 
 /// Whether `fingerprint` is the host's certificate (or the one it replaced).

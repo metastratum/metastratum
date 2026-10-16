@@ -62,7 +62,7 @@ async fn host(pool: &PgPool) -> HostId {
         cpu_json: "",
         migration_ready: false,
     };
-    hosts::create(pool, HostId::new(), &f, "fp", Utc::now())
+    hosts::create(pool, HostId::new(), &f, "fp", Utc::now(), "01")
         .await
         .unwrap()
         .id
