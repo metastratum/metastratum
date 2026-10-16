@@ -158,6 +158,8 @@ runcmd:
   - [ovs-vsctl, set, open_vswitch, ., "external_ids:system-id=$name", "external_ids:ovn-remote=tcp:10.77.0.10:6642", "external_ids:ovn-encap-type=geneve", "external_ids:ovn-encap-ip=$ip", "external_ids:ovn-bridge-mappings=external:br-ext"]
   - [ovs-vsctl, --may-exist, add-br, br-ext]
   - [sh, -c, "nic=\$(ip -o link | awk -F': ' '/$ext_mac/ {print \$2}'); ip link set \$nic up && ovs-vsctl --may-exist add-port br-ext \$nic"]
+  # Keep the external uplink up across reboots (it carries no address).
+  - [sh, -c, "printf '[Match]\\nMACAddress=$ext_mac\\n[Link]\\nActivationPolicy=up\\nRequiredForOnline=no\\n[Network]\\nLinkLocalAddressing=no\\n' > /etc/systemd/network/10-ext.network && networkctl reload"]
   - [systemctl, restart, ovn-controller]
 EOF
   fi
