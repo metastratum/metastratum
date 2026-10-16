@@ -175,6 +175,37 @@ pub async fn moved(db: &mut sqlx::PgConnection, id: VmId, host: HostId) -> Resul
     Ok(())
 }
 
+/// The VM, locked until the transaction ends.
+pub async fn get_for_update(db: &mut sqlx::PgConnection, id: VmId) -> Result<Vm> {
+    sqlx::query_as(concat!(
+        "SELECT ",
+        vm_columns!(),
+        " FROM vms WHERE id = $1 FOR UPDATE"
+    ))
+    .bind(id)
+    .fetch_optional(&mut *db)
+    .await?
+    .ok_or_else(|| {
+        hm_core::Error::NotFound {
+            kind: "vm",
+            id: id.to_string(),
+        }
+        .into()
+    })
+}
+
+/// Replaces a VM's spec as a new generation of its definition. Returns the
+/// generation.
+pub async fn redefine(db: &mut sqlx::PgConnection, id: VmId, spec: &VmSpec) -> Result<i64> {
+    Ok(sqlx::query_scalar(
+        "UPDATE vms SET spec = $2, generation = generation + 1, updated_at = now() WHERE id = $1 RETURNING generation",
+    )
+    .bind(id)
+    .bind(Json(spec))
+    .fetch_one(&mut *db)
+    .await?)
+}
+
 pub async fn delete(db: impl PgExecutor<'_>, id: VmId) -> Result<()> {
     sqlx::query("DELETE FROM vms WHERE id = $1")
         .bind(id)

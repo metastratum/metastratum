@@ -875,7 +875,11 @@ export interface paths {
         delete: operations["delete_vm"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Changes a stopped VM's settings. Its definition on the host is updated
+         *     right away; the VM picks it up when it next starts.
+         */
+        patch: operations["update_vm"];
         trace?: never;
     };
     "/api/v1/vms/{id}/console": {
@@ -1731,6 +1735,14 @@ export interface components {
             /** @description `null` clears it. */
             email?: string | null;
             password?: string | null;
+        };
+        UpdateVm: {
+            /**
+             * @description Allow live migration (the cluster's CPU model, no host disk cache) or
+             *     not (the host's full CPU, host disk cache). Only while the VM is
+             *     stopped; it applies from the next start.
+             */
+            migratable?: boolean | null;
         };
         UpdateVpc: {
             /**
@@ -4273,6 +4285,55 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_vm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateVm"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmView"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

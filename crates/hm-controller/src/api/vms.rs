@@ -23,7 +23,7 @@ use crate::state::AppState;
 pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list_vms, create_vm))
-        .routes(routes!(get_vm, delete_vm))
+        .routes(routes!(get_vm, update_vm, delete_vm))
         .routes(routes!(start_vm))
         .routes(routes!(stop_vm))
         .routes(routes!(reboot_vm))
@@ -776,6 +776,95 @@ async fn delete_vm(
     )
     .await;
     Ok((StatusCode::ACCEPTED, Json(TaskRef { task_id })))
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct UpdateVm {
+    /// Allow live migration (the cluster's CPU model, no host disk cache) or
+    /// not (the host's full CPU, host disk cache). Only while the VM is
+    /// stopped; it applies from the next start.
+    migratable: Option<bool>,
+}
+
+/// Changes a stopped VM's settings. Its definition on the host is updated
+/// right away; the VM picks it up when it next starts.
+#[utoipa::path(patch, path = "/vms/{id}", tag = "vms", params(("id" = VmId, Path)), request_body = UpdateVm,
+    responses((status = 200, body = VmView), (status = 403), (status = 404), (status = 409), (status = 503)))]
+async fn update_vm(
+    State(state): State<AppState>,
+    p: Principal,
+    Path(id): Path<VmId>,
+    Json(req): Json<UpdateVm>,
+) -> ApiResult<Json<VmView>> {
+    let vm = load(&state, &p, id, Perm::VmWrite).await?;
+    let Some(migratable) = req.migratable else {
+        return Ok(Json(view(vm, &context(&state).await?)));
+    };
+    if migratable == vm.spec.0.migratable {
+        return Ok(Json(view(vm, &context(&state).await?)));
+    }
+    // Locked, so no power action slips in between the checks and the change.
+    let mut tx = state.db.begin().await?;
+    let vm = hm_db::vms::get_for_update(&mut tx, id).await?;
+    let busy = hm_db::tasks::active_by_target(&mut *tx)
+        .await?
+        .into_iter()
+        .any(|(t, _)| t == id.0);
+    if vm.status != "ready" || busy || vm.power != "stopped" || vm.desired_power != "stopped" {
+        return Err(ApiError::conflict(format!(
+            "stop {} first; this can only change while it is stopped",
+            vm.name
+        )));
+    }
+    let host = vm
+        .host_id
+        .ok_or_else(|| ApiError::conflict("the VM is on no host"))?;
+    let mut spec = vm.spec.0.clone();
+    spec.migratable = migratable;
+    if migratable {
+        // The cluster's CPU model as it is now.
+        spec.cpu = Some(crate::migration::baseline_cpu(&state, host).await.ok_or_else(|| {
+            ApiError::unavailable("could not determine a CPU model the VM's cluster shares; is its host connected?")
+        })?);
+    }
+    let generation = hm_db::vms::redefine(&mut tx, id, &spec).await?;
+    let mut pools = std::collections::BTreeMap::new();
+    for d in &spec.disks {
+        if let std::collections::btree_map::Entry::Vacant(e) = pools.entry(d.pool_id) {
+            e.insert(super::agent_pool(
+                &hm_db::storage_pools::get(&mut *tx, d.pool_id).await?,
+            ));
+        }
+    }
+    let define = hm_proto::DefineVm {
+        vm_id: id.to_string(),
+        tenant_id: vm.tenant_id.to_string(),
+        name: vm.name.clone(),
+        generation: generation as u64,
+        spec_json: serde_json::to_string(&spec).map_err(ApiError::internal)?,
+        pools: pools.into_values().collect(),
+    };
+    state
+        .agents
+        .call(
+            host,
+            hm_proto::command::Cmd::DefineVm(define),
+            std::time::Duration::from_secs(60),
+        )
+        .await
+        .map_err(|e| ApiError::unavailable(format!("updating the VM on its host: {e}")))?;
+    tx.commit().await?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(vm.tenant_id),
+        "vm.update",
+        Some(("vm", id.0)),
+        json!({"name": vm.name, "migratable": migratable}),
+    )
+    .await;
+    let vm = hm_db::vms::get(&state.db, id).await?;
+    Ok(Json(view(vm, &context(&state).await?)))
 }
 
 #[derive(Deserialize, ToSchema)]

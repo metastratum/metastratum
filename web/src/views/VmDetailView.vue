@@ -37,6 +37,23 @@ const live = computed(
 const session = useSession()
 const migrating = ref(false)
 const migrationTask = computed(() => tasks.tasks.find((t) => t.id === vm.value?.migration?.task_id))
+// Live migration can change only while the VM is stopped.
+const stopped = computed(
+  () => vm.value?.status === 'ready' && vm.value.power === 'stopped' && vm.value.desired_power === 'stopped',
+)
+const switching = ref(false)
+async function setMigratable(on: boolean) {
+  actionError.value = ''
+  switching.value = true
+  try {
+    vm.value = await ok(api.PATCH('/api/v1/vms/{id}', { params: { path: { id: props.id } }, body: { migratable: on } }))
+  } catch (e) {
+    actionError.value = errorText(e)
+  } finally {
+    switching.value = false
+  }
+}
+
 async function cancelMigration() {
   actionError.value = ''
   try {
@@ -222,7 +239,17 @@ async function remove() {
             <dt>Tenant</dt><dd><IdChip :value="vm.tenant_id" /></dd>
             <dt>Firmware</dt><dd>{{ vm.firmware === 'uefi' ? 'UEFI' : 'BIOS' }}</dd>
             <dt>Live migration</dt>
-            <dd>{{ vm.migratable ? 'Allowed' : 'Off: host CPU and disk caching' }}</dd>
+            <dd class="migratable">
+              {{ vm.migratable ? 'Allowed' : 'Off: host CPU and disk caching' }}
+              <button
+                class="btn small"
+                :disabled="!stopped || switching"
+                :title="stopped ? undefined : 'Stop the VM to change this'"
+                @click="setMigratable(!vm.migratable)"
+              >
+                {{ switching ? 'Changing…' : vm.migratable ? 'Turn off' : 'Allow' }}
+              </button>
+            </dd>
             <dt>Created</dt><dd>{{ new Date(vm.created_at).toLocaleString() }}</dd>
           </dl>
         </section>
@@ -423,6 +450,9 @@ h1 {
   padding: 10px 14px;
   border-left: 3px solid var(--led-busy);
   background: var(--sunken);
+}
+.migratable .btn {
+  margin-left: 8px;
 }
 .moving .step {
   margin-left: 10px;

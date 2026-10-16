@@ -6,6 +6,8 @@ use hm_core::ids::{HostId, TaskId};
 use hm_db::sqlx::PgConnection;
 use hm_db::vms::Vm;
 
+use crate::state::AppState;
+
 /// Why a migration cannot happen, in words for whoever asked.
 #[derive(Debug, thiserror::Error)]
 pub enum Refusal {
@@ -126,4 +128,47 @@ pub async fn plan(
         .unwrap_or_default();
     hm_db::migrations::begin(tx, vm.id, task, source, dest, spec.vcpus, spec.memory_mib).await?;
     Ok((dest, name))
+}
+
+/// The baseline CPU of `host`'s cluster (or the host's own model when it is
+/// in none), computed by libvirt on that host. `None` when it cannot be
+/// computed: the VM then gets the host's CPU as is, and can only migrate to
+/// identical hosts.
+pub async fn baseline_cpu(state: &AppState, host: HostId) -> Option<hm_core::vm::CpuSpec> {
+    let hosts = match hm_db::hosts::list(&state.db).await {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(error = %e, "listing hosts for the CPU baseline");
+            return None;
+        }
+    };
+    let cluster = hosts.iter().find(|h| h.id == host)?.cluster_id;
+    let cpus: Vec<String> = hosts
+        .iter()
+        .filter(|h| h.state != "decommissioned" && !h.cpu_json.is_empty())
+        .filter(|h| {
+            if cluster.is_some() {
+                h.cluster_id == cluster
+            } else {
+                h.id == host
+            }
+        })
+        .map(|h| h.cpu_json.clone())
+        .collect();
+    if cpus.is_empty() {
+        tracing::warn!(%host, "no host reported its CPU model; the VM gets the host's CPU");
+        return None;
+    }
+    let cmd = hm_proto::command::Cmd::BaselineCpu(hm_proto::BaselineCpu { cpus_json: cpus });
+    match state
+        .agents
+        .query(host, cmd, std::time::Duration::from_secs(60))
+        .await
+    {
+        Ok(cpu) => Some(cpu),
+        Err(e) => {
+            tracing::warn!(%host, error = %e, "computing the cluster's CPU baseline; the VM gets the host's CPU");
+            None
+        }
+    }
 }

@@ -111,7 +111,7 @@ async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
     // anywhere in it. Kept in the spec: the VM keeps it for life.
     let mut spec = spec.clone();
     if spec.migratable && spec.cpu.is_none() {
-        spec.cpu = baseline_cpu(ctx, host).await;
+        spec.cpu = crate::migration::baseline_cpu(&ctx.state, host).await;
         if spec.cpu.is_some() {
             hm_db::vms::set_spec(db, vm.id, &spec).await?;
         }
@@ -147,53 +147,6 @@ async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
         .context("starting VM")?;
     }
     Ok(())
-}
-
-/// The baseline CPU of `host`'s cluster (or the host's own model when it is
-/// in none), computed by libvirt on that host. `None` when it cannot be
-/// computed: the VM then gets the host's CPU as is, and can only migrate to
-/// identical hosts.
-async fn baseline_cpu(ctx: &TaskCtx, host: HostId) -> Option<hm_core::vm::CpuSpec> {
-    let hosts = match hm_db::hosts::list(&ctx.state.db).await {
-        Ok(h) => h,
-        Err(e) => {
-            tracing::warn!(error = %e, "listing hosts for the CPU baseline");
-            return None;
-        }
-    };
-    let cluster = hosts.iter().find(|h| h.id == host)?.cluster_id;
-    let cpus: Vec<String> = hosts
-        .iter()
-        .filter(|h| h.state != "decommissioned" && !h.cpu_json.is_empty())
-        .filter(|h| {
-            if cluster.is_some() {
-                h.cluster_id == cluster
-            } else {
-                h.id == host
-            }
-        })
-        .map(|h| h.cpu_json.clone())
-        .collect();
-    if cpus.is_empty() {
-        tracing::warn!(%host, "no host reported its CPU model; the VM gets the host's CPU");
-        return None;
-    }
-    match ctx
-        .state
-        .agents
-        .query(
-            host,
-            Cmd::BaselineCpu(hm_proto::BaselineCpu { cpus_json: cpus }),
-            QUICK,
-        )
-        .await
-    {
-        Ok(cpu) => Some(cpu),
-        Err(e) => {
-            tracing::warn!(%host, error = %e, "computing the cluster's CPU baseline; the VM gets the host's CPU");
-            None
-        }
-    }
 }
 
 pub async fn start(ctx: &TaskCtx) -> Result<()> {

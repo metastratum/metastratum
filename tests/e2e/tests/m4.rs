@@ -281,6 +281,46 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
         host_flags > baseline_flags,
         "host {host_flags} vs baseline {baseline_flags}"
     );
+    drop(c);
+
+    // The setting changes only while the VM is stopped, from the next start.
+    let patch = json!({"migratable": true});
+    let (st, _) = api
+        .try_send(
+            Method::PATCH,
+            &format!("/vms/{bound_id}"),
+            Some(patch.clone()),
+        )
+        .await?;
+    assert_eq!(st, 409, "changed while running");
+    let t = api
+        .post(&format!("/vms/{bound_id}/stop?force=true"), json!({}))
+        .await?;
+    api.wait_task(t["task_id"].as_str().unwrap(), Duration::from_secs(60))
+        .await?;
+    api.wait_vm(bound_id, Duration::from_secs(30), |v| {
+        v["power"] == "stopped"
+    })
+    .await?;
+    let (st, body) = api
+        .try_send(Method::PATCH, &format!("/vms/{bound_id}"), Some(patch))
+        .await?;
+    assert_eq!((st, &body["migratable"]), (200, &json!(true)), "{body}");
+    let t = api
+        .post(&format!("/vms/{bound_id}/start"), json!({}))
+        .await?;
+    api.wait_task(t["task_id"].as_str().unwrap(), Duration::from_secs(60))
+        .await?;
+    running(api, bound_id).await?;
+    let mut c = api.console(bound_id, "serial").await?;
+    let now = flags(sh(&mut c, "grep -m1 ^flags /proc/cpuinfo").await?);
+    assert_eq!(
+        now, baseline_flags,
+        "after allowing migration it should have the cluster's CPU"
+    );
+    drop(c);
+    let task = migrate(api, bound_id, json!({})).await?;
+    assert_eq!(task["state"], "succeeded", "{task}");
 
     if std::env::var_os("HM_E2E_EVACUATE").is_some() {
         let host = back["host_id"].as_str().unwrap().to_owned();

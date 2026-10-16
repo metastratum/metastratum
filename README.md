@@ -170,7 +170,8 @@ baseline CPU model, so they run on, and migrate between, any of its hosts.
 A VM can instead be created non-migratable: it then gets its host's full CPU
 and disks use the host's page cache, and it stays on its host (evacuation
 leaves it there). That is the default when the VM's cluster has a single
-host.
+host. The setting can be changed while the VM is stopped and applies from
+its next start.
 
 Open http://127.0.0.1:18080 and sign in as `admin`. Add an image (for example
 `https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2`)
