@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::ids::{ImageId, NetworkId, NicId, VolumeId};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Firmware {
     Bios,
@@ -14,6 +15,7 @@ pub enum Firmware {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct VmSpec {
     pub vcpus: u32,
     pub memory_mib: u64,
@@ -27,6 +29,7 @@ pub struct VmSpec {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DiskSpec {
     pub volume_id: VolumeId,
     pub size_bytes: u64,
@@ -36,15 +39,18 @@ pub struct DiskSpec {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct NicSpec {
     /// Also the OVN logical switch port name and OVS iface-id.
     pub id: NicId,
     pub network_id: NetworkId,
     pub mac: String,
+    #[cfg_attr(feature = "utoipa", schema(value_type = String, format = Ipv4))]
     pub ip: std::net::Ipv4Addr,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct CloudInit {
     /// Hostname inside the guest.
     pub hostname: String,

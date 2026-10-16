@@ -81,14 +81,21 @@ pub async fn get(db: impl PgExecutor<'_>, id: TaskId) -> Result<Task> {
 
 /// Claims the oldest runnable task: a pending one, or a running one whose
 /// lease has expired (its previous owner is presumed dead).
+/// Tasks for the same target run in creation order: a task is not claimable
+/// while an older one for its target is unfinished.
 pub async fn claim(db: impl PgExecutor<'_>, owner: &str, lease: Duration) -> Result<Option<Task>> {
     Ok(sqlx::query_as(concat!("UPDATE tasks SET state = 'running', lease_owner = $1,
                 lease_expires_at = now() + $2 * interval '1 millisecond',
                 attempts = attempts + 1, started_at = coalesce(started_at, now()), updated_at = now()
          WHERE id = (
-             SELECT id FROM tasks
-             WHERE state = 'pending' OR (state = 'running' AND lease_expires_at < now())
-             ORDER BY created_at
+             SELECT t.id FROM tasks t
+             WHERE (t.state = 'pending' OR (t.state = 'running' AND t.lease_expires_at < now()))
+               AND NOT EXISTS (
+                   SELECT 1 FROM tasks o
+                   WHERE t.target_id IS NOT NULL AND o.target_id = t.target_id
+                     AND (o.created_at, o.id) < (t.created_at, t.id)
+                     AND o.state IN ('pending', 'running'))
+             ORDER BY t.created_at, t.id
              FOR UPDATE SKIP LOCKED
              LIMIT 1)
          RETURNING ", task_columns!()))
@@ -148,4 +155,62 @@ pub async fn finish(
     .execute(db)
     .await?;
     Ok(res.rows_affected() == 1)
+}
+
+/// Recent tasks in a tenant's subtree, newest first, optionally for one target.
+pub async fn list(
+    db: impl PgExecutor<'_>,
+    tenant_id: TenantId,
+    target_id: Option<Uuid>,
+    limit: i64,
+) -> Result<Vec<Task>> {
+    Ok(sqlx::query_as(concat!(
+        "SELECT ",
+        task_columns!(),
+        " FROM tasks
+         WHERE tenant_id IN (SELECT id FROM tenants WHERE path <@ (SELECT path FROM tenants WHERE id = $1))
+           AND ($2::uuid IS NULL OR target_id = $2)
+         ORDER BY created_at DESC LIMIT $3"
+    ))
+    .bind(tenant_id)
+    .bind(target_id)
+    .bind(limit)
+    .fetch_all(db)
+    .await?)
+}
+
+/// Extends the lease of a task the caller owns. Returns false if ownership
+/// was lost (the lease expired and another worker claimed it).
+pub async fn renew_lease(
+    db: impl PgExecutor<'_>,
+    id: TaskId,
+    owner: &str,
+    lease: Duration,
+) -> Result<bool> {
+    let res = sqlx::query(
+        "UPDATE tasks SET lease_expires_at = now() + $3 * interval '1 millisecond'
+         WHERE id = $1 AND lease_owner = $2 AND state = 'running'",
+    )
+    .bind(id)
+    .bind(owner)
+    .bind(lease.as_millis() as f64)
+    .execute(db)
+    .await?;
+    Ok(res.rows_affected() == 1)
+}
+
+/// Updates progress without touching step state.
+pub async fn set_progress(
+    db: impl PgExecutor<'_>,
+    id: TaskId,
+    step: &str,
+    progress: f32,
+) -> Result<()> {
+    sqlx::query("UPDATE tasks SET step = $2, progress = $3, updated_at = now() WHERE id = $1")
+        .bind(id)
+        .bind(step)
+        .bind(progress)
+        .execute(db)
+        .await?;
+    Ok(())
 }

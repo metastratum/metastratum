@@ -12,6 +12,7 @@ macro_rules! id_type {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
         #[serde(transparent)]
         #[cfg_attr(feature = "sqlx", derive(sqlx::Type), sqlx(transparent))]
+        #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema), schema(value_type = String, format = Uuid))]
         pub struct $name(pub Uuid);
 
         impl $name {

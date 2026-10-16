@@ -1,5 +1,6 @@
 [package]
 name = "hm-controller"
+description = "hypermon control plane"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,13 +8,28 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-axum.workspace = true
-hm-db.workspace = true
+argon2 = "0.6"
+axum = { workspace = true, features = ["ws"] }
+chrono.workspace = true
 clap.workspace = true
+futures.workspace = true
+hm-core = { workspace = true, features = ["sqlx", "utoipa"] }
+hm-db.workspace = true
+hm-ovsdb.workspace = true
+hm-pki.workspace = true
+hm-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
+tower-http = { workspace = true, features = ["fs", "trace"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tower-http.workspace = true
+utoipa.workspace = true
+utoipa-axum.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

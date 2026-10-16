@@ -198,3 +198,12 @@ pub async fn delete_volume(db: impl PgExecutor<'_>, id: VolumeId) -> Result<()> 
         .await?;
     Ok(())
 }
+
+pub async fn set_spec(db: impl PgExecutor<'_>, id: VmId, spec: &VmSpec) -> Result<()> {
+    sqlx::query("UPDATE vms SET spec = $2, updated_at = now() WHERE id = $1")
+        .bind(id)
+        .bind(Json(spec))
+        .execute(db)
+        .await?;
+    Ok(())
+}

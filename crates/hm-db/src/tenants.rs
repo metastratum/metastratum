@@ -123,3 +123,21 @@ pub async fn lineage(db: impl PgExecutor<'_>, id: TenantId) -> Result<Vec<Tenant
     .await?;
     Ok(rows.into_iter().map(Into::into).collect())
 }
+
+/// Looks up a direct child of `parent` (or the root, for `None`) by slug.
+pub async fn child_by_slug(
+    db: impl PgExecutor<'_>,
+    parent: Option<TenantId>,
+    slug: &str,
+) -> Result<Option<Tenant>> {
+    Ok(sqlx::query_as::<_, Row>(concat!(
+        "SELECT ",
+        tenant_columns!(),
+        " FROM tenants WHERE parent_id IS NOT DISTINCT FROM $1 AND slug = $2"
+    ))
+    .bind(parent)
+    .bind(slug)
+    .fetch_optional(db)
+    .await?
+    .map(Into::into))
+}

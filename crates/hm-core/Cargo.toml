@@ -8,11 +8,13 @@ rust-version.workspace = true
 
 [features]
 sqlx = ["dep:sqlx"]
+utoipa = ["dep:utoipa"]
 
 [dependencies]
 serde.workspace = true
 sqlx = { workspace = true, optional = true }
 thiserror.workspace = true
+utoipa = { workspace = true, optional = true }
 uuid.workspace = true
 
 [dev-dependencies]

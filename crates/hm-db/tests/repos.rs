@@ -163,3 +163,38 @@ async fn tasks_claim_lease_and_finish(pool: PgPool) {
         (TaskState::Failed, Some("boom"))
     );
 }
+
+#[sqlx::test(migrator = "hm_db::MIGRATOR")]
+async fn tasks_for_one_target_run_in_order(pool: PgPool) {
+    let root = tenants::create(&pool, None, "provider", "Provider")
+        .await
+        .unwrap();
+    let target = uuid::Uuid::now_v7();
+    let new = |target: Option<uuid::Uuid>| tasks::NewTask {
+        tenant_id: root.id,
+        kind: "noop",
+        target: target.map(|t| ("vm", t)),
+        params: serde_json::json!({}),
+        created_by: None,
+    };
+    let first = tasks::enqueue(&pool, new(Some(target))).await.unwrap();
+    let second = tasks::enqueue(&pool, new(Some(target))).await.unwrap();
+    let other = tasks::enqueue(&pool, new(None)).await.unwrap();
+
+    let lease = Duration::from_secs(30);
+    assert_eq!(
+        tasks::claim(&pool, "w", lease).await.unwrap().unwrap().id,
+        first.id
+    );
+    // `second` waits for `first`; untargeted work is not held up.
+    assert_eq!(
+        tasks::claim(&pool, "w", lease).await.unwrap().unwrap().id,
+        other.id
+    );
+    assert!(tasks::claim(&pool, "w", lease).await.unwrap().is_none());
+    tasks::finish(&pool, first.id, "w", Ok(())).await.unwrap();
+    assert_eq!(
+        tasks::claim(&pool, "w", lease).await.unwrap().unwrap().id,
+        second.id
+    );
+}

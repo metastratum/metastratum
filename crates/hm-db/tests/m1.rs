@@ -333,3 +333,73 @@ async fn vm_listing_by_subtree_and_power_observation(pool: PgPool) {
     );
     assert_eq!(vms::get(&pool, v1.id).await.unwrap().power, "running");
 }
+
+#[sqlx::test(migrator = "hm_db::MIGRATOR")]
+async fn placement_prefers_free_memory_and_skips_unavailable_hosts(pool: PgPool) {
+    let t = root(&pool).await;
+    let mk = |name: &'static str, mem: i64, kvm: bool| {
+        let pool = pool.clone();
+        async move {
+            let facts = hosts::Facts {
+                name,
+                address: "10.77.0.11",
+                cpu_count: 4,
+                memory_mib: mem,
+                cpu_model: "",
+                kvm,
+                libvirt_version: "",
+                ovn_chassis: name,
+                agent_version: "",
+            };
+            let h = hosts::create(&pool, HostId::new(), &facts, "fp", Utc::now())
+                .await
+                .unwrap();
+            hosts::set_connected(&pool, h.id, Some("replica"))
+                .await
+                .unwrap();
+            h
+        }
+    };
+    let small = mk("small", 4096, true).await;
+    let big = mk("big", 8192, true).await;
+    let nokvm = mk("nokvm", 65536, false).await;
+    let offline = mk("offline", 65536, true).await;
+    hosts::set_connected(&pool, offline.id, None).await.unwrap();
+
+    assert_eq!(
+        hosts::pick_for(&pool, 1024).await.unwrap().unwrap().id,
+        big.id
+    );
+    // Fill `big` with a 6 GiB VM: `small` now has more room.
+    let spec = VmSpec {
+        vcpus: 1,
+        memory_mib: 6144,
+        firmware: Default::default(),
+        disks: vec![],
+        nics: vec![],
+        cloud_init: None,
+    };
+    vms::create(
+        &pool,
+        vms::NewVm {
+            id: VmId::new(),
+            tenant_id: t.id,
+            name: "big-vm",
+            host_id: big.id,
+            spec: &spec,
+            desired_power: "running",
+            created_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        hosts::pick_for(&pool, 1024).await.unwrap().unwrap().id,
+        small.id
+    );
+    assert!(
+        hosts::pick_for(&pool, 5000).await.unwrap().is_none(),
+        "nothing fits"
+    );
+    let _ = nokvm;
+}
