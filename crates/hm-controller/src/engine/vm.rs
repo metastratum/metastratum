@@ -77,6 +77,7 @@ async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
                 ctx,
                 host,
                 Cmd::EnsureImage(EnsureImage {
+                    trusted: super::image_trusted(db, &image).await?,
                     image_id: image.id.to_string(),
                     source_url: image.source_url,
                     format: image.format,

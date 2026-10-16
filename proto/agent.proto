@@ -146,6 +146,9 @@ message EnsureImage {
   // "qcow2" or "raw": the format of the downloaded file.
   string format = 3;
   Pool pool = 4;
+  // Published by the provider: may come from internal (non-public)
+  // addresses. Tenants' images are only fetched from public ones.
+  bool trusted = 5;
 }
 
 // Create a volume, optionally as a copy-on-write clone of an image in the

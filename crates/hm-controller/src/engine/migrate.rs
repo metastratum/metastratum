@@ -257,6 +257,7 @@ async fn prepare(ctx: &TaskCtx, m: &Migration) -> Result<()> {
         if let Some(image) = d.image_id {
             let image = hm_db::images::get(db, image).await?;
             let cmd = EnsureImage {
+                trusted: super::image_trusted(db, &image).await?,
                 image_id: image.id.to_string(),
                 source_url: image.source_url,
                 format: image.format,

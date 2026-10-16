@@ -21,6 +21,18 @@ const RENEW_EVERY: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(500);
 const MAX_CONCURRENT: usize = 16;
 
+/// Whether an image was published by the provider (the root tenant), whose
+/// downloads may come from internal addresses; tenants' may not.
+pub(crate) async fn image_trusted(
+    db: &hm_db::sqlx::PgPool,
+    image: &hm_db::images::Image,
+) -> anyhow::Result<bool> {
+    Ok(hm_db::tenants::get(db, image.tenant_id)
+        .await?
+        .parent_id
+        .is_none())
+}
+
 /// Context handed to task handlers.
 pub struct TaskCtx {
     pub state: AppState,

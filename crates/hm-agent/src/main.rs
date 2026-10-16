@@ -45,6 +45,9 @@ struct Args {
     /// VM data: images, volumes, cloud-init seeds.
     #[arg(long, env = "HM_DATA_DIR", default_value = "/var/lib/hypermon")]
     data_dir: PathBuf,
+    /// Largest image the host downloads, in GiB.
+    #[arg(long, env = "HM_IMAGE_MAX_GIB", default_value_t = 64)]
+    image_max_gib: u64,
     #[arg(long, env = "HM_LIBVIRT_URI", default_value = "qemu:///system")]
     libvirt_uri: String,
     /// libvirt daemon socket. Defaults to virtqemud's, or libvirtd's on
@@ -108,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
         facts,
         lv: lv.clone(),
         pools,
+        max_image_bytes: args.image_max_gib << 30,
         files: vm::VmFiles {
             cloud_init_dir: args.data_dir.join("cloud-init"),
         },

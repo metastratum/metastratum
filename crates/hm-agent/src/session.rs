@@ -31,6 +31,8 @@ pub struct Agent {
     pub lv: Libvirt,
     pub pools: Arc<Pools>,
     pub files: vm::VmFiles,
+    /// Largest image download.
+    pub max_image_bytes: u64,
     /// Domain lifecycle changes from libvirt, forwarded while a session is up.
     pub changes: tokio::sync::Mutex<mpsc::Receiver<Change>>,
 }
@@ -266,7 +268,11 @@ impl Agent {
             Cmd::EnsureImage(c) => {
                 tracing::info!(image = %c.image_id, url = %c.source_url, "ensuring image");
                 let pool = self.pool(c.pool.as_ref()).await?;
-                pool.ensure_image(&c.image_id, &c.source_url, &c.format)
+                let policy = hm_storage::FetchPolicy {
+                    allow_private: c.trusted,
+                    max_bytes: self.max_image_bytes,
+                };
+                pool.ensure_image(&c.image_id, &c.source_url, &c.format, policy)
                     .await?;
             }
             Cmd::EnsureVolume(c) => {

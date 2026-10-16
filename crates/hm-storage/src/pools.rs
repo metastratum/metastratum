@@ -39,10 +39,16 @@ pub enum Pool {
 }
 
 impl Pool {
-    pub async fn ensure_image(&self, id: &str, url: &str, format: &str) -> Result<()> {
+    pub async fn ensure_image(
+        &self,
+        id: &str,
+        url: &str,
+        format: &str,
+        policy: crate::FetchPolicy,
+    ) -> Result<()> {
         match self {
-            Pool::File(p) => p.ensure_image(id, url, format).await,
-            Pool::Rbd(p) => p.ensure_image(id, url, format).await,
+            Pool::File(p) => p.ensure_image(id, url, format, policy).await,
+            Pool::Rbd(p) => p.ensure_image(id, url, format, policy).await,
         }
     }
 

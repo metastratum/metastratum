@@ -6,8 +6,11 @@
 //! every host attached to it sees the same images and volumes. [`Pools`]
 //! prepares pools on demand from the descriptions the controller sends.
 
+mod fetch;
 mod pools;
 mod rbd;
+
+pub use fetch::{FetchPolicy, is_public};
 
 pub use pools::{Pool, PoolSpec, Pools};
 pub use rbd::RbdPool;
@@ -16,9 +19,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use futures::StreamExt;
 use serde::Deserialize;
-use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +59,8 @@ pub(crate) struct ImgInfo {
     pub(crate) format: String,
     #[serde(rename = "virtual-size")]
     pub(crate) virtual_size: u64,
+    /// Checked by the tests (volumes' backing images).
+    #[cfg_attr(not(test), allow(dead_code))]
     #[serde(rename = "backing-filename")]
     pub(crate) backing_filename: Option<String>,
 }
@@ -130,10 +133,15 @@ impl FilePool {
             .clone()
     }
 
-    /// Downloads an image into the cache unless already present. Downloads
-    /// are converted to qcow2 and must not reference backing files, which a
-    /// hostile image could use to read arbitrary host files.
-    pub async fn ensure_image(&self, id: &str, url: &str, format: &str) -> Result<()> {
+    /// Downloads an image into the cache unless already present, converted
+    /// to qcow2. See [`fetch`] for what downloads may not do.
+    pub async fn ensure_image(
+        &self,
+        id: &str,
+        url: &str,
+        format: &str,
+        policy: FetchPolicy,
+    ) -> Result<()> {
         let dest = self.image_path(id)?;
         let lock = self.image_lock(id);
         let _guard = lock.lock().await;
@@ -146,7 +154,7 @@ impl FilePool {
         let part = dest.with_extension(format!("{unique}.part"));
         let converted = dest.with_extension(format!("{unique}.tmp"));
         let result = async {
-            fetch(url, format, &part, &converted, "qcow2").await?;
+            fetch(url, format, &part, &converted, "qcow2", policy).await?;
             set_mode(&converted, 0o644).await?;
             // Another host finished first: keep its copy, which running VMs
             // may already use as a backing file.
@@ -241,50 +249,28 @@ async fn set_mode(path: &Path, mode: u32) -> Result<()> {
 }
 
 /// Downloads `url` to `part`, checks it, and converts it to `out_format` at
-/// `out`. Downloads must not reference backing files, which a hostile image
-/// could use to read arbitrary host files.
+/// `out`. See [`fetch`] for what is refused.
 pub(crate) async fn fetch(
     url: &str,
     format: &str,
     part: &Path,
     out: &Path,
     out_format: &str,
+    policy: FetchPolicy,
 ) -> Result<()> {
-    download(url, part).await?;
     let declared = match format {
         "qcow2" | "raw" => format,
         other => return Err(Error::InvalidImage(format!("unsupported format {other}"))),
     };
-    let info = img_info(part, Some(declared)).await?;
-    if info.backing_filename.is_some() {
-        return Err(Error::InvalidImage(
-            "image references a backing file".into(),
-        ));
-    }
+    fetch::download(url, part, policy).await?;
+    fetch::check_untrusted(part, declared).await?;
     let (src, dst) = (part.to_string_lossy(), out.to_string_lossy());
-    run(
-        "qemu-img",
+    fetch::untrusted_qemu_img(
         &["convert", "-f", declared, "-O", out_format, &src, &dst],
+        600,
+        2 << 30,
     )
     .await?;
-    Ok(())
-}
-
-async fn download(url: &str, dest: &Path) -> Result<()> {
-    let resp = reqwest::get(url)
-        .await
-        .map_err(|e| Error::Download(e.to_string()))?;
-    if !resp.status().is_success() {
-        return Err(Error::Download(format!("{url}: HTTP {}", resp.status())));
-    }
-    let mut file = tokio::fs::File::create(dest).await?;
-    let mut body = resp.bytes_stream();
-    while let Some(chunk) = body.next().await {
-        file.write_all(&chunk.map_err(|e| Error::Download(e.to_string()))?)
-            .await?;
-    }
-    file.flush().await?;
-    file.sync_all().await?;
     Ok(())
 }
 

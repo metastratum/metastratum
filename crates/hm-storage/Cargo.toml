@@ -14,8 +14,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+url = "2"
 
 [dev-dependencies]
+rustls.workspace = true
 tokio.workspace = true
 
 [lints]
