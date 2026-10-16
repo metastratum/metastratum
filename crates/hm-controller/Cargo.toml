@@ -18,8 +18,10 @@ hm-db.workspace = true
 hm-ovsdb.workspace = true
 hm-pki.workspace = true
 hm-proto.workspace = true
+rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha-crypt = { version = "0.6", features = ["getrandom"] }
 thiserror.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true

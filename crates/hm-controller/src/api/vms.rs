@@ -141,7 +141,8 @@ pub struct CreateVm {
     #[serde(default)]
     ssh_authorized_keys: Vec<String>,
     /// Console password for the image's default user. Handy for the serial
-    /// console; prefer SSH keys otherwise.
+    /// console; prefer SSH keys otherwise. Only a SHA-512 crypt hash of it is
+    /// stored or passed to the guest.
     password: Option<String>,
     /// Complete cloud-init user data. Overrides `ssh_authorized_keys` and
     /// `password`.
@@ -192,18 +193,41 @@ fn validate(req: &CreateVm) -> ApiResult<()> {
     Ok(())
 }
 
-/// Builds `#cloud-config` user data from the convenience fields.
-fn user_data(req: &CreateVm) -> String {
+/// SHA-512 crypt (`$6$`): cloud-init recognises it as already hashed, and
+/// every Linux guest's libc can verify it. Newer schemes such as yescrypt
+/// would be mistaken for a plain-text password by cloud-init.
+fn hash_console_password(password: &str) -> ApiResult<String> {
+    // The salt is used in its crypt-base64 form. glibc and libxcrypt only
+    // use the first 16 characters of it, and 12 bytes encode to exactly 16;
+    // longer salts produce hashes guests cannot verify.
+    sha512_crypt(password, &rand::random::<[u8; 12]>())
+}
+
+fn sha512_crypt(password: &str, salt: &[u8; 12]) -> ApiResult<String> {
+    use sha_crypt::{PasswordHasher, ShaCrypt};
+    Ok(ShaCrypt::SHA512
+        .hash_password_with_salt(password.as_bytes(), salt)
+        .map_err(ApiError::internal)?
+        .to_string())
+}
+
+/// Builds `#cloud-config` user data from the convenience fields. The password
+/// is hashed here, so the plain text never reaches the database, the host or
+/// the guest's disk.
+fn user_data(req: &CreateVm) -> ApiResult<String> {
     let mut doc = serde_json::Map::new();
     if !req.ssh_authorized_keys.is_empty() {
         doc.insert("ssh_authorized_keys".into(), json!(req.ssh_authorized_keys));
     }
     if let Some(pw) = &req.password {
-        doc.insert("password".into(), json!(pw));
+        doc.insert("password".into(), json!(hash_console_password(pw)?));
         doc.insert("chpasswd".into(), json!({"expire": false}));
     }
     // JSON is valid YAML, so this needs no YAML serializer.
-    format!("#cloud-config\n{}\n", serde_json::Value::Object(doc))
+    Ok(format!(
+        "#cloud-config\n{}\n",
+        serde_json::Value::Object(doc)
+    ))
 }
 
 #[utoipa::path(post, path = "/vms", tag = "vms", request_body = CreateVm,
@@ -241,7 +265,10 @@ async fn create_vm(
         nics: vec![],
         cloud_init: Some(CloudInit {
             hostname: req.name.clone(),
-            user_data: req.user_data.clone().unwrap_or_else(|| user_data(&req)),
+            user_data: match &req.user_data {
+                Some(ud) => ud.clone(),
+                None => user_data(&req)?,
+            },
         }),
     };
     let desired = if req.start.unwrap_or(true) {
@@ -416,12 +443,29 @@ mod tests {
             "image_id": ImageId::new(), "ssh_authorized_keys": ["ssh-ed25519 AAAA x"], "password": "p'w\"d"
         }))
         .unwrap();
-        let ud = user_data(&req);
+        let ud = user_data(&req).unwrap();
         assert!(ud.starts_with("#cloud-config\n"));
+        assert!(!ud.contains("p'w"), "plain-text password leaked: {ud}");
         let body: serde_json::Value = serde_json::from_str(ud.lines().nth(1).unwrap()).unwrap();
-        assert_eq!(body["password"], "p'w\"d");
+        let hash = body["password"].as_str().unwrap();
+        assert!(hash.starts_with("$6$"), "{hash}");
+        use sha_crypt::{PasswordVerifier, ShaCrypt};
+        ShaCrypt::SHA512.verify_password(b"p'w\"d", hash).unwrap();
+        assert!(ShaCrypt::SHA512.verify_password(b"wrong", hash).is_err());
         assert_eq!(body["chpasswd"]["expire"], false);
         assert_eq!(body["ssh_authorized_keys"][0], "ssh-ed25519 AAAA x");
+    }
+
+    /// Reference output of libxcrypt's crypt(3) for this password and salt:
+    /// guests must be able to verify what we generate.
+    #[test]
+    fn sha512_crypt_matches_libc() {
+        assert_eq!(
+            sha512_crypt("Hello world!", b"hypermon-tst").unwrap(),
+            "$6$rounds=5000$cZ5QZ7LPjtK9oB5R$UAT4RtNALKwwMv9mrWoeiJ9W.foUnFZ2.6CPksejgVrFtT8PPnb.0XpYumaWmlz25PQm5bfMLlL3ISB.T.c6o0"
+        );
+        let random = hash_console_password("x").unwrap();
+        assert_eq!(random.split('$').nth(3).unwrap().len(), 16, "{random}");
     }
 
     #[test]

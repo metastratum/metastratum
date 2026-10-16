@@ -24,16 +24,34 @@ async fn vm_lifecycle_consoles_and_network() -> anyhow::Result<()> {
     let Some(api) = hm_e2e::connect().await? else {
         return Ok(());
     };
-    let image = api.image().await?;
     let run = format!(
-        "{:x}",
+        "e2e-{:x}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs()
     );
+    let result = scenario(&api, &run).await;
+    // Remove this run's VMs even if the scenario failed half-way.
+    if let Ok(vms) = api.get("/vms").await {
+        for vm in vms.as_array().into_iter().flatten() {
+            if vm["name"].as_str().is_some_and(|n| n.starts_with(&run)) {
+                let _ = api
+                    .send(
+                        reqwest::Method::DELETE,
+                        &format!("/vms/{}", vm["id"].as_str().unwrap()),
+                        None,
+                    )
+                    .await;
+            }
+        }
+    }
+    result
+}
 
-    let a = create(&api, &image, &format!("e2e-{run}-a")).await?;
-    let b = create(&api, &image, &format!("e2e-{run}-b")).await?;
+async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
+    let image = api.image().await?;
+    let a = create(api, &image, &format!("{run}-a")).await?;
+    let b = create(api, &image, &format!("{run}-b")).await?;
     let (a_id, b_id) = (a["id"].as_str().unwrap(), b["id"].as_str().unwrap());
     let b_ip = b["nics"][0]["ip"].as_str().unwrap().to_owned();
     for id in [a_id, b_id] {
