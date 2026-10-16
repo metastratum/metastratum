@@ -137,13 +137,17 @@ async fn create_tenant(
             "slug must be 1-63 lowercase letters, digits or hyphens, not starting or ending with a hyphen",
         ));
     }
+    let mut tx = state.db.begin().await?;
     let t = hm_db::tenants::create(
-        &state.db,
+        &mut *tx,
         Some(req.parent_id),
         &req.slug,
         valid_name(&req.name)?,
     )
     .await?;
+    // Every tenant starts with a default security group for its VMs.
+    hm_db::netsec::default_group(&mut tx, t.id).await?;
+    tx.commit().await?;
     audit(
         &state.db,
         Some(&p),
@@ -208,14 +212,11 @@ async fn delete_tenant(
             what.join(", ")
         )));
     }
-    for net in hm_db::networks::list(&state.db, id).await? {
-        state
-            .nb
-            .delete_network(&net.id.to_string())
-            .await
-            .map_err(ApiError::internal)?;
-    }
-    hm_db::tenants::delete(&state.db, id).await?;
+    let mut tx = state.db.begin().await?;
+    hm_db::tenants::delete(&mut tx, id).await?;
+    tx.commit().await?;
+    // Its networks leave OVN in the next pass.
+    state.net.kick();
     audit(
         &state.db,
         Some(&p),
@@ -312,6 +313,9 @@ async fn set_quotas(
 pub struct Grants {
     clusters: Vec<Uuid>,
     storage_pools: Vec<Uuid>,
+    /// Networks the tenant's VPCs may route to and take floating IPs from.
+    #[serde(default)]
+    external_networks: Vec<Uuid>,
 }
 
 #[utoipa::path(get, path = "/tenants/{id}/grants", tag = "tenants", params(("id" = TenantId, Path)),
@@ -325,6 +329,7 @@ async fn get_grants(
     Ok(Json(Grants {
         clusters: hm_db::grants::list(&state.db, id, "cluster").await?,
         storage_pools: hm_db::grants::list(&state.db, id, "storage_pool").await?,
+        external_networks: hm_db::grants::list(&state.db, id, "external_network").await?,
     }))
 }
 
@@ -351,9 +356,13 @@ async fn set_grants(
             ));
         }
     }
+    for e in &req.external_networks {
+        hm_db::external::get(&state.db, hm_core::ids::ExternalNetworkId(*e)).await?;
+    }
     let mut tx = state.db.begin().await?;
     hm_db::grants::set(&mut tx, id, "cluster", &req.clusters).await?;
     hm_db::grants::set(&mut tx, id, "storage_pool", &req.storage_pools).await?;
+    hm_db::grants::set(&mut tx, id, "external_network", &req.external_networks).await?;
     tx.commit().await?;
     audit(
         &state.db,

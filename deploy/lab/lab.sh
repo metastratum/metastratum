@@ -11,7 +11,10 @@
 #   hm-lab  10.77.0.0/24  management + Geneve underlay (NAT to the internet)
 #   hm-ext  10.78.0.0/24  "external" provider network for floating IPs (NAT)
 #
-# Usage: deploy/lab/lab.sh up | down | status | ceph | ssh <vm> [cmd...] | ip <vm>
+# Usage: deploy/lab/lab.sh up | down | status | ceph | testdb | ssh <vm> [cmd...] | ip <vm>
+#
+#   testdb  (re)starts an empty, unused OVN northbound database on
+#           tcp:10.77.0.10:6651 for integration tests (HM_TEST_OVN_NB_SCRATCH)
 #
 # Requirements: libvirt system daemon (virtqemud) running, the invoking user
 # in the `libvirt` group, nested virtualisation enabled, genisoimage, curl.
@@ -300,6 +303,20 @@ REMOTE
   printf '  {"monitors": ["10.77.0.10:6789"], "pool": "hypermon", "user": "hypermon", "key": "%s"}\n' "$key"
 }
 
+cmd_testdb() {
+  log "starting a scratch OVN northbound database on tcp:10.77.0.10:6651"
+  ssh_vm hm-ctl sudo bash -s <<'REMOTE'
+set -euo pipefail
+systemctl stop hm-test-nb 2>/dev/null || true
+systemctl reset-failed hm-test-nb 2>/dev/null || true
+rm -rf /run/hm-test-nb && mkdir -p /run/hm-test-nb
+ovsdb-tool create /run/hm-test-nb/nb.db /usr/share/ovn/ovn-nb.ovsschema
+systemd-run --unit hm-test-nb --quiet \
+  ovsdb-server /run/hm-test-nb/nb.db --remote=ptcp:6651:10.77.0.10 \
+  --unixctl=/run/hm-test-nb/ctl --no-chdir --log-file=/run/hm-test-nb/log
+REMOTE
+}
+
 cmd_down() {
   local line name
   for line in "${VMS[@]}"; do
@@ -331,9 +348,10 @@ main() {
     down) cmd_down ;;
     status) cmd_status ;;
     ceph) cmd_ceph ;;
+    testdb) cmd_testdb ;;
     ssh) shift; ssh_vm "$@" ;;
     ip) vm_field "$2" 1 ;;
-    *) sed -n '2,20p' "$0"; exit 1 ;;
+    *) sed -n '2,23p' "$0"; exit 1 ;;
   esac
 }
 

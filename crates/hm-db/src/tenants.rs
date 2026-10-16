@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use hm_core::ids::TenantId;
 use hm_core::tenant::TenantPath;
-use sqlx::PgExecutor;
+use sqlx::{PgConnection, PgExecutor};
 
 use crate::{Result, conflict_on_unique};
 
@@ -169,13 +169,20 @@ pub async fn contents(db: impl PgExecutor<'_>, id: TenantId) -> Result<Vec<(Stri
         .collect())
 }
 
-/// Deletes a tenant with its users, role bindings, networks, quotas and
-/// grants. Callers check it is empty first (see [`contents`]).
-pub async fn delete(db: impl PgExecutor<'_>, id: TenantId) -> Result<()> {
-    sqlx::query("DELETE FROM tenants WHERE id = $1")
-        .bind(id)
-        .execute(db)
-        .await?;
+/// Deletes a tenant with its users, role bindings, quotas, grants and network
+/// configuration (VPCs, networks, security groups, floating IPs, policies).
+/// Callers check it holds nothing else first (see [`contents`]); with no VMs
+/// left, nothing is connected to its networks.
+pub async fn delete(db: &mut PgConnection, id: TenantId) -> Result<()> {
+    for sql in [
+        "DELETE FROM external_ips WHERE tenant_id = $1",
+        "DELETE FROM networks WHERE tenant_id = $1",
+        "DELETE FROM vpcs WHERE tenant_id = $1",
+        "DELETE FROM security_groups WHERE tenant_id = $1",
+        "DELETE FROM tenants WHERE id = $1",
+    ] {
+        sqlx::query(sql).bind(id).execute(&mut *db).await?;
+    }
     Ok(())
 }
 

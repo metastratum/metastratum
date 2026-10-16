@@ -171,6 +171,99 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A stream of changes the caller can see, as `text/event-stream`. Each event
+         *     is named for the kind of thing that changed (`vm`, `task`, `host`, `image`,
+         *     `tenant`, `cluster`, `storage_pool`, `vpc`, `network`, `security_group`,
+         *     `external_ip`, `network_policy`, `external_network`) and carries `{"id", "op"}`; fetch it
+         *     through the API to see what changed. `resync` means changes may have been
+         *     missed and everything shown should be refetched; it is also the first
+         *     event, so a reconnecting client catches up.
+         */
+        get: operations["events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/external-networks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/external-networks/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Renames the network or changes its pool. Addresses already handed out
+         *     stay, even outside a narrowed pool.
+         */
+        put: operations["update"];
+        post?: never;
+        delete: operations["delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/floating-ips": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        post: operations["allocate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/floating-ips/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["release"];
+        options?: never;
+        head?: never;
+        patch: operations["update"];
+        trace?: never;
+    };
     "/api/v1/hosts": {
         parameters: {
             query?: never;
@@ -253,6 +346,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/network-policies/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_policy"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/networks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_networks"];
+        put?: never;
+        post: operations["create_network"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/networks/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_network"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/role-bindings": {
         parameters: {
             query?: never;
@@ -284,6 +425,70 @@ export interface paths {
         put?: never;
         post?: never;
         delete: operations["delete_binding"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security-group-rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_rule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security-groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_groups"];
+        put?: never;
+        post: operations["create_group"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security-groups/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_group"];
+        options?: never;
+        head?: never;
+        patch: operations["update_group"];
+        trace?: never;
+    };
+    "/api/v1/security-groups/{id}/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["add_rule"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -407,6 +612,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tenants/{id}/external-networks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** External networks the tenant's VPCs may route to. */
+        get: operations["usable"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tenants/{id}/grants": {
         parameters: {
             query?: never;
@@ -442,6 +664,26 @@ export interface paths {
         put: operations["put_provider"];
         post?: never;
         delete: operations["delete_provider"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{id}/network-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Guardrails that apply to a tenant's VMs: its own and its ancestors'.
+         *     They deny, and no security group can allow what they deny.
+         */
+        get: operations["list_policies"];
+        put?: never;
+        post: operations["create_policy"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -632,6 +874,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/vms/{id}/nics/{nic}/security-groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Changes which security groups apply to a NIC. Takes effect at once; the
+         *     VM keeps running.
+         */
+        put: operations["set_nic_groups"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/vms/{id}/reboot": {
         parameters: {
             query?: never;
@@ -680,6 +942,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/vpcs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_vpcs"];
+        put?: never;
+        post: operations["create_vpc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vpcs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_vpc"];
+        options?: never;
+        head?: never;
+        patch: operations["update_vpc"];
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -708,7 +1002,7 @@ export interface components {
             /** Format: int64 */
             memory_mib: number;
             name: string;
-            nics: components["schemas"]["NicSpec"][];
+            nics: components["schemas"]["NicView"][];
             /**
              * @description What the host last reported: `running`, `stopped`, `paused`,
              *     `crashed`, `shutting_down`, `missing` or `unknown`.
@@ -734,6 +1028,11 @@ export interface components {
             vcpus: number;
         } & {
             task_id: components["schemas"]["TaskId"];
+        };
+        AllocateFloatingIp: {
+            external_network_id: components["schemas"]["ExternalNetworkId"];
+            nic_id?: components["schemas"]["NicId"] | null;
+            tenant_id?: components["schemas"]["TenantId"] | null;
         };
         AuditEntry: {
             /** @description E.g. `vm.create`, `role.bind`, `auth.login`. */
@@ -817,6 +1116,21 @@ export interface components {
             tenant_id: components["schemas"]["TenantId"];
             user_id: components["schemas"]["UserId"];
         };
+        CreateExternalNetwork: {
+            /** @description e.g. `203.0.113.0/24`. */
+            cidr: string;
+            /** @description The upstream router; default the first address. */
+            gateway?: string | null;
+            name: string;
+            physical_network: string;
+            pool_end: string;
+            pool_start: string;
+        };
+        CreateGroup: {
+            description?: string;
+            name: string;
+            tenant_id?: components["schemas"]["TenantId"] | null;
+        };
         CreateImage: {
             /** @description `qcow2` or `raw`. */
             format: string;
@@ -833,6 +1147,14 @@ export interface components {
              * @description Validity in minutes (default 60, max 1440).
              */
             ttl_minutes?: number | null;
+        };
+        CreateNetwork: {
+            /** @description e.g. `10.1.0.0/24`; /16 to /29, not overlapping the VPC's others. */
+            cidr: string;
+            /** @description The router's address in the network; default the first one. */
+            gateway?: string | null;
+            name: string;
+            vpc_id: components["schemas"]["VpcId"];
         };
         CreateTenant: {
             name: string;
@@ -870,12 +1192,18 @@ export interface components {
             memory_mib: number;
             /** @description DNS-style label, unique within the tenant. */
             name: string;
+            network_id?: components["schemas"]["NetworkId"] | null;
             /**
              * @description Console password for the image's default user. Handy for the serial
              *     console; prefer SSH keys otherwise. Only a SHA-512 crypt hash of it is
              *     stored or passed to the guest.
              */
             password?: string | null;
+            /**
+             * @description Security groups for the NIC (the tenant's own); its `default` group
+             *     otherwise. An empty list blocks all traffic but DHCP.
+             */
+            security_group_ids?: components["schemas"]["SecurityGroupId"][] | null;
             /** @description SSH public keys for the image's default user. */
             ssh_authorized_keys?: string[];
             /** @description Start the VM once created (default true). */
@@ -890,6 +1218,11 @@ export interface components {
             /** Format: int32 */
             vcpus: number;
         };
+        CreateVpc: {
+            external_network_id?: components["schemas"]["ExternalNetworkId"] | null;
+            name: string;
+            tenant_id?: components["schemas"]["TenantId"] | null;
+        };
         DiskSpec: {
             image_id?: components["schemas"]["ImageId"] | null;
             /**
@@ -901,10 +1234,48 @@ export interface components {
             size_bytes: number;
             volume_id: components["schemas"]["VolumeId"];
         };
+        /** Format: uuid */
+        ExternalIpId: string;
+        /** Format: uuid */
+        ExternalNetworkId: string;
+        ExternalNetworkView: {
+            cidr: string;
+            /** Format: date-time */
+            created_at: string;
+            gateway: string;
+            /** @description Hosts that reach the physical network (and so can be gateways). */
+            hosts: string[];
+            id: components["schemas"]["ExternalNetworkId"];
+            name: string;
+            /** @description Name in the hosts' `ovn-bridge-mappings`. */
+            physical_network: string;
+            pool_end: string;
+            /** @description The range hypermon hands out (VPC gateways, floating IPs). */
+            pool_start: string;
+            /**
+             * Format: int64
+             * @description Addresses handed out.
+             */
+            used: number;
+        };
         /** @enum {string} */
         Firmware: "bios" | "uefi";
+        FloatingIpView: {
+            /** Format: date-time */
+            created_at: string;
+            external_network_id: components["schemas"]["ExternalNetworkId"];
+            external_network_name: string;
+            id: components["schemas"]["ExternalIpId"];
+            ip: string;
+            nic_id?: components["schemas"]["NicId"] | null;
+            tenant_id: components["schemas"]["TenantId"];
+            vm_id?: components["schemas"]["VmId"] | null;
+            vm_name?: string | null;
+        };
         Grants: {
             clusters: string[];
+            /** @description Networks the tenant's VPCs may route to and take floating IPs from. */
+            external_networks?: string[];
             storage_pools: string[];
         };
         /** Format: uuid */
@@ -932,6 +1303,11 @@ export interface components {
             memory_mib: number;
             name: string;
             ovn_chassis: string;
+            /**
+             * @description Physical networks the host reaches; external networks on them can
+             *     have their gateways here.
+             */
+            physical_networks: string[];
             /** @description `ready`, `maintenance` or `decommissioned`. */
             state: string;
             vm_count: number;
@@ -994,19 +1370,63 @@ export interface components {
         };
         /** Format: uuid */
         NetworkId: string;
+        NetworkView: {
+            cidr: string;
+            /** Format: date-time */
+            created_at: string;
+            gateway: string;
+            id: components["schemas"]["NetworkId"];
+            name: string;
+            /**
+             * Format: int64
+             * @description Connected NICs.
+             */
+            ports: number;
+            tenant_id: components["schemas"]["TenantId"];
+            vpc_id: components["schemas"]["VpcId"];
+        };
         NewToken: components["schemas"]["TokenView"] & {
             /** @description Send as `Authorization: Bearer <token>`. Shown only once. */
             token: string;
         };
+        NicGroups: {
+            /** @description Replaces the NIC's groups. An empty list blocks all traffic but DHCP. */
+            security_group_ids: components["schemas"]["SecurityGroupId"][];
+        };
         /** Format: uuid */
         NicId: string;
-        NicSpec: {
-            /** @description Also the OVN logical switch port name and OVS iface-id. */
+        NicView: {
+            /** @description The floating IP forwarding to this NIC, if any. */
+            floating_ip?: string | null;
+            floating_ip_id?: components["schemas"]["ExternalIpId"] | null;
             id: components["schemas"]["NicId"];
             /** Format: ipv4 */
             ip: string;
             mac: string;
             network_id: components["schemas"]["NetworkId"];
+            network_name?: string | null;
+            /** @description What traffic the NIC passes; none passes nothing. */
+            security_group_ids: components["schemas"]["SecurityGroupId"][];
+        };
+        /** Format: uuid */
+        PolicyId: string;
+        PolicyView: {
+            /** Format: date-time */
+            created_at: string;
+            description: string;
+            direction: string;
+            id: components["schemas"]["PolicyId"];
+            /** @description Set by a tenant above this one: it cannot be changed from here. */
+            inherited: boolean;
+            /** Format: int32 */
+            port_max?: number | null;
+            /** Format: int32 */
+            port_min?: number | null;
+            protocol: string;
+            remote_cidr: string;
+            /** @description The tenant that set it; it covers that tenant's whole subtree. */
+            tenant_id: components["schemas"]["TenantId"];
+            tenant_name: string;
         };
         PoolSpec: {
             cluster_ids: components["schemas"]["ClusterId"][];
@@ -1078,6 +1498,62 @@ export interface components {
             tenant_id: components["schemas"]["TenantId"];
             tenant_name: string;
         };
+        /** @description Traffic to match. Ports apply to tcp and udp only. */
+        RuleSpec: {
+            description?: string;
+            /** @description `ingress` (to the VM) or `egress` (from it). */
+            direction: string;
+            /**
+             * Format: int32
+             * @description Defaults to `port_min`.
+             */
+            port_max?: number | null;
+            /** Format: int32 */
+            port_min?: number | null;
+            /** @description `any`, `tcp`, `udp` or `icmp`. */
+            protocol: string;
+            /**
+             * @description The other end, e.g. `0.0.0.0/0`. For rules, give this or
+             *     `remote_group_id`; for policies it defaults to anywhere.
+             */
+            remote_cidr?: string | null;
+            remote_group_id?: components["schemas"]["SecurityGroupId"] | null;
+        };
+        RuleView: {
+            description: string;
+            direction: string;
+            id: components["schemas"]["SecurityRuleId"];
+            /** Format: int32 */
+            port_max?: number | null;
+            /** Format: int32 */
+            port_min?: number | null;
+            protocol: string;
+            remote_cidr?: string | null;
+            remote_group_id?: components["schemas"]["SecurityGroupId"] | null;
+            remote_group_name?: string | null;
+        };
+        /** Format: uuid */
+        SecurityGroupId: string;
+        SecurityGroupView: {
+            /** Format: date-time */
+            created_at: string;
+            description: string;
+            id: components["schemas"]["SecurityGroupId"];
+            /**
+             * Format: int64
+             * @description NICs in the group.
+             */
+            members: number;
+            name: string;
+            /**
+             * @description What the group allows; anything else is dropped. Replies to allowed
+             *     traffic are always allowed.
+             */
+            rules: components["schemas"]["RuleView"][];
+            tenant_id: components["schemas"]["TenantId"];
+        };
+        /** Format: uuid */
+        SecurityRuleId: string;
         /** Format: uuid */
         StoragePoolId: string;
         /** Format: uuid */
@@ -1135,6 +1611,18 @@ export interface components {
             last_used_at?: string | null;
             name: string;
         };
+        UpdateExternalNetwork: {
+            name: string;
+            pool_end: string;
+            pool_start: string;
+        };
+        UpdateFloatingIp: {
+            nic_id?: components["schemas"]["NicId"] | null;
+        };
+        UpdateGroup: {
+            description?: string | null;
+            name?: string | null;
+        };
         UpdateHost: {
             /**
              * Format: uuid
@@ -1158,8 +1646,21 @@ export interface components {
             email?: string | null;
             password?: string | null;
         };
+        UpdateVpc: {
+            /**
+             * Format: uuid
+             * @description Route to this external network; `null` disconnects the VPC.
+             */
+            external_network_id?: string | null;
+            name?: string | null;
+        };
         UsableCluster: {
             id: components["schemas"]["ClusterId"];
+            name: string;
+        };
+        UsableExternalNetwork: {
+            cidr: string;
+            id: components["schemas"]["ExternalNetworkId"];
             name: string;
         };
         UsablePool: {
@@ -1207,7 +1708,7 @@ export interface components {
             /** Format: int64 */
             memory_mib: number;
             name: string;
-            nics: components["schemas"]["NicSpec"][];
+            nics: components["schemas"]["NicView"][];
             /**
              * @description What the host last reported: `running`, `stopped`, `paused`,
              *     `crashed`, `shutting_down`, `missing` or `unknown`.
@@ -1234,6 +1735,20 @@ export interface components {
         };
         /** Format: uuid */
         VolumeId: string;
+        /** Format: uuid */
+        VpcId: string;
+        VpcView: {
+            /** Format: date-time */
+            created_at: string;
+            external_network_id?: components["schemas"]["ExternalNetworkId"] | null;
+            external_network_name?: string | null;
+            /** @description The VPC's address on the external network (its SNAT address). */
+            gateway_ip?: string | null;
+            id: components["schemas"]["VpcId"];
+            name: string;
+            networks: components["schemas"]["NetworkView"][];
+            tenant_id: components["schemas"]["TenantId"];
+        };
     };
     responses: never;
     parameters: never;
@@ -1589,6 +2104,323 @@ export interface operations {
             };
         };
     };
+    events: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Server-Sent Events */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": unknown;
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalNetworkView"][];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateExternalNetwork"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalNetworkView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["ExternalNetworkId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateExternalNetwork"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalNetworkView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["ExternalNetworkId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Still in use */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: {
+                /** @description Defaults to the caller's tenant. */
+                tenant_id?: components["schemas"]["TenantId"];
+                descendants?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FloatingIpView"][];
+                };
+            };
+        };
+    };
+    allocate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AllocateFloatingIp"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FloatingIpView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    release: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["ExternalIpId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["ExternalIpId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateFloatingIp"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FloatingIpView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_hosts: {
         parameters: {
             query?: never;
@@ -1773,6 +2605,140 @@ export interface operations {
             };
         };
     };
+    delete_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["PolicyId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_networks: {
+        parameters: {
+            query?: {
+                /** @description Defaults to the caller's tenant. */
+                tenant_id?: components["schemas"]["TenantId"];
+                /** @description Include those of all sub-tenants. */
+                descendants?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkView"][];
+                };
+            };
+        };
+    };
+    create_network: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateNetwork"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_network: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["NetworkId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description VMs still connected */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     create_binding: {
         parameters: {
             query?: never;
@@ -1844,6 +2810,219 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["SecurityRuleId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_groups: {
+        parameters: {
+            query?: {
+                /** @description Defaults to the caller's tenant. */
+                tenant_id?: components["schemas"]["TenantId"];
+                descendants?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityGroupView"][];
+                };
+            };
+        };
+    };
+    create_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateGroup"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityGroupView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["SecurityGroupId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description In use */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["SecurityGroupId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateGroup"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityGroupView"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    add_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["SecurityGroupId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RuleSpec"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityGroupView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2239,6 +3418,33 @@ export interface operations {
             };
         };
     };
+    usable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsableExternalNetwork"][];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     get_grants: {
         parameters: {
             query?: never;
@@ -2391,6 +3597,70 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_policies: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyView"][];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RuleSpec"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyView"][];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2919,6 +4189,50 @@ export interface operations {
             };
         };
     };
+    set_nic_groups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+                nic: components["schemas"]["NicId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NicGroups"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     reboot_vm: {
         parameters: {
             query?: never;
@@ -2982,6 +4296,158 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["TaskRef"];
                 };
+            };
+        };
+    };
+    list_vpcs: {
+        parameters: {
+            query?: {
+                /** @description Defaults to the caller's tenant. */
+                tenant_id?: components["schemas"]["TenantId"];
+                /** @description Include those of all sub-tenants. */
+                descendants?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VpcView"][];
+                };
+            };
+        };
+    };
+    create_vpc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateVpc"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VpcView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_vpc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VpcId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Still has networks */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_vpc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VpcId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateVpc"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VpcView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

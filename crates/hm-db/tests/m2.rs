@@ -58,6 +58,7 @@ async fn host(pool: &PgPool) -> HostId {
         libvirt_version: "",
         ovn_chassis: "",
         agent_version: "",
+        physical_networks: &[],
     };
     hosts::create(pool, HostId::new(), &f, "fp", Utc::now())
         .await
@@ -430,7 +431,9 @@ async fn audit_entries_are_scoped_to_subtrees_and_outlive_tenants(pool: PgPool) 
         2
     );
 
-    tenants::delete(&pool, t.dev.id).await.unwrap();
+    tenants::delete(&mut pool.acquire().await.unwrap(), t.dev.id)
+        .await
+        .unwrap();
     assert_eq!(
         audit::list(&pool, t.acme.id, None, 50).await.unwrap().len(),
         2,

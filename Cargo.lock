@@ -1231,6 +1231,7 @@ dependencies = [
  "hm-authz",
  "hm-core",
  "hm-db",
+ "hm-netplan",
  "hm-ovsdb",
  "hm-pki",
  "hm-proto",
@@ -1271,6 +1272,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "hm-core",
+ "hm-netplan",
  "serde",
  "serde_json",
  "sqlx",
@@ -1303,6 +1305,16 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "hm-netplan"
+version = "0.1.0"
+dependencies = [
+ "hm-ovsdb",
+ "serde_json",
+ "tokio",
  "uuid",
 ]
 

@@ -40,13 +40,28 @@ fn hostname() -> String {
 
 /// The OVN chassis name (`external_ids:system-id`), if OVS is configured.
 async fn ovn_chassis() -> String {
+    ovs_external_id("system-id").await
+}
+
+/// Physical networks from `external_ids:ovn-bridge-mappings`
+/// (`physnet:bridge,...`).
+async fn physical_networks() -> Vec<String> {
+    ovs_external_id("ovn-bridge-mappings")
+        .await
+        .split(',')
+        .filter_map(|m| m.split_once(':').map(|(net, _)| net.trim().to_owned()))
+        .filter(|n| !n.is_empty())
+        .collect()
+}
+
+async fn ovs_external_id(key: &str) -> String {
     let out = tokio::process::Command::new("ovs-vsctl")
         .args([
             "--if-exists",
             "get",
             "Open_vSwitch",
             ".",
-            "external_ids:system-id",
+            &format!("external_ids:{key}"),
         ])
         .output()
         .await;
@@ -70,6 +85,7 @@ pub async fn gather(lv: &Libvirt, address: IpAddr) -> Result<HostFacts> {
         kvm: std::path::Path::new("/dev/kvm").exists(),
         libvirt_version: node.libvirt_version,
         ovn_chassis: ovn_chassis().await,
+        physical_networks: physical_networks().await,
         agent_version: crate::VERSION.to_owned(),
     })
 }

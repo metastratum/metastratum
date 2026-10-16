@@ -5,4 +5,4 @@ pub mod client;
 pub mod nb;
 
 pub use client::{Client, Error, Result};
-pub use nb::{NetworkSpec, Northbound, PortSpec};
+pub use nb::Northbound;

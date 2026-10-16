@@ -40,6 +40,7 @@ async fn host(pool: &PgPool) -> hosts::Host {
         libvirt_version: "11.3.0",
         ovn_chassis: "hm-host1",
         agent_version: "0.1.0",
+        physical_networks: &[],
     };
     hosts::create(pool, HostId::new(), &facts, "fp", Utc::now())
         .await
@@ -99,10 +100,8 @@ async fn ip_allocation_is_ordered_skips_gateway_and_exhausts(pool: PgPool) {
 
     // A /29 has 6 usable addresses; minus the gateway leaves 5.
     let small = NetworkId::new();
-    sqlx::query("INSERT INTO networks (id, tenant_id, name, cidr, gateway) VALUES ($1, $2, 'small', '192.168.5.0/29', '192.168.5.1')")
-        .bind(small)
-        .bind(t.id)
-        .execute(&pool)
+    let vpc = networks::get_vpc(&pool, net.vpc_id).await.unwrap();
+    networks::create(&pool, small, &vpc, "small", "192.168.5.0/29", "192.168.5.1")
         .await
         .unwrap();
     let mut ips = vec![];

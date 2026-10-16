@@ -53,38 +53,13 @@ async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
     let spec = &vm.spec.0;
 
     ctx.step("network", 0.1).await;
-    for nic in &spec.nics {
-        let net = hm_db::networks::get(db, nic.network_id).await?;
-        let (net_id, tenant, vm_id) = (
-            net.id.to_string(),
-            net.tenant_id.to_string(),
-            vm.id.to_string(),
-        );
-        ctx.state
-            .nb
-            .ensure_network(&hm_ovsdb::NetworkSpec {
-                id: &net_id,
-                tenant_id: &tenant,
-                cidr: &net.cidr,
-                gateway: &net.gateway,
-                mtu: hm_ovsdb::nb::DEFAULT_MTU,
-            })
-            .await
-            .context("creating OVN network")?;
-        let (nic_id, ip) = (nic.id.to_string(), nic.ip.to_string());
-        ctx.state
-            .nb
-            .ensure_port(&hm_ovsdb::PortSpec {
-                name: &nic_id,
-                network_id: &net_id,
-                tenant_id: &tenant,
-                vm_id: &vm_id,
-                mac: &nic.mac,
-                ip: &ip,
-            })
-            .await
-            .context("creating OVN port")?;
-    }
+    // The VM's ports, security groups and addresses are in the database;
+    // have OVN implement them before the VM plugs in.
+    ctx.state
+        .net
+        .sync()
+        .await
+        .context("programming the network")?;
 
     let mut pools = std::collections::BTreeMap::new();
     for disk in &spec.disks {
@@ -251,13 +226,11 @@ pub async fn delete(ctx: &TaskCtx) -> Result<()> {
     }
 
     ctx.step("network", 0.8).await;
-    for nic in hm_db::networks::nics_for_vm(db, id).await? {
-        ctx.state
-            .nb
-            .delete_port(&nic.id.to_string())
-            .await
-            .context("removing OVN port")?;
-    }
+    // Deleting the VM deletes its NICs; their ports go in the next pass.
     hm_db::vms::delete(db, id).await?;
+    if let Err(e) = ctx.state.net.sync().await {
+        tracing::warn!(vm = %id, error = %format!("{e:#}"), "removing the VM's ports; retrying in the background");
+        ctx.state.net.kick();
+    }
     Ok(())
 }

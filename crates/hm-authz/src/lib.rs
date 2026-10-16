@@ -33,6 +33,12 @@ pub enum Perm {
     VmConsole,
     ImageRead,
     ImageWrite,
+    /// See VPCs, networks, security groups and floating IPs.
+    NetworkRead,
+    /// Change them.
+    NetworkWrite,
+    /// Set guardrail policies for the tenant's subtree.
+    PolicyWrite,
     TaskRead,
     AuditRead,
     /// Hosts, clusters and storage pools. Checked on the root tenant.
@@ -74,12 +80,14 @@ impl Role {
                     | VmConsole
                     | ImageRead
                     | ImageWrite
+                    | NetworkRead
+                    | NetworkWrite
                     | TaskRead
                     | InfraRead
             ),
             Role::Viewer => matches!(
                 perm,
-                TenantRead | UserRead | VmRead | ImageRead | TaskRead | InfraRead
+                TenantRead | UserRead | VmRead | ImageRead | NetworkRead | TaskRead | InfraRead
             ),
         }
     }

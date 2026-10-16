@@ -7,8 +7,20 @@ export type Role = 'admin' | 'operator' | 'viewer'
 /** What each built-in role may do; mirrors hm-authz. */
 const ROLE_PERMS: Record<Role, ReadonlySet<string>> = {
   admin: new Set(['*']),
-  operator: new Set(['tenant.read', 'user.read', 'vm.read', 'vm.write', 'vm.console', 'image.read', 'image.write', 'task.read', 'infra.read']),
-  viewer: new Set(['tenant.read', 'user.read', 'vm.read', 'image.read', 'task.read', 'infra.read']),
+  operator: new Set([
+    'tenant.read',
+    'user.read',
+    'vm.read',
+    'vm.write',
+    'vm.console',
+    'image.read',
+    'image.write',
+    'network.read',
+    'network.write',
+    'task.read',
+    'infra.read',
+  ]),
+  viewer: new Set(['tenant.read', 'user.read', 'vm.read', 'image.read', 'network.read', 'task.read', 'infra.read']),
 }
 const RANK: Record<Role, number> = { admin: 3, operator: 2, viewer: 1 }
 

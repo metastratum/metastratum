@@ -3,8 +3,35 @@ import { onMounted, onUnmounted, watch } from 'vue'
 import { useSession } from './session'
 
 /** Kinds of things the controller announces changes to. */
-export type Kind = 'vm' | 'task' | 'host' | 'image' | 'tenant' | 'cluster' | 'storage_pool'
-const KINDS: Kind[] = ['vm', 'task', 'host', 'image', 'tenant', 'cluster', 'storage_pool']
+export type Kind =
+  | 'vm'
+  | 'task'
+  | 'host'
+  | 'image'
+  | 'tenant'
+  | 'cluster'
+  | 'storage_pool'
+  | 'vpc'
+  | 'network'
+  | 'security_group'
+  | 'external_ip'
+  | 'network_policy'
+  | 'external_network'
+const KINDS: Kind[] = [
+  'vm',
+  'task',
+  'host',
+  'image',
+  'tenant',
+  'cluster',
+  'storage_pool',
+  'vpc',
+  'network',
+  'security_group',
+  'external_ip',
+  'network_policy',
+  'external_network',
+]
 
 /** A change: which one, and whether it was inserted, updated or deleted. */
 export type Notice = { kind: Kind; id: string; op: 'insert' | 'update' | 'delete' }

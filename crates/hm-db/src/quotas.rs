@@ -11,21 +11,23 @@ use sqlx::{PgConnection, PgExecutor};
 
 use crate::Result;
 
-pub const RESOURCES: [&str; 4] = ["vms", "vcpus", "memory_mib", "disk_gib"];
+pub const RESOURCES: [&str; 5] = ["vms", "vcpus", "memory_mib", "disk_gib", "floating_ips"];
 const GIB: i64 = 1 << 30;
 
-/// Amounts per resource (`vms`, `vcpus`, `memory_mib`, `disk_gib`).
+/// Amounts per resource (`vms`, `vcpus`, `memory_mib`, `disk_gib`,
+/// `floating_ips`).
 pub type Amounts = BTreeMap<String, i64>;
 
 /// What a tenant's subtree currently uses.
 pub async fn usage(db: impl PgExecutor<'_>, tenant_id: TenantId) -> Result<Amounts> {
-    let (vms, vcpus, memory, disk): (i64, i64, i64, i64) = sqlx::query_as(
+    let (vms, vcpus, memory, disk, fips): (i64, i64, i64, i64, i64) = sqlx::query_as(
         "WITH sub AS (SELECT id FROM tenants WHERE path <@ (SELECT path FROM tenants WHERE id = $1))
          SELECT
            (SELECT count(*) FROM vms WHERE tenant_id IN (SELECT id FROM sub)),
            (SELECT coalesce(sum((spec->>'vcpus')::bigint), 0)::bigint FROM vms WHERE tenant_id IN (SELECT id FROM sub)),
            (SELECT coalesce(sum((spec->>'memory_mib')::bigint), 0)::bigint FROM vms WHERE tenant_id IN (SELECT id FROM sub)),
-           (SELECT coalesce(sum(size_bytes), 0)::bigint FROM volumes WHERE tenant_id IN (SELECT id FROM sub))",
+           (SELECT coalesce(sum(size_bytes), 0)::bigint FROM volumes WHERE tenant_id IN (SELECT id FROM sub)),
+           (SELECT count(*) FROM external_ips WHERE kind = 'floating' AND tenant_id IN (SELECT id FROM sub))",
     )
     .bind(tenant_id)
     .fetch_one(db)
@@ -35,6 +37,7 @@ pub async fn usage(db: impl PgExecutor<'_>, tenant_id: TenantId) -> Result<Amoun
         ("vcpus", vcpus),
         ("memory_mib", memory),
         ("disk_gib", (disk + GIB - 1) / GIB),
+        ("floating_ips", fips),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))

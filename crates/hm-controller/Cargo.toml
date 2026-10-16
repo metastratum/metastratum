@@ -17,6 +17,7 @@ futures.workspace = true
 hm-authz.workspace = true
 hm-core = { workspace = true, features = ["sqlx", "utoipa"] }
 hm-db.workspace = true
+hm-netplan.workspace = true
 hm-ovsdb.workspace = true
 hm-pki.workspace = true
 hm-proto.workspace = true

@@ -14,7 +14,8 @@ a web UI with a virtual console.
 | `crates/hm-proto` | gRPC protocol between controller and agents (`proto/agent.proto`) |
 | `crates/hm-virtrpc` | Native async client for libvirt's RPC protocol, generated from `remote_protocol.x` |
 | `crates/hm-libvirt` | Domain XML and the agent's libvirt facade (events, consoles) |
-| `crates/hm-ovsdb` | OVSDB client and OVN northbound operations |
+| `crates/hm-netplan` | The network plane as a pure function: model → OVN northbound rows → one transaction |
+| `crates/hm-ovsdb` | OVSDB client for the OVN northbound database |
 | `crates/hm-storage` | Host storage pools: local qcow2, NFS, Ceph RBD |
 | `crates/hm-controller` | Control plane: REST API, agent endpoint, task engine, console relay |
 | `crates/hm-agent` | Host agent: drives libvirt, storage and consoles on each hypervisor |
@@ -45,8 +46,8 @@ Some tests need extra tools or services and skip themselves without them:
 - a libvirt daemon: `HM_TEST_LIBVIRT_SOCKET=/run/libvirt/virtqemud-sock`
   (your user needs `qemu:///system` access; the tests create and remove
   small throwaway domains)
-- an OVN northbound database: `HM_TEST_OVN_NB=tcp:10.77.0.10:6641` with the
-  lab running
+- an empty OVN northbound database that nothing else uses:
+  `deploy/lab/lab.sh testdb`, then `HM_TEST_OVN_NB_SCRATCH=tcp:10.77.0.10:6651`
 
 The web UI lives in `web/`:
 
@@ -122,6 +123,7 @@ deploy/lab/lab.sh up        # create networks, storage pool and VMs; wait until 
 deploy/lab/lab.sh status
 deploy/lab/lab.sh ssh hm-host1 [cmd...]
 deploy/lab/lab.sh ceph      # (re)run the Ceph setup; prints the RBD pool config
+deploy/lab/lab.sh testdb    # a throwaway OVN northbound database for tests
 deploy/lab/lab.sh down      # remove VMs and networks; keeps the cached base image
 ```
 
@@ -186,7 +188,11 @@ The Rust suite creates two VMs, checks both consoles, pings across the overlay
 network between hosts, power-cycles and deletes them; checks tenant isolation,
 inherited roles, quotas, the audit log and API tokens; and boots VMs from the
 lab's NFS export and, with `HM_E2E_RBD_KEY` set to the key `lab.sh ceph`
-prints, from Ceph RBD. With `HM_E2E_DEX=http://127.0.0.1:5556/dex` it also
+prints, from Ceph RBD. For networking it builds VPCs in a child tenant and
+checks isolation between them, SNAT to the lab's external network
+(10.78.0.0/24, registered as `lab-external` on first run), a floating IP that
+only answers SSH while a security group allows it, and a parent's guardrail
+that closes it again regardless. With `HM_E2E_DEX=http://127.0.0.1:5556/dex` it also
 signs in through Dex and checks how groups become roles. It also checks that
 live updates (`/api/v1/events`) reach only those allowed to see the change. `HM_E2E_DEBUG=1`
 prints console traffic. The browser suite does the VM lifecycle and tenant

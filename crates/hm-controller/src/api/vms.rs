@@ -5,7 +5,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use hm_core::ids::{
-    ClusterId, HostId, ImageId, LOCAL_POOL, NicId, StoragePoolId, TaskId, TenantId, VmId, VolumeId,
+    ClusterId, ExternalIpId, HostId, ImageId, LOCAL_POOL, NetworkId, NicId, SecurityGroupId,
+    StoragePoolId, TaskId, TenantId, VmId, VolumeId,
 };
 use hm_core::vm::{CloudInit, DiskSpec, Firmware, NicSpec, VmSpec, mac_for};
 use hm_db::vms::Vm;
@@ -26,6 +27,7 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(start_vm))
         .routes(routes!(stop_vm))
         .routes(routes!(reboot_vm))
+        .routes(routes!(set_nic_groups))
 }
 
 const GIB: u64 = 1 << 30;
@@ -61,20 +63,68 @@ pub struct VmView {
     memory_mib: u64,
     firmware: Firmware,
     disks: Vec<DiskSpec>,
-    nics: Vec<NicSpec>,
+    nics: Vec<NicView>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
 
-/// What VM views need besides the VM row: host names and liveness, and the
-/// tasks in flight.
+#[derive(Serialize, ToSchema)]
+pub struct NicView {
+    id: NicId,
+    network_id: NetworkId,
+    network_name: Option<String>,
+    mac: String,
+    #[schema(value_type = String, format = Ipv4)]
+    ip: std::net::Ipv4Addr,
+    /// What traffic the NIC passes; none passes nothing.
+    security_group_ids: Vec<SecurityGroupId>,
+    /// The floating IP forwarding to this NIC, if any.
+    floating_ip: Option<String>,
+    floating_ip_id: Option<ExternalIpId>,
+}
+
+/// What VM views need besides the VM row: host names and liveness, the
+/// tasks in flight, and network details of NICs.
 struct Context {
     hosts: HashMap<HostId, (String, bool)>,
     tasks: HashMap<uuid::Uuid, String>,
+    networks: HashMap<NetworkId, String>,
+    nic_groups: HashMap<NicId, Vec<SecurityGroupId>>,
+    floating: HashMap<NicId, (ExternalIpId, String)>,
 }
 
 async fn context(state: &AppState) -> ApiResult<Context> {
+    type NicRow = (
+        NicId,
+        Option<SecurityGroupId>,
+        Option<ExternalIpId>,
+        Option<String>,
+    );
+    let nic_rows: Vec<NicRow> = hm_db::sqlx::query_as(
+        "SELECT n.id, g.security_group_id, f.id, host(f.ip)
+             FROM nics n LEFT JOIN nic_security_groups g ON g.nic_id = n.id
+             LEFT JOIN external_ips f ON f.nic_id = n.id",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    let mut nic_groups: HashMap<NicId, Vec<SecurityGroupId>> = HashMap::new();
+    let mut floating = HashMap::new();
+    for (nic, group, fip, ip) in nic_rows {
+        let groups = nic_groups.entry(nic).or_default();
+        if let Some(g) = group.filter(|g| !groups.contains(g)) {
+            groups.push(g);
+        }
+        if let (Some(f), Some(ip)) = (fip, ip) {
+            floating.insert(nic, (f, ip));
+        }
+    }
+    let networks: Vec<(NetworkId, String)> = hm_db::sqlx::query_as("SELECT id, name FROM networks")
+        .fetch_all(&state.db)
+        .await?;
     Ok(Context {
+        networks: networks.into_iter().collect(),
+        nic_groups,
+        floating,
         hosts: hm_db::hosts::list(&state.db)
             .await?
             .into_iter()
@@ -108,7 +158,20 @@ fn view(vm: Vm, ctx: &Context) -> VmView {
         memory_mib: spec.memory_mib,
         firmware: spec.firmware,
         disks: spec.disks,
-        nics: spec.nics,
+        nics: spec
+            .nics
+            .into_iter()
+            .map(|n| NicView {
+                network_name: ctx.networks.get(&n.network_id).cloned(),
+                security_group_ids: ctx.nic_groups.get(&n.id).cloned().unwrap_or_default(),
+                floating_ip_id: ctx.floating.get(&n.id).map(|f| f.0),
+                floating_ip: ctx.floating.get(&n.id).map(|f| f.1.clone()),
+                id: n.id,
+                network_id: n.network_id,
+                mac: n.mac,
+                ip: n.ip,
+            })
+            .collect(),
         created_at: vm.created_at,
         updated_at: vm.updated_at,
     }
@@ -185,6 +248,12 @@ pub struct CreateVm {
     cluster_id: Option<ClusterId>,
     /// Pool for the VM's disk; local storage on its host by default.
     storage_pool_id: Option<StoragePoolId>,
+    /// Network to connect to (the tenant's own); its default network
+    /// otherwise.
+    network_id: Option<NetworkId>,
+    /// Security groups for the NIC (the tenant's own); its `default` group
+    /// otherwise. An empty list blocks all traffic but DHCP.
+    security_group_ids: Option<Vec<SecurityGroupId>>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -297,7 +366,23 @@ async fn create_vm(
     .map(|(k, v)| (k.to_owned(), v))
     .collect();
     hm_db::quotas::reserve(&mut tx, tenant, &delta).await?;
-    let network = hm_db::networks::default_for(&mut tx, tenant).await?;
+    let network = match req.network_id {
+        Some(id) => {
+            let n = hm_db::networks::get(&mut *tx, id).await?;
+            if n.tenant_id != tenant {
+                return Err(ApiError::not_found("network"));
+            }
+            n
+        }
+        None => hm_db::networks::default_for(&mut tx, tenant).await?,
+    };
+    let groups = match &req.security_group_ids {
+        Some(ids) => {
+            check_groups(&mut tx, tenant, ids).await?;
+            ids.clone()
+        }
+        None => vec![hm_db::netsec::default_group(&mut tx, tenant).await?.id],
+    };
 
     let vm_id = VmId::new();
     let volume_id = VolumeId::new();
@@ -356,6 +441,7 @@ async fn create_vm(
     let nic_id = NicId::new();
     let nic =
         hm_db::networks::create_nic(&mut tx, nic_id, vm_id, network.id, &mac_for(nic_id)).await?;
+    hm_db::networks::set_nic_groups(&mut tx, nic_id, &groups).await?;
     spec.nics.push(NicSpec {
         id: nic_id,
         network_id: network.id,
@@ -384,6 +470,63 @@ async fn create_vm(
             item: view(vm, &context(&state).await?),
         }),
     ))
+}
+
+/// Security groups must belong to the VM's tenant.
+async fn check_groups(
+    tx: &mut hm_db::sqlx::PgConnection,
+    tenant: TenantId,
+    ids: &[SecurityGroupId],
+) -> ApiResult<()> {
+    for id in ids {
+        let g = hm_db::netsec::get_group(&mut *tx, *id).await?;
+        if g.tenant_id != tenant {
+            return Err(ApiError::not_found("security group"));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct NicGroups {
+    /// Replaces the NIC's groups. An empty list blocks all traffic but DHCP.
+    security_group_ids: Vec<SecurityGroupId>,
+}
+
+/// Changes which security groups apply to a NIC. Takes effect at once; the
+/// VM keeps running.
+#[utoipa::path(put, path = "/vms/{id}/nics/{nic}/security-groups", tag = "vms",
+    params(("id" = VmId, Path), ("nic" = NicId, Path)), request_body = NicGroups,
+    responses((status = 200, body = VmView), (status = 400), (status = 403), (status = 404)))]
+async fn set_nic_groups(
+    State(state): State<AppState>,
+    p: Principal,
+    Path((id, nic)): Path<(VmId, NicId)>,
+    Json(req): Json<NicGroups>,
+) -> ApiResult<Json<VmView>> {
+    let vm = load(&state, &p, id, Perm::VmWrite).await?;
+    if !vm.spec.0.nics.iter().any(|n| n.id == nic) {
+        return Err(ApiError::not_found("NIC"));
+    }
+    let mut groups = req.security_group_ids.clone();
+    groups.sort();
+    groups.dedup();
+    let mut tx = state.db.begin().await?;
+    check_groups(&mut tx, vm.tenant_id, &groups).await?;
+    hm_db::networks::set_nic_groups(&mut tx, nic, &groups).await?;
+    tx.commit().await?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(vm.tenant_id),
+        "vm.nic.security_groups",
+        Some(("vm", id.0)),
+        json!({"nic": nic, "security_group_ids": groups}),
+    )
+    .await;
+    state.net.kick();
+    let vm = hm_db::vms::get(&state.db, id).await?;
+    Ok(Json(view(vm, &context(&state).await?)))
 }
 
 /// Picks a host for a new VM. Hosts are locked until the transaction ends,

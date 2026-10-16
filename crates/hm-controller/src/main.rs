@@ -7,6 +7,7 @@ mod ca;
 mod engine;
 mod error;
 mod events;
+mod net;
 mod state;
 
 use std::net::SocketAddr;
@@ -187,11 +188,12 @@ async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
     let (cert_chain, key) = ca::server_identity(&ca, &args.agent_names)?;
     let ca_pem = ca.cert_pem().to_owned();
     let replica = format!("{}-{}", hostname(), uuid::Uuid::now_v7().simple());
+    let nb = std::sync::Arc::new(hm_ovsdb::Northbound::new(args.ovn_nb.clone()));
     let state = AppState::new(Inner {
         db: db.clone(),
         ca,
         agents: Agents::default(),
-        nb: hm_ovsdb::Northbound::new(args.ovn_nb.clone()),
+        net: net::Reconciler::new(db.clone(), nb),
         replica: replica.clone(),
         secure_cookies: args.secure_cookies,
         public_url: args
@@ -206,6 +208,7 @@ async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
     tokio::spawn(housekeeping(state.clone()));
     tokio::spawn(state.events.clone().listen(db.clone()));
     tokio::spawn(state.events.clone().watch_hosts(db.clone()));
+    tokio::spawn(state.net.clone().run());
 
     let tls = ServerTlsConfig::new()
         .identity(Identity::from_pem(cert_chain, key))

@@ -16,6 +16,7 @@ pub struct Host {
     pub kvm: bool,
     pub libvirt_version: String,
     pub ovn_chassis: String,
+    pub physical_networks: Vec<String>,
     pub agent_version: String,
     pub cert_fingerprint: String,
     pub cert_expires_at: DateTime<Utc>,
@@ -40,7 +41,7 @@ macro_rules! host_columns {
     () => {
         "id, name, host(address) AS address, state, cpu_count, memory_mib, cpu_model, kvm, \
          libvirt_version, ovn_chassis, agent_version, cert_fingerprint, cert_expires_at, \
-         cluster_id, connected_to, last_seen_at, created_at"
+         cluster_id, connected_to, last_seen_at, created_at, physical_networks"
     };
 }
 
@@ -56,6 +57,7 @@ pub struct Facts<'a> {
     pub libvirt_version: &'a str,
     pub ovn_chassis: &'a str,
     pub agent_version: &'a str,
+    pub physical_networks: &'a [String],
 }
 
 pub async fn create(
@@ -67,8 +69,8 @@ pub async fn create(
 ) -> Result<Host> {
     sqlx::query_as(concat!(
         "INSERT INTO hosts (id, name, address, cpu_count, memory_mib, cpu_model, kvm, libvirt_version,
-                            ovn_chassis, agent_version, cert_fingerprint, cert_expires_at)
-         VALUES ($1, $2, $3::inet, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING ",
+                            ovn_chassis, agent_version, cert_fingerprint, cert_expires_at, physical_networks)
+         VALUES ($1, $2, $3::inet, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING ",
         host_columns!()
     ))
     .bind(id)
@@ -83,6 +85,7 @@ pub async fn create(
     .bind(f.agent_version)
     .bind(cert_fingerprint)
     .bind(cert_expires_at)
+    .bind(f.physical_networks)
     .fetch_one(db)
     .await
     .map_err(|e| conflict_on_unique(e, "host"))
@@ -91,7 +94,8 @@ pub async fn create(
 pub async fn update_facts(db: impl PgExecutor<'_>, id: HostId, f: &Facts<'_>) -> Result<()> {
     sqlx::query(
         "UPDATE hosts SET name = $2, address = $3::inet, cpu_count = $4, memory_mib = $5, cpu_model = $6,
-                kvm = $7, libvirt_version = $8, ovn_chassis = $9, agent_version = $10, updated_at = now()
+                kvm = $7, libvirt_version = $8, ovn_chassis = $9, agent_version = $10,
+                physical_networks = $11, updated_at = now()
          WHERE id = $1",
     )
     .bind(id)
@@ -104,6 +108,7 @@ pub async fn update_facts(db: impl PgExecutor<'_>, id: HostId, f: &Facts<'_>) ->
     .bind(f.libvirt_version)
     .bind(f.ovn_chassis)
     .bind(f.agent_version)
+    .bind(f.physical_networks)
     .execute(db)
     .await
     .map_err(|e| conflict_on_unique(e, "host"))?;

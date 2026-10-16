@@ -65,6 +65,12 @@ id_type!(
     NicId,
     ClusterId,
     StoragePoolId,
+    VpcId,
+    ExternalNetworkId,
+    ExternalIpId,
+    SecurityGroupId,
+    SecurityRuleId,
+    PolicyId,
 );
 
 /// The built-in pool of host-local storage.

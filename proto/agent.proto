@@ -43,6 +43,8 @@ message HostFacts {
   string libvirt_version = 7;
   string ovn_chassis = 8;
   string agent_version = 9;
+  // Physical networks OVS bridges reach (names from ovn-bridge-mappings).
+  repeated string physical_networks = 10;
 }
 
 message AgentMessage {

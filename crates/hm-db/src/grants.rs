@@ -1,4 +1,5 @@
-//! Provider resources (clusters, storage pools) granted to tenants.
+//! Provider resources (clusters, storage pools, external networks) granted to
+//! tenants.
 //!
 //! The root tenant may use everything. Any other tenant may use what is
 //! granted to it, and a tenant's parent can only grant what it may use
@@ -10,7 +11,7 @@ use uuid::Uuid;
 
 use crate::Result;
 
-pub const KINDS: [&str; 2] = ["cluster", "storage_pool"];
+pub const KINDS: [&str; 3] = ["cluster", "storage_pool", "external_network"];
 
 pub async fn list(db: impl PgExecutor<'_>, tenant_id: TenantId, kind: &str) -> Result<Vec<Uuid>> {
     Ok(sqlx::query_scalar(

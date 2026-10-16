@@ -38,6 +38,9 @@ pub struct HostView {
     kvm: bool,
     libvirt_version: String,
     ovn_chassis: String,
+    /// Physical networks the host reaches; external networks on them can
+    /// have their gateways here.
+    physical_networks: Vec<String>,
     agent_version: String,
     vm_count: usize,
     allocated_memory_mib: u64,
@@ -72,6 +75,7 @@ async fn list_hosts(State(state): State<AppState>, p: Principal) -> ApiResult<Js
             kvm: h.kvm,
             libvirt_version: h.libvirt_version,
             ovn_chassis: h.ovn_chassis,
+            physical_networks: h.physical_networks,
             agent_version: h.agent_version,
             cert_expires_at: h.cert_expires_at,
             last_seen_at: h.last_seen_at,

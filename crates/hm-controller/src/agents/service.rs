@@ -42,6 +42,7 @@ fn facts_row(f: &HostFacts) -> hm_db::hosts::Facts<'_> {
         libvirt_version: &f.libvirt_version,
         ovn_chassis: &f.ovn_chassis,
         agent_version: &f.agent_version,
+        physical_networks: &f.physical_networks,
     }
 }
 

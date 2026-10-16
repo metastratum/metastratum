@@ -52,6 +52,11 @@ impl ApiError {
         )
     }
 
+    /// Refused, with an explanation the caller may see.
+    pub fn forbidden_msg(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, "permission_denied", message)
+    }
+
     pub fn not_found(kind: &str) -> Self {
         Self::new(
             StatusCode::NOT_FOUND,

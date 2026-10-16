@@ -27,7 +27,8 @@ const RECHECK: Duration = Duration::from_secs(60);
 
 /// A stream of changes the caller can see, as `text/event-stream`. Each event
 /// is named for the kind of thing that changed (`vm`, `task`, `host`, `image`,
-/// `tenant`, `cluster`, `storage_pool`) and carries `{"id", "op"}`; fetch it
+/// `tenant`, `cluster`, `storage_pool`, `vpc`, `network`, `security_group`,
+/// `external_ip`, `network_policy`, `external_network`) and carries `{"id", "op"}`; fetch it
 /// through the API to see what changed. `resync` means changes may have been
 /// missed and everything shown should be refetched; it is also the first
 /// event, so a reconnecting client catches up.
@@ -110,7 +111,19 @@ fn visible(p: &Principal, root: Option<&TenantPath>, c: &Change) -> bool {
         // VM state shown to tenants depends on their host being reachable;
         // host IDs are already part of what they see of their VMs.
         ("host", _) => true,
-        ("cluster" | "storage_pool", _) => root.is_some_and(|r| p.can(Perm::InfraRead, r)),
+        ("cluster" | "storage_pool" | "external_network", _) => {
+            root.is_some_and(|r| p.can(Perm::InfraRead, r))
+        }
+        ("vpc" | "network" | "security_group" | "external_ip", Some(t)) => {
+            p.can(Perm::NetworkRead, t)
+        }
+        // Guardrails apply to (and are shown in) the subtree below them.
+        ("network_policy", Some(t)) => {
+            p.can(Perm::NetworkRead, t)
+                || p.bindings.iter().any(|b| {
+                    t.is_ancestor_or_self_of(&b.tenant) && b.role.allows(Perm::NetworkRead)
+                })
+        }
         ("vm", Some(t)) => p.can(Perm::VmRead, t),
         ("task", Some(t)) => p.can(Perm::TaskRead, t),
         ("tenant", Some(t)) => p.can(Perm::TenantRead, t),

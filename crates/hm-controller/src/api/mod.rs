@@ -5,15 +5,19 @@ mod auth;
 mod clusters;
 mod console;
 mod events;
+mod external_networks;
+mod floating_ips;
 mod hosts;
 mod images;
 mod oidc;
+mod security;
 mod storage_pools;
 mod tasks;
 mod tenants;
 mod tokens;
 mod users;
 mod vms;
+mod vpcs;
 
 pub use auth::hash_password;
 pub use storage_pools::agent_pool;
@@ -36,7 +40,7 @@ pub const SESSION_COOKIE: &str = "hm_session";
     info(title = "hypermon API", version = "1"),
     tags(
         (name = "auth"), (name = "tenants"), (name = "users"), (name = "vms"), (name = "images"),
-        (name = "hosts"), (name = "tasks"), (name = "audit"), (name = "events"),
+        (name = "hosts"), (name = "tasks"), (name = "audit"), (name = "events"), (name = "networks"),
     )
 )]
 struct ApiDoc;
@@ -57,6 +61,10 @@ fn api() -> OpenApiRouter<AppState> {
         .merge(tokens::routes())
         .merge(audit::routes())
         .merge(events::routes())
+        .merge(external_networks::routes())
+        .merge(vpcs::routes())
+        .merge(security::routes())
+        .merge(floating_ips::routes())
 }
 
 /// The API router (mounted under `/api/v1`) and its OpenAPI document.

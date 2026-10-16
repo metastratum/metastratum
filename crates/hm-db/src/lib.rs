@@ -6,10 +6,13 @@
 pub mod audit;
 pub mod clusters;
 pub mod console;
+pub mod external;
 pub mod grants;
 pub mod hosts;
 pub mod images;
 pub mod join_tokens;
+pub mod netmodel;
+pub mod netsec;
 pub mod networks;
 pub mod oidc;
 pub mod pki;
