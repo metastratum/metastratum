@@ -54,8 +54,13 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<PgPool> {
         .await?)
 }
 
+/// Brings the schema up to date. Migrations this build does not know were
+/// applied by a newer controller during a rolling upgrade; they are left
+/// alone, so an older replica can still restart until it is replaced.
 pub async fn migrate(pool: &PgPool) -> Result<()> {
-    MIGRATOR.run(pool).await?;
+    let mut migrator = sqlx::migrate!("../../migrations");
+    migrator.set_ignore_missing(true);
+    migrator.run(pool).await?;
     Ok(())
 }
 

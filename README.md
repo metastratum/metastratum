@@ -2,7 +2,13 @@
 
 A KVM-based virtual machine management platform: multiple hypervisor hosts,
 OVN-backed virtual networks with ACLs, live migration, nested multi-tenancy and
-a web UI with a virtual console.
+a web UI with a virtual console. Controllers run as several replicas; hosts
+that fail are fenced and their VMs restarted elsewhere.
+
+- [Running hypermon](docs/operations.md): controllers in several places,
+  PostgreSQL and OVN underneath, host failure, upgrades, monitoring
+- [Security](SECURITY.md): the security model, and what the last review
+  found
 
 ## Layout
 
@@ -24,6 +30,8 @@ a web UI with a virtual console.
 | `tests/e2e` | End-to-end tests against a running controller and lab |
 | `migrations/` | SQL migrations (sqlx) |
 | `deploy/dev` | Local dev dependencies (Postgres, Dex as a test identity provider) |
+| `deploy/systemd` | Units for the controller and the agent |
+| `docs/` | Operating hypermon |
 | `deploy/lab` | Nested-KVM lab: 1 control VM + 3 hypervisor VMs |
 
 ## Development
@@ -184,6 +192,13 @@ leaves it there). That is the default when the VM's cluster has a single
 host. The setting can be changed while the VM is stopped and applies from
 its next start.
 
+Add `--metrics-listen 127.0.0.1:9180` for Prometheus metrics, and run a
+second replica beside it (another `--listen` and `--agent-listen`, the same
+database and master key) to try out several controllers; give the agents
+both endpoints, comma-separated, in `HM_CONTROLLER`. Tenants' identity
+providers must be on public addresses; to try Dex (below) in a sub-tenant,
+add `--trusted-oidc-issuers http://127.0.0.1:5556/dex`.
+
 Open http://127.0.0.1:18080 and sign in as `admin`. Add an image (for example
 `https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2`)
 before creating VMs. Hosts only take VMs once they are in a cluster
@@ -221,8 +236,14 @@ disk, NFS and Ceph while another VM pings them and holds a TCP connection to
 them, and checks the guests never restarted; with `HM_E2E_EVACUATE=1` it also
 evacuates a host (which moves every VM on it, not only the test's). With `HM_E2E_DEX=http://127.0.0.1:5556/dex` it also
 signs in through Dex and checks how groups become roles. It also checks that
-live updates (`/api/v1/events`) reach only those allowed to see the change. `HM_E2E_DEBUG=1`
-prints console traffic. The browser suite does the VM lifecycle and tenant
+live updates (`/api/v1/events`) reach only those allowed to see the change.
+For hardening it checks that tenants' images (and, with Dex, identity
+providers) cannot reach internal addresses, and that hosts renew their
+certificates and migrate with the new ones. With a second replica in
+`HM_E2E_URL2` it checks both serve every host; with `HM_E2E_FENCE=1` it
+freezes a lab host, waits for it to be fenced and its VM restarted on
+another, then starts the host again and returns it to service. `HM_E2E_DEBUG=1` prints
+console traffic. The browser suite does the VM lifecycle and tenant
 management through the UI with Playwright, using your installed Chrome.
 
 ## License

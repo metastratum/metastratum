@@ -198,3 +198,17 @@ async fn tasks_for_one_target_run_in_order(pool: PgPool) {
         second.id
     );
 }
+
+/// During a rolling upgrade, an older controller restarting against a schema
+/// a newer one migrated must still start.
+#[sqlx::test(migrator = "hm_db::MIGRATOR")]
+async fn migrations_from_newer_controllers_are_tolerated(pool: PgPool) {
+    sqlx::query(
+        "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+         VALUES (99991231000001, 'from a newer release', true, '\\x00', 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    hm_db::migrate(&pool).await.unwrap();
+}
