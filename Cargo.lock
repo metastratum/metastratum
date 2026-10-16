@@ -850,6 +850,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hm-ovsdb"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "hm-pki"
 version = "0.1.0"
 dependencies = [
