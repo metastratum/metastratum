@@ -112,8 +112,10 @@ async fn resolve_tenant(
     };
     for slug in path.unwrap_or("").split('/').filter(|s| !s.is_empty()) {
         match mst_db::tenants::child_by_slug(&state.db, Some(tenant.id), slug).await? {
-            Some(t) => tenant = t,
-            None => return Ok(None),
+            // A tenant with a domain of its own is signed in to there only:
+            // from here, it and its sub-tenants do not exist.
+            Some(t) if !mst_db::tenants::has_domain(&state.db, t.id).await? => tenant = t,
+            _ => return Ok(None),
         }
     }
     Ok(Some(tenant))
@@ -124,7 +126,8 @@ pub struct SiteView {
     /// Name of the tenant this site's domain is bound to; null when it is
     /// bound to none, and sign-ins start from the provider.
     tenant_name: Option<String>,
-    /// Whether the tenant sign-ins start from has sub-tenants: whether the
+    /// Whether the tenant sign-ins start from has sub-tenants that can be
+    /// signed in to here (those without a domain of their own): whether the
     /// sign-in page needs to ask for one.
     sub_tenants: bool,
 }
@@ -142,7 +145,7 @@ async fn site_info(
         None => mst_db::tenants::root(&state.db).await?,
     };
     let sub_tenants = match &base {
-        Some(t) => mst_db::tenants::has_children(&state.db, t.id).await?,
+        Some(t) => mst_db::tenants::has_undomained_children(&state.db, t.id).await?,
         None => false,
     };
     Ok(Json(SiteView {
@@ -269,7 +272,8 @@ pub async fn open_session(
 }
 
 /// Resolves a slug path (`acme/dev`) to a tenant, starting from the tenant
-/// the site's domain is bound to, or else the provider.
+/// the site's domain is bound to, or else the provider. Tenants with a domain
+/// of their own, and theirs, are not found: they are signed in to there.
 pub async fn tenant_by_path(
     state: &AppState,
     site: &Site,

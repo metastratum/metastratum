@@ -70,9 +70,13 @@ The proxy must:
 `mst.acme.com` for Acme (Tenants → Acme → Sign-in → Domains; provider
 administrators only). The sign-in page there starts from Acme: Acme's people
 leave the tenant empty, and those of its sub-tenants enter the path below
-it (`dev` for `acme/dev`). The page asks for a tenant only when there are
-sub-tenants to choose from. Nothing above or beside Acme can be signed in
-to at that address. For each domain:
+it (`dev` for `acme/dev`). Nothing above or beside Acme can be signed in
+to at that address, and Acme and its sub-tenants can be signed in to
+nowhere else: at the main address, or at a domain above Acme's, they don't
+exist. A sub-tenant with a domain of its own leaves Acme's address the same
+way. The page asks for a tenant only when there are sub-tenants to sign in
+to there. Provider accounts always sign in at the main address, even when
+the provider tenant has a domain too. For each domain:
 
 - point its DNS at the proxy, and give the proxy a certificate for it;
 - if the tenant signs in through an identity provider, register

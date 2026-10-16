@@ -56,10 +56,12 @@ The boundaries metastratum enforces:
   disabled.
 - **Tenant domains** are bound by provider administrators only: they
   decide which names lead to the controllers, and a tenant must not take
-  over another's sign-in page, or the provider's. At a bound domain, only
-  that tenant and its sub-tenants can be signed in to. The sign-in page
-  there tells anyone the tenant's name and whether it has sub-tenants
-  (never their names); elsewhere, only whether the provider has any.
+  over another's sign-in page, or the provider's. A tenant with a domain,
+  and its sub-tenants, can be signed in to only there (up to a sub-tenant
+  with a domain of its own); from any other address they look like tenants
+  that don't exist. The sign-in page at a domain tells anyone the tenant's
+  name and whether it has sub-tenants to sign in to there (never their
+  names); elsewhere, only whether the provider has any.
 - **Sign-in through identity providers** uses the authorization code flow
   with PKCE, a nonce and a state value, verifies the ID token's signature,
   issuer and audience, and follows no redirects.

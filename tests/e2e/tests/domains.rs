@@ -62,6 +62,17 @@ async fn sign_in(api: &Api, user: &str, tenant: Option<&str>) -> anyhow::Result<
         .0)
 }
 
+/// Signs in as the provider's administrator the tests run as.
+async fn sign_in_admin(api: &Api) -> anyhow::Result<u16> {
+    let user = std::env::var("MST_E2E_USER").unwrap_or_else(|_| "admin".into());
+    let password = std::env::var("MST_E2E_PASSWORD")?;
+    let body = json!({"username": user, "password": password});
+    Ok(api
+        .try_send(Method::POST, "/auth/login", Some(body))
+        .await?
+        .0)
+}
+
 async fn scenario(admin: &Api, run: &str, acme: &str, dev: &str) -> anyhow::Result<()> {
     let user = |tenant: &str, name: &str, role: &str| json!({"tenant_id": tenant, "username": name, "display_name": name, "password": PASSWORD, "role": role});
     admin.post("/users", user(acme, "alice", "admin")).await?;
@@ -147,11 +158,17 @@ async fn scenario(admin: &Api, run: &str, acme: &str, dev: &str) -> anyhow::Resu
         sign_in(&at()?, "bob", Some(&format!("{run}/dev"))).await?,
         401
     );
-    // Nothing above it is reachable there, and elsewhere nothing changed.
-    assert_eq!(sign_in(&at()?, "admin", None).await?, 401);
+    // Nothing above it is reachable there; elsewhere, it and its
+    // sub-tenants no longer exist.
+    assert_eq!(sign_in_admin(&at()?).await?, 401);
     let plain = Api::anonymous_at(&admin.base, "127.0.0.1")?;
+    assert_eq!(sign_in_admin(&plain).await?, 204);
     assert_eq!(sign_in(&plain, "alice", None).await?, 401);
-    assert_eq!(sign_in(&plain, "alice", Some(run)).await?, 204);
+    assert_eq!(sign_in(&plain, "alice", Some(run)).await?, 401);
+    assert_eq!(
+        sign_in(&plain, "bob", Some(&format!("{run}/dev"))).await?,
+        401
+    );
 
     // A tenant without sub-tenants needs no tenant field.
     let dev_domain = format!("dev-{run}.example.test");
@@ -166,6 +183,11 @@ async fn scenario(admin: &Api, run: &str, acme: &str, dev: &str) -> anyhow::Resu
         .await?;
     assert_eq!(site["tenant_name"], "dev", "{site}");
     assert_eq!(site["sub_tenants"], false, "{site}");
+    let bob_there = Api::anonymous_at(&admin.base, &dev_domain)?;
+    assert_eq!(sign_in(&bob_there, "bob", None).await?, 204);
+    // Acme's address no longer reaches dev, so it has nothing to ask for.
+    assert_eq!(sign_in(&at()?, "bob", Some("dev")).await?, 401);
+    assert_eq!(at()?.get("/auth/site").await?["sub_tenants"], false);
     // The nearest domain wins.
     assert_eq!(
         sign_in_urls(dev).await?.0,
@@ -186,6 +208,12 @@ async fn scenario(admin: &Api, run: &str, acme: &str, dev: &str) -> anyhow::Resu
         serde_json::Value::Null
     );
     assert_eq!(sign_in(&at()?, "alice", None).await?, 401);
+    // Acme is back at the main address; dev, with its own domain, is not.
+    assert_eq!(sign_in(&plain, "alice", Some(run)).await?, 204);
+    assert_eq!(
+        sign_in(&plain, "bob", Some(&format!("{run}/dev"))).await?,
+        401
+    );
     assert_eq!(
         sign_in_urls(acme).await?.0,
         format!("{base}/login?tenant={run}")

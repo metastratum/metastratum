@@ -217,10 +217,22 @@ pub async fn slug_paths(
     Ok(rows.into_iter().collect())
 }
 
-/// Whether a tenant has sub-tenants.
-pub async fn has_children(db: impl PgExecutor<'_>, id: TenantId) -> Result<bool> {
+/// Whether a tenant has sub-tenants without a domain of their own: the ones
+/// that can be signed in to at its address.
+pub async fn has_undomained_children(db: impl PgExecutor<'_>, id: TenantId) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM tenants t WHERE t.parent_id = $1
+                        AND NOT EXISTS (SELECT 1 FROM tenant_domains d WHERE d.tenant_id = t.id))",
+    )
+    .bind(id)
+    .fetch_one(db)
+    .await?)
+}
+
+/// Whether a domain name is bound to a tenant.
+pub async fn has_domain(db: impl PgExecutor<'_>, id: TenantId) -> Result<bool> {
     Ok(
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM tenants WHERE parent_id = $1)")
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM tenant_domains WHERE tenant_id = $1)")
             .bind(id)
             .fetch_one(db)
             .await?,
