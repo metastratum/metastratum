@@ -55,7 +55,19 @@ pub struct LoginRequest {
 }
 
 #[derive(Serialize, ToSchema)]
+pub struct RoleAt {
+    tenant_id: TenantId,
+    tenant_name: String,
+    /// Slug path of the tenant (empty for the root).
+    tenant: String,
+    #[schema(value_type = String)]
+    role: String,
+}
+
+#[derive(Serialize, ToSchema)]
 pub struct Me {
+    /// Roles the user holds; each also applies to the tenant's sub-tenants.
+    roles: Vec<RoleAt>,
     user_id: UserId,
     username: String,
     display_name: String,
@@ -106,7 +118,19 @@ async fn login(
     .map_err(ApiError::internal)?;
     let user = match user {
         Some(u) if ok && !u.disabled => u,
-        _ => {
+        other => {
+            let entry = hm_db::audit::Entry {
+                user_id: other.as_ref().map(|u| u.id),
+                username: Some(&req.username),
+                tenant_id: other.as_ref().map(|u| u.tenant_id),
+                action: "auth.login",
+                target: None,
+                success: false,
+                details: serde_json::json!({"tenant": req.tenant}),
+            };
+            if let Err(e) = hm_db::audit::record(&state.db, entry).await {
+                tracing::error!(error = %e, "writing audit log");
+            }
             return Err(ApiError::new(
                 StatusCode::UNAUTHORIZED,
                 "unauthenticated",
@@ -124,6 +148,18 @@ async fn login(
     )
     .await?;
     tracing::info!(user = %user.username, tenant = %user.tenant_id, "login");
+    let entry = hm_db::audit::Entry {
+        user_id: Some(user.id),
+        username: Some(&user.username),
+        tenant_id: Some(user.tenant_id),
+        action: "auth.login",
+        target: None,
+        success: true,
+        details: serde_json::json!({"method": "password"}),
+    };
+    if let Err(e) = hm_db::audit::record(&state.db, entry).await {
+        tracing::error!(error = %e, "writing audit log");
+    }
 
     let secure = if state.secure_cookies { "; Secure" } else { "" };
     let cookie = format!(
@@ -156,13 +192,26 @@ async fn me(State(state): State<AppState>, p: Principal) -> ApiResult<Json<Me>> 
     let user = hm_db::users::get(&state.db, p.user_id).await?;
     let lineage = hm_db::tenants::lineage(&state.db, p.tenant_id).await?;
     let slugs: Vec<_> = lineage.iter().skip(1).map(|t| t.slug.as_str()).collect();
+    let bindings = hm_db::rbac::bindings_of(&state.db, p.user_id).await?;
+    let ids: Vec<_> = bindings.iter().map(|b| b.tenant_id).collect();
+    let paths = hm_db::tenants::slug_paths(&state.db, &ids).await?;
+    let roles = bindings
+        .into_iter()
+        .map(|b| RoleAt {
+            tenant: paths.get(&b.tenant_id).cloned().unwrap_or_default(),
+            tenant_id: b.tenant_id,
+            tenant_name: b.tenant_name,
+            role: b.role,
+        })
+        .collect();
     Ok(Json(Me {
+        roles,
         user_id: user.id,
         username: user.username,
         display_name: user.display_name,
         tenant_id: p.tenant_id,
         tenant: slugs.join("/"),
         tenant_name: lineage.last().map(|t| t.name.clone()).unwrap_or_default(),
-        provider_admin: p.tenant_path.depth() == 1,
+        provider_admin: p.is_provider_admin(),
     }))
 }

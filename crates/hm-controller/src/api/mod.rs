@@ -1,10 +1,14 @@
 //! REST API (`/api/v1`) and its OpenAPI description.
 
+mod audit;
 mod auth;
 mod console;
 mod hosts;
 mod images;
 mod tasks;
+mod tenants;
+mod tokens;
+mod users;
 mod vms;
 
 pub use auth::hash_password;
@@ -26,7 +30,8 @@ pub const SESSION_COOKIE: &str = "hm_session";
 #[openapi(
     info(title = "hypermon API", version = "1"),
     tags(
-        (name = "auth"), (name = "vms"), (name = "images"), (name = "hosts"), (name = "tasks"),
+        (name = "auth"), (name = "tenants"), (name = "users"), (name = "vms"), (name = "images"),
+        (name = "hosts"), (name = "tasks"), (name = "audit"),
     )
 )]
 struct ApiDoc;
@@ -39,6 +44,10 @@ fn api() -> OpenApiRouter<AppState> {
         .merge(images::routes())
         .merge(hosts::routes())
         .merge(tasks::routes())
+        .merge(tenants::routes())
+        .merge(users::routes())
+        .merge(tokens::routes())
+        .merge(audit::routes())
 }
 
 /// The API router (mounted under `/api/v1`) and its OpenAPI document.
@@ -55,7 +64,10 @@ pub fn router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
     (router, doc)
 }
 
-/// Extracts the session secret from the cookie or a bearer token.
+/// API tokens carry this prefix, so they are told apart from session IDs.
+pub const TOKEN_PREFIX: &str = "hmtok_";
+
+/// Extracts the session secret or API token from the cookie or a bearer token.
 fn session_secret(headers: &HeaderMap) -> Option<String> {
     if let Some(v) = headers
         .get(header::AUTHORIZATION)
@@ -79,15 +91,13 @@ impl FromRequestParts<AppState> for Principal {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let secret = session_secret(&parts.headers).ok_or_else(ApiError::unauthorized)?;
-        let user_id = hm_db::sessions::resolve(&state.db, &hm_pki::hash_secret(&secret))
-            .await?
-            .ok_or_else(ApiError::unauthorized)?;
-        let user = hm_db::users::get(&state.db, user_id).await?;
-        let tenant = hm_db::tenants::get(&state.db, user.tenant_id).await?;
-        Ok(Principal {
-            user_id: user.id,
-            tenant_id: tenant.id,
-            tenant_path: tenant.path,
-        })
+        let hash = hm_pki::hash_secret(&secret);
+        let user_id = if secret.starts_with(TOKEN_PREFIX) {
+            hm_db::rbac::resolve_token(&state.db, &hash).await?
+        } else {
+            hm_db::sessions::resolve(&state.db, &hash).await?
+        }
+        .ok_or_else(ApiError::unauthorized)?;
+        Principal::load(&state.db, user_id).await
     }
 }

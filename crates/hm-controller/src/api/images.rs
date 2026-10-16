@@ -4,11 +4,12 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use hm_core::ids::{ImageId, TenantId};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
-use crate::authz::{Perm, Principal, authorize, authorize_resource};
+use crate::authz::{Perm, Principal, audit, authorize, authorize_resource};
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
@@ -112,6 +113,15 @@ async fn create_image(
         },
     )
     .await?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(tenant),
+        "image.create",
+        Some(("image", image.id.0)),
+        json!({"name": image.name, "url": image.source_url}),
+    )
+    .await;
     Ok((StatusCode::CREATED, Json(image.into())))
 }
 
@@ -125,5 +135,14 @@ async fn delete_image(
     let image = hm_db::images::get(&state.db, id).await?;
     authorize_resource(&state.db, &p, Perm::ImageWrite, image.tenant_id, "image").await?;
     hm_db::images::delete(&state.db, id).await?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(image.tenant_id),
+        "image.delete",
+        Some(("image", id.0)),
+        json!({"name": image.name}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }

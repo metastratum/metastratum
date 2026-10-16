@@ -133,7 +133,7 @@ async fn bootstrap(db: hm_db::sqlx::PgPool, user: &str, password: &str) -> anyho
         None => hm_db::tenants::create(&mut *tx, None, "provider", "Provider").await?,
     };
     let hash = api::hash_password(password)?;
-    hm_db::users::create(
+    let admin = hm_db::users::create(
         &mut *tx,
         hm_db::users::NewUser {
             tenant_id: root.id,
@@ -145,6 +145,7 @@ async fn bootstrap(db: hm_db::sqlx::PgPool, user: &str, password: &str) -> anyho
     )
     .await
     .context("creating admin user")?;
+    hm_db::rbac::create_binding(&mut *tx, admin.id, root.id, "admin", None).await?;
     tx.commit().await?;
     ca::load_or_create(&db).await?;
     println!("provider tenant {} and user {user} ready", root.id);

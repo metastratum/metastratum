@@ -13,7 +13,7 @@ use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
-use crate::authz::{Perm, Principal, authorize, authorize_resource};
+use crate::authz::{Perm, Principal, audit, authorize, authorize_resource};
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
@@ -278,6 +278,16 @@ async fn create_vm(
     let host = hm_db::hosts::pick_for(&mut *tx, req.memory_mib as i64)
         .await?
         .ok_or_else(|| ApiError::unavailable("no connected host has enough free memory"))?;
+    let delta: hm_db::quotas::Amounts = [
+        ("vms", 1),
+        ("vcpus", i64::from(req.vcpus)),
+        ("memory_mib", req.memory_mib as i64),
+        ("disk_gib", req.disk_gib as i64),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v))
+    .collect();
+    hm_db::quotas::reserve(&mut tx, tenant, &delta).await?;
     let network = hm_db::networks::default_for(&mut tx, tenant).await?;
 
     let vm_id = VmId::new();
@@ -346,6 +356,15 @@ async fn create_vm(
     tx.commit().await?;
 
     tracing::info!(vm = %vm_id, name = %req.name, host = %host.name, "VM accepted");
+    audit(
+        &state.db,
+        Some(&p),
+        Some(tenant),
+        "vm.create",
+        Some(("vm", vm_id.0)),
+        json!({"name": req.name, "vcpus": req.vcpus, "memory_mib": req.memory_mib, "disk_gib": req.disk_gib, "host": host.name}),
+    )
+    .await;
     let vm = hm_db::vms::get(&state.db, vm_id).await?;
     Ok((
         StatusCode::ACCEPTED,
@@ -395,8 +414,17 @@ async fn power_action(
     if let Some(d) = desired {
         hm_db::vms::set_desired_power(&mut *tx, id, d).await?;
     }
-    let task_id = enqueue(&mut tx, p, vm.tenant_id, kind, id, params).await?;
+    let task_id = enqueue(&mut tx, p, vm.tenant_id, kind, id, params.clone()).await?;
     tx.commit().await?;
+    audit(
+        &state.db,
+        Some(p),
+        Some(vm.tenant_id),
+        kind,
+        Some(("vm", id.0)),
+        json!({"name": vm.name, "params": params}),
+    )
+    .await;
     Ok((StatusCode::ACCEPTED, Json(TaskRef { task_id })))
 }
 
@@ -459,6 +487,15 @@ async fn delete_vm(
     hm_db::vms::set_status(&mut *tx, id, "deleting", None).await?;
     let task_id = enqueue(&mut tx, &p, vm.tenant_id, "vm.delete", id, json!({})).await?;
     tx.commit().await?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(vm.tenant_id),
+        "vm.delete",
+        Some(("vm", id.0)),
+        json!({"name": vm.name}),
+    )
+    .await;
     Ok((StatusCode::ACCEPTED, Json(TaskRef { task_id })))
 }
 

@@ -10,7 +10,7 @@ use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
-use crate::authz::{Perm, Principal, authorize};
+use crate::authz::{Perm, Principal, audit, authorize};
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
@@ -44,7 +44,7 @@ pub struct HostView {
 
 #[utoipa::path(get, path = "/hosts", tag = "hosts", responses((status = 200, body = Vec<HostView>), (status = 403)))]
 async fn list_hosts(State(state): State<AppState>, p: Principal) -> ApiResult<Json<Vec<HostView>>> {
-    authorize(&state.db, &p, Perm::HostAdmin, p.tenant_id).await?;
+    authorize(&state.db, &p, Perm::InfraRead, p.tenant_id).await?;
     let mut out = vec![];
     for h in hm_db::hosts::list(&state.db).await? {
         let vms = hm_db::vms::list_on_host(&state.db, h.id).await?;
@@ -112,7 +112,7 @@ async fn create_join_token(
     p: Principal,
     Json(req): Json<CreateJoinToken>,
 ) -> ApiResult<(StatusCode, Json<JoinTokenView>)> {
-    authorize(&state.db, &p, Perm::HostAdmin, p.tenant_id).await?;
+    authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
     let minutes = req.ttl_minutes.unwrap_or(60).clamp(1, 1440);
     let view = issue_join_token(
         &state,
@@ -120,5 +120,14 @@ async fn create_join_token(
         Duration::from_secs(u64::from(minutes) * 60),
     )
     .await?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(p.tenant_id),
+        "host.join_token",
+        None,
+        serde_json::json!({"expires_at": view.expires_at}),
+    )
+    .await;
     Ok((StatusCode::CREATED, Json(view)))
 }

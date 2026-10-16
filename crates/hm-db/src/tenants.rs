@@ -141,3 +141,71 @@ pub async fn child_by_slug(
     .await?
     .map(Into::into))
 }
+
+pub async fn rename(db: impl PgExecutor<'_>, id: TenantId, name: &str) -> Result<()> {
+    sqlx::query("UPDATE tenants SET name = $2, updated_at = now() WHERE id = $1")
+        .bind(id)
+        .bind(name)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// What still lives in a tenant (not its subtree), as `(kind, count)` for
+/// kinds with a non-zero count. Tenants must be empty to be deleted.
+pub async fn contents(db: impl PgExecutor<'_>, id: TenantId) -> Result<Vec<(String, i64)>> {
+    let row: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM tenants WHERE parent_id = $1),
+                (SELECT count(*) FROM vms WHERE tenant_id = $1),
+                (SELECT count(*) FROM images WHERE tenant_id = $1)",
+    )
+    .bind(id)
+    .fetch_one(db)
+    .await?;
+    Ok([("sub-tenants", row.0), ("VMs", row.1), ("images", row.2)]
+        .into_iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(k, n)| (k.to_owned(), n))
+        .collect())
+}
+
+/// Deletes a tenant with its users, role bindings, networks, quotas and
+/// grants. Callers check it is empty first (see [`contents`]).
+pub async fn delete(db: impl PgExecutor<'_>, id: TenantId) -> Result<()> {
+    sqlx::query("DELETE FROM tenants WHERE id = $1")
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// All tenants in the subtrees rooted at `roots`, parents before children.
+pub async fn in_subtrees(db: impl PgExecutor<'_>, roots: &[TenantId]) -> Result<Vec<Tenant>> {
+    let rows: Vec<Row> = sqlx::query_as(concat!(
+        "SELECT ",
+        tenant_columns!(),
+        " FROM tenants
+         WHERE path <@ ANY (SELECT path FROM tenants WHERE id = ANY($1))
+         ORDER BY nlevel(path), slug"
+    ))
+    .bind(roots.iter().map(|t| t.0).collect::<Vec<_>>())
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
+/// Slug paths below the root (`acme/dev`; empty for the root) of tenants.
+pub async fn slug_paths(
+    db: impl PgExecutor<'_>,
+    ids: &[TenantId],
+) -> Result<std::collections::HashMap<TenantId, String>> {
+    let rows: Vec<(TenantId, String)> = sqlx::query_as(
+        "SELECT t.id, coalesce((SELECT string_agg(a.slug, '/' ORDER BY nlevel(a.path)) FROM tenants a
+                                WHERE a.path @> t.path AND a.parent_id IS NOT NULL), '')
+         FROM tenants t WHERE t.id = ANY($1)",
+    )
+    .bind(ids.iter().map(|t| t.0).collect::<Vec<_>>())
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().collect())
+}

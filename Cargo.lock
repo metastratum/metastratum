@@ -945,6 +945,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hm-authz"
+version = "0.1.0"
+dependencies = [
+ "hm-core",
+ "serde",
+]
+
+[[package]]
 name = "hm-controller"
 version = "0.1.0"
 dependencies = [
@@ -954,6 +962,7 @@ dependencies = [
  "chrono",
  "clap",
  "futures",
+ "hm-authz",
  "hm-core",
  "hm-db",
  "hm-ovsdb",

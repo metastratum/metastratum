@@ -9,6 +9,7 @@ license = "MIT"
 rust-version = "1.97"
 
 [workspace.dependencies]
+hm-authz = { path = "crates/hm-authz" }
 hm-core = { path = "crates/hm-core" }
 hm-db = { path = "crates/hm-db" }
 hm-libvirt = { path = "crates/hm-libvirt" }

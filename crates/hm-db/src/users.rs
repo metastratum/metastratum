@@ -80,3 +80,59 @@ pub async fn find_by_username(
     .fetch_optional(db)
     .await?)
 }
+
+/// Users whose home is the tenant (or, with `descendants`, its subtree).
+pub async fn list(
+    db: impl PgExecutor<'_>,
+    tenant_id: TenantId,
+    descendants: bool,
+) -> Result<Vec<User>> {
+    Ok(sqlx::query_as(concat!(
+        "SELECT ",
+        user_columns!(),
+        " FROM users WHERE tenant_id = $1
+            OR ($2 AND tenant_id IN (SELECT id FROM tenants
+                                     WHERE path <@ (SELECT path FROM tenants WHERE id = $1)))
+         ORDER BY username"
+    ))
+    .bind(tenant_id)
+    .bind(descendants)
+    .fetch_all(db)
+    .await?)
+}
+
+pub struct Changes<'a> {
+    pub display_name: Option<&'a str>,
+    pub email: Option<Option<&'a str>>,
+    pub password_hash: Option<&'a str>,
+    pub disabled: Option<bool>,
+}
+
+pub async fn update(db: impl PgExecutor<'_>, id: UserId, c: Changes<'_>) -> Result<()> {
+    sqlx::query(
+        "UPDATE users SET
+            display_name = coalesce($2, display_name),
+            email = CASE WHEN $3 THEN $4 ELSE email END,
+            password_hash = coalesce($5, password_hash),
+            disabled = coalesce($6, disabled),
+            updated_at = now()
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(c.display_name)
+    .bind(c.email.is_some())
+    .bind(c.email.flatten())
+    .bind(c.password_hash)
+    .bind(c.disabled)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+pub async fn delete(db: impl PgExecutor<'_>, id: UserId) -> Result<()> {
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}

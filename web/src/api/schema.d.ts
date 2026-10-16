@@ -4,6 +4,22 @@
  */
 
 export interface paths {
+    "/api/v1/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_audit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -135,6 +151,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/role-bindings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Gives a user a role at a tenant (and so its sub-tenants). Requires
+         *     managing users at that tenant and being able to see the user.
+         */
+        post: operations["create_binding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/role-bindings/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_binding"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tasks": {
         parameters: {
             query?: never;
@@ -159,6 +211,180 @@ export interface paths {
             cookie?: never;
         };
         get: operations["get_task"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every tenant the caller can see, parents before children. */
+        get: operations["list_tenants"];
+        put?: never;
+        post: operations["create_tenant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_tenant"];
+        put?: never;
+        post?: never;
+        /**
+         * Deletes an empty tenant (no sub-tenants, VMs or images), with its users and
+         *     networks.
+         */
+        delete: operations["delete_tenant"];
+        options?: never;
+        head?: never;
+        patch: operations["update_tenant"];
+        trace?: never;
+    };
+    "/api/v1/tenants/{id}/grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_grants"];
+        /**
+         * Replaces the clusters and storage pools a tenant may use. Each must be
+         *     usable by the parent; revoking one also revokes it from sub-tenants.
+         */
+        put: operations["set_grants"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{id}/quotas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_quotas"];
+        /**
+         * Changes limits. Keys present are set (a number) or cleared (`null`);
+         *     absent keys are left alone. Set by the parent tenant's administrators.
+         */
+        put: operations["set_quotas"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{id}/role-bindings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["tenant_bindings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The caller's own tokens. */
+        get: operations["list_tokens"];
+        put?: never;
+        post: operations["create_token"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tokens/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_token"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_users"];
+        put?: never;
+        post: operations["create_user"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_user"];
+        options?: never;
+        head?: never;
+        patch: operations["update_user"];
+        trace?: never;
+    };
+    "/api/v1/users/{id}/role-bindings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["user_bindings"];
         put?: never;
         post?: never;
         delete?: never;
@@ -318,6 +544,34 @@ export interface components {
         } & {
             task_id: components["schemas"]["TaskId"];
         };
+        AuditEntry: {
+            /** @description E.g. `vm.create`, `role.bind`, `auth.login`. */
+            action: string;
+            /** Format: date-time */
+            at: string;
+            details: unknown;
+            /** Format: int64 */
+            id: number;
+            /** @description `success` or `failure`. */
+            outcome: string;
+            /** Format: uuid */
+            target_id?: string | null;
+            target_kind?: string | null;
+            tenant_id?: components["schemas"]["TenantId"] | null;
+            user_id?: components["schemas"]["UserId"] | null;
+            username?: string | null;
+        };
+        BindingView: {
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            id: string;
+            role: string;
+            tenant_id: components["schemas"]["TenantId"];
+            tenant_name: string;
+            user_id: components["schemas"]["UserId"];
+            username: string;
+        };
         ConsoleRequest: {
             kind: components["schemas"]["Kind"];
         };
@@ -326,6 +580,11 @@ export interface components {
             path: string;
             /** @description Single-use; valid for 30 seconds. */
             ticket: string;
+        };
+        CreateBinding: {
+            role: string;
+            tenant_id: components["schemas"]["TenantId"];
+            user_id: components["schemas"]["UserId"];
         };
         CreateImage: {
             /** @description `qcow2` or `raw`. */
@@ -342,6 +601,29 @@ export interface components {
              * @description Validity in minutes (default 60, max 1440).
              */
             ttl_minutes?: number | null;
+        };
+        CreateTenant: {
+            name: string;
+            parent_id: components["schemas"]["TenantId"];
+            /** @description Lowercase letters, digits and hyphens; unique among siblings. */
+            slug: string;
+        };
+        CreateToken: {
+            /**
+             * Format: int32
+             * @description Days until it expires; omit for a token that does not expire.
+             */
+            expires_in_days?: number | null;
+            name: string;
+        };
+        CreateUser: {
+            display_name?: string;
+            email?: string | null;
+            password: string;
+            /** @description Role to hold at `tenant_id` (default `viewer`). */
+            role?: string | null;
+            tenant_id: components["schemas"]["TenantId"];
+            username: string;
         };
         CreateVm: {
             /**
@@ -382,6 +664,10 @@ export interface components {
         };
         /** @enum {string} */
         Firmware: "bios" | "uefi";
+        Grants: {
+            clusters: string[];
+            storage_pools: string[];
+        };
         /** Format: uuid */
         HostId: string;
         HostView: {
@@ -423,6 +709,12 @@ export interface components {
             source_url: string;
             tenant_id: components["schemas"]["TenantId"];
         };
+        InheritedLimit: {
+            /** Format: int64 */
+            max: number;
+            /** @description The ancestor whose limit this is. */
+            tenant_name: string;
+        };
         JoinTokenView: {
             /** Format: date-time */
             expires_at: string;
@@ -444,6 +736,8 @@ export interface components {
             display_name: string;
             /** @description Whether the user administers the provider (hosts, enrollment). */
             provider_admin: boolean;
+            /** @description Roles the user holds; each also applies to the tenant's sub-tenants. */
+            roles: components["schemas"]["RoleAt"][];
             /** @description Slug path of the user's tenant, empty for the provider. */
             tenant: string;
             tenant_id: components["schemas"]["TenantId"];
@@ -453,6 +747,10 @@ export interface components {
         };
         /** Format: uuid */
         NetworkId: string;
+        NewToken: components["schemas"]["TokenView"] & {
+            /** @description Send as `Authorization: Bearer <token>`. Shown only once. */
+            token: string;
+        };
         /** Format: uuid */
         NicId: string;
         NicSpec: {
@@ -462,6 +760,30 @@ export interface components {
             ip: string;
             mac: string;
             network_id: components["schemas"]["NetworkId"];
+        };
+        Quotas: {
+            /** @description The tightest limit an ancestor imposes, where one does. */
+            inherited: {
+                [key: string]: components["schemas"]["InheritedLimit"];
+            };
+            /**
+             * @description This tenant's own limits per resource (`vms`, `vcpus`, `memory_mib`,
+             *     `disk_gib`); absent means no limit of its own.
+             */
+            limits: {
+                [key: string]: number;
+            };
+            /** @description What the tenant and its sub-tenants use now. */
+            usage: {
+                [key: string]: number;
+            };
+        };
+        RoleAt: {
+            role: string;
+            /** @description Slug path of the tenant (empty for the root). */
+            tenant: string;
+            tenant_id: components["schemas"]["TenantId"];
+            tenant_name: string;
         };
         /** Format: uuid */
         TaskId: string;
@@ -492,8 +814,60 @@ export interface components {
         };
         /** Format: uuid */
         TenantId: string;
+        TenantView: {
+            /** Format: date-time */
+            created_at: string;
+            /** @description 1 for the root. */
+            depth: number;
+            id: components["schemas"]["TenantId"];
+            name: string;
+            parent_id?: components["schemas"]["TenantId"] | null;
+            slug: string;
+            /**
+             * @description Slugs from below the root down to this tenant, e.g. `acme/dev`; what
+             *     users of this tenant enter at sign-in. Empty for the root.
+             */
+            slug_path: string;
+        };
+        TokenView: {
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            expires_at?: string | null;
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            last_used_at?: string | null;
+            name: string;
+        };
+        UpdateTenant: {
+            name: string;
+        };
+        /**
+         * @description Users may change their own name, email and password; administrators may
+         *     change anyone's and disable accounts.
+         */
+        UpdateUser: {
+            disabled?: boolean | null;
+            display_name?: string | null;
+            /** @description `null` clears it. */
+            email?: string | null;
+            password?: string | null;
+        };
         /** Format: uuid */
         UserId: string;
+        UserView: {
+            /** Format: date-time */
+            created_at: string;
+            disabled: boolean;
+            display_name: string;
+            email?: string | null;
+            id: components["schemas"]["UserId"];
+            /** @description Signs in with a password (rather than through an identity provider). */
+            local: boolean;
+            tenant_id: components["schemas"]["TenantId"];
+            username: string;
+        };
         /** Format: uuid */
         VmId: string;
         VmView: {
@@ -556,6 +930,38 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_audit: {
+        parameters: {
+            query?: {
+                /** @description Defaults to the caller's tenant; includes sub-tenants. */
+                tenant_id?: components["schemas"]["TenantId"];
+                /** @description Entries older than this ID (for paging). */
+                before?: number;
+                /** @description Default 100, max 500. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditEntry"][];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     login: {
         parameters: {
             query?: never;
@@ -801,6 +1207,84 @@ export interface operations {
             };
         };
     };
+    create_binding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateBinding"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BindingView"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_binding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_tasks: {
         parameters: {
             query?: {
@@ -843,6 +1327,570 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_tenants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantView"][];
+                };
+            };
+        };
+    };
+    create_tenant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTenant"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_tenant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_tenant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not empty */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_tenant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateTenant"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantView"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_grants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Grants"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_grants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Grants"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Grants"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_quotas: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Quotas"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_quotas: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: number | null;
+                };
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Quotas"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    tenant_bindings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BindingView"][];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_tokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenView"][];
+                };
+            };
+        };
+    };
+    create_token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateToken"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NewToken"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_users: {
+        parameters: {
+            query?: {
+                /** @description Defaults to the caller's tenant. */
+                tenant_id?: components["schemas"]["TenantId"];
+                /** @description Include users of all sub-tenants. */
+                descendants?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserView"][];
+                };
+            };
+        };
+    };
+    create_user: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateUser"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_user: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_user: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateUser"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    user_bindings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BindingView"][];
                 };
             };
             404: {

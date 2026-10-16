@@ -10,6 +10,7 @@ use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
+#[derive(Clone)]
 pub struct Api {
     pub base: String,
     http: reqwest::Client,
@@ -41,6 +42,72 @@ pub async fn connect() -> Result<Option<Api>> {
 }
 
 impl Api {
+    /// Signs in as a specific user, optionally of a sub-tenant (`acme/dev`).
+    pub async fn login(
+        base: &str,
+        username: &str,
+        password: &str,
+        tenant: Option<&str>,
+    ) -> Result<Api> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let http = reqwest::Client::builder().cookie_store(true).build()?;
+        let api = Api {
+            base: base.trim_end_matches('/').to_owned(),
+            http,
+        };
+        api.send(
+            reqwest::Method::POST,
+            "/auth/login",
+            Some(json!({"username": username, "password": password, "tenant": tenant})),
+        )
+        .await
+        .with_context(|| format!("login as {username}"))?;
+        Ok(api)
+    }
+
+    /// A client authenticating with a bearer token instead of a session.
+    pub fn with_token(base: &str, token: &str) -> Result<Api> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {token}").parse()?,
+        );
+        let http = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()?;
+        Ok(Api {
+            base: base.trim_end_matches('/').to_owned(),
+            http,
+        })
+    }
+
+    /// Like `send`, but returns error statuses instead of failing.
+    pub async fn try_send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<(u16, Value)> {
+        let mut req = self
+            .http
+            .request(method, format!("{}/api/v1{path}", self.base));
+        if let Some(b) = body {
+            req = req.json(&b);
+        }
+        let resp = req.send().await?;
+        let status = resp.status().as_u16();
+        let text = resp.text().await?;
+        Ok((
+            status,
+            if text.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_str(&text)?
+            },
+        ))
+    }
+
     pub async fn send(
         &self,
         method: reqwest::Method,
@@ -122,9 +189,9 @@ impl Api {
         }
     }
 
-    /// Finds or registers the test image.
+    /// Finds or registers the test image, shared so sub-tenants can use it.
     pub async fn image(&self) -> Result<String> {
-        let name = "e2e-debian-13";
+        let name = "e2e-debian-13-shared";
         let images = self.get("/images").await?;
         if let Some(i) = images
             .as_array()
@@ -140,7 +207,7 @@ impl Api {
         let img = self
             .post(
                 "/images",
-                json!({"name": name, "source_url": url, "format": "qcow2"}),
+                json!({"name": name, "source_url": url, "format": "qcow2", "shared": true}),
             )
             .await?;
         Ok(img["id"].as_str().unwrap().to_owned())
@@ -181,26 +248,11 @@ impl Console {
         Ok(())
     }
 
-    /// Reads until `needle` appears, returning everything read so far.
+    /// Reads until `needle` appears and returns everything up to and
+    /// including it. Anything after the needle stays buffered for the next
+    /// read: output can arrive in arbitrary chunks.
     pub async fn expect(&mut self, needle: &str, timeout: Duration) -> Result<String> {
-        let deadline = Instant::now() + timeout;
-        while !String::from_utf8_lossy(&self.buf).contains(needle) {
-            let left = deadline.saturating_duration_since(Instant::now());
-            match tokio::time::timeout(left, self.ws.next()).await {
-                Ok(Some(Ok(Message::Binary(b)))) => {
-                    debug("<<", &b);
-                    self.buf.extend_from_slice(&b)
-                }
-                Ok(Some(Ok(_))) => {}
-                Ok(Some(Err(e))) => bail!("console error: {e}"),
-                Ok(None) => bail!("console closed while waiting for {needle:?}"),
-                Err(_) => bail!(
-                    "timed out waiting for {needle:?}; got: {}",
-                    String::from_utf8_lossy(&self.buf)
-                ),
-            }
-        }
-        Ok(String::from_utf8_lossy(&std::mem::take(&mut self.buf)).into_owned())
+        self.expect_any(&[needle], timeout).await
     }
 
     /// Logs in on a serial console (if needed) and runs a command, returning
@@ -239,6 +291,7 @@ impl Console {
         let deadline = Instant::now() + timeout;
         loop {
             if let Some(v) = parse(&String::from_utf8_lossy(&self.buf)) {
+                // Callers only read the remainder of the current line.
                 self.buf.clear();
                 return Ok(v);
             }
@@ -256,24 +309,39 @@ impl Console {
         }
     }
 
+    /// Reads until any of `needles` appears; consumes up to the first match.
     async fn expect_any(&mut self, needles: &[&str], timeout: Duration) -> Result<String> {
         let deadline = Instant::now() + timeout;
+        let longest = needles.iter().map(|n| n.len()).max().unwrap_or(0);
+        let mut from = 0;
         loop {
-            let text = String::from_utf8_lossy(&self.buf).into_owned();
-            if needles.iter().any(|n| text.contains(n)) {
-                self.buf.clear();
-                return Ok(text);
+            let found = needles
+                .iter()
+                .filter_map(|n| find(&self.buf, n.as_bytes(), from))
+                .min();
+            if let Some(end) = found {
+                let rest = self.buf.split_off(end);
+                let head = std::mem::replace(&mut self.buf, rest);
+                return Ok(String::from_utf8_lossy(&head).into_owned());
             }
             let left = deadline.saturating_duration_since(Instant::now());
             match tokio::time::timeout(left, self.ws.next()).await {
                 Ok(Some(Ok(Message::Binary(b)))) => {
                     debug("<<", &b);
+                    // Only the new bytes (and a needle's length before them)
+                    // can complete a match. Rescanning everything per chunk is
+                    // quadratic: slow enough that console backpressure
+                    // throttles the guest while it boots.
+                    from = self.buf.len().saturating_sub(longest);
                     self.buf.extend_from_slice(&b)
                 }
                 Ok(Some(Ok(_))) => {}
                 Ok(Some(Err(e))) => bail!("console error: {e}"),
-                Ok(None) => bail!("console closed"),
-                Err(_) => bail!("timed out waiting for {needles:?}; got: {text}"),
+                Ok(None) => bail!("console closed while waiting for {needles:?}"),
+                Err(_) => bail!(
+                    "timed out waiting for {needles:?}; got: {}",
+                    String::from_utf8_lossy(&self.buf)
+                ),
             }
         }
     }
@@ -283,5 +351,28 @@ impl Console {
 fn debug(dir: &str, data: &[u8]) {
     if std::env::var_os("HM_E2E_DEBUG").is_some() {
         eprintln!("{dir} {:?}", String::from_utf8_lossy(data));
+    }
+}
+
+/// End offset of the first occurrence of `needle` in `hay` starting at or
+/// after `from`.
+fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    let from = from.min(hay.len());
+    hay[from..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|i| from + i + needle.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find;
+
+    #[test]
+    fn find_returns_the_end_of_the_first_match() {
+        assert_eq!(find(b"ab__rc=0__", b"__rc=", 0), Some(7));
+        assert_eq!(find(b"ab__rc=0__", b"__rc=", 2), Some(7));
+        assert_eq!(find(b"ab__rc=0__", b"__rc=", 3), None);
+        assert_eq!(find(b"abc", b"c", 9), None);
     }
 }

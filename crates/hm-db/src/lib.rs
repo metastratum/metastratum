@@ -3,12 +3,16 @@
 //! Repositories are plain functions over any `PgExecutor`, so callers can
 //! compose them inside a single transaction.
 
+pub mod audit;
 pub mod console;
+pub mod grants;
 pub mod hosts;
 pub mod images;
 pub mod join_tokens;
 pub mod networks;
 pub mod pki;
+pub mod quotas;
+pub mod rbac;
 pub mod sessions;
 pub mod tasks;
 pub mod tenants;
