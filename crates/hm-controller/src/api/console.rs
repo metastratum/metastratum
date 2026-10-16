@@ -160,10 +160,10 @@ async fn relay(socket: WebSocket, tunnel: Tunnel) {
     };
     let downstream = async {
         while let Ok(Some(chunk)) = from_agent.message().await {
-            if let Some(tunnel_chunk::Msg::Data(data)) = chunk.msg {
-                if ws_tx.send(Message::Binary(data.into())).await.is_err() {
-                    break;
-                }
+            if let Some(tunnel_chunk::Msg::Data(data)) = chunk.msg
+                && ws_tx.send(Message::Binary(data.into())).await.is_err()
+            {
+                break;
             }
         }
         let _ = ws_tx.send(Message::Close(None)).await;

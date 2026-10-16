@@ -72,10 +72,10 @@ pub async fn relay(
             };
             let down = async {
                 while let Ok(Some(chunk)) = from_ctl.message().await {
-                    if let Some(tunnel_chunk::Msg::Data(d)) = chunk.msg {
-                        if wr.write_all(&d).await.is_err() {
-                            break;
-                        }
+                    if let Some(tunnel_chunk::Msg::Data(d)) = chunk.msg
+                        && wr.write_all(&d).await.is_err()
+                    {
+                        break;
                     }
                 }
             };
@@ -109,10 +109,10 @@ pub async fn relay(
                 })
             };
             while let Ok(Some(chunk)) = from_ctl.message().await {
-                if let Some(tunnel_chunk::Msg::Data(d)) = chunk.msg {
-                    if in_tx.send(d).await.is_err() {
-                        break;
-                    }
+                if let Some(tunnel_chunk::Msg::Data(d)) = chunk.msg
+                    && in_tx.send(d).await.is_err()
+                {
+                    break;
                 }
             }
             drop(in_tx);

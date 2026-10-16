@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "tests/e2e"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-rust-version = "1.85"
+rust-version = "1.97"
 
 [workspace.dependencies]
 hm-core = { path = "crates/hm-core" }

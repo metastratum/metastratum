@@ -56,6 +56,7 @@ impl From<hm_db::tasks::Task> for TaskView {
 }
 
 #[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListQuery {
     /// Defaults to the caller's tenant; includes descendants.
     tenant_id: Option<TenantId>,

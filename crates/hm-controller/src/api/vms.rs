@@ -90,6 +90,7 @@ async fn load(state: &AppState, p: &Principal, id: VmId, perm: Perm) -> ApiResul
 }
 
 #[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListQuery {
     /// Defaults to the caller's tenant.
     tenant_id: Option<TenantId>,
@@ -353,6 +354,7 @@ async fn start_vm(
 }
 
 #[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct StopQuery {
     /// Power off immediately instead of asking the guest to shut down.
     #[serde(default)]

@@ -46,6 +46,7 @@ impl From<hm_db::images::Image> for ImageView {
 }
 
 #[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListQuery {
     /// Defaults to the caller's tenant.
     tenant_id: Option<TenantId>,

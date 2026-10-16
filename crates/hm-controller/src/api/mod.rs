@@ -60,10 +60,9 @@ fn session_secret(headers: &HeaderMap) -> Option<String> {
     if let Some(v) = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
+        && let Some(t) = v.strip_prefix("Bearer ")
     {
-        if let Some(t) = v.strip_prefix("Bearer ") {
-            return Some(t.trim().to_owned());
-        }
+        return Some(t.trim().to_owned());
     }
     headers
         .get_all(header::COOKIE)
