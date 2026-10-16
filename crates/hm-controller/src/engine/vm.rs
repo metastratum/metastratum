@@ -86,6 +86,14 @@ async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
             .context("creating OVN port")?;
     }
 
+    let mut pools = std::collections::BTreeMap::new();
+    for disk in &spec.disks {
+        if let std::collections::btree_map::Entry::Vacant(e) = pools.entry(disk.pool_id) {
+            let p = hm_db::storage_pools::get(db, disk.pool_id).await?;
+            e.insert(crate::api::agent_pool(&p));
+        }
+    }
+
     ctx.step("image", 0.2).await;
     for disk in &spec.disks {
         if let Some(image_id) = disk.image_id {
@@ -97,6 +105,7 @@ async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
                     image_id: image.id.to_string(),
                     source_url: image.source_url,
                     format: image.format,
+                    pool: Some(pools[&disk.pool_id].clone()),
                 }),
                 SLOW,
             )
@@ -114,6 +123,7 @@ async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
                 volume_id: disk.volume_id.to_string(),
                 size_bytes: disk.size_bytes,
                 image_id: disk.image_id.map(|i| i.to_string()).unwrap_or_default(),
+                pool: Some(pools[&disk.pool_id].clone()),
             }),
             QUICK,
         )
@@ -131,6 +141,7 @@ async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
             name: vm.name.clone(),
             generation: vm.generation as u64,
             spec_json: serde_json::to_string(spec)?,
+            pools: pools.into_values().collect(),
         }),
         QUICK,
     )
@@ -223,11 +234,13 @@ pub async fn delete(ctx: &TaskCtx) -> Result<()> {
         .context("removing domain")?;
         ctx.step("volumes", 0.5).await;
         for vol in hm_db::vms::volumes_for_vm(db, id).await? {
+            let pool = crate::api::agent_pool(&hm_db::storage_pools::get(db, vol.pool_id).await?);
             call(
                 ctx,
                 host,
                 Cmd::DeleteVolume(DeleteVolume {
                     volume_id: vol.id.to_string(),
+                    pool: Some(pool),
                 }),
                 QUICK,
             )

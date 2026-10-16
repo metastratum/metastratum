@@ -11,7 +11,7 @@ use hm_proto::{
     AgentMessage, CommandResult, ConsoleKind, DomainState, Heartbeat, Hello, HostFacts, PowerState,
     agent_message, controller_message,
 };
-use hm_storage::LocalPool;
+use hm_storage::{PoolSpec, Pools};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, Endpoint};
@@ -29,7 +29,7 @@ pub struct Agent {
     pub identity: HostIdentity,
     pub facts: HostFacts,
     pub lv: Libvirt,
-    pub pool: LocalPool,
+    pub pools: Arc<Pools>,
     pub files: vm::VmFiles,
     /// Domain lifecycle changes from libvirt, forwarded while a session is up.
     pub changes: tokio::sync::Mutex<mpsc::Receiver<Change>>,
@@ -212,6 +212,22 @@ impl Agent {
         }
     }
 
+    /// Prepares the pool a command refers to.
+    async fn pool(&self, spec: Option<&hm_proto::Pool>) -> Result<hm_storage::Pool> {
+        let spec = spec.context("command does not name a storage pool")?;
+        let config = if spec.config_json.is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&spec.config_json).context("invalid pool config")?
+        };
+        let spec = PoolSpec {
+            id: spec.id.clone(),
+            kind: spec.kind.clone(),
+            config,
+        };
+        Ok(self.pools.get(&spec).await?)
+    }
+
     async fn report_power(&self, vm_id: &str, tx: &mpsc::Sender<AgentMessage>) {
         if let Ok(st) = self.lv.state(vm_id).await {
             let d = DomainState {
@@ -237,22 +253,31 @@ impl Agent {
         match cmd {
             Cmd::EnsureImage(c) => {
                 tracing::info!(image = %c.image_id, url = %c.source_url, "ensuring image");
-                self.pool
+                let pool = self.pool(c.pool.as_ref()).await?;
+                pool.files()
                     .ensure_image(&c.image_id, &c.source_url, &c.format)
                     .await?;
             }
             Cmd::EnsureVolume(c) => {
                 let image = Some(c.image_id.as_str()).filter(|s| !s.is_empty());
-                self.pool
+                let pool = self.pool(c.pool.as_ref()).await?;
+                pool.files()
                     .ensure_volume(&c.volume_id, c.size_bytes, image)
                     .await?;
             }
-            Cmd::DeleteVolume(c) => self.pool.delete_volume(&c.volume_id).await?,
+            Cmd::DeleteVolume(c) => {
+                let pool = self.pool(c.pool.as_ref()).await?;
+                pool.files().delete_volume(&c.volume_id).await?;
+            }
             Cmd::DefineVm(c) => {
                 let spec: hm_core::vm::VmSpec =
                     serde_json::from_str(&c.spec_json).context("invalid VM spec")?;
+                let mut pools = std::collections::HashMap::new();
+                for p in &c.pools {
+                    pools.insert(p.id.clone(), self.pool(Some(p)).await?);
+                }
                 let def = vm::domain(
-                    &self.pool,
+                    &pools,
                     &self.files,
                     &c.vm_id,
                     &c.tenant_id,

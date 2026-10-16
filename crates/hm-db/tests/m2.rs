@@ -112,7 +112,7 @@ async fn allocate(
         tenant_id: tenant,
         vm_id: Some(id),
         host_id: Some(host),
-        pool: "local".into(),
+        pool_id: hm_core::ids::LOCAL_POOL,
         size_bytes: disk_gib << 30,
         image_id: None,
     };
@@ -453,4 +453,61 @@ async fn tenant_contents_and_subtree_listing(pool: PgPool) {
         .map(|t| t.slug)
         .collect();
     assert_eq!(names, ["acme", "globex", "dev"]);
+}
+
+#[sqlx::test(migrator = "hm_db::MIGRATOR")]
+async fn storage_pools_attach_to_clusters(pool: PgPool) {
+    tree(&pool).await;
+    let c1 = hm_db::clusters::create(&pool, "c1", 4.0, 1.0)
+        .await
+        .unwrap();
+    let c2 = hm_db::clusters::create(&pool, "c2", 4.0, 1.0)
+        .await
+        .unwrap();
+    let local = hm_db::storage_pools::get(&pool, hm_core::ids::LOCAL_POOL)
+        .await
+        .unwrap();
+    assert_eq!((local.kind.as_str(), local.clusters.len()), ("local", 0));
+
+    let mut tx = pool.begin().await.unwrap();
+    let cfg = serde_json::json!({"server": "10.77.0.10", "export": "/srv/nfs/hypermon"});
+    let id = hm_db::storage_pools::create(&mut tx, "nfs1", "nfs", &cfg, &[c1.id])
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    assert!(
+        hm_db::storage_pools::create(&mut tx, "nfs1", "nfs", &cfg, &[])
+            .await
+            .is_err(),
+        "duplicate name"
+    );
+    tx.rollback().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    hm_db::storage_pools::update(&mut tx, id, "nfs1", &cfg, &[c1.id, c2.id])
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let err =
+        hm_db::storage_pools::update(&mut tx, id, "nfs1", &cfg, &[hm_core::ids::ClusterId::new()])
+            .await
+            .unwrap_err();
+    assert!(err.to_string().contains("unknown cluster"), "{err}");
+    tx.rollback().await.unwrap();
+
+    let p = hm_db::storage_pools::get(&pool, id).await.unwrap();
+    assert_eq!(p.clusters, vec![c1.id]);
+    assert_eq!(
+        hm_db::storage_pools::volume_count(&pool, id).await.unwrap(),
+        0
+    );
+    let mut tx = pool.begin().await.unwrap();
+    hm_db::storage_pools::delete(&mut tx, id).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        hm_db::storage_pools::list(&pool).await.unwrap().len(),
+        1,
+        "only local is left"
+    );
 }

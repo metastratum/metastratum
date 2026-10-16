@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{ImageId, NetworkId, NicId, VolumeId};
+use crate::ids::{ImageId, LOCAL_POOL, NetworkId, NicId, StoragePoolId, VolumeId};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
@@ -32,6 +32,10 @@ pub struct VmSpec {
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DiskSpec {
     pub volume_id: VolumeId,
+    /// Pool the volume lives in. Specs from before storage pools existed
+    /// used local storage.
+    #[serde(default = "local_pool")]
+    pub pool_id: StoragePoolId,
     pub size_bytes: u64,
     /// Image the volume was cloned from, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,6 +62,10 @@ pub struct CloudInit {
     pub user_data: String,
 }
 
+fn local_pool() -> StoragePoolId {
+    LOCAL_POOL
+}
+
 /// Locally administered unicast MAC in hypermon's prefix, derived from the
 /// NIC ID so it is stable and needs no allocation table.
 pub fn mac_for(nic: NicId) -> String {
@@ -75,10 +83,14 @@ mod tests {
 
     #[test]
     fn spec_json_roundtrip_with_defaults() {
-        let json = r#"{"vcpus":2,"memory_mib":1024,"disks":[],"nics":[]}"#;
+        let json = r#"{"vcpus":2,"memory_mib":1024,"disks":[{"volume_id":"0199f0a2-7b3c-7d00-8000-000000000001","size_bytes":1}],"nics":[]}"#;
         let spec: VmSpec = serde_json::from_str(json).unwrap();
         assert_eq!(spec.firmware, Firmware::Uefi);
         assert!(spec.cloud_init.is_none());
+        assert_eq!(
+            spec.disks[0].pool_id, LOCAL_POOL,
+            "old specs used local storage"
+        );
         let again: VmSpec = serde_json::from_str(&serde_json::to_string(&spec).unwrap()).unwrap();
         assert_eq!(again, spec);
     }

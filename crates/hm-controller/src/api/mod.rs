@@ -6,6 +6,7 @@ mod clusters;
 mod console;
 mod hosts;
 mod images;
+mod storage_pools;
 mod tasks;
 mod tenants;
 mod tokens;
@@ -13,6 +14,7 @@ mod users;
 mod vms;
 
 pub use auth::hash_password;
+pub use storage_pools::agent_pool;
 
 use axum::Router;
 use axum::extract::FromRequestParts;
@@ -46,6 +48,7 @@ fn api() -> OpenApiRouter<AppState> {
         .merge(hosts::routes())
         .merge(tasks::routes())
         .merge(clusters::routes())
+        .merge(storage_pools::routes())
         .merge(tenants::routes())
         .merge(users::routes())
         .merge(tokens::routes())

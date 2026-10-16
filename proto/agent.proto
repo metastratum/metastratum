@@ -114,23 +114,36 @@ message CommandResult {
   string error = 2;
 }
 
-// Download an image into the host's image cache (idempotent).
+// A storage pool, as much as the agent needs to reach it.
+message Pool {
+  string id = 1;
+  // "local", "nfs" or "rbd".
+  string kind = 2;
+  // Kind-specific connection details (JSON), including secrets.
+  string config_json = 3;
+}
+
+// Make an image available in a pool (download and convert it once).
 message EnsureImage {
   string image_id = 1;
   string source_url = 2;
   // "qcow2" or "raw": the format of the downloaded file.
   string format = 3;
+  Pool pool = 4;
 }
 
-// Create a volume, optionally as a copy-on-write overlay of a cached image.
+// Create a volume, optionally as a copy-on-write clone of an image in the
+// same pool.
 message EnsureVolume {
   string volume_id = 1;
   uint64 size_bytes = 2;
   string image_id = 3;
+  Pool pool = 4;
 }
 
 message DeleteVolume {
   string volume_id = 1;
+  Pool pool = 2;
 }
 
 // Define (or redefine) the domain for a VM. `spec_json` is an
@@ -141,6 +154,8 @@ message DefineVm {
   string name = 3;
   uint64 generation = 4;
   string spec_json = 5;
+  // Pools the VM's disks live in.
+  repeated Pool pools = 6;
 }
 
 message StartVm {

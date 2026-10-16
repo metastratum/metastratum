@@ -67,6 +67,9 @@ id_type!(
     StoragePoolId,
 );
 
+/// The built-in pool of host-local storage.
+pub const LOCAL_POOL: StoragePoolId = StoragePoolId(Uuid::from_u128(1));
+
 #[cfg(test)]
 mod tests {
     use super::*;

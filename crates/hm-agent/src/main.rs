@@ -11,10 +11,10 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, bail};
+use anyhow::bail;
 use clap::Parser;
 use hm_libvirt::Libvirt;
-use hm_storage::LocalPool;
+use hm_storage::Pools;
 use tracing_subscriber::EnvFilter;
 
 /// Crate version and the source revision it was built from.
@@ -91,14 +91,13 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let pool = LocalPool::new(&args.data_dir);
-    pool.init().await.context("preparing storage pool")?;
+    let pools = Pools::new(&args.data_dir);
     let agent = Arc::new(session::Agent {
         controller: args.controller,
         identity,
         facts,
         lv: lv.clone(),
-        pool,
+        pools,
         files: vm::VmFiles {
             cloud_init_dir: args.data_dir.join("cloud-init"),
         },

@@ -4,7 +4,9 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use hm_core::ids::{ClusterId, HostId, ImageId, NicId, TaskId, TenantId, VmId, VolumeId};
+use hm_core::ids::{
+    ClusterId, HostId, ImageId, LOCAL_POOL, NicId, StoragePoolId, TaskId, TenantId, VmId, VolumeId,
+};
 use hm_core::vm::{CloudInit, DiskSpec, Firmware, NicSpec, VmSpec, mac_for};
 use hm_db::vms::Vm;
 use serde::{Deserialize, Serialize};
@@ -181,6 +183,8 @@ pub struct CreateVm {
     start: Option<bool>,
     /// Cluster to place the VM in; any cluster the tenant may use otherwise.
     cluster_id: Option<ClusterId>,
+    /// Pool for the VM's disk; local storage on its host by default.
+    storage_pool_id: Option<StoragePoolId>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -275,9 +279,14 @@ async fn create_vm(
     if !hm_db::images::is_usable_by(&state.db, req.image_id, tenant).await? {
         return Err(ApiError::not_found("image"));
     }
+    let pool =
+        hm_db::storage_pools::get(&state.db, req.storage_pool_id.unwrap_or(LOCAL_POOL)).await?;
+    if !super::storage_pools::may_use(&state, tenant, &pool).await? {
+        return Err(ApiError::not_found("storage pool"));
+    }
 
     let mut tx = state.db.begin().await?;
-    let host = place(&state, &mut tx, tenant, &req).await?;
+    let host = place(&state, &mut tx, tenant, &req, &pool).await?;
     let delta: hm_db::quotas::Amounts = [
         ("vms", 1),
         ("vcpus", i64::from(req.vcpus)),
@@ -294,6 +303,7 @@ async fn create_vm(
     let volume_id = VolumeId::new();
     let disk = DiskSpec {
         volume_id,
+        pool_id: pool.id,
         size_bytes: req.disk_gib * GIB,
         image_id: Some(req.image_id),
     };
@@ -335,8 +345,9 @@ async fn create_vm(
             id: volume_id,
             tenant_id: tenant,
             vm_id: Some(vm_id),
-            host_id: Some(host.id),
-            pool: "local".into(),
+            // Only local volumes are tied to a host.
+            host_id: (pool.kind == "local").then_some(host.id),
+            pool_id: pool.id,
             size_bytes: disk.size_bytes as i64,
             image_id: Some(req.image_id),
         },
@@ -382,8 +393,20 @@ async fn place(
     tx: &mut hm_db::sqlx::PgConnection,
     tenant: TenantId,
     req: &CreateVm,
+    pool: &hm_db::storage_pools::Pool,
 ) -> ApiResult<hm_scheduler::Host> {
-    let mut clusters = super::clusters::allowed_clusters(state, tenant).await?;
+    let mut clusters = super::storage_pools::clusters_for(
+        pool,
+        super::clusters::allowed_clusters(state, tenant).await?,
+    );
+    // A shared pool restricts placement to its clusters; say so when none
+    // of them is available, rather than blaming every host.
+    if pool.kind != "local" && clusters.as_ref().is_some_and(|c| c.is_empty()) {
+        return Err(ApiError::unavailable(format!(
+            "storage pool {} is not attached to any cluster this tenant may use",
+            pool.name
+        )));
+    }
     if let Some(want) = req.cluster_id {
         if clusters.as_ref().is_some_and(|c| !c.contains(&want)) {
             return Err(ApiError::not_found("cluster"));

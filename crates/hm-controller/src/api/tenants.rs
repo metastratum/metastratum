@@ -343,6 +343,14 @@ async fn set_grants(
     for c in &req.clusters {
         hm_db::clusters::get(&state.db, hm_core::ids::ClusterId(*c)).await?;
     }
+    for sp in &req.storage_pools {
+        let pool = hm_db::storage_pools::get(&state.db, hm_core::ids::StoragePoolId(*sp)).await?;
+        if pool.kind == "local" {
+            return Err(ApiError::bad_request(
+                "local storage is available to every tenant; it needs no grant",
+            ));
+        }
+    }
     let mut tx = state.db.begin().await?;
     hm_db::grants::set(&mut tx, id, "cluster", &req.clusters).await?;
     hm_db::grants::set(&mut tx, id, "storage_pool", &req.storage_pools).await?;

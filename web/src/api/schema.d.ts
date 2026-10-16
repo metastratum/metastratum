@@ -235,6 +235,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/storage-pools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_pools"];
+        put?: never;
+        post: operations["create_pool"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage-pools/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["update_pool"];
+        post?: never;
+        delete: operations["delete_pool"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tasks": {
         parameters: {
             query?: never;
@@ -369,6 +401,26 @@ export interface paths {
             cookie?: never;
         };
         get: operations["tenant_bindings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{id}/storage-pools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pools the tenant may put VM disks in: local storage, and shared pools
+         *     granted to it.
+         */
+        get: operations["usable_pools"];
         put?: never;
         post?: never;
         delete?: never;
@@ -745,6 +797,7 @@ export interface components {
             ssh_authorized_keys?: string[];
             /** @description Start the VM once created (default true). */
             start?: boolean | null;
+            storage_pool_id?: components["schemas"]["StoragePoolId"] | null;
             tenant_id?: components["schemas"]["TenantId"] | null;
             /**
              * @description Complete cloud-init user data. Overrides `ssh_authorized_keys` and
@@ -756,6 +809,11 @@ export interface components {
         };
         DiskSpec: {
             image_id?: components["schemas"]["ImageId"] | null;
+            /**
+             * @description Pool the volume lives in. Specs from before storage pools existed
+             *     used local storage.
+             */
+            pool_id?: components["schemas"]["StoragePoolId"];
             /** Format: int64 */
             size_bytes: number;
             volume_id: components["schemas"]["VolumeId"];
@@ -861,6 +919,35 @@ export interface components {
             mac: string;
             network_id: components["schemas"]["NetworkId"];
         };
+        PoolSpec: {
+            cluster_ids: components["schemas"]["ClusterId"][];
+            /**
+             * @description NFS: `server`, `export`, optional mount `options`. RBD: `monitors`
+             *     (list of host:port), `pool`, `user`, `key`. On update, omitting `key`
+             *     keeps the stored one.
+             */
+            config: unknown;
+            /** @description `nfs` or `rbd` (the local pool is built in). */
+            kind?: string | null;
+            name: string;
+        };
+        PoolView: {
+            /**
+             * @description Clusters the pool is attached to; empty for `local`, which every host
+             *     has.
+             */
+            cluster_ids: components["schemas"]["ClusterId"][];
+            /** @description Connection details, without secrets. */
+            config: unknown;
+            /** Format: date-time */
+            created_at: string;
+            id: components["schemas"]["StoragePoolId"];
+            /** @description `local`, `nfs` or `rbd`. */
+            kind: string;
+            name: string;
+            /** Format: int64 */
+            volumes: number;
+        };
         Quotas: {
             /** @description The tightest limit an ancestor imposes, where one does. */
             inherited: {
@@ -885,6 +972,8 @@ export interface components {
             tenant_id: components["schemas"]["TenantId"];
             tenant_name: string;
         };
+        /** Format: uuid */
+        StoragePoolId: string;
         /** Format: uuid */
         TaskId: string;
         TaskRef: {
@@ -965,6 +1054,11 @@ export interface components {
         };
         UsableCluster: {
             id: components["schemas"]["ClusterId"];
+            name: string;
+        };
+        UsablePool: {
+            id: components["schemas"]["StoragePoolId"];
+            kind: string;
             name: string;
         };
         /** Format: uuid */
@@ -1586,6 +1680,153 @@ export interface operations {
             };
         };
     };
+    list_pools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoolView"][];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_pool: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PoolSpec"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoolView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_pool: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["StoragePoolId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PoolSpec"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoolView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_pool: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["StoragePoolId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Has volumes */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_tasks: {
         parameters: {
             query?: {
@@ -1974,6 +2215,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BindingView"][];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    usable_pools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsablePool"][];
                 };
             };
             404: {

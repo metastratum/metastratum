@@ -1,8 +1,14 @@
 //! Storage for the hypermon agent.
 //!
-//! M1 has one pool type: a host-local directory of qcow2 volumes, each a
-//! copy-on-write overlay of a cached base image. Shared pools (NFS, Ceph RBD)
-//! arrive in M2 behind the same operations.
+//! File pools are directories of qcow2 volumes, each a copy-on-write overlay
+//! of an image cached in the same pool. The local pool is a directory on the
+//! host; an NFS pool is the same layout on a share mounted by the agent, so
+//! every host attached to it sees the same images and volumes. [`Pools`]
+//! prepares pools on demand from the descriptions the controller sends.
+
+mod pools;
+
+pub use pools::{Pool, PoolSpec, Pools};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -27,6 +33,8 @@ pub enum Error {
     MissingImage(String),
     #[error("requested size {requested} is smaller than the image ({image} bytes)")]
     TooSmall { requested: u64, image: u64 },
+    #[error("invalid pool: {0}")]
+    Pool(String),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -52,7 +60,7 @@ struct ImgInfo {
     backing_filename: Option<String>,
 }
 
-async fn run(tool: &'static str, args: &[&str]) -> Result<Vec<u8>> {
+pub(crate) async fn run(tool: &'static str, args: &[&str]) -> Result<Vec<u8>> {
     let out = Command::new(tool).args(args).output().await?;
     if !out.status.success() {
         return Err(Error::Tool {
@@ -75,13 +83,13 @@ async fn img_info(path: &Path, format: Option<&str>) -> Result<ImgInfo> {
 }
 
 #[derive(Clone)]
-pub struct LocalPool {
+pub struct FilePool {
     root: PathBuf,
     /// Serialises work per image so concurrent VM creations download once.
     image_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
-impl LocalPool {
+impl FilePool {
     /// `root` holds `images/` (cached base images) and `volumes/`.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
@@ -130,8 +138,11 @@ impl LocalPool {
         if tokio::fs::try_exists(&dest).await? {
             return Ok(());
         }
-        let part = dest.with_extension("part");
-        let converted = dest.with_extension("tmp");
+        // Hosts sharing a pool may fetch the same image at once: each works
+        // on its own temporary files and the first to finish wins.
+        let unique = format!("{}.{}", std::process::id(), random_suffix());
+        let part = dest.with_extension(format!("{unique}.part"));
+        let converted = dest.with_extension(format!("{unique}.tmp"));
         let result = async {
             download(url, &part).await?;
             let declared = match format {
@@ -151,7 +162,11 @@ impl LocalPool {
             )
             .await?;
             set_mode(&converted, 0o644).await?;
-            tokio::fs::rename(&converted, &dest).await?;
+            // Another host finished first: keep its copy, which running VMs
+            // may already use as a backing file.
+            if !tokio::fs::try_exists(&dest).await? {
+                tokio::fs::rename(&converted, &dest).await?;
+            }
             Ok(())
         }
         .await;
@@ -170,7 +185,7 @@ impl LocalPool {
         if tokio::fs::try_exists(&dest).await? {
             return Ok(());
         }
-        let tmp = dest.with_extension("tmp");
+        let tmp = dest.with_extension(format!("{}.tmp", random_suffix()));
         let (tmp_s, size_s) = (tmp.to_string_lossy().into_owned(), size.to_string());
         match image {
             Some(img) => {
@@ -221,6 +236,18 @@ impl LocalPool {
     }
 }
 
+fn random_suffix() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+    );
+    format!("{:016x}", h.finish())
+}
+
 async fn set_mode(path: &Path, mode: u32) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).await?;
@@ -251,7 +278,7 @@ mod tests {
 
     #[test]
     fn ids_cannot_escape_the_pool() {
-        let pool = LocalPool::new("/var/lib/hypermon");
+        let pool = FilePool::new("/var/lib/hypermon");
         assert!(
             pool.volume_path("0199f0a2-7b3c-7d00-8000-000000000001")
                 .is_ok()
@@ -274,7 +301,7 @@ mod tests {
             return eprintln!("qemu-img not installed; skipping");
         }
         let root = std::env::temp_dir().join(format!("hm-storage-{}", std::process::id()));
-        let pool = LocalPool::new(&root);
+        let pool = FilePool::new(&root);
         pool.init().await.unwrap();
 
         // Seed the cache directly (downloads need a server).

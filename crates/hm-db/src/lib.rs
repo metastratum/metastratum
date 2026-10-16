@@ -15,6 +15,7 @@ pub mod pki;
 pub mod quotas;
 pub mod rbac;
 pub mod sessions;
+pub mod storage_pools;
 pub mod tasks;
 pub mod tenants;
 pub mod users;

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use hm_core::vm::{Firmware, VmSpec};
 use hm_libvirt::{Disk, DiskDevice, DomainDef, Nic};
-use hm_storage::LocalPool;
+use hm_storage::Pool;
 
 /// OVS integration bridge managed by ovn-controller.
 const INTEGRATION_BRIDGE: &str = "br-int";
@@ -54,7 +54,7 @@ async fn write_seed(path: &Path, vm_id: &str, hostname: &str, user_data: &str) -
 }
 
 pub async fn domain(
-    pool: &LocalPool,
+    pools: &std::collections::HashMap<String, Pool>,
     files: &VmFiles,
     vm_id: &str,
     tenant_id: &str,
@@ -64,9 +64,13 @@ pub async fn domain(
 ) -> Result<DomainDef> {
     let mut disks = Vec::new();
     for (i, d) in spec.disks.iter().enumerate() {
+        let pool = pools
+            .get(&d.pool_id.to_string())
+            .with_context(|| format!("storage pool {} of disk {i} was not provided", d.pool_id))?;
         disks.push(Disk {
             device: DiskDevice::Disk,
             path: pool
+                .files()
                 .volume_path(&d.volume_id.to_string())?
                 .to_string_lossy()
                 .into_owned(),

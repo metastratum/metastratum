@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use hm_core::ids::{HostId, ImageId, TenantId, UserId, VmId, VolumeId};
+use hm_core::ids::{HostId, ImageId, StoragePoolId, TenantId, UserId, VmId, VolumeId};
 use hm_core::vm::VmSpec;
 use sqlx::PgExecutor;
 use sqlx::types::Json;
@@ -167,21 +167,21 @@ pub struct Volume {
     pub tenant_id: TenantId,
     pub vm_id: Option<VmId>,
     pub host_id: Option<HostId>,
-    pub pool: String,
+    pub pool_id: StoragePoolId,
     pub size_bytes: i64,
     pub image_id: Option<ImageId>,
 }
 
 pub async fn create_volume(db: impl PgExecutor<'_>, v: &Volume) -> Result<()> {
     sqlx::query(
-        "INSERT INTO volumes (id, tenant_id, vm_id, host_id, pool, size_bytes, image_id)
+        "INSERT INTO volumes (id, tenant_id, vm_id, host_id, pool_id, size_bytes, image_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(v.id)
     .bind(v.tenant_id)
     .bind(v.vm_id)
     .bind(v.host_id)
-    .bind(&v.pool)
+    .bind(v.pool_id)
     .bind(v.size_bytes)
     .bind(v.image_id)
     .execute(db)
@@ -191,7 +191,7 @@ pub async fn create_volume(db: impl PgExecutor<'_>, v: &Volume) -> Result<()> {
 
 pub async fn volumes_for_vm(db: impl PgExecutor<'_>, vm_id: VmId) -> Result<Vec<Volume>> {
     Ok(sqlx::query_as(
-        "SELECT id, tenant_id, vm_id, host_id, pool, size_bytes, image_id FROM volumes
+        "SELECT id, tenant_id, vm_id, host_id, pool_id, size_bytes, image_id FROM volumes
          WHERE vm_id = $1 ORDER BY created_at",
     )
     .bind(vm_id)
