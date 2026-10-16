@@ -115,6 +115,41 @@ pub struct MigrateTo<'a> {
     pub max_bandwidth_mib: Option<u64>,
 }
 
+/// One step of a live migration driven from outside libvirt (libvirt's
+/// "managed direct" migration): the caller runs each step on the daemon of
+/// the host it belongs to, and carries the opaque cookies between them. No
+/// daemon connects to another; only QEMU sends the domain over (with TLS).
+#[derive(Clone, Debug)]
+pub enum MigrationStep {
+    /// Source: returns a cookie and the domain's XML for the destination.
+    Begin,
+    /// Destination: readies an incoming domain from `xml`. Returns a cookie
+    /// and the URI to send it to.
+    Prepare { xml: String },
+    /// Source: copies the domain to `uri`; returns once it is there (paused
+    /// here) or failed. Returns a cookie.
+    Perform { uri: String },
+    /// Destination: runs the domain that arrived, or, if cancelled, throws
+    /// it away. Returns a cookie.
+    Finish {
+        uri: String,
+        name: String,
+        cancelled: bool,
+    },
+    /// Source: removes the domain here, or, if cancelled, resumes it.
+    Confirm { cancelled: bool },
+}
+
+/// What a migration step hands to the next.
+#[derive(Clone, Debug, Default)]
+pub struct StepOut {
+    pub cookie: Vec<u8>,
+    /// From Begin.
+    pub xml: Option<String>,
+    /// From Prepare.
+    pub uri: Option<String>,
+}
+
 /// Progress of a running migration.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct JobStats {
@@ -472,55 +507,121 @@ impl Libvirt {
     /// finished (the domain then runs on the destination and is gone here)
     /// or failed (it keeps running here).
     pub async fn migrate(&self, uuid: &str, to: &MigrateTo<'_>) -> Result<()> {
-        // virDomainMigrateFlags
-        const LIVE: u32 = 1;
-        const PEER2PEER: u32 = 2;
-        const PERSIST_DEST: u32 = 8;
-        const UNDEFINE_SOURCE: u32 = 16;
-        const NON_SHARED_INC: u32 = 128;
-        const ABORT_ON_ERROR: u32 = 4096;
-        const AUTO_CONVERGE: u32 = 8192;
-        const TLS: u32 = 65536;
-
         let c = self.client().await?;
         let dom = self.lookup(&c, uuid).await?;
-        let s = |field: &str, v: &str| TypedParam {
-            field: field.into(),
-            value: TypedParamValue::VirTypedParamString(v.into()),
-        };
-        // Name the destination by address throughout: hosts need not resolve
-        // each other's names, and certificates carry the address.
-        let mut params = vec![
-            s("migrate_uri", &format!("tcp://{}", to.address)),
-            s("tls.destination", to.address),
-        ];
-        let mut flags = LIVE
-            | PEER2PEER
-            | PERSIST_DEST
-            | UNDEFINE_SOURCE
-            | ABORT_ON_ERROR
-            | AUTO_CONVERGE
-            | TLS;
-        if !to.copy_disks.is_empty() {
-            // Only the top layer: the destination has the base image.
-            flags |= NON_SHARED_INC;
-            params.extend(to.copy_disks.iter().map(|d| s("migrate_disks", d)));
-        }
-        if let Some(mib) = to.max_bandwidth_mib {
-            params.push(TypedParam {
-                field: "bandwidth".into(),
-                value: TypedParamValue::VirTypedParamUllong(mib),
-            });
-        }
         c.domain_migrate_perform3_params(&DomainMigratePerform3ParamsArgs {
             dom,
             dconnuri: Some(format!("qemu+tls://{}/system", to.address)),
-            params,
+            params: migrate_params(to, &format!("tcp://{}", to.address)),
             cookie_in: vec![],
-            flags,
+            flags: migrate_flags(to) | MIGRATE_PEER2PEER,
         })
         .await?;
         Ok(())
+    }
+
+    /// Runs one step of a migration the caller drives (see
+    /// [`MigrationStep`]). `to` describes the migration the same way at
+    /// every step, on both hosts.
+    pub async fn migration_step(
+        &self,
+        uuid: &str,
+        to: &MigrateTo<'_>,
+        step: MigrationStep,
+        cookie_in: Vec<u8>,
+    ) -> Result<StepOut> {
+        let c = self.client().await?;
+        let flags = migrate_flags(to);
+        // libvirt's own client leaves these to the source.
+        let dest_flags = flags & !(MIGRATE_ABORT_ON_ERROR | MIGRATE_AUTO_CONVERGE);
+        let with_uri = |uri: &str| migrate_params(to, uri);
+        let default_uri = format!("tcp://{}", to.address);
+        Ok(match step {
+            MigrationStep::Begin => {
+                let dom = self.lookup(&c, uuid).await?;
+                let r = c
+                    .domain_migrate_begin3_params(&DomainMigrateBegin3ParamsArgs {
+                        dom,
+                        params: with_uri(&default_uri),
+                        flags,
+                    })
+                    .await?;
+                StepOut {
+                    cookie: r.cookie_out,
+                    xml: Some(r.xml),
+                    uri: None,
+                }
+            }
+            MigrationStep::Prepare { xml } => {
+                let mut params = with_uri(&default_uri);
+                params.push(string_param("destination_xml", &xml));
+                let r = c
+                    .domain_migrate_prepare3_params(&DomainMigratePrepare3ParamsArgs {
+                        params,
+                        cookie_in,
+                        flags: dest_flags,
+                    })
+                    .await?;
+                StepOut {
+                    cookie: r.cookie_out,
+                    xml: None,
+                    uri: Some(r.uri_out.unwrap_or(default_uri)),
+                }
+            }
+            MigrationStep::Perform { uri } => {
+                let dom = self.lookup(&c, uuid).await?;
+                let r = c
+                    .domain_migrate_perform3_params(&DomainMigratePerform3ParamsArgs {
+                        dom,
+                        dconnuri: None,
+                        params: with_uri(&uri),
+                        cookie_in,
+                        flags,
+                    })
+                    .await?;
+                StepOut {
+                    cookie: r.cookie_out,
+                    ..StepOut::default()
+                }
+            }
+            MigrationStep::Finish {
+                uri,
+                name,
+                cancelled,
+            } => {
+                let mut params = with_uri(&uri);
+                params.push(string_param("destination_name", &name));
+                let r = c
+                    .domain_migrate_finish3_params(&DomainMigrateFinish3ParamsArgs {
+                        params,
+                        cookie_in,
+                        flags: dest_flags,
+                        cancelled: i32::from(cancelled),
+                    })
+                    .await;
+                match r {
+                    Ok(r) => StepOut {
+                        cookie: r.cookie_out,
+                        ..StepOut::default()
+                    },
+                    // Discarding the incoming domain reports no domain.
+                    Err(_) if cancelled => StepOut::default(),
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            MigrationStep::Confirm { cancelled } => {
+                let dom = self.lookup(&c, uuid).await?;
+                c.domain_migrate_confirm3_params(&DomainMigrateConfirm3ParamsArgs {
+                    dom,
+                    params: with_uri(&default_uri),
+                    cookie_in,
+                    flags,
+                    cancelled: i32::from(cancelled),
+                })
+                .await?;
+                StepOut::default()
+            }
+        })
     }
 
     /// Progress of the domain's current job (a migration), if any.
@@ -615,6 +716,59 @@ impl Libvirt {
             }
         }
     }
+}
+
+// virDomainMigrateFlags
+const MIGRATE_LIVE: u32 = 1;
+const MIGRATE_PEER2PEER: u32 = 2;
+const MIGRATE_PERSIST_DEST: u32 = 8;
+const MIGRATE_UNDEFINE_SOURCE: u32 = 16;
+const MIGRATE_NON_SHARED_INC: u32 = 128;
+const MIGRATE_ABORT_ON_ERROR: u32 = 4096;
+const MIGRATE_AUTO_CONVERGE: u32 = 8192;
+const MIGRATE_TLS: u32 = 65536;
+
+fn string_param(field: &str, v: &str) -> TypedParam {
+    TypedParam {
+        field: field.into(),
+        value: TypedParamValue::VirTypedParamString(v.into()),
+    }
+}
+
+fn migrate_flags(to: &MigrateTo<'_>) -> u32 {
+    let mut flags = MIGRATE_LIVE
+        | MIGRATE_PERSIST_DEST
+        | MIGRATE_UNDEFINE_SOURCE
+        | MIGRATE_ABORT_ON_ERROR
+        | MIGRATE_AUTO_CONVERGE
+        | MIGRATE_TLS;
+    if !to.copy_disks.is_empty() {
+        // Only the top layer: the destination has the base image.
+        flags |= MIGRATE_NON_SHARED_INC;
+    }
+    flags
+}
+
+/// Migration parameters. The destination is named by address throughout:
+/// hosts need not resolve each other's names, and certificates carry the
+/// address.
+fn migrate_params(to: &MigrateTo<'_>, uri: &str) -> Vec<TypedParam> {
+    let mut params = vec![
+        string_param("migrate_uri", uri),
+        string_param("tls.destination", to.address),
+    ];
+    params.extend(
+        to.copy_disks
+            .iter()
+            .map(|d| string_param("migrate_disks", d)),
+    );
+    if let Some(mib) = to.max_bandwidth_mib {
+        params.push(TypedParam {
+            field: "bandwidth".into(),
+            value: TypedParamValue::VirTypedParamUllong(mib),
+        });
+    }
+    params
 }
 
 #[cfg(test)]

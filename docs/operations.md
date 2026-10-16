@@ -165,10 +165,16 @@ Hosts enroll with a single-use join token (Infrastructure → Hosts, or
 `hm-controller join-token`) and get a certificate from the controller's CA,
 valid for 30 days. Agents renew it when a third of that is left, or on
 demand (Renew certificate on the host), and libvirt picks up the new one
-without restarting. The agent also limits libvirt's TLS listener to host
-certificates (`tls_allowed_dn_list` in `libvirtd.conf` or
-`virtproxyd.conf`; it restarts libvirt once to apply that, which running
-VMs do not notice). `hm_host_cert_expiry_timestamp_seconds` shows how long
+without restarting.
+
+Hosts' libvirt does not listen on the network: the controller drives live
+migrations on each host's own libvirt, and QEMU sends the VM over TLS
+(migration ports 49152-49215 must be open between hosts). The agent closes
+libvirt's TLS listener, and opens it only while a host in its cluster runs
+an agent from before protocol 3, which migrates peer to peer; it then also
+limits it to host certificates (`tls_allowed_dn_list`). Either change
+restarts libvirt once, after migrations on the host have ended; running VMs
+do not notice. `hm_host_cert_expiry_timestamp_seconds` shows how long
 each has.
 
 Put a host in maintenance before working on it; Evacuate also live-migrates
@@ -219,7 +225,10 @@ commands an agent handles. Upgrade **controllers first, then agents**:
    replicas ignore migrations they do not know, so they keep working, and
    can restart, until they are replaced.
 2. Upgrade the agents, a host at a time or all at once. Restarting an agent
-   does not touch its VMs.
+   does not touch its VMs. Hosts can be drained to upgraded hosts
+   throughout: while a cluster mixes agents that migrate peer to peer with
+   newer ones, the newer ones keep libvirt's TLS listener open for them,
+   and close it once the last host is upgraded.
 
 The release notes say when a release drops support for an agent revision.
 

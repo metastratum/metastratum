@@ -6,9 +6,16 @@
 //! - `preparing`: the destination gets the VM's local volumes (as fresh
 //!   copies of its image; only the changed top layer is copied later), its
 //!   storage pools and its cloud-init seed.
-//! - `running`: the VM's port may bind on both hosts, and the source's
-//!   libvirt migrates the VM, copying memory and local disks while the guest
-//!   runs. Progress is polled from the source; a cancel aborts the job.
+//! - `running`: the VM's port may bind on both hosts, and the VM is
+//!   migrated, copying memory and local disks while the guest runs.
+//!   Progress is polled from the source; a cancel aborts the job.
+//!
+//!   Between hosts whose agents speak protocol 3, the controller drives the
+//!   migration: libvirt's Begin, Prepare, Perform, Finish and Confirm, each
+//!   on its own host's libvirt, carrying the cookies between them and
+//!   recording the step reached (`handoff`). Hosts' libvirt daemons then
+//!   never talk to each other, and need not listen for each other at all.
+//!   With older agents the source's libvirt migrates peer to peer.
 //! - `committing`: the VM runs on the destination; the source's copies are
 //!   removed and the database records the move.
 //!
@@ -22,11 +29,12 @@ use anyhow::{Context, Result, anyhow, bail};
 use hm_core::ids::{HostId, VmId};
 use hm_db::migrations::Migration;
 use hm_proto::command::Cmd;
+use hm_proto::migration_step::Step;
 use hm_proto::{
     AbortMigration, DefineVm, DeleteVolume, DomainInfo, EnsureImage, EnsureVolume, MigrateVm,
-    MigrationStats, PrepareMigration, UndefineVm,
+    MigrationStats, MigrationStep, PrepareMigration, UndefineVm,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::TaskCtx;
 
@@ -309,6 +317,12 @@ async fn prepare(ctx: &TaskCtx, m: &Migration) -> Result<()> {
 
 async fn transfer(ctx: &TaskCtx, m: &Migration, span: Span) -> Result<()> {
     let (src, dst, vm_id) = (m.source_host_id, m.dest_host_id, m.vm_id);
+    let speaks = |h: &hm_db::hosts::Host| h.agent_protocol >= DRIVEN_PROTOCOL as i32;
+    if speaks(&hm_db::hosts::get(&ctx.state.db, src).await?)
+        && speaks(&hm_db::hosts::get(&ctx.state.db, dst).await?)
+    {
+        return transfer_driven(ctx, m, span).await;
+    }
     // A migration started before a restart may still be going.
     if info(ctx, src, vm_id)
         .await
@@ -344,6 +358,255 @@ async fn transfer(ctx: &TaskCtx, m: &Migration, span: Span) -> Result<()> {
         r = call => r.map_err(|e| anyhow!(e)).context("migrating"),
         r = watch(ctx, m, span, false) => r.and(Err(anyhow!("the migration job ended without an answer"))),
     }
+}
+
+/// The first agent protocol with migrations the controller drives.
+pub const DRIVEN_PROTOCOL: u32 = 3;
+
+/// What an agent hands back from a migration step.
+#[derive(Debug, Default, Deserialize)]
+struct StepOut {
+    /// Base64.
+    cookie: String,
+    xml: Option<String>,
+    uri: Option<String>,
+}
+
+/// How far a driven migration has got (the migration's `handoff`).
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Handoff {
+    /// "" before anything; "preparing" while the destination readies an
+    /// incoming domain; "performing" while the source sends it;
+    /// "performed" once that ended; "finished" once the destination ran it
+    /// (or threw it away).
+    #[serde(default)]
+    phase: String,
+    /// From the last step, base64.
+    #[serde(default)]
+    cookie: String,
+    #[serde(default)]
+    uri: String,
+    #[serde(default)]
+    name: String,
+    /// The migration is being undone.
+    #[serde(default)]
+    cancelled: bool,
+}
+
+/// Migrates with each host's libvirt doing its own part, driven from here.
+/// Resumes from the recorded step after a controller restart: a copy cut
+/// off mid-way is undone on both hosts (its outcome went with the replica
+/// that waited for it), anything later is carried through.
+async fn transfer_driven(ctx: &TaskCtx, m: &Migration, span: Span) -> Result<()> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let (src, dst, vm_id) = (m.source_host_id, m.dest_host_id, m.vm_id);
+    let db = &ctx.state.db;
+    let vm = hm_db::vms::get(db, vm_id).await?;
+    let dest = hm_db::hosts::get(db, dst).await?;
+    let base = MigrationStep {
+        vm_id: vm_id.to_string(),
+        dest_address: dest.address.clone(),
+        copy_disks: local_disks(ctx, &vm)
+            .await?
+            .into_iter()
+            .map(|(t, _, _)| t)
+            .collect(),
+        ..MigrationStep::default()
+    };
+    let run = |host: HostId, step: Step, fill: &dyn Fn(&mut MigrationStep), timeout: Duration| {
+        let mut cmd = base.clone();
+        cmd.step = step as i32;
+        fill(&mut cmd);
+        async move {
+            ctx.state
+                .agents
+                .query::<StepOut>(host, Cmd::MigrationStep(cmd), timeout)
+                .await
+                .map_err(|e| anyhow!(e))
+        }
+    };
+    let cookie = |c: &str| b64.decode(c).unwrap_or_default();
+    let mut h: Handoff = serde_json::from_value(
+        hm_db::migrations::get(db, vm_id)
+            .await?
+            .map(|m| m.handoff.0)
+            .unwrap_or_default(),
+    )
+    .unwrap_or_default();
+    let save = |h: &Handoff| {
+        let v = serde_json::to_value(h).expect("serializable");
+        async move { hm_db::migrations::set_handoff(db, vm_id, &v).await }
+    };
+    let mut failure: Option<anyhow::Error> = None;
+
+    if h.phase == "preparing" {
+        // Cut off while the destination readied the domain: throw away
+        // whatever it readied, and start over.
+        let name = h.name.clone();
+        let _ = run(
+            dst,
+            Step::Finish,
+            &|c| {
+                c.name = name.clone();
+                c.cancelled = true;
+            },
+            QUICK,
+        )
+        .await;
+        h = Handoff::default();
+        save(&h).await?;
+    }
+    if h.phase == "performing" {
+        // Cut off while the source sent it, and its answer went with the
+        // replica that waited for it: undo it on both hosts. Stop a copy
+        // still going, and wait until it is over, or done and waiting for
+        // Confirm (libvirt then holds the job, the domain paused).
+        let abort = AbortMigration {
+            vm_id: vm_id.to_string(),
+        };
+        let _ = ctx
+            .state
+            .agents
+            .call(src, Cmd::AbortMigration(abort), QUICK)
+            .await;
+        for _ in 0..300 {
+            match info(ctx, src, vm_id).await {
+                Ok(w) if !w.job_active || w.power == "paused" => break,
+                _ => tokio::time::sleep(POLL).await,
+            }
+        }
+        h.phase = "performed".into();
+        h.cookie.clear();
+        h.cancelled = true;
+        failure = Some(anyhow!(
+            "a controller stopped during the copy; it was undone"
+        ));
+        save(&h).await?;
+    }
+    if h.phase.is_empty() {
+        let begin = run(src, Step::Begin, &|_| {}, QUICK)
+            .await
+            .context("starting on the source")?;
+        let xml = begin.xml.context("the source returned no domain XML")?;
+        h.name = domain_name(&xml).context("the domain XML has no name")?;
+        h.phase = "preparing".into();
+        save(&h).await?;
+        let begin_cookie = cookie(&begin.cookie);
+        let prepared = run(
+            dst,
+            Step::Prepare,
+            &|c| {
+                c.cookie = begin_cookie.clone();
+                c.xml = xml.clone();
+            },
+            QUICK,
+        )
+        .await;
+        let prepared = match prepared {
+            Ok(p) => p,
+            Err(e) => {
+                h = Handoff::default();
+                save(&h).await?;
+                return Err(e.context("preparing the incoming domain"));
+            }
+        };
+        h.uri = prepared.uri.context("the destination returned no URI")?;
+        h.phase = "performing".into();
+        save(&h).await?;
+        tracing::info!(vm = %vm_id, to = %dest.name, uri = %h.uri, "live-migrating (driven)");
+        let (prepared_cookie, uri) = (cookie(&prepared.cookie), h.uri.clone());
+        let perform = run(
+            src,
+            Step::Perform,
+            &|c| {
+                c.cookie = prepared_cookie.clone();
+                c.uri = uri.clone();
+            },
+            TRANSFER,
+        );
+        let performed = tokio::select! {
+            r = perform => r,
+            r = watch(ctx, m, span, false) => r.and(Err(anyhow!("the migration job ended without an answer"))),
+        };
+        match performed {
+            Ok(p) => h.cookie = p.cookie,
+            Err(e) => {
+                h.cookie.clear();
+                h.cancelled = true;
+                failure = Some(e.context("migrating"));
+            }
+        }
+        h.phase = "performed".into();
+        save(&h).await?;
+    }
+    if h.phase == "performed" {
+        let (c, uri, name, cancelled) = (
+            cookie(&h.cookie),
+            h.uri.clone(),
+            h.name.clone(),
+            h.cancelled,
+        );
+        let finished = run(
+            dst,
+            Step::Finish,
+            &|s| {
+                s.cookie = c.clone();
+                s.uri = uri.clone();
+                s.name = name.clone();
+                s.cancelled = cancelled;
+            },
+            QUICK,
+        )
+        .await;
+        match finished {
+            Ok(f) => h.cookie = f.cookie,
+            Err(e) => {
+                h.cookie.clear();
+                if !h.cancelled {
+                    h.cancelled = true;
+                    failure = Some(e.context("starting the VM on the destination"));
+                }
+            }
+        }
+        h.phase = "finished".into();
+        save(&h).await?;
+    }
+    if h.phase == "finished" {
+        let (c, cancelled) = (cookie(&h.cookie), h.cancelled);
+        let confirmed = run(
+            src,
+            Step::Confirm,
+            &|s| {
+                s.cookie = c.clone();
+                s.cancelled = cancelled;
+            },
+            QUICK,
+        )
+        .await;
+        match confirmed {
+            Ok(_) => {}
+            // Undoing: the source may hold no migration to confirm (it
+            // failed before it began).
+            Err(e) if cancelled => {
+                tracing::warn!(vm = %vm_id, error = %format!("{e:#}"), "undoing on the source")
+            }
+            Err(e) => return Err(e.context("completing on the source")),
+        }
+        save(&Handoff::default()).await?;
+    }
+    match failure {
+        Some(e) => Err(e),
+        None if h.cancelled => Err(anyhow!("the migration was undone")),
+        None => Ok(()),
+    }
+}
+
+/// The `<name>` of a domain XML.
+fn domain_name(xml: &str) -> Option<String> {
+    let start = xml.find("<name>")? + "<name>".len();
+    let end = start + xml[start..].find("</name>")?;
+    Some(xml[start..end].trim().to_owned())
 }
 
 /// Reports a running migration's progress and aborts it if cancelled.
@@ -415,7 +678,12 @@ fn gib(bytes: u64) -> String {
 async fn settle(ctx: &TaskCtx, m: &Migration) -> Result<Settled> {
     let (src, dst, vm) = (m.source_host_id, m.dest_host_id, m.vm_id);
     let mut here = info(ctx, src, vm).await;
-    if here.as_ref().is_ok_and(|h| h.job_active) {
+    // A driven migration's job stays open, the domain paused, until it is
+    // confirmed; that is not one still copying.
+    if here
+        .as_ref()
+        .is_ok_and(|h| h.job_active && h.power != "paused")
+    {
         // Still migrating (e.g. our call timed out): let it finish.
         watch(ctx, m, Span(0.0, 1.0), true).await?;
         here = info(ctx, src, vm).await;

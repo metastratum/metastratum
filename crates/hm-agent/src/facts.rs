@@ -88,7 +88,7 @@ pub async fn gather(lv: &Libvirt, address: IpAddr) -> Result<HostFacts> {
             .map(|c| serde_json::to_string(&crate::vm::cpu_spec(c)).unwrap_or_default())
             .unwrap_or_default(),
         // Checked again for every session; see Agent::session.
-        migration_ready: crate::tls::listening().await,
+        migration_ready: crate::tls::ready_for_migration(),
         hostname: hostname(),
         address: address.to_string(),
         cpu_count: node.cpus,

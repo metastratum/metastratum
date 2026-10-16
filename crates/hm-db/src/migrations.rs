@@ -16,11 +16,14 @@ pub struct Migration {
     pub state: String,
     pub cancel_requested: bool,
     pub started_at: DateTime<Utc>,
+    /// For migrations the controller drives: the step reached and what it
+    /// handed on.
+    pub handoff: sqlx::types::Json<serde_json::Value>,
 }
 
 macro_rules! columns {
     () => {
-        "vm_id, task_id, source_host_id, dest_host_id, state, cancel_requested, started_at"
+        "vm_id, task_id, source_host_id, dest_host_id, state, cancel_requested, started_at, handoff"
     };
 }
 
@@ -83,6 +86,20 @@ pub async fn set_state(db: impl PgExecutor<'_>, vm: VmId, state: &str) -> Result
     sqlx::query("UPDATE migrations SET state = $2 WHERE vm_id = $1")
         .bind(vm)
         .bind(state)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// Records how far a driven migration has got.
+pub async fn set_handoff(
+    db: impl PgExecutor<'_>,
+    vm: VmId,
+    handoff: &serde_json::Value,
+) -> Result<()> {
+    sqlx::query("UPDATE migrations SET handoff = $2 WHERE vm_id = $1")
+        .bind(vm)
+        .bind(sqlx::types::Json(handoff))
         .execute(db)
         .await?;
     Ok(())

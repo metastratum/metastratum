@@ -22,6 +22,8 @@ pub struct Host {
     /// `redfish` or `libvirt` when the host can be fenced.
     pub fence_kind: Option<String>,
     pub connected_since: Option<DateTime<Utc>>,
+    /// The protocol revision its agent speaks.
+    pub agent_protocol: i32,
     pub agent_version: String,
     pub cert_fingerprint: String,
     pub cert_expires_at: DateTime<Utc>,
@@ -46,7 +48,7 @@ macro_rules! host_columns {
     () => {
         "id, name, host(address) AS address, state, cpu_count, memory_mib, cpu_model, kvm, \
          libvirt_version, ovn_chassis, agent_version, cert_fingerprint, cert_expires_at, \
-         cluster_id, connected_to, last_seen_at, created_at, physical_networks, cpu_json, migration_ready, fence_kind, connected_since"
+         cluster_id, connected_to, last_seen_at, created_at, physical_networks, cpu_json, migration_ready, fence_kind, connected_since, agent_protocol"
     };
 }
 
@@ -154,6 +156,15 @@ pub async fn list(db: impl PgExecutor<'_>) -> Result<Vec<Host>> {
     ))
     .fetch_all(db)
     .await?)
+}
+
+pub async fn set_agent_protocol(db: impl PgExecutor<'_>, id: HostId, version: u32) -> Result<()> {
+    sqlx::query("UPDATE hosts SET agent_protocol = $2 WHERE id = $1")
+        .bind(id)
+        .bind(version as i32)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 /// Records which replica holds the agent session (or that none does).

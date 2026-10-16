@@ -175,6 +175,8 @@ message Command {
     AbortMigration abort_migration = 23;
     DomainInfo domain_info = 24;
     RenewCertificate renew_certificate = 25;
+    MigrationStep migration_step = 26;
+    LibvirtTls libvirt_tls = 27;
   }
 }
 
@@ -268,6 +270,43 @@ message PrepareMigration {
 
 // On a migration's source: live-migrate the running VM to the host at
 // `dest_address`. Returns when done (or failed, the VM still running here).
+// One step of a live migration the controller drives: libvirt's Begin
+// (source), Prepare (destination), Perform (source), Finish (destination)
+// and Confirm (source), each on that host's own libvirt, the controller
+// carrying the cookies from one to the next. Hosts' libvirt daemons never
+// talk to each other. Returns {"cookie": base64, "xml"?, "uri"?} as JSON.
+message MigrationStep {
+  enum Step {
+    BEGIN = 0;
+    PREPARE = 1;
+    PERFORM = 2;
+    FINISH = 3;
+    CONFIRM = 4;
+  }
+  string vm_id = 1;
+  Step step = 2;
+  // Describe the migration alike at every step.
+  string dest_address = 3;
+  repeated string copy_disks = 4;
+  // From the previous step.
+  bytes cookie = 5;
+  // Prepare: the domain XML Begin returned.
+  string xml = 6;
+  // Perform and Finish: the URI Prepare returned.
+  string uri = 7;
+  // Finish: the domain's name.
+  string name = 8;
+  // Finish and Confirm: undo instead.
+  bool cancelled = 9;
+}
+
+// Whether libvirt listens for TLS connections from other hosts: only
+// needed while some host in the cluster migrates peer to peer (agents from
+// before MigrationStep).
+message LibvirtTls {
+  bool listen = 1;
+}
+
 message MigrateVm {
   string vm_id = 1;
   string dest_address = 2;

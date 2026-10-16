@@ -7,7 +7,8 @@ pub mod domain;
 pub mod xml;
 
 pub use conn::{
-    Change, JobStats, Libvirt, ManagedDomain, MigrateTo, NodeFacts, Power, State, system_socket,
+    Change, JobStats, Libvirt, ManagedDomain, MigrateTo, MigrationStep, NodeFacts, Power, State,
+    StepOut, system_socket,
 };
 pub use cpu::CpuModel;
 pub use domain::{Disk, DiskDevice, DiskSource, DomainDef, Firmware, Metadata, Nic};

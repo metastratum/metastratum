@@ -380,12 +380,18 @@ impl AgentControl for AgentControlService {
         let _ = tx.send(Ok(welcome)).await;
         let conn = state.agents.register(host, tx, &hello.capabilities);
         tracing::info!(%host, protocol = version, "agent protocol");
+        hm_db::hosts::set_agent_protocol(&state.db, host, version)
+            .await
+            .map_err(internal)?;
         hm_db::hosts::set_connected(&state.db, host, Some(&state.replica))
             .await
             .map_err(internal)?;
         observe_domains(&state, host, &hello.domains, true).await;
         tracing::info!(%host, "agent session established");
         renew_if_outlived(&state, host).await;
+        if let Ok(h) = hm_db::hosts::get(&state.db, host).await {
+            tokio::spawn(libvirt_tls_policy(state.clone(), h.cluster_id, host));
+        }
 
         tokio::spawn(async move {
             loop {
@@ -452,6 +458,39 @@ impl AgentControl for AgentControlService {
             return Err(Status::not_found("no such console session"));
         }
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+    }
+}
+
+/// Tells the hosts of a cluster whether their libvirt must listen for each
+/// other over TLS: only while one of them has an agent too old for
+/// migrations the controller drives, which migrates peer to peer. A host
+/// outside clusters migrates nowhere and never needs to.
+pub async fn libvirt_tls_policy(
+    state: AppState,
+    cluster: Option<hm_core::ids::ClusterId>,
+    host: HostId,
+) {
+    let Ok(hosts) = hm_db::hosts::list(&state.db).await else {
+        return;
+    };
+    let members: Vec<_> = hosts
+        .iter()
+        .filter(|h| h.state != "decommissioned")
+        .filter(|h| match cluster {
+            Some(c) => h.cluster_id == Some(c),
+            None => h.id == host,
+        })
+        .collect();
+    let driven = crate::engine::DRIVEN_PROTOCOL as i32;
+    let listen = members.iter().any(|h| h.agent_protocol < driven);
+    for h in members
+        .iter()
+        .filter(|h| h.is_live() && h.agent_protocol >= driven)
+    {
+        let cmd = hm_proto::command::Cmd::LibvirtTls(hm_proto::LibvirtTls { listen });
+        if let Err(e) = state.agents.call(h.id, cmd, Duration::from_secs(120)).await {
+            tracing::warn!(host = %h.id, listen, error = %e, "setting libvirt's TLS listener");
+        }
     }
 }
 

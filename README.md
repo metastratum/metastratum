@@ -186,12 +186,12 @@ token:
 DATABASE_URL=... deploy/lab/agent.sh
 ```
 
-For live migration, hosts' libvirt daemons talk to each other over TLS. The
-agent installs its host certificate (signed by the controller's CA) where
-libvirt and QEMU look for it (`/etc/pki/{CA,libvirt,qemu}`); `agent.sh` then
-enables libvirt's TLS listener (`libvirtd-tls.socket`, or
-`virtproxyd-tls.socket` with modular daemons). Hosts without it show "No
-migration" and are not chosen as destinations. VMs get their cluster's
+Live migrations are driven by the controller, step by step on each host's
+own libvirt; the hosts' libvirt daemons never talk to each other, and do not
+listen on the network. QEMU sends the VM from host to host over TLS, with
+the host certificate (signed by the controller's CA) that the agent
+installs where QEMU looks for it (`/etc/pki/qemu`). Hosts without it show
+"No migration" and are not chosen as destinations. VMs get their cluster's
 baseline CPU model, so they run on, and migrate between, any of its hosts.
 A VM can instead be created non-migratable: it then gets its host's full CPU
 and disks use the host's page cache, and it stays on its host (evacuation

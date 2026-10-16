@@ -21,7 +21,9 @@ use hm_proto::{
 use tokio::sync::{mpsc, oneshot};
 use tonic::Status;
 
-pub use service::{AgentControlService, EnrollmentService, ReplicaControlService};
+pub use service::{
+    AgentControlService, EnrollmentService, ReplicaControlService, libvirt_tls_policy,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {

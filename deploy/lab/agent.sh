@@ -52,25 +52,11 @@ systemctl daemon-reload
 systemctl enable -q hm-agent
 systemctl restart hm-agent
 
-# Live migration: libvirt accepts TLS connections from other hosts, with the
-# host certificate the agent installs (once it is enrolled).
-for _ in $(seq 60); do [[ -e /etc/pki/libvirt/servercert.pem ]] && break; sleep 1; done
-if [[ -e /etc/pki/libvirt/servercert.pem ]]; then
-  if systemctl is-enabled -q virtproxyd.socket 2>/dev/null; then unit=virtproxyd; else unit=libvirtd; fi
-  if ! systemctl is-active -q "$unit-tls.socket"; then
-    # systemd only hands a socket to a daemon it starts, so stop it, and its
-    # other sockets so no client wakes it up meanwhile. Running VMs are
-    # unaffected.
-    sockets=("$unit.socket" "$unit-ro.socket" "$unit-admin.socket")
-    systemctl stop "${sockets[@]}" "$unit.service"
-    systemctl enable -q --now "$unit-tls.socket"
-    systemctl start "${sockets[@]}" "$unit.service"
-    # The agent reports migration readiness when it (re)connects.
-    systemctl restart hm-agent
-  fi
-else
-  echo "hm-agent did not install its certificate; live migration stays off" >&2
-fi
+# Live migration needs no libvirt listener: the controller drives it on each
+# host's own libvirt, and QEMU sends the VM over TLS with the host
+# certificate the agent installs. The agent opens libvirt's TLS listener
+# only while a host in its cluster runs an older agent that migrates peer to
+# peer, and closes it otherwise.
 REMOTE
   done
   log "done; follow logs with: $LAB ssh hm-host1 sudo journalctl -fu hm-agent"

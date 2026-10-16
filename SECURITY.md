@@ -67,8 +67,9 @@ The boundaries hypermon enforces:
   database (a host's current or just-renewed certificate; a live replica).
   Hosts' certificates last 30 days and are renewed automatically; their
   subjects are chosen by the controller, not taken from the request.
-  Libvirt (live migration) uses TLS between hosts with the same
-  certificates, and accepts host certificates only. The controller reaches
+  Hosts' libvirt does not listen on the network: the controller drives
+  live migrations on each host's own libvirt, and only QEMU sends the VM
+  over, with TLS and host certificates. The controller reaches
   OVN's northbound database over TLS with a client certificate; hosts reach
   the southbound one with certificates from a CA of its own, naming their
   chassis, under OVN's RBAC.
@@ -97,19 +98,21 @@ A review of the whole system before calling it hardened. Fixed:
 | An agent from another version could be sent commands it does not know | protocol versions and capabilities |
 | Hosts' certificates were valid for a year | 30 days, renewed automatically; longer ones are renewed at once |
 | Hosts' libvirt accepted any certificate the controller's CA issued (replicas' too) | only host certificates (`tls_allowed_dn_list`, kept by the agent) |
+| For live migration, each host's libvirt accepted connections from the other hosts with full control: one compromised host could take over the rest | the controller drives migrations on each host's own libvirt; libvirt's TLS listener is closed (opened only while an older agent in the cluster still migrates peer to peer) |
 | API tokens carried all of their user's rights | tokens can be limited to roles at tenants |
 | Hosts' ovn-controller used the southbound database with no TLS or RBAC: any host could rewrite every host's flows | agents set up TLS with a certificate per chassis from a separate OVN CA, under OVN's RBAC (`--ovn-sb`) |
 | Unchecked whether IPv6 gets around IPv4-only networks | tested: guests reach no neighbour over IPv6, and cannot advertise themselves as router |
 
 Not fixed, and worth knowing:
 
-- **A compromised host can take over the other hosts.** For live migration,
-  each host's libvirt accepts TLS connections from the other hosts, with
-  full control. Treat hosts as one trust domain, and keep them off networks
-  guests or tenants reach.
+- **During a live migration**, the destination's QEMU accepts the incoming
+  VM from any client certificate the controller's CA issued (hosts' and
+  controller replicas'), not only the source's. Another host that is taken over could race to send a VM of
+  its own instead, for the seconds a migration takes to start. Keep hosts
+  off networks guests or tenants reach.
 - **No certificate revocation.** A decommissioned host's certificate is
-  refused by the controllers, but other hosts' libvirt accepts it until it
-  expires (up to 30 days). Reinstall a host you no longer trust, and replace
+  refused by the controllers, but stays valid for migration streams until
+  it expires (up to 30 days). Reinstall a host you no longer trust, and replace
   the CA if one was compromised (every host must then enroll again).
 - **OVN's databases need TLS configured.** Without `--ovn-sb` and TLS on
   the northbound database, anyone who reaches them controls every

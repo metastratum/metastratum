@@ -6,6 +6,7 @@
 //! written as sequences of idempotent steps.
 
 mod migrate;
+pub use migrate::DRIVEN_PROTOCOL;
 mod recover;
 mod vm;
 

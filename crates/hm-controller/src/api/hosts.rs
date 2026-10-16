@@ -208,6 +208,13 @@ async fn update_host(
             ));
         }
         hm_db::hosts::set_cluster(&state.db, id, cluster).await?;
+        if cluster != host.cluster_id {
+            // Whether libvirt must listen depends on the cluster's hosts:
+            // both the one it left and the one it joined may change.
+            let tls = crate::agents::libvirt_tls_policy;
+            tokio::spawn(tls(state.clone(), host.cluster_id, id));
+            tokio::spawn(tls(state.clone(), cluster, id));
+        }
     }
     if let Some(s) = &req.state {
         if !matches!(s.as_str(), "ready" | "maintenance") {

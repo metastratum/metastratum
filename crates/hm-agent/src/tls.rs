@@ -204,8 +204,58 @@ pub async fn reload_libvirt() {
     );
 }
 
-/// Whether libvirt listens for TLS connections (the installer enables the
-/// listener; see deploy/).
+/// Whether this host can take part in live migrations the controller drives:
+/// QEMU has its TLS certificates (the migration stream is encrypted).
+pub fn ready_for_migration() -> bool {
+    Path::new("/etc/pki/qemu/server-cert.pem").exists()
+        && Path::new("/etc/pki/qemu/client-cert.pem").exists()
+}
+
+/// Opens or closes libvirt's TLS listener. Other hosts only need it to
+/// migrate peer to peer (agents from before the controller drove
+/// migrations); otherwise it is one more way into the host.
+pub async fn set_listening(listen: bool) -> Result<()> {
+    if listening().await == listen {
+        return Ok(());
+    }
+    let systemctl = |args: Vec<String>| async move {
+        let status = tokio::process::Command::new("systemctl")
+            .args(&args)
+            .status()
+            .await?;
+        if !status.success() {
+            anyhow::bail!("systemctl {} failed", args.join(" "));
+        }
+        anyhow::Ok(())
+    };
+    // The modular daemons serve remote clients through virtproxyd.
+    let modular = tokio::process::Command::new("systemctl")
+        .args(["is-enabled", "-q", "virtproxyd.socket"])
+        .status()
+        .await
+        .is_ok_and(|s| s.success());
+    let daemon = if modular { "virtproxyd" } else { "libvirtd" };
+    let socket = format!("{daemon}-tls.socket");
+    let verb = if listen { "enable" } else { "disable" };
+    systemctl(vec![verb.into(), "--now".into(), socket]).await?;
+    // A running daemon keeps the listener it was handed (or never got the
+    // new one): restart it. Running VMs carry on.
+    systemctl(vec!["restart".into(), format!("{daemon}.service")]).await?;
+    if listening().await != listen {
+        anyhow::bail!(
+            "libvirt's TLS listener did not {}",
+            if listen { "open" } else { "close" }
+        );
+    }
+    tracing::info!(
+        listen,
+        "libvirt's TLS listener {}",
+        if listen { "opened" } else { "closed" }
+    );
+    Ok(())
+}
+
+/// Whether libvirt listens for TLS connections.
 pub async fn listening() -> bool {
     matches!(
         tokio::time::timeout(

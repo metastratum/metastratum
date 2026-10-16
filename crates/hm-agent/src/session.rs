@@ -129,7 +129,7 @@ impl Agent {
         // What may have changed on the host since the agent started: the TLS
         // listener, and OVS's identity and bridges (OVS resets its system-id
         // at start on some distributions).
-        facts.migration_ready = crate::tls::listening().await;
+        facts.migration_ready = crate::tls::ready_for_migration();
         facts.ovn_chassis = crate::facts::ovn_chassis().await;
         facts.physical_networks = crate::facts::physical_networks().await;
         let hello = Hello {
@@ -325,7 +325,7 @@ impl Agent {
     }
 
     async fn handle(
-        &self,
+        self: &Arc<Self>,
         cmd: Cmd,
         tx: &mpsc::Sender<AgentMessage>,
         client: AgentControlClient<Channel>,
@@ -374,6 +374,59 @@ impl Agent {
                 tracing::info!(vm = %c.vm_id, to = %c.dest_address, "migrated");
                 // The domain is gone from here; say so at once.
                 let _ = self.full_sync(tx).await;
+            }
+            Cmd::MigrationStep(c) => {
+                use hm_proto::migration_step::Step;
+                let which = Step::try_from(c.step).context("unknown migration step")?;
+                let step = match which {
+                    Step::Begin => hm_libvirt::MigrationStep::Begin,
+                    Step::Prepare => hm_libvirt::MigrationStep::Prepare { xml: c.xml },
+                    Step::Perform => hm_libvirt::MigrationStep::Perform { uri: c.uri },
+                    Step::Finish => hm_libvirt::MigrationStep::Finish {
+                        uri: c.uri,
+                        name: c.name,
+                        cancelled: c.cancelled,
+                    },
+                    Step::Confirm => hm_libvirt::MigrationStep::Confirm {
+                        cancelled: c.cancelled,
+                    },
+                };
+                tracing::info!(vm = %c.vm_id, step = ?which, cancelled = c.cancelled, "migration step");
+                let to = hm_libvirt::MigrateTo {
+                    address: &c.dest_address,
+                    copy_disks: &c.copy_disks,
+                    max_bandwidth_mib: None,
+                };
+                let out = self
+                    .lv
+                    .migration_step(&c.vm_id, &to, step, c.cookie)
+                    .await?;
+                if matches!(which, Step::Finish | Step::Confirm) {
+                    // The domain arrived here, or left: say so at once.
+                    let _ = self.full_sync(tx).await;
+                }
+                use base64::Engine;
+                return Ok(serde_json::to_string(&serde_json::json!({
+                    "cookie": base64::engine::general_purpose::STANDARD.encode(&out.cookie),
+                    "xml": out.xml,
+                    "uri": out.uri,
+                }))?);
+            }
+            Cmd::LibvirtTls(c) => {
+                // Changing it restarts libvirt, which would cut off a
+                // migration (going either way): wait for those to end.
+                let this = self.clone();
+                tokio::spawn(async move {
+                    for _ in 0..720 {
+                        if !this.migrations_running().await {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                    }
+                    if let Err(e) = crate::tls::set_listening(c.listen).await {
+                        tracing::warn!(error = %format!("{e:#}"), "changing libvirt's TLS listener");
+                    }
+                });
             }
             Cmd::MigrationStats(c) => {
                 let st = match self.lv.job_stats(&c.vm_id).await {
@@ -496,6 +549,24 @@ impl Agent {
         *self.identity.write().unwrap() = renewed;
         tracing::info!("host certificate renewed");
         Ok(())
+    }
+
+    /// Whether a domain here has a job going (a migration in or out).
+    async fn migrations_running(&self) -> bool {
+        let Ok(domains) = self.lv.list_managed().await else {
+            return true;
+        };
+        for d in domains {
+            if self
+                .lv
+                .job_stats(&d.meta.vm_id)
+                .await
+                .is_ok_and(|st| st.active)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// Sets up ovn-controller's access to the southbound database, when the

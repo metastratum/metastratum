@@ -12,8 +12,9 @@ pub use v1::*;
 /// covered by capabilities instead.
 ///
 /// 1: before versioning (agents sent no version). 2: versions, capabilities
-/// and the controller's welcome.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// and the controller's welcome. 3: migrations the controller drives
+/// (`MigrationStep`), so hosts' libvirt need not listen for each other.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// The oldest agent protocol a controller of this build still serves.
 /// Upgrades go controllers first, then agents; agents between this and
@@ -40,6 +41,8 @@ pub fn capability(cmd: &command::Cmd) -> &'static str {
         AbortMigration(_) => "abort_migration",
         DomainInfo(_) => "domain_info",
         RenewCertificate(_) => "renew_certificate",
+        MigrationStep(_) => "migration_step",
+        LibvirtTls(_) => "libvirt_tls",
     }
 }
 
@@ -61,6 +64,8 @@ pub const CAPABILITIES: &[&str] = &[
     "abort_migration",
     "domain_info",
     "renew_certificate",
+    "migration_step",
+    "libvirt_tls",
 ];
 
 #[cfg(test)]
@@ -69,7 +74,7 @@ mod tests {
     fn every_command_is_a_capability() {
         // A new command added to the protocol must be named here too; this
         // count is a reminder (prost has no variant list to check against).
-        assert_eq!(super::CAPABILITIES.len(), 16);
+        assert_eq!(super::CAPABILITIES.len(), 18);
         let unique: std::collections::HashSet<_> = super::CAPABILITIES.iter().collect();
         assert_eq!(unique.len(), super::CAPABILITIES.len());
     }
