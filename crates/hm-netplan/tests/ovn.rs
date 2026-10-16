@@ -146,7 +146,7 @@ async fn plans_converge_a_real_northbound_database() {
         eprintln!("HM_TEST_OVN_NB_SCRATCH not set; skipping");
         return;
     };
-    let nb = Northbound::new(addr);
+    let nb = Northbound::new(&addr, None);
     // Start from nothing of ours.
     converge(&nb, &Model::default()).await;
 

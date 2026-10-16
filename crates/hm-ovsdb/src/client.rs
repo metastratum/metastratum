@@ -17,8 +17,12 @@ use tokio::sync::{mpsc, oneshot};
 pub enum Error {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    #[error("invalid address {0:?}; expected tcp:HOST:PORT or unix:PATH")]
+    #[error("invalid address {0:?}; expected tcp:HOST:PORT, ssl:HOST:PORT or unix:PATH")]
     Address(String),
+    #[error("tls: {0}")]
+    Tls(String),
+    #[error("{0} is not the cluster leader")]
+    NotLeader(String),
     #[error("connection closed")]
     Closed,
     #[error("no reply within {0:?}")]
@@ -59,14 +63,46 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connects to `tcp:HOST:PORT` or `unix:PATH`.
-    pub async fn connect(addr: &str) -> Result<Self> {
-        if let Some(hostport) = addr.strip_prefix("tcp:") {
-            let s = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(hostport))
+    /// Connects to `tcp:HOST:PORT`, `ssl:HOST:PORT` (needs `tls`, see
+    /// [`crate::tls::client_config`]) or `unix:PATH`.
+    pub async fn connect(addr: &str, tls: Option<&Arc<rustls::ClientConfig>>) -> Result<Self> {
+        let tcp = |hostport: &str| {
+            let hostport = hostport.to_owned();
+            async move {
+                let s = tokio::time::timeout(
+                    CONNECT_TIMEOUT,
+                    tokio::net::TcpStream::connect(&hostport),
+                )
                 .await
                 .map_err(|_| Error::Timeout(CONNECT_TIMEOUT))??;
-            s.set_nodelay(true)?;
-            let (r, w) = s.into_split();
+                s.set_nodelay(true)?;
+                Ok::<_, Error>(s)
+            }
+        };
+        if let Some(hostport) = addr.strip_prefix("tcp:") {
+            let (r, w) = tcp(hostport).await?.into_split();
+            Ok(Self::start(r, w))
+        } else if let Some(hostport) = addr.strip_prefix("ssl:") {
+            let tls = tls.ok_or_else(|| {
+                Error::Tls(format!(
+                    "{addr} needs a CA certificate, certificate and key"
+                ))
+            })?;
+            let host = hostport
+                .rsplit_once(':')
+                .map(|(h, _)| h.trim_matches(['[', ']']))
+                .ok_or_else(|| Error::Address(addr.into()))?;
+            let name = rustls::pki_types::ServerName::try_from(host.to_owned())
+                .map_err(|_| Error::Address(addr.into()))?;
+            let stream = tcp(hostport).await?;
+            let stream = tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                tokio_rustls::TlsConnector::from(tls.clone()).connect(name, stream),
+            )
+            .await
+            .map_err(|_| Error::Timeout(CONNECT_TIMEOUT))?
+            .map_err(|e| Error::Tls(format!("{addr}: {e}")))?;
+            let (r, w) = tokio::io::split(stream);
             Ok(Self::start(r, w))
         } else if let Some(path) = addr.strip_prefix("unix:") {
             let (r, w) = tokio::net::UnixStream::connect(path).await?.into_split();

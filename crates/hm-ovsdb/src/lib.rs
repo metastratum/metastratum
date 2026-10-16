@@ -3,6 +3,7 @@
 
 pub mod client;
 pub mod nb;
+pub mod tls;
 
 pub use client::{Client, Error, Result};
 pub use nb::Northbound;

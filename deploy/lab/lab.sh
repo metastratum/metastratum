@@ -11,10 +11,13 @@
 #   hm-lab  10.77.0.0/24  management + Geneve underlay (NAT to the internet)
 #   hm-ext  10.78.0.0/24  "external" provider network for floating IPs (NAT)
 #
-# Usage: deploy/lab/lab.sh up | down | status | ceph | testdb | ssh <vm> [cmd...] | ip <vm>
+# Usage: deploy/lab/lab.sh up | down | status | ceph | ovn-tls | testdb | ssh <vm> [cmd...] | ip <vm>
 #
-#   testdb  (re)starts an empty, unused OVN northbound database on
-#           tcp:10.77.0.10:6651 for integration tests (HM_TEST_OVN_NB_SCRATCH)
+#   ovn-tls also serves the northbound database over TLS (ssl:10.77.0.10:6643)
+#           and prints the controller's flags for it
+#   testdb  (re)starts empty, unused OVN northbound databases on hm-ctl for
+#           integration tests (plain, TLS and a three-server cluster) and
+#           prints the variables that point the tests at them
 #
 # Requirements: libvirt system daemon (virtqemud) running, the invoking user
 # in the `libvirt` group, nested virtualisation enabled, genisoimage, curl.
@@ -308,18 +311,92 @@ REMOTE
   printf '  {"monitors": ["10.77.0.10:6789"], "pool": "hypermon", "user": "hypermon", "key": "%s"}\n' "$key"
 }
 
-cmd_testdb() {
-  log "starting a scratch OVN northbound database on tcp:10.77.0.10:6651"
-  ssh_vm hm-ctl sudo bash -s <<'REMOTE'
+# Bash run on hm-ctl: make_pki <dir> <name>... creates a CA in <dir> and a
+# certificate and key per name, signed by it. Like ovs-pki's, the
+# certificates name nothing: OVN checks the CA, not names. Keeps what exists.
+read -r -d '' MAKE_PKI <<'SH' || true
+make_pki() {
+  local dir=$1 who; shift
+  mkdir -p "$dir" && cd "$dir" && umask 077
+  [[ -f ca.pem ]] || openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    -nodes -days 3650 -subj /CN=hm-ovn-ca -keyout ca-key.pem -out ca.pem 2>/dev/null
+  for who; do
+    [[ -f $who.pem ]] && continue
+    openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+      -subj "/CN=$who" -keyout "$who-key.pem" -out "$who.csr" 2>/dev/null
+    openssl x509 -req -in "$who.csr" -CA ca.pem -CAkey ca-key.pem -CAcreateserial \
+      -days 3650 -extfile <(echo basicConstraints=CA:FALSE) -out "$who.pem" 2>/dev/null
+  done
+}
+SH
+
+# Serves the lab's northbound database over TLS as well, on 6643, with
+# a client certificate for the controller.
+cmd_ovn_tls() {
+  log "serving the OVN northbound database over TLS on ssl:10.77.0.10:6643"
+  { echo "$MAKE_PKI"; cat <<'REMOTE'; } | ssh_vm hm-ctl sudo bash -s
 set -euo pipefail
-systemctl stop hm-test-nb 2>/dev/null || true
-systemctl reset-failed hm-test-nb 2>/dev/null || true
-rm -rf /run/hm-test-nb && mkdir -p /run/hm-test-nb
-ovsdb-tool create /run/hm-test-nb/nb.db /usr/share/ovn/ovn-nb.ovsschema
-systemd-run --unit hm-test-nb --quiet \
-  ovsdb-server /run/hm-test-nb/nb.db --remote=ptcp:6651:10.77.0.10 \
-  --unixctl=/run/hm-test-nb/ctl --no-chdir --log-file=/run/hm-test-nb/log
+make_pki /etc/ovn/hm-pki nb controller
+ovn-nbctl set-ssl /etc/ovn/hm-pki/nb-key.pem /etc/ovn/hm-pki/nb.pem /etc/ovn/hm-pki/ca.pem
+ovn-nbctl set-connection ptcp:6641 pssl:6643
 REMOTE
+  mkdir -p "$STATE/ovn-pki"
+  local f
+  for f in ca.pem controller.pem controller-key.pem; do
+    (umask 077; ssh_vm hm-ctl sudo cat "/etc/ovn/hm-pki/$f" > "$STATE/ovn-pki/$f")
+  done
+  log "controller flags:"
+  echo "  --ovn-nb ssl:10.77.0.10:6643 --ovn-ca-cert $STATE/ovn-pki/ca.pem \\"
+  echo "  --ovn-certificate $STATE/ovn-pki/controller.pem --ovn-private-key $STATE/ovn-pki/controller-key.pem"
+}
+
+cmd_testdb() {
+  log "starting scratch OVN northbound databases on 10.77.0.10"
+  { echo "$MAKE_PKI"; cat <<'REMOTE'; } | ssh_vm hm-ctl sudo bash -s
+set -euo pipefail
+for u in hm-test-nb hm-test-nb-ssl hm-test-nb-c1 hm-test-nb-c2 hm-test-nb-c3; do
+  systemctl stop $u 2>/dev/null || true
+  systemctl reset-failed $u 2>/dev/null || true
+done
+d=/run/hm-test-nb
+rm -rf $d && mkdir -p $d/pki
+schema=/usr/share/ovn/ovn-nb.ovsschema
+run() { # run <unit> <db> <args...>
+  local unit=$1 db=$2; shift 2
+  systemd-run --unit $unit --quiet ovsdb-server $db "$@" \
+    --unixctl=$d/$unit.ctl --no-chdir --log-file=$d/$unit.log
+}
+
+# Standalone, plain TCP.
+ovsdb-tool create $d/nb.db $schema
+run hm-test-nb $d/nb.db --remote=ptcp:6651:10.77.0.10
+
+# Standalone over TLS.
+make_pki $d/pki server client
+ovsdb-tool create $d/nb-ssl.db $schema
+run hm-test-nb-ssl $d/nb-ssl.db --remote=pssl:6652:10.77.0.10 \
+  --private-key=$d/pki/server-key.pem --certificate=$d/pki/server.pem --ca-cert=$d/pki/ca.pem
+
+# A three-server cluster: clients on 6653-6655, Raft on 6663-6665.
+ovsdb-tool create-cluster $d/c1.db $schema tcp:10.77.0.10:6663
+for i in 2 3; do
+  ovsdb-tool join-cluster $d/c$i.db OVN_Northbound tcp:10.77.0.10:666$((i + 2)) tcp:10.77.0.10:6663
+done
+for i in 1 2 3; do
+  run hm-test-nb-c$i $d/c$i.db --remote=ptcp:665$((i + 2)):10.77.0.10
+done
+REMOTE
+  mkdir -p "$STATE/test-nb-pki"
+  local f
+  for f in ca.pem client.pem client-key.pem; do
+    (umask 077; ssh_vm hm-ctl sudo cat "/run/hm-test-nb/pki/$f" > "$STATE/test-nb-pki/$f")
+  done
+  cat <<EOF
+export HM_TEST_OVN_NB_SCRATCH=tcp:10.77.0.10:6651
+export HM_TEST_OVN_NB_SSL=ssl:10.77.0.10:6652
+export HM_TEST_OVN_NB_PKI=$STATE/test-nb-pki
+export HM_TEST_OVN_NB_CLUSTER=tcp:10.77.0.10:6653,tcp:10.77.0.10:6654,tcp:10.77.0.10:6655
+EOF
 }
 
 cmd_down() {
@@ -354,9 +431,10 @@ main() {
     status) cmd_status ;;
     ceph) cmd_ceph ;;
     testdb) cmd_testdb ;;
+    ovn-tls) cmd_ovn_tls ;;
     ssh) shift; ssh_vm "$@" ;;
     ip) vm_field "$2" 1 ;;
-    *) sed -n '2,23p' "$0"; exit 1 ;;
+    *) sed -n '2,25p' "$0"; exit 1 ;;
   esac
 }
 

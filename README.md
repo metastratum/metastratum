@@ -46,8 +46,9 @@ Some tests need extra tools or services and skip themselves without them:
 - a libvirt daemon: `HM_TEST_LIBVIRT_SOCKET=/run/libvirt/virtqemud-sock`
   (your user needs `qemu:///system` access; the tests create and remove
   small throwaway domains)
-- an empty OVN northbound database that nothing else uses:
-  `deploy/lab/lab.sh testdb`, then `HM_TEST_OVN_NB_SCRATCH=tcp:10.77.0.10:6651`
+- empty OVN northbound databases that nothing else uses (plain, over TLS,
+  and a three-server cluster): `deploy/lab/lab.sh testdb` starts them on the
+  lab and prints the `HM_TEST_OVN_NB_*` variables to export
 
 The web UI lives in `web/`:
 
@@ -123,7 +124,8 @@ deploy/lab/lab.sh up        # create networks, storage pool and VMs; wait until 
 deploy/lab/lab.sh status
 deploy/lab/lab.sh ssh hm-host1 [cmd...]
 deploy/lab/lab.sh ceph      # (re)run the Ceph setup; prints the RBD pool config
-deploy/lab/lab.sh testdb    # a throwaway OVN northbound database for tests
+deploy/lab/lab.sh ovn-tls   # serve OVN's northbound database over TLS too; prints the controller flags
+deploy/lab/lab.sh testdb    # throwaway OVN northbound databases for tests
 deploy/lab/lab.sh down      # remove VMs and networks; keeps the cached base image
 ```
 
@@ -156,6 +158,10 @@ target/debug/hm-controller serve --listen 127.0.0.1:18080 \
   --agent-listen 10.77.0.1:8443 --agent-names 10.77.0.1 \
   --ovn-nb tcp:10.77.0.10:6641 --web-dir web/dist
 ```
+
+Whoever reaches the northbound database can rewrite every tenant's network,
+so beyond trying things out, use TLS: `deploy/lab/lab.sh ovn-tls` sets it up
+on the lab and prints the `--ovn-nb ssl:...` flags to use instead.
 
 Then build and install the agent on the three hosts. It is a static binary, so
 it runs on any distribution; hosts that are not enrolled yet get a fresh join

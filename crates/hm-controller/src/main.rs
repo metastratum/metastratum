@@ -94,9 +94,20 @@ struct ServeArgs {
     /// Extra DNS names / IPs for the agent endpoint certificate.
     #[arg(long, env = "HM_AGENT_NAMES", value_delimiter = ',')]
     agent_names: Vec<String>,
-    /// OVN northbound database, e.g. tcp:10.77.0.10:6641.
+    /// OVN northbound database, e.g. ssl:10.0.0.10:6641. For a clustered
+    /// database, list its servers comma-separated; the leader is used.
     #[arg(long, env = "HM_OVN_NB")]
     ovn_nb: String,
+    /// CA certificate that signed the northbound servers' certificates
+    /// (PEM), for ssl: remotes.
+    #[arg(long, env = "HM_OVN_CA_CERT", requires_all = ["ovn_certificate", "ovn_private_key"])]
+    ovn_ca_cert: Option<PathBuf>,
+    /// Certificate the controller presents to the northbound database.
+    #[arg(long, env = "HM_OVN_CERTIFICATE")]
+    ovn_certificate: Option<PathBuf>,
+    /// Private key for --ovn-certificate.
+    #[arg(long, env = "HM_OVN_PRIVATE_KEY")]
+    ovn_private_key: Option<PathBuf>,
     /// Built web UI to serve at `/`.
     #[arg(long, env = "HM_WEB_DIR")]
     web_dir: Option<PathBuf>,
@@ -233,7 +244,28 @@ async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
     let (cert_chain, key) = ca::server_identity(&ca, &args.agent_names)?;
     let ca_pem = ca.cert_pem().to_owned();
     let replica = format!("{}-{}", hostname(), uuid::Uuid::now_v7().simple());
-    let nb = std::sync::Arc::new(hm_ovsdb::Northbound::new(args.ovn_nb.clone()));
+    let ovn_tls = match (
+        &args.ovn_ca_cert,
+        &args.ovn_certificate,
+        &args.ovn_private_key,
+    ) {
+        (Some(ca), Some(cert), Some(key)) => {
+            let read =
+                |p: &PathBuf| std::fs::read(p).with_context(|| format!("reading {}", p.display()));
+            Some(hm_ovsdb::tls::client_config(
+                &read(ca)?,
+                &read(cert)?,
+                &read(key)?,
+            )?)
+        }
+        _ => None,
+    };
+    if ovn_tls.is_none() && args.ovn_nb.split(',').any(|r| r.trim().starts_with("ssl:")) {
+        anyhow::bail!(
+            "ssl: OVN remotes need --ovn-ca-cert, --ovn-certificate and --ovn-private-key"
+        );
+    }
+    let nb = std::sync::Arc::new(hm_ovsdb::Northbound::new(&args.ovn_nb, ovn_tls));
     let state = AppState::new(Inner {
         db: db.clone(),
         ca,
