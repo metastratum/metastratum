@@ -53,6 +53,31 @@ async fn write_seed(path: &Path, vm_id: &str, hostname: &str, user_data: &str) -
     Ok(())
 }
 
+/// libvirt's CPU model as hypermon stores it.
+pub fn cpu_spec(c: hm_libvirt::CpuModel) -> hm_core::vm::CpuSpec {
+    hm_core::vm::CpuSpec {
+        model: c.model,
+        vendor: c.vendor,
+        features: c
+            .features
+            .into_iter()
+            .map(|(policy, name)| hm_core::vm::CpuFeature { policy, name })
+            .collect(),
+    }
+}
+
+pub fn cpu_model(c: &hm_core::vm::CpuSpec) -> hm_libvirt::CpuModel {
+    hm_libvirt::CpuModel {
+        model: c.model.clone(),
+        vendor: c.vendor.clone(),
+        features: c
+            .features
+            .iter()
+            .map(|f| (f.policy.clone(), f.name.clone()))
+            .collect(),
+    }
+}
+
 pub async fn domain(
     pools: &std::collections::HashMap<String, Pool>,
     files: &VmFiles,
@@ -120,6 +145,7 @@ pub async fn domain(
             Firmware::Uefi => hm_libvirt::Firmware::Uefi,
         },
         disks,
+        cpu: spec.cpu.as_ref().map(cpu_model),
         nics: spec
             .nics
             .iter()

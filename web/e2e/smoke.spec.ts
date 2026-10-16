@@ -46,6 +46,15 @@ test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
   await expect(page.locator('.xterm')).toBeVisible()
   await expect(page.getByText('Connected', { exact: true })).toBeVisible({ timeout: 30_000 })
 
+  // Live-migrate it from the VM page; it keeps running on another host.
+  await page.getByRole('tab', { name: 'Details' }).click()
+  const host = page.locator('.facts div', { hasText: 'Host' }).locator('dd')
+  const before = (await host.textContent())!.trim()
+  await page.getByRole('button', { name: 'Migrate' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Migrate' }).click()
+  await expect(host).not.toHaveText(before, { timeout: 3 * 60_000 })
+  await expect(page.getByText('Running', { exact: true })).toBeVisible({ timeout: 60_000 })
+
   await page.getByRole('button', { name: 'Delete VM' }).click()
   await page.getByRole('button', { name: `Delete ${name} and its disk` }).click()
   await expect(page.getByRole('heading', { name: 'Virtual machines' })).toBeVisible()

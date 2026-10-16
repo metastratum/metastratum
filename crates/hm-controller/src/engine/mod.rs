@@ -5,6 +5,7 @@
 //! lease lapses and another replica resumes the task. Handlers are therefore
 //! written as sequences of idempotent steps.
 
+mod migrate;
 mod vm;
 
 use std::sync::Arc;
@@ -95,6 +96,8 @@ async fn execute(state: AppState, task: Task) {
         "vm.stop" => vm::stop(&ctx).await,
         "vm.reboot" => vm::reboot(&ctx).await,
         "vm.delete" => vm::delete(&ctx).await,
+        "vm.migrate" => migrate::migrate(&ctx).await,
+        "host.evacuate" => migrate::evacuate(&ctx).await,
         other => Err(anyhow::anyhow!("unknown task kind {other}")),
     };
     renew.abort();

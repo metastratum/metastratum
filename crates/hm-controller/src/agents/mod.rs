@@ -40,14 +40,18 @@ type Outbound = mpsc::Sender<Result<ControllerMessage, Status>>;
 pub struct AgentConn {
     session: u64,
     tx: Outbound,
-    pending: Mutex<HashMap<String, oneshot::Sender<Result<(), String>>>>,
+    pending: Mutex<HashMap<String, oneshot::Sender<Result<String, String>>>>,
 }
 
 impl AgentConn {
     /// Completes a pending command with the agent's result.
-    fn complete(&self, request_id: &str, error: String) {
+    fn complete(&self, request_id: &str, error: String, payload: String) {
         if let Some(waiter) = self.pending.lock().unwrap().remove(request_id) {
-            let _ = waiter.send(if error.is_empty() { Ok(()) } else { Err(error) });
+            let _ = waiter.send(if error.is_empty() {
+                Ok(payload)
+            } else {
+                Err(error)
+            });
         }
     }
 }
@@ -102,6 +106,28 @@ impl Agents {
         cmd: command::Cmd,
         timeout: Duration,
     ) -> Result<(), AgentError> {
+        self.send(host, cmd, timeout).await.map(drop)
+    }
+
+    /// Runs a command whose answer is JSON.
+    pub async fn query<T: serde::de::DeserializeOwned>(
+        &self,
+        host: HostId,
+        cmd: command::Cmd,
+        timeout: Duration,
+    ) -> Result<T, AgentError> {
+        let payload = self.send(host, cmd, timeout).await?;
+        serde_json::from_str(&payload)
+            .map_err(|e| AgentError::Failed(format!("unexpected answer: {e}")))
+    }
+
+    /// Sends a command and waits for its result's payload.
+    async fn send(
+        &self,
+        host: HostId,
+        cmd: command::Cmd,
+        timeout: Duration,
+    ) -> Result<String, AgentError> {
         let conn = self
             .conns
             .lock()
@@ -127,7 +153,7 @@ impl Agents {
             return Err(AgentError::Closed);
         }
         match tokio::time::timeout(timeout, wait).await {
-            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Ok(payload))) => Ok(payload),
             Ok(Ok(Err(e))) => Err(AgentError::Failed(e)),
             Ok(Err(_)) => Err(AgentError::Closed),
             Err(_) => {

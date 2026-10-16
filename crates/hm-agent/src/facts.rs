@@ -76,7 +76,19 @@ async fn ovs_external_id(key: &str) -> String {
 
 pub async fn gather(lv: &Libvirt, address: IpAddr) -> Result<HostFacts> {
     let node = lv.node_facts().await.context("querying libvirt")?;
+    let cpu = match lv.host_cpu().await {
+        Ok(cpu) => cpu,
+        Err(e) => {
+            tracing::warn!(error = %e, "reading the host CPU model");
+            None
+        }
+    };
     Ok(HostFacts {
+        cpu_json: cpu
+            .map(|c| serde_json::to_string(&crate::vm::cpu_spec(c)).unwrap_or_default())
+            .unwrap_or_default(),
+        // Checked again for every session; see Agent::session.
+        migration_ready: crate::tls::listening().await,
         hostname: hostname(),
         address: address.to_string(),
         cpu_count: node.cpus,

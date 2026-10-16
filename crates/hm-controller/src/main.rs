@@ -7,6 +7,7 @@ mod ca;
 mod engine;
 mod error;
 mod events;
+mod migration;
 mod net;
 mod state;
 

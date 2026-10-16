@@ -17,6 +17,8 @@ type VmLike = Pick<Vm, 'status' | 'power' | 'host_connected' | 'active_task'>
 export function vmState(vm: VmLike): { tone: Tone; text: string } {
   if (vm.status === 'creating') return { tone: 'busy', text: 'Creating' }
   if (vm.status === 'deleting') return { tone: 'busy', text: 'Deleting' }
+  // Still running on its source meanwhile.
+  if (vm.status === 'migrating') return { tone: 'busy', text: 'Migrating' }
   if (vm.status === 'error') return { tone: 'fault', text: 'Failed' }
   if (!vm.host_connected) return { tone: 'unknown', text: 'Host unreachable' }
 

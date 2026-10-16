@@ -313,6 +313,26 @@ export interface paths {
         patch: operations["update_host"];
         trace?: never;
     };
+    "/api/v1/hosts/{id}/evacuate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Puts a host in maintenance and live-migrates its running VMs to other
+         *     hosts of its cluster, one at a time. Stopped VMs stay.
+         */
+        post: operations["evacuate_host"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/images": {
         parameters: {
             query?: never;
@@ -874,6 +894,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/vms/{id}/migrate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Live-migrates a running VM to another host of its cluster, without
+         *     stopping it. Disks on shared storage stay put; local disks are copied.
+         *     Moving VMs between hosts is the provider's business.
+         */
+        post: operations["migrate_vm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/migrate/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Asks a migration in progress to stop. The VM stays where it was. */
+        post: operations["cancel_migration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/vms/{id}/nics/{nic}/security-groups": {
         parameters: {
             query?: never;
@@ -1001,6 +1059,7 @@ export interface components {
             id: components["schemas"]["VmId"];
             /** Format: int64 */
             memory_mib: number;
+            migration?: components["schemas"]["MigrationView"] | null;
             name: string;
             nics: components["schemas"]["NicView"][];
             /**
@@ -1234,6 +1293,9 @@ export interface components {
             size_bytes: number;
             volume_id: components["schemas"]["VolumeId"];
         };
+        EvacuateRef: {
+            task_id: components["schemas"]["TaskId"];
+        };
         /** Format: uuid */
         ExternalIpId: string;
         /** Format: uuid */
@@ -1301,6 +1363,8 @@ export interface components {
             libvirt_version: string;
             /** Format: int64 */
             memory_mib: number;
+            /** @description Accepts live migrations (libvirt TLS is set up). */
+            migration_ready: boolean;
             name: string;
             ovn_chassis: string;
             /**
@@ -1367,6 +1431,19 @@ export interface components {
             tenant_name: string;
             user_id: components["schemas"]["UserId"];
             username: string;
+        };
+        MigrateVm: {
+            host_id?: components["schemas"]["HostId"] | null;
+        };
+        MigrationView: {
+            cancel_requested: boolean;
+            dest_host_id: components["schemas"]["HostId"];
+            dest_host_name?: string | null;
+            /** Format: date-time */
+            started_at: string;
+            /** @description `preparing`, `running` or `committing`. */
+            state: string;
+            task_id: components["schemas"]["TaskId"];
         };
         /** Format: uuid */
         NetworkId: string;
@@ -1707,6 +1784,7 @@ export interface components {
             id: components["schemas"]["VmId"];
             /** Format: int64 */
             memory_mib: number;
+            migration?: components["schemas"]["MigrationView"] | null;
             name: string;
             nics: components["schemas"]["NicView"][];
             /**
@@ -2509,6 +2587,45 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    evacuate_host: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["HostId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvacuateRef"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4174,6 +4291,86 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ConsoleTicket"];
                 };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    migrate_vm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MigrateVm"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskRef"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancel_migration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             404: {
                 headers: {

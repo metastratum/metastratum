@@ -94,8 +94,11 @@ impl Agent {
         let channel = self.channel().await?;
         let mut client = AgentControlClient::new(channel.clone());
         let (tx, rx) = mpsc::channel::<AgentMessage>(64);
+        let mut facts = self.facts.clone();
+        // The TLS listener may have been enabled since the agent started.
+        facts.migration_ready = crate::tls::listening().await;
         let hello = Hello {
-            facts: Some(self.facts.clone()),
+            facts: Some(facts),
             domains: self.domains().await?,
         };
         tx.send(AgentMessage {
@@ -163,20 +166,21 @@ impl Agent {
                 );
                 tokio::spawn(async move {
                     let request_id = cmd.request_id.clone();
-                    let error = match cmd.cmd {
+                    let (error, payload) = match cmd.cmd {
                         Some(c) => match this.handle(c, &tx, client).await {
-                            Ok(()) => String::new(),
+                            Ok(payload) => (String::new(), payload),
                             Err(e) => {
                                 tracing::warn!(error = %format!("{e:#}"), "command failed");
-                                format!("{e:#}")
+                                (format!("{e:#}"), String::new())
                             }
                         },
-                        None => "empty command".into(),
+                        None => ("empty command".into(), String::new()),
                     };
                     let msg = AgentMessage {
                         msg: Some(agent_message::Msg::Result(CommandResult {
                             request_id,
                             error,
+                            payload,
                         })),
                     };
                     let _ = tx.send(msg).await;
@@ -257,7 +261,7 @@ impl Agent {
         cmd: Cmd,
         tx: &mpsc::Sender<AgentMessage>,
         client: AgentControlClient<Channel>,
-    ) -> Result<()> {
+    ) -> Result<String> {
         match cmd {
             Cmd::EnsureImage(c) => {
                 tracing::info!(image = %c.image_id, url = %c.source_url, "ensuring image");
@@ -276,24 +280,83 @@ impl Agent {
                 pool.delete_volume(&c.volume_id).await?;
             }
             Cmd::DefineVm(c) => {
-                let spec: hm_core::vm::VmSpec =
-                    serde_json::from_str(&c.spec_json).context("invalid VM spec")?;
-                let mut pools = std::collections::HashMap::new();
-                for p in &c.pools {
-                    pools.insert(p.id.clone(), self.pool(Some(p)).await?);
-                }
-                let def = vm::domain(
-                    &pools,
-                    &self.files,
-                    &c.vm_id,
-                    &c.tenant_id,
-                    &c.name,
-                    c.generation,
-                    &spec,
-                )
-                .await?;
+                let def = self.domain_def(&c).await?;
                 self.lv.define(def.to_xml()).await?;
                 tracing::info!(vm = %c.vm_id, name = %c.name, "domain defined");
+            }
+            Cmd::PrepareMigration(c) => {
+                // Everything the domain needs here, except the domain itself:
+                // pools mounted, Ceph secrets set, the seed ISO written.
+                let c = c.vm.context("no VM to prepare for")?;
+                self.domain_def(&c).await?;
+                tracing::info!(vm = %c.vm_id, "prepared for incoming migration");
+            }
+            Cmd::MigrateVm(c) => {
+                tracing::info!(vm = %c.vm_id, to = %c.dest_address, disks = ?c.copy_disks, "migrating");
+                let to = hm_libvirt::MigrateTo {
+                    address: &c.dest_address,
+                    copy_disks: &c.copy_disks,
+                    max_bandwidth_mib: None,
+                };
+                self.lv.migrate(&c.vm_id, &to).await?;
+                tracing::info!(vm = %c.vm_id, to = %c.dest_address, "migrated");
+                // The domain is gone from here; say so at once.
+                let _ = self.full_sync(tx).await;
+            }
+            Cmd::MigrationStats(c) => {
+                let st = match self.lv.job_stats(&c.vm_id).await {
+                    Ok(st) => st,
+                    // Gone: the migration finished (or never started here).
+                    Err(hm_libvirt::conn::Error::NoDomain(_)) => hm_libvirt::JobStats::default(),
+                    Err(e) => return Err(e.into()),
+                };
+                return Ok(serde_json::to_string(&serde_json::json!({
+                    "active": st.active,
+                    "elapsed_ms": st.elapsed_ms,
+                    "data_total": st.data_total,
+                    "data_processed": st.data_processed,
+                    "data_remaining": st.data_remaining,
+                    "dirty_pages_per_s": st.dirty_pages_per_s,
+                    "downtime_ms": st.downtime_ms,
+                }))?);
+            }
+            Cmd::AbortMigration(c) => {
+                tracing::info!(vm = %c.vm_id, "aborting migration");
+                self.lv.abort_job(&c.vm_id).await?;
+            }
+            Cmd::DomainInfo(c) => {
+                let info = match self.lv.state(&c.vm_id).await {
+                    Ok(st) => {
+                        let job = self
+                            .lv
+                            .job_stats(&c.vm_id)
+                            .await
+                            .map(|j| j.active)
+                            .unwrap_or(false);
+                        serde_json::json!({"defined": true, "power": session_power_name(st.power), "job_active": job})
+                    }
+                    Err(hm_libvirt::conn::Error::NoDomain(_)) => {
+                        serde_json::json!({"defined": false, "power": "missing", "job_active": false})
+                    }
+                    Err(e) => return Err(e.into()),
+                };
+                return Ok(info.to_string());
+            }
+            Cmd::BaselineCpu(c) => {
+                let cpus = c
+                    .cpus_json
+                    .iter()
+                    .map(|j| {
+                        serde_json::from_str::<hm_core::vm::CpuSpec>(j).map(|s| vm::cpu_model(&s))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .context("invalid CPU model")?;
+                let base = self
+                    .lv
+                    .baseline_cpu(&cpus)
+                    .await?
+                    .context("libvirt found no common CPU model")?;
+                return Ok(serde_json::to_string(&vm::cpu_spec(base))?);
             }
             Cmd::StartVm(c) => {
                 self.lv.start(&c.vm_id).await?;
@@ -327,6 +390,37 @@ impl Agent {
                 });
             }
         }
-        Ok(())
+        Ok(String::new())
+    }
+
+    /// The domain for a VM, with what it needs on this host set up.
+    async fn domain_def(&self, c: &hm_proto::DefineVm) -> Result<hm_libvirt::DomainDef> {
+        let spec: hm_core::vm::VmSpec =
+            serde_json::from_str(&c.spec_json).context("invalid VM spec")?;
+        let mut pools = std::collections::HashMap::new();
+        for p in &c.pools {
+            pools.insert(p.id.clone(), self.pool(Some(p)).await?);
+        }
+        vm::domain(
+            &pools,
+            &self.files,
+            &c.vm_id,
+            &c.tenant_id,
+            &c.name,
+            c.generation,
+            &spec,
+        )
+        .await
+    }
+}
+
+fn session_power_name(p: Power) -> &'static str {
+    match p {
+        Power::Running => "running",
+        Power::Stopped => "stopped",
+        Power::Paused => "paused",
+        Power::Crashed => "crashed",
+        Power::ShuttingDown => "shutting_down",
+        Power::Unknown => "unknown",
     }
 }

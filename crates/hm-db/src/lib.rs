@@ -11,6 +11,7 @@ pub mod grants;
 pub mod hosts;
 pub mod images;
 pub mod join_tokens;
+pub mod migrations;
 pub mod netmodel;
 pub mod netsec;
 pub mod networks;

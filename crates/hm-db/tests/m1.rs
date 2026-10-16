@@ -41,6 +41,8 @@ async fn host(pool: &PgPool) -> hosts::Host {
         ovn_chassis: "hm-host1",
         agent_version: "0.1.0",
         physical_networks: &[],
+        cpu_json: "",
+        migration_ready: false,
     };
     hosts::create(pool, HostId::new(), &facts, "fp", Utc::now())
         .await
@@ -49,6 +51,7 @@ async fn host(pool: &PgPool) -> hosts::Host {
 
 async fn vm(pool: &PgPool, tenant: &tenants::Tenant, host: &hosts::Host, name: &str) -> vms::Vm {
     let spec = VmSpec {
+        cpu: None,
         vcpus: 1,
         memory_mib: 512,
         firmware: Default::default(),
@@ -354,6 +357,7 @@ async fn scheduling_snapshot_reports_allocations_and_liveness(pool: PgPool) {
         .await
         .unwrap();
     let spec = VmSpec {
+        cpu: None,
         vcpus: 3,
         memory_mib: 1024,
         firmware: Default::default(),

@@ -183,6 +183,24 @@ impl Api {
         }
     }
 
+    /// Waits for a task to end, however it ends, and returns it.
+    pub async fn wait_task_end(&self, id: &str, timeout: Duration) -> Result<Value> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let t = self.get(&format!("/tasks/{id}")).await?;
+            if matches!(
+                t["state"].as_str(),
+                Some("succeeded" | "failed" | "cancelled")
+            ) {
+                return Ok(t);
+            }
+            if Instant::now() > deadline {
+                bail!("task {id} still {} after {timeout:?}", t["state"]);
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
     /// Polls a VM until `pred` holds.
     pub async fn wait_vm(
         &self,

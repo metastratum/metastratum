@@ -101,18 +101,24 @@ pub struct Candidate {
     pub memory_overcommit: f32,
     pub used_vcpus: i64,
     pub used_memory_mib: i64,
+    /// Accepts live migrations (libvirt TLS is set up).
+    pub migration_ready: bool,
 }
 
 /// All hosts with their allocations, locked until the transaction ends so
 /// concurrent placements see each other's allocations.
 pub async fn candidates_locked(db: &mut PgConnection) -> Result<Vec<Candidate>> {
     Ok(sqlx::query_as(
-        "SELECT h.id, h.name, h.cluster_id, h.state, h.kvm, h.cpu_count, h.memory_mib,
+        "SELECT h.id, h.name, h.cluster_id, h.state, h.kvm, h.cpu_count, h.memory_mib, h.migration_ready,
                 (h.connected_to IS NOT NULL AND h.last_seen_at > now() - interval '30 seconds') AS live,
                 coalesce(c.cpu_overcommit, 1) AS cpu_overcommit,
                 coalesce(c.memory_overcommit, 1) AS memory_overcommit,
-                (SELECT coalesce(sum((v.spec->>'vcpus')::bigint), 0)::bigint FROM vms v WHERE v.host_id = h.id) AS used_vcpus,
+                -- VMs on the host, plus those migrating to it.
+                (SELECT coalesce(sum((v.spec->>'vcpus')::bigint), 0)::bigint FROM vms v WHERE v.host_id = h.id)
+                  + (SELECT coalesce(sum(m.vcpus), 0)::bigint FROM migrations m WHERE m.dest_host_id = h.id)
+                    AS used_vcpus,
                 (SELECT coalesce(sum((v.spec->>'memory_mib')::bigint), 0)::bigint FROM vms v WHERE v.host_id = h.id)
+                  + (SELECT coalesce(sum(m.memory_mib), 0)::bigint FROM migrations m WHERE m.dest_host_id = h.id)
                     AS used_memory_mib
          FROM hosts h LEFT JOIN clusters c ON c.id = h.cluster_id
          ORDER BY h.id

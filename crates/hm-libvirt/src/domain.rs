@@ -72,6 +72,9 @@ pub struct DomainDef {
     pub firmware: Firmware,
     pub disks: Vec<Disk>,
     pub nics: Vec<Nic>,
+    /// The guest CPU; the host's own (passthrough) when unset. VMs that
+    /// should migrate get their cluster's baseline model.
+    pub cpu: Option<crate::cpu::CpuModel>,
 }
 
 impl DomainDef {
@@ -108,7 +111,9 @@ impl DomainDef {
                 .attr("name", "qemu")
                 .attr("type", &d.format);
             if d.device == DiskDevice::Disk {
-                driver = driver.attr("discard", "unmap");
+                // No host page cache: required for safe live migration of
+                // disks on shared storage, and the guest caches anyway.
+                driver = driver.attr("cache", "none").attr("discard", "unmap");
             }
             let (kind, source) = match &d.source {
                 DiskSource::File(path) => ("file", El::new("source").attr("file", path)),
@@ -181,9 +186,18 @@ impl DomainDef {
                     .child(El::new("acpi"))
                     .child(El::new("apic")),
             )
-            // Replaced by the cluster's baseline CPU model once live migration
-            // lands; passthrough is fine while VMs never leave their host.
-            .child(El::new("cpu").attr("mode", "host-passthrough"))
+            .child(match &self.cpu {
+                Some(cpu) => El::new("cpu")
+                    .attr("mode", "custom")
+                    .attr("match", "exact")
+                    .attr("check", "partial")
+                    .child(El::new("model").attr("fallback", "forbid").text(&cpu.model))
+                    .maybe(cpu.vendor.as_ref().map(|v| El::new("vendor").text(v)))
+                    .children(cpu.features.iter().map(|(policy, name)| {
+                        El::new("feature").attr("policy", policy).attr("name", name)
+                    })),
+                None => El::new("cpu").attr("mode", "host-passthrough"),
+            })
             .child(El::new("clock").attr("offset", "utc"))
             .child(El::new("on_poweroff").text("destroy"))
             .child(El::new("on_reboot").text("restart"))
@@ -323,6 +337,14 @@ mod tests {
                     readonly: true,
                 },
             ],
+            cpu: Some(crate::cpu::CpuModel {
+                model: "EPYC-Milan".into(),
+                vendor: Some("AMD".into()),
+                features: vec![
+                    ("require".into(), "x2apic".into()),
+                    ("disable".into(), "xsaves".into()),
+                ],
+            }),
             nics: vec![Nic {
                 mac: "02:00:00:00:00:01".into(),
                 bridge: "br-int".into(),

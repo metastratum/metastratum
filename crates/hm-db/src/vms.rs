@@ -132,7 +132,9 @@ pub async fn set_desired_power(db: impl PgExecutor<'_>, id: VmId, power: &str) -
 
 /// Records the power state a host reports, and why it changed if known.
 /// Returns whether anything changed. This is an observation only: the
-/// desired power state changes solely through the API.
+/// desired power state changes solely through the API. While a VM migrates,
+/// its source's reports (paused, then gone) say nothing about the VM; the
+/// migration records the outcome itself.
 pub async fn observe_power(
     db: impl PgExecutor<'_>,
     id: VmId,
@@ -142,7 +144,8 @@ pub async fn observe_power(
 ) -> Result<bool> {
     let res = sqlx::query(
         "UPDATE vms SET power = $3, power_reason = $4, power_observed_at = now(), updated_at = now()
-         WHERE id = $1 AND host_id = $2 AND (power <> $3 OR power_reason IS DISTINCT FROM $4)",
+         WHERE id = $1 AND host_id = $2 AND status <> 'migrating'
+           AND (power <> $3 OR power_reason IS DISTINCT FROM $4)",
     )
     .bind(id)
     .bind(host_id)
@@ -151,6 +154,25 @@ pub async fn observe_power(
     .execute(db)
     .await?;
     Ok(res.rows_affected() == 1)
+}
+
+/// Moves a VM to the host it was migrated to: it runs there now, and its
+/// host-local volumes are there too.
+pub async fn moved(db: &mut sqlx::PgConnection, id: VmId, host: HostId) -> Result<()> {
+    sqlx::query(
+        "UPDATE vms SET host_id = $2, status = 'ready', power = 'running', power_reason = NULL,
+                power_observed_at = now(), updated_at = now() WHERE id = $1",
+    )
+    .bind(id)
+    .bind(host)
+    .execute(&mut *db)
+    .await?;
+    sqlx::query("UPDATE volumes SET host_id = $2 WHERE vm_id = $1 AND host_id IS NOT NULL")
+        .bind(id)
+        .bind(host)
+        .execute(&mut *db)
+        .await?;
+    Ok(())
 }
 
 pub async fn delete(db: impl PgExecutor<'_>, id: VmId) -> Result<()> {

@@ -3,9 +3,11 @@ import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, ApiError, errorText, ok, type SecurityGroup, type Task, type Vm } from '../api/client'
 import IdChip from '../components/IdChip.vue'
+import MigrateDialog from '../components/MigrateDialog.vue'
 import StatusLed from '../components/StatusLed.vue'
 import { ago, gib, mib, powerNote, vmState } from '../state'
 import { useLiveRefresh } from '../stores/live'
+import { useSession } from '../stores/session'
 import { taskLabel, useTasks } from '../stores/tasks'
 
 // Console clients (noVNC, xterm.js) are large; load them when first opened.
@@ -25,6 +27,25 @@ const confirmingDelete = ref(false)
 
 const state = computed(() => (vm.value ? vmState(vm.value) : null))
 const running = computed(() => vm.value?.power === 'running' && vm.value.status === 'ready' && vm.value.host_connected)
+// Consoles work while the VM migrates too (on its source, until it moves).
+const live = computed(
+  () =>
+    vm.value?.power === 'running' &&
+    vm.value.host_connected &&
+    (vm.value.status === 'ready' || vm.value.status === 'migrating'),
+)
+const session = useSession()
+const migrating = ref(false)
+const migrationTask = computed(() => tasks.tasks.find((t) => t.id === vm.value?.migration?.task_id))
+async function cancelMigration() {
+  actionError.value = ''
+  try {
+    await ok(api.POST('/api/v1/vms/{id}/migrate/cancel', { params: { path: { id: props.id } } }))
+    await load()
+  } catch (e) {
+    actionError.value = errorText(e)
+  }
+}
 const note = computed(() => (vm.value ? powerNote(vm.value) : null))
 const settled = computed(() => vm.value?.status === 'ready')
 
@@ -130,8 +151,23 @@ async function remove() {
         <button class="btn" :disabled="!running" title="Ask the guest OS to shut down" @click="act('stop')">Shut down</button>
         <button class="btn" :disabled="!running" title="Cut power immediately" @click="act('force')">Power off</button>
         <button class="btn" :disabled="!running" @click="act('reboot')">Reboot</button>
+        <button
+          v-if="session.me?.provider_admin"
+          class="btn"
+          :disabled="!running"
+          title="Move the running VM to another host"
+          @click="migrating = true"
+        >
+          Migrate
+        </button>
         <template v-if="!confirmingDelete">
-          <button class="btn danger" :disabled="vm.status === 'deleting'" @click="confirmingDelete = true">Delete VM</button>
+          <button
+            class="btn danger"
+            :disabled="vm.status === 'deleting' || vm.status === 'migrating'"
+            @click="confirmingDelete = true"
+          >
+            Delete VM
+          </button>
         </template>
         <template v-else>
           <button class="btn danger" @click="remove">Delete {{ vm.name }} and its disk</button>
@@ -142,6 +178,17 @@ async function remove() {
     <p v-if="actionError" class="error-text" role="alert">{{ actionError }}</p>
     <p v-if="vm.error" class="error-text">{{ vm.error }}</p>
     <p v-if="note" class="note">{{ note }}</p>
+    <div v-if="vm.migration" class="moving" role="status">
+      <span class="label">Moving</span>
+      <span>
+        {{ vm.host_name }} → <strong>{{ vm.migration.dest_host_name }}</strong>
+        <span class="muted step">{{ migrationTask?.step ?? vm.migration.state }}</span>
+      </span>
+      <progress :value="migrationTask?.progress ?? 0" max="1" />
+      <button v-if="session.me?.provider_admin" class="btn small" :disabled="vm.migration.cancel_requested" @click="cancelMigration">
+        {{ vm.migration.cancel_requested ? 'Cancelling…' : 'Cancel' }}
+      </button>
+    </div>
 
     <dl class="facts">
       <div><dt class="label">Address</dt><dd class="mono">{{ vm.nics[0]?.ip ?? '—' }}</dd></div>
@@ -155,17 +202,18 @@ async function remove() {
     </dl>
 
     <div class="tabs" role="tablist">
-      <button role="tab" :aria-selected="tab === 'console'" :disabled="!running" @click="tab = 'console'">Console</button>
-      <button role="tab" :aria-selected="tab === 'serial'" :disabled="!running" @click="tab = 'serial'">Serial</button>
+      <button role="tab" :aria-selected="tab === 'console'" :disabled="!live" @click="tab = 'console'">Console</button>
+      <button role="tab" :aria-selected="tab === 'serial'" :disabled="!live" @click="tab = 'serial'">Serial</button>
       <button role="tab" :aria-selected="tab === 'details'" @click="tab = 'details'">Details</button>
     </div>
 
     <div class="panel">
-      <template v-if="tab !== 'details' && !running">
+      <template v-if="tab !== 'details' && !live">
         <p class="muted">Start the VM to use its console.</p>
       </template>
-      <VncConsole v-else-if="tab === 'console'" :key="`vnc-${vm.id}`" :vm-id="vm.id" />
-      <SerialConsole v-else-if="tab === 'serial'" :key="`serial-${vm.id}`" :vm-id="vm.id" />
+      <!-- Keyed by host: after a migration the console reconnects there. -->
+      <VncConsole v-else-if="tab === 'console'" :key="`vnc-${vm.id}-${vm.host_id}`" :vm-id="vm.id" />
+      <SerialConsole v-else-if="tab === 'serial'" :key="`serial-${vm.id}-${vm.host_id}`" :vm-id="vm.id" />
       <div v-else class="details">
         <section>
           <h2 class="label">Identity</h2>
@@ -230,6 +278,12 @@ async function remove() {
         </section>
       </div>
     </div>
+    <MigrateDialog
+      v-if="migrating"
+      :vm="vm"
+      @close="migrating = false"
+      @started="((migrating = false), tasks.poke(), load())"
+    />
   </section>
 </template>
 
@@ -357,5 +411,23 @@ h1 {
 .nic-groups .buttons {
   display: flex;
   gap: 6px;
+}
+.moving {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin-top: 14px;
+  padding: 10px 14px;
+  border-left: 3px solid var(--led-busy);
+  background: var(--sunken);
+}
+.moving .step {
+  margin-left: 10px;
+}
+.moving progress {
+  flex: 1;
+  min-width: 140px;
+  accent-color: var(--led-busy);
 }
 </style>

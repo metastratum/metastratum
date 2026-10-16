@@ -59,6 +59,8 @@ async fn host(pool: &PgPool) -> HostId {
         ovn_chassis: "",
         agent_version: "",
         physical_networks: &[],
+        cpu_json: "",
+        migration_ready: false,
     };
     hosts::create(pool, HostId::new(), &f, "fp", Utc::now())
         .await
@@ -88,6 +90,7 @@ async fn allocate(
     quotas::reserve(&mut tx, tenant, &delta).await?;
     let id = VmId::new();
     let spec = VmSpec {
+        cpu: None,
         vcpus,
         memory_mib: mem,
         firmware: Default::default(),

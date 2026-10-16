@@ -162,6 +162,8 @@ async fn the_model_snapshot_has_everything_the_compiler_needs(pool: PgPool) {
             ovn_chassis: "hm-host1",
             agent_version: "",
             physical_networks: &["external".to_owned()],
+            cpu_json: "",
+            migration_ready: false,
         },
         "fp",
         Utc::now(),
@@ -192,6 +194,7 @@ async fn the_model_snapshot_has_everything_the_compiler_needs(pool: PgPool) {
             name: "web",
             host_id: host.id,
             spec: &VmSpec {
+                cpu: None,
                 vcpus: 1,
                 memory_mib: 512,
                 firmware: Default::default(),

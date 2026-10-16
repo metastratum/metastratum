@@ -17,20 +17,25 @@
     <acpi/>
     <apic/>
   </features>
-  <cpu mode='host-passthrough'/>
+  <cpu mode='custom' match='exact' check='partial'>
+    <model fallback='forbid'>EPYC-Milan</model>
+    <vendor>AMD</vendor>
+    <feature policy='require' name='x2apic'/>
+    <feature policy='disable' name='xsaves'/>
+  </cpu>
   <clock offset='utc'/>
   <on_poweroff>destroy</on_poweroff>
   <on_reboot>restart</on_reboot>
   <on_crash>destroy</on_crash>
   <devices>
     <disk type='file' device='disk'>
-      <driver name='qemu' type='qcow2' discard='unmap'/>
+      <driver name='qemu' type='qcow2' cache='none' discard='unmap'/>
       <source file='/var/lib/hypermon/pools/local/vol-1.qcow2'/>
       <target dev='vda' bus='virtio'/>
       <boot order='1'/>
     </disk>
     <disk type='network' device='disk'>
-      <driver name='qemu' type='raw' discard='unmap'/>
+      <driver name='qemu' type='raw' cache='none' discard='unmap'/>
       <source protocol='rbd' name='hypermon/vol-2'>
         <host name='10.77.0.10' port='6789'/>
         <auth username='hypermon'>

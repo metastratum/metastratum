@@ -26,6 +26,30 @@ pub struct VmSpec {
     pub nics: Vec<NicSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_init: Option<CloudInit>,
+    /// The guest CPU: the VM's cluster baseline, so it can run (and migrate)
+    /// on any host of the cluster. Unset for VMs from before live migration,
+    /// which get their host's CPU as is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<CpuSpec>,
+}
+
+/// A named CPU model with feature adjustments.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct CpuSpec {
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
+    /// `require`d and `disable`d features on top of the model.
+    #[serde(default)]
+    pub features: Vec<CpuFeature>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct CpuFeature {
+    pub policy: String,
+    pub name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

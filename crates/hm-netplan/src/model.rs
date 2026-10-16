@@ -90,6 +90,12 @@ pub struct Port {
     pub mac: String,
     pub ip: Ipv4Addr,
     pub security_groups: Vec<Uuid>,
+    /// Chassis allowed to bind the port: the VM's host, and during a live
+    /// migration its destination too. Empty: any.
+    pub chassis: Vec<String>,
+    /// Live-migrating: the destination takes over once the guest announces
+    /// itself there (RARP), so traffic follows the VM with no gap.
+    pub migrating: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

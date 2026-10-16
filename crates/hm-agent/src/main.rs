@@ -5,6 +5,7 @@ mod console;
 mod enroll;
 mod facts;
 mod session;
+mod tls;
 mod vm;
 
 use std::net::IpAddr;
@@ -90,6 +91,15 @@ async fn main() -> anyhow::Result<()> {
             id
         }
     };
+
+    // libvirt and QEMU use the host identity for migration TLS.
+    match tls::install(&identity) {
+        Ok(true) => tracing::info!("installed the host certificate for libvirt and QEMU TLS"),
+        Ok(false) => {}
+        Err(e) => {
+            tracing::warn!(error = %format!("{e:#}"), "installing TLS certificates; live migration will fail")
+        }
+    }
 
     let pools = Pools::new(&args.data_dir);
     let agent = Arc::new(session::Agent {

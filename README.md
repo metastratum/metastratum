@@ -160,6 +160,14 @@ token:
 DATABASE_URL=... deploy/lab/agent.sh
 ```
 
+For live migration, hosts' libvirt daemons talk to each other over TLS. The
+agent installs its host certificate (signed by the controller's CA) where
+libvirt and QEMU look for it (`/etc/pki/{CA,libvirt,qemu}`); `agent.sh` then
+enables libvirt's TLS listener (`libvirtd-tls.socket`, or
+`virtproxyd-tls.socket` with modular daemons). Hosts without it show "No
+migration" and are not chosen as destinations. VMs get their cluster's
+baseline CPU model, so they run on, and migrate between, any of its hosts.
+
 Open http://127.0.0.1:18080 and sign in as `admin`. Add an image (for example
 `https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2`)
 before creating VMs. Hosts only take VMs once they are in a cluster
@@ -192,7 +200,10 @@ prints, from Ceph RBD. For networking it builds VPCs in a child tenant and
 checks isolation between them, SNAT to the lab's external network
 (10.78.0.0/24, registered as `lab-external` on first run), a floating IP that
 only answers SSH while a security group allows it, and a parent's guardrail
-that closes it again regardless. With `HM_E2E_DEX=http://127.0.0.1:5556/dex` it also
+that closes it again regardless. For live migration it moves VMs on local
+disk, NFS and Ceph while another VM pings them and holds a TCP connection to
+them, and checks the guests never restarted; with `HM_E2E_EVACUATE=1` it also
+evacuates a host (which moves every VM on it, not only the test's). With `HM_E2E_DEX=http://127.0.0.1:5556/dex` it also
 signs in through Dex and checks how groups become roles. It also checks that
 live updates (`/api/v1/events`) reach only those allowed to see the change. `HM_E2E_DEBUG=1`
 prints console traffic. The browser suite does the VM lifecycle and tenant

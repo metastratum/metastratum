@@ -50,6 +50,8 @@ fn model() -> Model {
         mac: format!("02:00:00:00:00:{:02x}", ip[3]),
         ip: Ipv4Addr::from(ip),
         security_groups: groups,
+        chassis: vec![],
+        migrating: false,
     };
     let ports = vec![
         port([10, 0, 0, 2], vec![sg]),

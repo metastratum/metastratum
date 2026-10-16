@@ -52,6 +52,8 @@ const LABELS: Record<string, string> = {
   'vm.stop': 'Shut down',
   'vm.reboot': 'Reboot',
   'vm.delete': 'Delete VM',
+  'vm.migrate': 'Migrate VM',
+  'host.evacuate': 'Evacuate host',
 }
 
 export function taskLabel(t: Task): string {

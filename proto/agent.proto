@@ -45,6 +45,12 @@ message HostFacts {
   string agent_version = 9;
   // Physical networks OVS bridges reach (names from ovn-bridge-mappings).
   repeated string physical_networks = 10;
+  // The host-model CPU (`hm_core::vm::CpuSpec` as JSON), for cluster
+  // baselines; empty if unknown.
+  string cpu_json = 11;
+  // Whether libvirt accepts TLS connections from other hosts, which live
+  // migration to this host needs.
+  bool migration_ready = 12;
 }
 
 message AgentMessage {
@@ -107,6 +113,12 @@ message Command {
     RebootVm reboot_vm = 16;
     UndefineVm undefine_vm = 17;
     OpenConsole open_console = 18;
+    BaselineCpu baseline_cpu = 19;
+    PrepareMigration prepare_migration = 20;
+    MigrateVm migrate_vm = 21;
+    MigrationStats migration_stats = 22;
+    AbortMigration abort_migration = 23;
+    DomainInfo domain_info = 24;
   }
 }
 
@@ -114,6 +126,8 @@ message CommandResult {
   string request_id = 1;
   // Empty on success.
   string error = 2;
+  // What a query returns (JSON), on success.
+  string payload = 3;
 }
 
 // A storage pool, as much as the agent needs to reach it.
@@ -177,6 +191,43 @@ message RebootVm {
 // Destroy and undefine the domain and remove its per-VM files. Volumes are
 // deleted separately.
 message UndefineVm {
+  string vm_id = 1;
+}
+
+// The CPU model all of `cpus_json` (each an `hm_core::vm::CpuSpec`) can run,
+// keeping only features that survive migration. Returns a CpuSpec.
+message BaselineCpu {
+  repeated string cpus_json = 1;
+}
+
+// On a migration's destination: set up what the VM needs besides its
+// volumes (storage pools, Ceph secrets, the cloud-init seed), without
+// defining the domain; the migration brings that.
+message PrepareMigration {
+  DefineVm vm = 1;
+}
+
+// On a migration's source: live-migrate the running VM to the host at
+// `dest_address`. Returns when done (or failed, the VM still running here).
+message MigrateVm {
+  string vm_id = 1;
+  string dest_address = 2;
+  // Disks on host-local storage to copy (targets: vda, ...).
+  repeated string copy_disks = 3;
+}
+
+// Progress of the VM's migration job. Returns hm_libvirt::JobStats as JSON.
+message MigrationStats {
+  string vm_id = 1;
+}
+
+message AbortMigration {
+  string vm_id = 1;
+}
+
+// Whether the VM's domain is here and in what state. Returns
+// {"defined": bool, "power": "...", "job_active": bool}.
+message DomainInfo {
   string vm_id = 1;
 }
 

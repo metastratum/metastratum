@@ -423,6 +423,15 @@ pub fn compile(m: &Model) -> Desired {
             continue;
         }
         let address = format!("{} {}", p.mac, p.ip);
+        // Only the VM's host may bind the port, so no other host can claim
+        // it. A migrating port is bound on both hosts (multi-chassis).
+        let mut options = BTreeMap::new();
+        if !p.chassis.is_empty() {
+            options.insert("requested-chassis".to_owned(), p.chassis.join(","));
+        }
+        if p.migrating && p.chassis.len() > 1 {
+            options.insert("activation-strategy".to_owned(), "rarp".to_owned());
+        }
         b.add(
             Table::LogicalSwitchPort,
             format!("lsp/{}", p.id),
@@ -432,7 +441,7 @@ pub fn compile(m: &Model) -> Desired {
                 ("type", s("")),
                 ("addresses", strs([address.clone()])),
                 ("port_security", strs([address])),
-                ("options", Datum::Map(BTreeMap::new())),
+                ("options", Datum::Map(options)),
                 (
                     "dhcpv4_options",
                     Datum::Ref(Some(format!("dhcp/{}", p.network_id))),
@@ -621,6 +630,8 @@ mod tests {
             mac: format!("02:00:00:00:00:{n:02x}"),
             ip: Ipv4Addr::from(ip),
             security_groups: vec![sg],
+            chassis: vec![],
+            migrating: false,
         };
         Model {
             external_networks: vec![ExternalNetwork {
@@ -862,6 +873,35 @@ mod tests {
         let d = compile(&m);
         assert!(d.find(&format!("nat/fip/{}", id(50))).is_none());
         assert_eq!(d.warnings.len(), 1, "{:?}", d.warnings);
+    }
+
+    #[test]
+    fn ports_are_bound_to_their_host_and_both_while_migrating() {
+        let mut m = model();
+        m.ports[0].chassis = vec!["hm-host1".into()];
+        let opts = |m: &Model| match compile(m)
+            .find(&format!("lsp/{}", id(20)))
+            .unwrap()
+            .get("options")
+        {
+            Some(Datum::Map(o)) => o.clone(),
+            _ => panic!(),
+        };
+        assert_eq!(
+            opts(&m).get("requested-chassis").map(String::as_str),
+            Some("hm-host1")
+        );
+        assert!(!opts(&m).contains_key("activation-strategy"));
+        m.ports[0].chassis.push("hm-host2".into());
+        m.ports[0].migrating = true;
+        assert_eq!(
+            opts(&m).get("requested-chassis").map(String::as_str),
+            Some("hm-host1,hm-host2")
+        );
+        assert_eq!(
+            opts(&m).get("activation-strategy").map(String::as_str),
+            Some("rarp")
+        );
     }
 
     #[test]

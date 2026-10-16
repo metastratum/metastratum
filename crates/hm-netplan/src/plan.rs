@@ -253,6 +253,8 @@ mod tests {
                 mac: "02:00:00:00:00:01".into(),
                 ip: Ipv4Addr::new(10, 0, 0, 2),
                 security_groups: vec![],
+                chassis: vec![],
+                migrating: false,
             }],
             ..Model::default()
         }

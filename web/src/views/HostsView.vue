@@ -31,6 +31,19 @@ function manage(h: Host) {
   manageError.value = ''
   managing.value = h
 }
+async function evacuate() {
+  const h = managing.value
+  if (!h) return
+  manageError.value = ''
+  try {
+    await ok(api.POST('/api/v1/hosts/{id}/evacuate', { params: { path: { id: h.id } } }))
+    managing.value = null
+    await load()
+  } catch (e) {
+    manageError.value = errorText(e)
+  }
+}
+
 async function saveHost() {
   const h = managing.value
   if (!h) return
@@ -140,6 +153,24 @@ async function createToken() {
           Maintenance: place no new VMs here
         </label>
         <p class="muted hint">VMs already on the host keep running.</p>
+        <div class="evacuate">
+          <div>
+            <strong>Evacuate</strong>
+            <p class="muted hint">
+              Puts the host in maintenance and live-migrates its running VMs to other hosts of its cluster, one at a
+              time. Stopped VMs stay. Follow it in Tasks.
+            </p>
+          </div>
+          <button
+            type="button"
+            class="btn"
+            :disabled="!managing.cluster_id || !managing.vm_count"
+            :title="!managing.cluster_id ? 'The host is in no cluster' : !managing.vm_count ? 'No VMs to move' : undefined"
+            @click="evacuate"
+          >
+            Evacuate {{ managing.name }}
+          </button>
+        </div>
         <p v-if="manageError" class="error-text" role="alert">{{ manageError }}</p>
         <footer>
           <button type="button" class="btn" @click="managing = null">Cancel</button>
@@ -214,5 +245,18 @@ footer {
 .hint {
   margin: 0;
   font-size: 12px;
+}
+.evacuate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+.evacuate > div {
+  flex: 1;
+  min-width: 220px;
 }
 </style>

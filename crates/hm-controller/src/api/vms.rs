@@ -28,6 +28,8 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(stop_vm))
         .routes(routes!(reboot_vm))
         .routes(routes!(set_nic_groups))
+        .routes(routes!(migrate_vm))
+        .routes(routes!(cancel_migration))
 }
 
 const GIB: u64 = 1 << 30;
@@ -64,8 +66,21 @@ pub struct VmView {
     firmware: Firmware,
     disks: Vec<DiskSpec>,
     nics: Vec<NicView>,
+    /// The live migration in progress, if any.
+    migration: Option<MigrationView>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct MigrationView {
+    task_id: TaskId,
+    dest_host_id: HostId,
+    dest_host_name: Option<String>,
+    /// `preparing`, `running` or `committing`.
+    state: String,
+    cancel_requested: bool,
+    started_at: DateTime<Utc>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -91,6 +106,7 @@ struct Context {
     networks: HashMap<NetworkId, String>,
     nic_groups: HashMap<NicId, Vec<SecurityGroupId>>,
     floating: HashMap<NicId, (ExternalIpId, String)>,
+    migrations: HashMap<VmId, hm_db::migrations::Migration>,
 }
 
 async fn context(state: &AppState) -> ApiResult<Context> {
@@ -121,7 +137,13 @@ async fn context(state: &AppState) -> ApiResult<Context> {
     let networks: Vec<(NetworkId, String)> = hm_db::sqlx::query_as("SELECT id, name FROM networks")
         .fetch_all(&state.db)
         .await?;
+    let migrations: Vec<hm_db::migrations::Migration> = hm_db::sqlx::query_as(
+        "SELECT vm_id, task_id, source_host_id, dest_host_id, state, cancel_requested, started_at FROM migrations",
+    )
+    .fetch_all(&state.db)
+    .await?;
     Ok(Context {
+        migrations: migrations.into_iter().map(|m| (m.vm_id, m)).collect(),
         networks: networks.into_iter().collect(),
         nic_groups,
         floating,
@@ -172,6 +194,14 @@ fn view(vm: Vm, ctx: &Context) -> VmView {
                 ip: n.ip,
             })
             .collect(),
+        migration: ctx.migrations.get(&vm.id).map(|m| MigrationView {
+            task_id: m.task_id,
+            dest_host_id: m.dest_host_id,
+            dest_host_name: ctx.hosts.get(&m.dest_host_id).map(|h| h.0.clone()),
+            state: m.state.clone(),
+            cancel_requested: m.cancel_requested,
+            started_at: m.started_at,
+        }),
         created_at: vm.created_at,
         updated_at: vm.updated_at,
     }
@@ -393,6 +423,8 @@ async fn create_vm(
         image_id: Some(req.image_id),
     };
     let mut spec = VmSpec {
+        // The create task sets the cluster's baseline CPU before defining the VM.
+        cpu: None,
         vcpus: req.vcpus,
         memory_mib: req.memory_mib,
         firmware: req.firmware,
@@ -623,6 +655,11 @@ async fn power_action(
     if vm.status == "deleting" {
         return Err(ApiError::conflict("VM is being deleted"));
     }
+    if vm.status == "migrating" {
+        return Err(ApiError::conflict(
+            "VM is being migrated; wait, or cancel the migration",
+        ));
+    }
     let mut tx = state.db.begin().await?;
     if let Some(d) = desired {
         hm_db::vms::set_desired_power(&mut *tx, id, d).await?;
@@ -696,6 +733,11 @@ async fn delete_vm(
     Path(id): Path<VmId>,
 ) -> ApiResult<(StatusCode, Json<TaskRef>)> {
     let vm = load(&state, &p, id, Perm::VmWrite).await?;
+    if vm.status == "migrating" {
+        return Err(ApiError::conflict(
+            "VM is being migrated; cancel the migration first",
+        ));
+    }
     let mut tx = state.db.begin().await?;
     hm_db::vms::set_status(&mut *tx, id, "deleting", None).await?;
     let task_id = enqueue(&mut tx, &p, vm.tenant_id, "vm.delete", id, json!({})).await?;
@@ -710,6 +752,78 @@ async fn delete_vm(
     )
     .await;
     Ok((StatusCode::ACCEPTED, Json(TaskRef { task_id })))
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct MigrateVm {
+    /// Destination; the scheduler picks one in the VM's cluster otherwise.
+    host_id: Option<HostId>,
+}
+
+/// Live-migrates a running VM to another host of its cluster, without
+/// stopping it. Disks on shared storage stay put; local disks are copied.
+/// Moving VMs between hosts is the provider's business.
+#[utoipa::path(post, path = "/vms/{id}/migrate", tag = "vms", params(("id" = VmId, Path)), request_body = MigrateVm,
+    responses((status = 202, body = TaskRef), (status = 403), (status = 404), (status = 409)))]
+async fn migrate_vm(
+    State(state): State<AppState>,
+    p: Principal,
+    Path(id): Path<VmId>,
+    Json(req): Json<MigrateVm>,
+) -> ApiResult<(StatusCode, Json<TaskRef>)> {
+    let vm = load(&state, &p, id, Perm::VmRead).await?;
+    authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
+    let mut tx = state.db.begin().await?;
+    let task = enqueue(&mut tx, &p, vm.tenant_id, "vm.migrate", id, json!({})).await?;
+    let (dest, name) = crate::migration::plan(&mut tx, &vm, req.host_id, &[], task)
+        .await
+        .map_err(|e| match e {
+            crate::migration::Refusal::Refused(m) => ApiError::conflict(m),
+            crate::migration::Refusal::Db(e) => e.into(),
+        })?;
+    hm_db::sqlx::query(
+        "UPDATE tasks SET params = jsonb_build_object('dest_host_id', $2::uuid) WHERE id = $1",
+    )
+    .bind(task)
+    .bind(dest)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(vm.tenant_id),
+        "vm.migrate",
+        Some(("vm", id.0)),
+        json!({"name": vm.name, "from": vm.host_id, "to": dest, "to_name": name}),
+    )
+    .await;
+    Ok((StatusCode::ACCEPTED, Json(TaskRef { task_id: task })))
+}
+
+/// Asks a migration in progress to stop. The VM stays where it was.
+#[utoipa::path(post, path = "/vms/{id}/migrate/cancel", tag = "vms", params(("id" = VmId, Path)),
+    responses((status = 204), (status = 403), (status = 404), (status = 409)))]
+async fn cancel_migration(
+    State(state): State<AppState>,
+    p: Principal,
+    Path(id): Path<VmId>,
+) -> ApiResult<StatusCode> {
+    let vm = load(&state, &p, id, Perm::VmRead).await?;
+    authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
+    if !hm_db::migrations::request_cancel(&state.db, id).await? {
+        return Err(ApiError::conflict("the VM is not being migrated"));
+    }
+    audit(
+        &state.db,
+        Some(&p),
+        Some(vm.tenant_id),
+        "vm.migrate.cancel",
+        Some(("vm", id.0)),
+        json!({"name": vm.name}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]

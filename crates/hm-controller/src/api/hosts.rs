@@ -19,6 +19,7 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(update_host))
         .routes(routes!(list_hosts))
         .routes(routes!(create_join_token))
+        .routes(routes!(evacuate_host))
 }
 
 #[derive(Serialize, ToSchema)]
@@ -32,6 +33,8 @@ pub struct HostView {
     cluster_name: Option<String>,
     /// Whether the host's agent has a live session (and heartbeated recently).
     connected: bool,
+    /// Accepts live migrations (libvirt TLS is set up).
+    migration_ready: bool,
     cpu_count: i32,
     memory_mib: i64,
     cpu_model: String,
@@ -63,6 +66,7 @@ async fn list_hosts(State(state): State<AppState>, p: Principal) -> ApiResult<Js
             cluster_name: h.cluster_id.and_then(|c| clusters.get(&c).cloned()),
             cluster_id: h.cluster_id,
             connected: h.is_live(),
+            migration_ready: h.migration_ready,
             vm_count: vms.len(),
             allocated_memory_mib: vms.iter().map(|v| v.spec.0.memory_mib).sum(),
             id: h.id,
@@ -209,4 +213,51 @@ async fn update_host(
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct EvacuateRef {
+    task_id: hm_core::ids::TaskId,
+}
+
+/// Puts a host in maintenance and live-migrates its running VMs to other
+/// hosts of its cluster, one at a time. Stopped VMs stay.
+#[utoipa::path(post, path = "/hosts/{id}/evacuate", tag = "hosts", params(("id" = HostId, Path)),
+    responses((status = 202, body = EvacuateRef), (status = 403), (status = 404), (status = 409)))]
+async fn evacuate_host(
+    State(state): State<AppState>,
+    p: Principal,
+    axum::extract::Path(id): axum::extract::Path<HostId>,
+) -> ApiResult<(StatusCode, Json<EvacuateRef>)> {
+    authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
+    let host = hm_db::hosts::get(&state.db, id).await?;
+    if host.cluster_id.is_none() {
+        return Err(ApiError::conflict(
+            "the host is in no cluster, so its VMs have nowhere to go",
+        ));
+    }
+    let mut tx = state.db.begin().await?;
+    hm_db::hosts::set_state(&mut *tx, id, "maintenance").await?;
+    let task = hm_db::tasks::enqueue(
+        &mut *tx,
+        hm_db::tasks::NewTask {
+            tenant_id: p.tenant_id,
+            kind: "host.evacuate",
+            target: Some(("host", id.0)),
+            params: serde_json::json!({}),
+            created_by: Some(p.user_id),
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(p.tenant_id),
+        "host.evacuate",
+        Some(("host", id.0)),
+        serde_json::json!({"name": host.name}),
+    )
+    .await;
+    Ok((StatusCode::ACCEPTED, Json(EvacuateRef { task_id: task.id })))
 }

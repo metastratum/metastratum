@@ -26,6 +26,9 @@ const usedPct = computed(() => Math.min(100, (props.host.allocated_memory_mib / 
       <StatusLed :tone="host.connected ? 'on' : 'fault'" :label="host.connected ? 'Connected' : 'Not connected'" />
       <span v-if="!host.kvm" class="error-text">No KVM</span>
       <span v-if="host.state === 'maintenance'" class="tag maint">Maintenance</span>
+      <span v-if="host.connected && !host.migration_ready" class="tag stray" title="libvirt does not accept TLS connections">
+        No migration
+      </span>
       <span class="tag" :class="{ stray: !host.cluster_name }">{{ host.cluster_name ?? 'No cluster' }}</span>
       <button type="button" class="btn small manage" @click="emit('manage')">Manage</button>
       <dl class="specs mono">

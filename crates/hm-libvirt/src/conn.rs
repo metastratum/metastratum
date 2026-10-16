@@ -104,6 +104,30 @@ pub struct NodeFacts {
     pub libvirt_version: String,
 }
 
+/// Where and how to live-migrate a domain.
+#[derive(Clone, Debug, Default)]
+pub struct MigrateTo<'a> {
+    /// The destination host's address; its daemon must accept TLS.
+    pub address: &'a str,
+    /// Disks (target names such as `vda`) on host-local storage, to copy
+    /// while the guest runs. Shared and network disks are not copied.
+    pub copy_disks: &'a [String],
+    pub max_bandwidth_mib: Option<u64>,
+}
+
+/// Progress of a running migration.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JobStats {
+    pub active: bool,
+    pub elapsed_ms: u64,
+    pub data_total: u64,
+    pub data_processed: u64,
+    pub data_remaining: u64,
+    pub dirty_pages_per_s: u64,
+    /// The pause at the switch-over, once known.
+    pub downtime_ms: Option<u64>,
+}
+
 /// What [`Libvirt::watch`] reports.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {
@@ -400,6 +424,140 @@ impl Libvirt {
             flags: 0,
         })
         .await?;
+        Ok(())
+    }
+
+    /// The host's host-model CPU, for cluster baselines.
+    pub async fn host_cpu(&self) -> Result<Option<crate::cpu::CpuModel>> {
+        let caps = self
+            .client()
+            .await?
+            .connect_get_domain_capabilities(&ConnectGetDomainCapabilitiesArgs {
+                emulatorbin: None,
+                arch: None,
+                machine: None,
+                virttype: Some("kvm".into()),
+                flags: 0,
+            })
+            .await?
+            .capabilities;
+        Ok(crate::cpu::host_model(&caps))
+    }
+
+    /// The most capable CPU all of `cpus` can run, limited to features that
+    /// survive migration.
+    pub async fn baseline_cpu(
+        &self,
+        cpus: &[crate::cpu::CpuModel],
+    ) -> Result<Option<crate::cpu::CpuModel>> {
+        const BASELINE_MIGRATABLE: u32 = 2;
+        let r = self
+            .client()
+            .await?
+            .connect_baseline_hypervisor_cpu(&ConnectBaselineHypervisorCpuArgs {
+                emulator: None,
+                arch: None,
+                machine: None,
+                virttype: Some("kvm".into()),
+                xml_cp_us: cpus.iter().map(crate::cpu::CpuModel::to_xml).collect(),
+                flags: BASELINE_MIGRATABLE,
+            })
+            .await?;
+        Ok(crate::cpu::parse_cpu(&r.cpu))
+    }
+
+    /// Live-migrates a running domain to another host, peer to peer: this
+    /// host's daemon connects to the destination's over TLS and drives the
+    /// whole migration, including copying local disks. Returns when it has
+    /// finished (the domain then runs on the destination and is gone here)
+    /// or failed (it keeps running here).
+    pub async fn migrate(&self, uuid: &str, to: &MigrateTo<'_>) -> Result<()> {
+        // virDomainMigrateFlags
+        const LIVE: u32 = 1;
+        const PEER2PEER: u32 = 2;
+        const PERSIST_DEST: u32 = 8;
+        const UNDEFINE_SOURCE: u32 = 16;
+        const NON_SHARED_INC: u32 = 128;
+        const ABORT_ON_ERROR: u32 = 4096;
+        const AUTO_CONVERGE: u32 = 8192;
+        const TLS: u32 = 65536;
+
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        let s = |field: &str, v: &str| TypedParam {
+            field: field.into(),
+            value: TypedParamValue::VirTypedParamString(v.into()),
+        };
+        // Name the destination by address throughout: hosts need not resolve
+        // each other's names, and certificates carry the address.
+        let mut params = vec![
+            s("migrate_uri", &format!("tcp://{}", to.address)),
+            s("tls.destination", to.address),
+        ];
+        let mut flags = LIVE
+            | PEER2PEER
+            | PERSIST_DEST
+            | UNDEFINE_SOURCE
+            | ABORT_ON_ERROR
+            | AUTO_CONVERGE
+            | TLS;
+        if !to.copy_disks.is_empty() {
+            // Only the top layer: the destination has the base image.
+            flags |= NON_SHARED_INC;
+            params.extend(to.copy_disks.iter().map(|d| s("migrate_disks", d)));
+        }
+        if let Some(mib) = to.max_bandwidth_mib {
+            params.push(TypedParam {
+                field: "bandwidth".into(),
+                value: TypedParamValue::VirTypedParamUllong(mib),
+            });
+        }
+        c.domain_migrate_perform3_params(&DomainMigratePerform3ParamsArgs {
+            dom,
+            dconnuri: Some(format!("qemu+tls://{}/system", to.address)),
+            params,
+            cookie_in: vec![],
+            flags,
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Progress of the domain's current job (a migration), if any.
+    pub async fn job_stats(&self, uuid: &str) -> Result<JobStats> {
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        let r = c
+            .domain_get_job_stats(&DomainGetJobStatsArgs { dom, flags: 0 })
+            .await?;
+        let mut st = JobStats {
+            // virDomainJobType: BOUNDED or UNBOUNDED while running.
+            active: matches!(r.r#type, 1 | 2),
+            ..JobStats::default()
+        };
+        for p in r.params {
+            let TypedParamValue::VirTypedParamUllong(v) = p.value else {
+                continue;
+            };
+            match p.field.as_str() {
+                "time_elapsed" => st.elapsed_ms = v,
+                "data_total" => st.data_total = v,
+                "data_processed" => st.data_processed = v,
+                "data_remaining" => st.data_remaining = v,
+                "memory_dirty_rate" => st.dirty_pages_per_s = v,
+                "downtime" => st.downtime_ms = Some(v),
+                _ => {}
+            }
+        }
+        Ok(st)
+    }
+
+    /// Aborts the domain's current job. A migration then fails and the domain
+    /// keeps running here.
+    pub async fn abort_job(&self, uuid: &str) -> Result<()> {
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        c.domain_abort_job(&DomainAbortJobArgs { dom }).await?;
         Ok(())
     }
 

@@ -43,6 +43,8 @@ fn facts_row(f: &HostFacts) -> hm_db::hosts::Facts<'_> {
         ovn_chassis: &f.ovn_chassis,
         agent_version: &f.agent_version,
         physical_networks: &f.physical_networks,
+        cpu_json: &f.cpu_json,
+        migration_ready: f.migration_ready,
     }
 }
 
@@ -263,7 +265,9 @@ impl AgentControl for AgentControlService {
                     Some(agent_message::Msg::DomainState(d)) => {
                         observe_domains(&state, host, std::slice::from_ref(&d), false).await;
                     }
-                    Some(agent_message::Msg::Result(r)) => conn.complete(&r.request_id, r.error),
+                    Some(agent_message::Msg::Result(r)) => {
+                        conn.complete(&r.request_id, r.error, r.payload)
+                    }
                     Some(agent_message::Msg::Hello(_)) | None => {}
                 }
             }

@@ -18,6 +18,7 @@ fn def(uuid: &str) -> DomainDef {
         firmware: Firmware::Bios,
         disks: vec![],
         nics: vec![],
+        cpu: None,
     }
 }
 
