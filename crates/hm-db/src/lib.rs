@@ -19,6 +19,7 @@ pub mod oidc;
 pub mod pki;
 pub mod quotas;
 pub mod rbac;
+pub mod replicas;
 pub mod sessions;
 pub mod storage_pools;
 pub mod tasks;

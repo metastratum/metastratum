@@ -35,6 +35,8 @@ pub struct HostView {
     connected: bool,
     /// Accepts live migrations (libvirt TLS is set up).
     migration_ready: bool,
+    /// The controller replica holding the agent's session.
+    controller: Option<String>,
     cpu_count: i32,
     memory_mib: i64,
     cpu_model: String,
@@ -67,6 +69,7 @@ async fn list_hosts(State(state): State<AppState>, p: Principal) -> ApiResult<Js
             cluster_id: h.cluster_id,
             connected: h.is_live(),
             migration_ready: h.migration_ready,
+            controller: h.connected_to.clone(),
             vm_count: vms.len(),
             allocated_memory_mib: vms.iter().map(|v| v.spec.0.memory_mib).sum(),
             id: h.id,

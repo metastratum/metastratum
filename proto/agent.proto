@@ -11,6 +11,21 @@ service Enrollment {
   rpc Enroll(EnrollRequest) returns (EnrollResponse);
 }
 
+// Between controller replicas: an agent holds its session with one replica;
+// the others forward commands and console tunnels for its host to it. Only
+// replica certificates are accepted.
+service ReplicaControl {
+  rpc Call(ForwardedCommand) returns (CommandResult);
+  // Metadata names the console: host-id, vm-id, kind ("vnc" or "serial").
+  rpc Console(stream TunnelChunk) returns (stream TunnelChunk);
+}
+
+message ForwardedCommand {
+  string host_id = 1;
+  Command command = 2;
+  uint64 timeout_ms = 3;
+}
+
 service AgentControl {
   // Long-lived control stream. The first agent message must be `hello`.
   rpc Session(stream AgentMessage) returns (stream ControllerMessage);

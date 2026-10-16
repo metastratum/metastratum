@@ -83,7 +83,13 @@ impl Sealer {
         let nonce: [u8; 24] = nonce.try_into().map_err(|_| SealError::Open)?;
         let pt = self
             .cipher
-            .decrypt(&XNonce::from(nonce), Payload { msg: ct, aad: context.as_bytes() })
+            .decrypt(
+                &XNonce::from(nonce),
+                Payload {
+                    msg: ct,
+                    aad: context.as_bytes(),
+                },
+            )
             .map_err(|_| SealError::Open)?;
         String::from_utf8(pt).map_err(|_| SealError::Open)
     }
@@ -102,9 +108,15 @@ mod tests {
         assert_eq!(s.open("pool:1:key", &sealed).unwrap(), "AQBsecret==");
         // Same plaintext, different ciphertext.
         assert_ne!(s.seal("pool:1:key", "AQBsecret=="), sealed);
-        assert!(s.open("pool:2:key", &sealed).is_err(), "moved to another row");
+        assert!(
+            s.open("pool:2:key", &sealed).is_err(),
+            "moved to another row"
+        );
         let other = Sealer::from_base64(&Sealer::generate_key()).unwrap();
-        assert!(other.open("pool:1:key", &sealed).is_err(), "another master key");
+        assert!(
+            other.open("pool:1:key", &sealed).is_err(),
+            "another master key"
+        );
         // Plaintext from before sealing passes through.
         assert_eq!(s.open("x", "plain").unwrap(), "plain");
     }

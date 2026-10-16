@@ -1366,6 +1366,8 @@ export interface components {
             cluster_name?: string | null;
             /** @description Whether the host's agent has a live session (and heartbeated recently). */
             connected: boolean;
+            /** @description The controller replica holding the agent's session. */
+            controller?: string | null;
             /** Format: int32 */
             cpu_count: number;
             cpu_model: string;

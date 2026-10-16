@@ -29,9 +29,10 @@ const VERSION: &str = concat!(
 #[derive(Parser)]
 #[command(version = VERSION, about)]
 struct Args {
-    /// Controller agent endpoint.
-    #[arg(long, env = "HM_CONTROLLER")]
-    controller: String,
+    /// Controller agent endpoints; with several (comma-separated), the agent
+    /// moves to the next when one is unreachable.
+    #[arg(long, env = "HM_CONTROLLER", value_delimiter = ',', required = true)]
+    controller: Vec<String>,
     /// Join token; only needed for the first start.
     #[arg(long, env = "HM_JOIN_TOKEN")]
     join_token: Option<String>,
@@ -73,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
     let lv = Libvirt::new(socket, &args.libvirt_uri);
     let address = match args.address {
         Some(a) => a,
-        None => facts::detect_address(&args.controller)?,
+        None => facts::detect_address(&args.controller[0])?,
     };
     let facts = facts::gather(&lv, address).await?;
     if !facts.kvm {
@@ -89,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
                 );
             };
             let id =
-                enroll::enroll(&args.controller, token, facts.clone(), &args.state_dir).await?;
+                enroll::enroll(&args.controller[0], token, facts.clone(), &args.state_dir).await?;
             tracing::info!(host = %id.host_id, "enrolled");
             id
         }
@@ -106,7 +107,8 @@ async fn main() -> anyhow::Result<()> {
 
     let pools = Pools::new(&args.data_dir);
     let agent = Arc::new(session::Agent {
-        controller: args.controller,
+        controllers: args.controller,
+        current: std::sync::atomic::AtomicUsize::new(0),
         identity,
         facts,
         lv: lv.clone(),

@@ -8,8 +8,8 @@ mod engine;
 mod error;
 mod events;
 mod migration;
-mod secrets;
 mod net;
+mod secrets;
 mod state;
 
 use std::net::SocketAddr;
@@ -24,6 +24,7 @@ use axum::routing::get;
 use clap::{Parser, Subcommand};
 use hm_proto::agent_control_server::AgentControlServer;
 use hm_proto::enrollment_server::EnrollmentServer;
+use hm_proto::replica_control_server::ReplicaControlServer;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
@@ -81,6 +82,11 @@ struct ServeArgs {
     /// Address for the agent endpoint (gRPC over mutual TLS).
     #[arg(long, env = "HM_AGENT_LISTEN", default_value = "0.0.0.0:8443")]
     agent_listen: SocketAddr,
+    /// Address other controller replicas reach this one's agent endpoint on,
+    /// to forward commands for agents connected here. Defaults to the agent
+    /// listen address, or the first agent name with its port.
+    #[arg(long, env = "HM_PEER_ADDRESS")]
+    peer_address: Option<String>,
     /// Extra DNS names / IPs for the agent endpoint certificate.
     #[arg(long, env = "HM_AGENT_NAMES", value_delimiter = ',')]
     agent_names: Vec<String>,
@@ -119,11 +125,9 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     // Before anything reads a secret (every remaining command uses the CA).
-    secrets::init(
-        args.master_key_file
-            .as_deref()
-            .context("--master-key-file or HM_MASTER_KEY_FILE is required (see `hm-controller gen-master-key`)")?,
-    )?;
+    secrets::init(args.master_key_file.as_deref().context(
+        "--master-key-file or HM_MASTER_KEY_FILE is required (see `hm-controller gen-master-key`)",
+    )?)?;
 
     let url = args
         .database_url
@@ -203,7 +207,9 @@ async fn bootstrap(db: hm_db::sqlx::PgPool, user: &str, password: &str) -> anyho
 }
 
 async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
-    secrets::seal_existing(&db).await.context("sealing stored secrets")?;
+    secrets::seal_existing(&db)
+        .await
+        .context("sealing stored secrets")?;
     let ca = ca::load_or_create(&db).await?;
     let (cert_chain, key) = ca::server_identity(&ca, &args.agent_names)?;
     let ca_pem = ca.cert_pem().to_owned();
@@ -224,6 +230,45 @@ async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
     });
     tracing::info!(%replica, fingerprint = %state.ca.fingerprint(), "controller starting");
 
+    // Other replicas forward commands for agents connected here, and this
+    // one forwards to them, authenticated by replica certificates.
+    let peer_address = match &args.peer_address {
+        Some(a) => a.clone(),
+        None if !args.agent_listen.ip().is_unspecified() => args.agent_listen.to_string(),
+        None => format!(
+            "{}:{}",
+            args.agent_names.first().context(
+                "--peer-address is needed when the agent endpoint listens on all addresses"
+            )?,
+            args.agent_listen.port()
+        ),
+    };
+    let (replica_cert, replica_key) = state.ca.issue_client(
+        &format!("{}{replica}", agents::peers::REPLICA_CN_PREFIX),
+        Duration::from_secs(365 * 86400),
+    )?;
+    let peer_tls = tonic::transport::ClientTlsConfig::new()
+        .ca_certificate(Certificate::from_pem(state.ca.cert_pem()))
+        .identity(Identity::from_pem(replica_cert, replica_key))
+        .domain_name(ca::SERVER_NAME);
+    state.agents.set_peers(agents::peers::Peers::new(
+        db.clone(),
+        replica.clone(),
+        peer_tls,
+    ));
+    hm_db::replicas::heartbeat(&db, &replica, &peer_address).await?;
+    tokio::spawn({
+        let (db, replica) = (db.clone(), replica.clone());
+        async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                if let Err(e) = hm_db::replicas::heartbeat(&db, &replica, &peer_address).await {
+                    tracing::warn!(error = %e, "replica heartbeat");
+                }
+            }
+        }
+    });
+
     tokio::spawn(engine::run(state.clone()));
     tokio::spawn(housekeeping(state.clone()));
     tokio::spawn(state.events.clone().listen(db.clone()));
@@ -241,6 +286,9 @@ async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
         .http2_keepalive_interval(Some(Duration::from_secs(15)))
         .add_service(EnrollmentServer::new(EnrollmentService(state.clone())))
         .add_service(AgentControlServer::new(AgentControlService(state.clone())))
+        .add_service(ReplicaControlServer::new(agents::ReplicaControlService(
+            state.clone(),
+        )))
         .serve_with_shutdown(args.agent_listen, shutdown());
     tracing::info!(addr = %args.agent_listen, "agent endpoint listening");
 
@@ -270,6 +318,9 @@ async fn housekeeping(state: AppState) {
         }
         if let Err(e) = hm_db::oidc::purge_expired(&state.db).await {
             tracing::warn!(error = %e, "purging OIDC logins");
+        }
+        if let Err(e) = hm_db::replicas::purge_stale(&state.db).await {
+            tracing::warn!(error = %e, "purging gone replicas");
         }
         tokio::time::sleep(Duration::from_secs(600)).await;
     }

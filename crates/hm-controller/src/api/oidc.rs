@@ -203,8 +203,11 @@ async fn start(State(state): State<AppState>, Query(q): Query<StartQuery>) -> Ap
         meta,
         ClientId::new(provider.client_id.clone()),
         Some(ClientSecret::new(
-            crate::secrets::open(&crate::secrets::idp_secret(provider.tenant_id), &provider.client_secret)
-                .map_err(ApiError::internal)?,
+            crate::secrets::open(
+                &crate::secrets::idp_secret(provider.tenant_id),
+                &provider.client_secret,
+            )
+            .map_err(ApiError::internal)?,
         )),
     )
     .set_redirect_uri(RedirectUrl::new(redirect_uri(&state)).map_err(ApiError::internal)?);
@@ -321,8 +324,11 @@ async fn finish(
         meta,
         ClientId::new(provider.client_id.clone()),
         Some(ClientSecret::new(
-            crate::secrets::open(&crate::secrets::idp_secret(provider.tenant_id), &provider.client_secret)
-                .map_err(|e| e.to_string())?,
+            crate::secrets::open(
+                &crate::secrets::idp_secret(provider.tenant_id),
+                &provider.client_secret,
+            )
+            .map_err(|e| e.to_string())?,
         )),
     )
     .set_redirect_uri(RedirectUrl::new(redirect_uri(state)).map_err(|e| e.to_string())?);

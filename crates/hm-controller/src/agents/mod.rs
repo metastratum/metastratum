@@ -3,10 +3,10 @@
 //! Each agent holds one control session with one controller replica. The
 //! registry maps hosts to their session on this replica. Commands carry a
 //! request ID; the agent answers with a `CommandResult` that completes the
-//! waiting caller.
-//!
-//! TODO(M5): route commands for hosts connected to another replica.
+//! waiting caller. Commands and consoles for hosts whose session is on
+//! another replica are forwarded there (see [`peers`]).
 
+pub mod peers;
 mod service;
 
 use std::collections::HashMap;
@@ -21,7 +21,7 @@ use hm_proto::{
 use tokio::sync::{mpsc, oneshot};
 use tonic::Status;
 
-pub use service::{AgentControlService, EnrollmentService};
+pub use service::{AgentControlService, EnrollmentService, ReplicaControlService};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
@@ -73,9 +73,19 @@ pub struct Agents {
     conns: Arc<Mutex<HashMap<HostId, Arc<AgentConn>>>>,
     tunnels: Arc<Mutex<HashMap<String, PendingTunnel>>>,
     next_session: Arc<AtomicU64>,
+    peers: Arc<std::sync::OnceLock<peers::Peers>>,
 }
 
 impl Agents {
+    /// Lets commands for hosts connected elsewhere be forwarded.
+    pub fn set_peers(&self, p: peers::Peers) {
+        let _ = self.peers.set(p);
+    }
+
+    fn is_local(&self, host: HostId) -> bool {
+        self.conns.lock().unwrap().contains_key(&host)
+    }
+
     /// Registers a new session for `host`, replacing any older one.
     fn register(&self, host: HostId, tx: Outbound) -> Arc<AgentConn> {
         let conn = Arc::new(AgentConn {
@@ -121,8 +131,22 @@ impl Agents {
             .map_err(|e| AgentError::Failed(format!("unexpected answer: {e}")))
     }
 
-    /// Sends a command and waits for its result's payload.
+    /// Sends a command, here or via the replica holding the host's session,
+    /// and waits for its result's payload.
     async fn send(
+        &self,
+        host: HostId,
+        cmd: command::Cmd,
+        timeout: Duration,
+    ) -> Result<String, AgentError> {
+        match self.peers.get() {
+            Some(p) if !self.is_local(host) => p.forward(host, cmd, timeout).await,
+            _ => self.send_local(host, cmd, timeout).await,
+        }
+    }
+
+    /// Sends a command to an agent whose session is on this replica.
+    pub async fn send_local(
         &self,
         host: HostId,
         cmd: command::Cmd,
@@ -163,9 +187,23 @@ impl Agents {
         }
     }
 
-    /// Asks the agent on `host` to open a console tunnel for `vm` and waits
-    /// for it to dial back.
+    /// Opens a console tunnel to `vm` on `host`, here or via the replica
+    /// holding the host's session.
     pub async fn open_console(
+        &self,
+        host: HostId,
+        vm: VmId,
+        kind: ConsoleKind,
+    ) -> Result<Tunnel, AgentError> {
+        match self.peers.get() {
+            Some(p) if !self.is_local(host) => p.console(host, vm, kind).await,
+            _ => self.open_console_local(host, vm, kind).await,
+        }
+    }
+
+    /// Asks the agent on `host` (connected here) to open a console tunnel for
+    /// `vm` and waits for it to dial back.
+    pub async fn open_console_local(
         &self,
         host: HostId,
         vm: VmId,
@@ -185,7 +223,7 @@ impl Agents {
         });
         let timeout = Duration::from_secs(15);
         let result = async {
-            self.call(host, open, timeout).await?;
+            self.send_local(host, open, timeout).await?;
             tokio::time::timeout(timeout, wait)
                 .await
                 .map_err(|_| AgentError::Timeout(timeout))?

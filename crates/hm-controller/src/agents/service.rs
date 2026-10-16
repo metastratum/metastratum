@@ -306,3 +306,95 @@ impl AgentControl for AgentControlService {
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 }
+
+/// Serves other replicas: commands and consoles for agents connected here.
+pub struct ReplicaControlService(pub AppState);
+
+impl ReplicaControlService {
+    fn authenticate<T>(&self, req: &Request<T>) -> Result<(), Status> {
+        let leaf = req
+            .peer_certs()
+            .and_then(|c| c.first().cloned())
+            .ok_or_else(|| Status::unauthenticated("client certificate required"))?;
+        match hm_pki::common_name(&leaf) {
+            Ok(cn) if cn.starts_with(super::peers::REPLICA_CN_PREFIX) => Ok(()),
+            _ => Err(Status::permission_denied("not a controller replica")),
+        }
+    }
+}
+
+fn agent_status(e: super::AgentError) -> Status {
+    match e {
+        super::AgentError::NotConnected => Status::unavailable(super::peers::NOT_CONNECTED),
+        super::AgentError::Timeout(_) => Status::deadline_exceeded(e.to_string()),
+        e => Status::unavailable(e.to_string()),
+    }
+}
+
+#[tonic::async_trait]
+impl hm_proto::replica_control_server::ReplicaControl for ReplicaControlService {
+    type ConsoleStream = BoxStream<TunnelChunk>;
+
+    async fn call(
+        &self,
+        req: Request<hm_proto::ForwardedCommand>,
+    ) -> Result<Response<hm_proto::CommandResult>, Status> {
+        self.authenticate(&req)?;
+        let req = req.into_inner();
+        let host: HostId = req
+            .host_id
+            .parse()
+            .map_err(|_| Status::invalid_argument("bad host ID"))?;
+        let cmd = req
+            .command
+            .and_then(|c| c.cmd)
+            .ok_or_else(|| Status::invalid_argument("no command"))?;
+        // Only sessions held here: a forwarded command is never forwarded again.
+        let timeout = Duration::from_millis(req.timeout_ms.clamp(1_000, 6 * 3_600_000));
+        let (error, payload) = match self.0.agents.send_local(host, cmd, timeout).await {
+            Ok(p) => (String::new(), p),
+            Err(super::AgentError::Failed(e)) => (e, String::new()),
+            Err(e) => return Err(agent_status(e)),
+        };
+        Ok(Response::new(hm_proto::CommandResult {
+            request_id: String::new(),
+            error,
+            payload,
+        }))
+    }
+
+    async fn console(
+        &self,
+        req: Request<Streaming<TunnelChunk>>,
+    ) -> Result<Response<Self::ConsoleStream>, Status> {
+        self.authenticate(&req)?;
+        let md = req.metadata();
+        let get = |k: &str| md.get(k).and_then(|v| v.to_str().ok()).map(str::to_owned);
+        let host: HostId = get("host-id")
+            .and_then(|h| h.parse().ok())
+            .ok_or_else(|| Status::invalid_argument("host-id"))?;
+        let vm: VmId = get("vm-id")
+            .and_then(|v| v.parse().ok())
+            .ok_or_else(|| Status::invalid_argument("vm-id"))?;
+        let kind = match get("kind").as_deref() {
+            Some("serial") => hm_proto::ConsoleKind::Serial,
+            _ => hm_proto::ConsoleKind::Vnc,
+        };
+        let tunnel = self
+            .0
+            .agents
+            .open_console_local(host, vm, kind)
+            .await
+            .map_err(agent_status)?;
+        let mut inbound = req.into_inner();
+        let to_agent = tunnel.to_agent;
+        tokio::spawn(async move {
+            while let Ok(Some(chunk)) = inbound.message().await {
+                if to_agent.send(Ok(chunk)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(Response::new(Box::pin(tunnel.from_agent)))
+    }
+}

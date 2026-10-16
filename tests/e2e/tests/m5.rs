@@ -82,3 +82,71 @@ async fn tenant_images_are_not_fetched_from_internal_addresses() -> anyhow::Resu
     assert_eq!(st, 204, "{body}");
     Ok(())
 }
+
+/// With two controller replicas (`HM_E2E_URL2`), each serves every host:
+/// consoles and VM operations work through either, whichever holds the
+/// host's agent session.
+#[tokio::test]
+async fn every_replica_reaches_every_host() -> anyhow::Result<()> {
+    let Some(a) = hm_e2e::connect().await? else {
+        return Ok(());
+    };
+    let Ok(url2) = std::env::var("HM_E2E_URL2") else {
+        eprintln!("HM_E2E_URL2 not set; skipping");
+        return Ok(());
+    };
+    let password = std::env::var("HM_E2E_PASSWORD")?;
+    let b = hm_e2e::Api::login(&url2, "admin", &password, None).await?;
+    // Both see the same sessions.
+    let hosts_a = a.get("/hosts").await?;
+    let hosts_b = b.get("/hosts").await?;
+    for h in hosts_a.as_array().unwrap() {
+        let other = hosts_b
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == h["id"])
+            .unwrap();
+        assert_eq!(h["controller"], other["controller"]);
+    }
+    let image = a.image().await?;
+    let name = format!(
+        "e2e-{:x}-ha",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs()
+    );
+    let vm = a
+        .post(
+            "/vms",
+            json!({"name": name, "vcpus": 1, "memory_mib": 512, "disk_gib": 3, "image_id": image,
+                   "migratable": false}),
+        )
+        .await?;
+    let id = vm["id"].as_str().unwrap().to_owned();
+    let result = async {
+        a.wait_vm(&id, Duration::from_secs(120), |v| {
+            v["status"] == "ready" && v["power"] == "running"
+        })
+        .await?;
+        for api in [&a, &b] {
+            let mut c = api.console(&id, "vnc").await?;
+            c.expect("RFB 003.", Duration::from_secs(10)).await?;
+        }
+        // Operations through the other replica.
+        let t = b
+            .post(&format!("/vms/{id}/stop?force=true"), json!({}))
+            .await?;
+        b.wait_task(t["task_id"].as_str().unwrap(), Duration::from_secs(60))
+            .await?;
+        anyhow::Ok(())
+    }
+    .await;
+    let (_, t) = a
+        .try_send(Method::DELETE, &format!("/vms/{id}"), None)
+        .await?;
+    if let Some(t) = t["task_id"].as_str() {
+        a.wait_task(t, Duration::from_secs(120)).await?;
+    }
+    result
+}

@@ -25,7 +25,10 @@ const HEARTBEAT: Duration = Duration::from_secs(5);
 const FULL_SYNC_EVERY: u32 = 6;
 
 pub struct Agent {
-    pub controller: String,
+    /// Controller replicas to try, in turn.
+    pub controllers: Vec<String>,
+    /// The one currently in use.
+    pub current: std::sync::atomic::AtomicUsize,
     pub identity: HostIdentity,
     pub facts: HostFacts,
     pub lv: Libvirt,
@@ -49,6 +52,19 @@ fn power(p: Power) -> PowerState {
 }
 
 impl Agent {
+    fn controller(&self) -> String {
+        let i = self.current.load(std::sync::atomic::Ordering::Relaxed);
+        self.controllers[i % self.controllers.len()].clone()
+    }
+
+    /// After a failed session: try the next replica.
+    fn next_controller(&self) {
+        if self.controllers.len() > 1 {
+            self.current
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     async fn domains(&self) -> Result<Vec<DomainState>> {
         Ok(self
             .lv
@@ -65,14 +81,14 @@ impl Agent {
     }
 
     async fn channel(&self) -> Result<Channel> {
-        Endpoint::from_shared(self.controller.clone())?
+        Endpoint::from_shared(self.controller())?
             .tls_config(self.identity.tls())?
             .connect_timeout(Duration::from_secs(10))
             .http2_keep_alive_interval(Duration::from_secs(15))
             .keep_alive_while_idle(true)
             .connect()
             .await
-            .with_context(|| format!("connecting to {}", self.controller))
+            .with_context(|| format!("connecting to {}", self.controller()))
     }
 
     /// Runs sessions forever, reconnecting with capped exponential backoff.
@@ -82,8 +98,11 @@ impl Agent {
             let started = tokio::time::Instant::now();
             match self.clone().session().await {
                 Ok(()) => tracing::info!("session ended"),
-                Err(e) => tracing::warn!(error = %format!("{e:#}"), "session failed"),
+                Err(e) => {
+                    tracing::warn!(error = %format!("{e:#}"), controller = %self.controller(), "session failed")
+                }
             }
+            self.next_controller();
             if started.elapsed() > Duration::from_secs(60) {
                 backoff = Duration::from_secs(1);
             }
@@ -108,7 +127,7 @@ impl Agent {
         })
         .await?;
         let mut inbound = client.session(ReceiverStream::new(rx)).await?.into_inner();
-        tracing::info!(host = %self.identity.host_id, controller = %self.controller, "session established");
+        tracing::info!(host = %self.identity.host_id, controller = %self.controller(), "session established");
 
         let heartbeat = {
             let (this, tx) = (self.clone(), tx.clone());

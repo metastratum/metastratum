@@ -131,6 +131,20 @@ impl Ca {
         )?)
     }
 
+    /// Issues a client certificate (and a fresh key) with this common name.
+    /// Returns `(cert_pem, key_pem)`.
+    pub fn issue_client(&self, common_name: &str, lifetime: Duration) -> Result<(String, String)> {
+        let key = KeyPair::generate()?;
+        let mut params = CertificateParams::default();
+        params.distinguished_name = dn(common_name);
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+        params.serial_number = Some(serial());
+        validity(&mut params, lifetime);
+        let cert = params.signed_by(&key, &self.issuer()?)?;
+        Ok((cert.pem(), key.serialize_pem()))
+    }
+
     /// Issues a server certificate (and a fresh key) for the given DNS names
     /// and IP addresses. Returns `(cert_pem, key_pem)`.
     pub fn issue_server(&self, sans: &[String], lifetime: Duration) -> Result<(String, String)> {

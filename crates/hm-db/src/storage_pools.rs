@@ -137,7 +137,11 @@ pub async fn delete(db: &mut PgConnection, id: StoragePoolId) -> Result<()> {
 }
 
 /// Replaces a pool's configuration only (e.g. to seal its secrets).
-pub async fn set_config(db: impl PgExecutor<'_>, id: StoragePoolId, config: &serde_json::Value) -> Result<()> {
+pub async fn set_config(
+    db: impl PgExecutor<'_>,
+    id: StoragePoolId,
+    config: &serde_json::Value,
+) -> Result<()> {
     sqlx::query("UPDATE storage_pools SET config = $2 WHERE id = $1")
         .bind(id)
         .bind(sqlx::types::Json(config))
