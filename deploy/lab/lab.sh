@@ -54,7 +54,12 @@ preflight() {
   done
   local nested
   nested=$(cat /sys/module/kvm_intel/parameters/nested 2>/dev/null || cat /sys/module/kvm_amd/parameters/nested 2>/dev/null || echo N)
-  [[ $nested == 1 || $nested == Y ]] || die "nested virtualisation is disabled"
+  [[ $nested == 1 || $nested == Y ]] || die "nested virtualisation is disabled (see README: Lab > One-time host setup)"
+  virsh domcapabilities --virttype kvm 2>/dev/null | grep -q "<value>efi</value>" ||
+    die "libvirt has no UEFI firmware for KVM guests; install edk2-ovmf (Debian/Ubuntu: ovmf)"
+  if systemctl is-active -q docker 2>/dev/null; then
+    printf '\e[1;33mwarning:\e[0m Docker is running; unless libvirt bridges are allowed in DOCKER-USER, VMs will have no internet (see README: Lab > One-time host setup, step 5)\n' >&2
+  fi
 }
 
 ensure_network() { # ensure_network <name> <prefix> [dhcp-hosts-xml]
