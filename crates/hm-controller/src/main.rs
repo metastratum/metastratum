@@ -6,6 +6,7 @@ mod authz;
 mod ca;
 mod engine;
 mod error;
+mod events;
 mod state;
 
 use std::net::SocketAddr;
@@ -197,11 +198,14 @@ async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
             .public_url
             .clone()
             .unwrap_or_else(|| format!("http://{}", args.listen)),
+        events: events::Hub::default(),
     });
     tracing::info!(%replica, fingerprint = %state.ca.fingerprint(), "controller starting");
 
     tokio::spawn(engine::run(state.clone()));
     tokio::spawn(housekeeping(state.clone()));
+    tokio::spawn(state.events.clone().listen(db.clone()));
+    tokio::spawn(state.events.clone().watch_hosts(db.clone()));
 
     let tls = ServerTlsConfig::new()
         .identity(Identity::from_pem(cert_chain, key))

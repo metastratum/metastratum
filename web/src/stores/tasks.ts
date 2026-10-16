@@ -1,45 +1,47 @@
 import { defineStore } from 'pinia'
 import { api, type Task } from '../api/client'
+import { onLive, useLive } from './live'
 
 const ACTIVE = new Set(['pending', 'running'])
 
+let unlisten = () => {}
+let pending = 0
+
 /**
- * Recent tasks for the task tray. Polls quickly while anything is in flight
- * and slowly otherwise; `poke()` after starting work refreshes immediately.
+ * Recent tasks for the task tray, refreshed as tasks change. Without live
+ * updates it polls instead. `poke()` after starting work refreshes at once.
  */
 export const useTasks = defineStore('tasks', {
-  state: () => ({ tasks: [] as Task[], timer: 0 as number, listeners: new Set<() => void>() }),
+  state: () => ({ tasks: [] as Task[], timer: 0 as number }),
   getters: {
     active: (s) => s.tasks.filter((t) => ACTIVE.has(t.state)),
   },
   actions: {
     async refresh() {
-      const before = new Map(this.tasks.map((t) => [t.id, t.state]))
       const { data } = await api.GET('/api/v1/tasks', { params: { query: { limit: 20 } } })
-      if (!data) return
-      this.tasks = data
-      // Tell views when something they show may have changed.
-      if (data.some((t) => before.get(t.id) !== t.state)) this.listeners.forEach((fn) => fn())
+      if (data) this.tasks = data
     },
     start() {
       if (this.timer) return
-      const tick = async () => {
-        await this.refresh().catch(() => {})
-        this.timer = window.setTimeout(tick, this.active.length ? 1500 : 8000)
-      }
-      void tick()
+      const live = useLive()
+      void this.refresh().catch(() => {})
+      unlisten = onLive(['task'], () => {
+        // Progress comes in bursts; one refresh per burst is enough.
+        clearTimeout(pending)
+        pending = window.setTimeout(() => void this.refresh().catch(() => {}), 150)
+      })
+      this.timer = window.setInterval(() => {
+        if (!live.connected) void this.refresh().catch(() => {})
+      }, 10_000)
     },
     stop() {
-      clearTimeout(this.timer)
+      clearInterval(this.timer)
+      clearTimeout(pending)
+      unlisten()
       this.timer = 0
     },
     poke() {
-      this.stop()
-      this.start()
-    },
-    onChange(fn: () => void) {
-      this.listeners.add(fn)
-      return () => this.listeners.delete(fn)
+      void this.refresh().catch(() => {})
     },
   },
 })

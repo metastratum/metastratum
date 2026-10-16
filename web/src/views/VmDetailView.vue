@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, ApiError, ok, type Task, type Vm } from '../api/client'
 import IdChip from '../components/IdChip.vue'
 import StatusLed from '../components/StatusLed.vue'
 import { ago, gib, mib, powerNote, vmState } from '../state'
+import { useLiveRefresh } from '../stores/live'
 import { taskLabel, useTasks } from '../stores/tasks'
 
 // Console clients (noVNC, xterm.js) are large; load them when first opened.
@@ -44,17 +45,9 @@ watch(
   },
 )
 
-let timer = 0
-let unlisten = () => {}
-onMounted(() => {
-  void load()
-  timer = window.setInterval(load, 3000)
-  unlisten = tasks.onChange(load)
-})
-onUnmounted(() => {
-  clearInterval(timer)
-  unlisten()
-})
+onMounted(load)
+// Task notices don't say which VM they are about; their history is cheap.
+useLiveRefresh(['vm', 'task', 'host'], load, (n) => n.kind !== 'vm' || n.id === props.id)
 
 type Action = 'start' | 'stop' | 'force' | 'reboot'
 async function act(action: Action) {

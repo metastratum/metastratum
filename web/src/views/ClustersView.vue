@@ -4,6 +4,7 @@ import { api, errorText, ok, type Cluster, type Host } from '../api/client'
 import InfraTabs from '../components/InfraTabs.vue'
 import ModalDialog from '../components/ModalDialog.vue'
 import { mib } from '../state'
+import { useLiveRefresh } from '../stores/live'
 
 const clusters = ref<Cluster[] | null>(null)
 const hosts = ref<Host[]>([])
@@ -13,6 +14,7 @@ async function load() {
   ;[clusters.value, hosts.value] = await Promise.all([ok(api.GET('/api/v1/clusters')), ok(api.GET('/api/v1/hosts'))])
 }
 onMounted(load)
+useLiveRefresh(['cluster', 'host'], load)
 
 const members = computed(() => {
   const m = new Map<string, Host[]>()

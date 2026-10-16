@@ -187,7 +187,8 @@ network between hosts, power-cycles and deletes them; checks tenant isolation,
 inherited roles, quotas, the audit log and API tokens; and boots VMs from the
 lab's NFS export and, with `HM_E2E_RBD_KEY` set to the key `lab.sh ceph`
 prints, from Ceph RBD. With `HM_E2E_DEX=http://127.0.0.1:5556/dex` it also
-signs in through Dex and checks how groups become roles. `HM_E2E_DEBUG=1`
+signs in through Dex and checks how groups become roles. It also checks that
+live updates (`/api/v1/events`) reach only those allowed to see the change. `HM_E2E_DEBUG=1`
 prints console traffic. The browser suite does the VM lifecycle and tenant
 management through the UI with Playwright, using your installed Chrome.
 

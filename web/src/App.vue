@@ -3,6 +3,7 @@ import { watch } from 'vue'
 import { useRouter } from 'vue-router'
 import TaskTray from './components/TaskTray.vue'
 import TenantPicker from './components/TenantPicker.vue'
+import { onLive, useLive } from './stores/live'
 import { useScope } from './stores/scope'
 import { useSession } from './stores/session'
 import { useTasks } from './stores/tasks'
@@ -10,15 +11,21 @@ import { useTasks } from './stores/tasks'
 const session = useSession()
 const scope = useScope()
 const tasks = useTasks()
+const live = useLive()
 const router = useRouter()
+
+// The tenant tree changes when tenants are added, renamed or removed.
+onLive(['tenant'], () => session.me && void scope.load())
 
 watch(
   () => session.me,
   (me) => {
     if (me) {
+      live.start()
       tasks.start()
       void scope.load()
     } else {
+      live.stop()
       tasks.stop()
     }
   },

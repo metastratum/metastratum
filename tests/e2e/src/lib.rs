@@ -134,6 +134,20 @@ impl Api {
         Ok((status, value))
     }
 
+    /// Opens the live event stream (`/events`).
+    pub async fn events(&self) -> Result<Events> {
+        let resp = self
+            .http
+            .get(format!("{}/api/v1/events", self.base))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(Events {
+            body: Box::pin(resp.bytes_stream()),
+            buf: String::new(),
+        })
+    }
+
     pub async fn get(&self, path: &str) -> Result<Value> {
         Ok(self.send(reqwest::Method::GET, path, None).await?.1)
     }
@@ -362,6 +376,61 @@ fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
         .windows(needle.len())
         .position(|w| w == needle)
         .map(|i| from + i + needle.len())
+}
+
+/// A Server-Sent Events stream.
+pub struct Events {
+    body: std::pin::Pin<Box<dyn futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>>,
+    buf: String,
+}
+
+impl Events {
+    /// The next event as (name, data), or `None` if none comes in time.
+    pub async fn next(&mut self, within: Duration) -> Result<Option<(String, Value)>> {
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            if let Some(end) = self.buf.find("\n\n") {
+                let block: String = self.buf.drain(..end + 2).collect();
+                let mut name = String::from("message");
+                let mut data = String::new();
+                for line in block.lines() {
+                    if let Some(v) = line.strip_prefix("event:") {
+                        name = v.trim().to_owned();
+                    } else if let Some(v) = line.strip_prefix("data:") {
+                        data.push_str(v.trim());
+                    }
+                }
+                // Comments (keep-alives) have neither.
+                if data.is_empty() {
+                    continue;
+                }
+                return Ok(Some((name, serde_json::from_str(&data)?)));
+            }
+            match tokio::time::timeout_at(deadline, self.body.next()).await {
+                Err(_) => return Ok(None),
+                Ok(None) => bail!("event stream ended"),
+                Ok(Some(chunk)) => self.buf.push_str(&String::from_utf8_lossy(&chunk?)),
+            }
+        }
+    }
+
+    /// Waits for an event about `id`, skipping others.
+    pub async fn wait_for(
+        &mut self,
+        kind: &str,
+        id: &str,
+        within: Duration,
+    ) -> Result<Option<Value>> {
+        let deadline = Instant::now() + within;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            match self.next(left).await? {
+                Some((k, data)) if k == kind && data["id"] == id => return Ok(Some(data)),
+                Some(_) => {}
+                None => break,
+            }
+        }
+        Ok(None)
+    }
 }
 
 #[cfg(test)]

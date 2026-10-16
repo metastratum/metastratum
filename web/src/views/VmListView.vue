@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, ok, type Vm } from '../api/client'
 import CreateVmDialog from '../components/CreateVmDialog.vue'
 import StatusLed from '../components/StatusLed.vue'
 import { ago, mib, vmState } from '../state'
+import { useLiveRefresh } from '../stores/live'
 import { useScope } from '../stores/scope'
 import { useTasks } from '../stores/tasks'
 
@@ -30,17 +31,9 @@ watch(
 // Name the tenant when the list spans sub-tenants.
 const mixed = computed(() => vms.value?.some((v) => v.tenant_id !== scope.current) ?? false)
 
-let timer = 0
-let unlisten = () => {}
-onMounted(() => {
-  void load()
-  timer = window.setInterval(load, 5000)
-  unlisten = tasks.onChange(load)
-})
-onUnmounted(() => {
-  clearInterval(timer)
-  unlisten()
-})
+onMounted(load)
+// A host going away changes how its VMs are shown.
+useLiveRefresh(['vm', 'host'], load)
 
 function created(vm: Vm) {
   creating.value = false

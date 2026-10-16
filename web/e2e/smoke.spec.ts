@@ -89,3 +89,27 @@ test('manage a sub-tenant: quotas, people, removal', async ({ page }) => {
   await page.getByRole('dialog').getByRole('button', { name: 'Delete tenant' }).click()
   await expect(tree.getByRole('button', { name })).toHaveCount(0)
 })
+
+test('pages update live when things change elsewhere', async ({ page }) => {
+  const id = Date.now().toString(36)
+  await signIn(page)
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Tenants' }).click()
+  const tree = page.getByRole('navigation', { name: 'Tenants' })
+  await expect(tree.getByRole('button').first()).toBeVisible()
+
+  // Change things through the API, as another user or script would.
+  const me = await (await page.request.get('/api/v1/auth/me')).json()
+  const res = await page.request.post('/api/v1/tenants', {
+    data: { parent_id: me.tenant_id, slug: `live-${id}`, name: `Live ${id}` },
+  })
+  expect(res.ok()).toBeTruthy()
+  const tenant = await res.json()
+  // No polling would pick this up within the timeout.
+  await expect(tree.getByRole('button', { name: `Live ${id}` })).toBeVisible({ timeout: 5_000 })
+
+  await page.request.patch(`/api/v1/tenants/${tenant.id}`, { data: { name: `Renamed ${id}` } })
+  await expect(tree.getByRole('button', { name: `Renamed ${id}` })).toBeVisible({ timeout: 5_000 })
+
+  await page.request.delete(`/api/v1/tenants/${tenant.id}`)
+  await expect(tree.getByRole('button', { name: `Renamed ${id}` })).toHaveCount(0, { timeout: 5_000 })
+})

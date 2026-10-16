@@ -4,6 +4,7 @@ mod audit;
 mod auth;
 mod clusters;
 mod console;
+mod events;
 mod hosts;
 mod images;
 mod oidc;
@@ -35,7 +36,7 @@ pub const SESSION_COOKIE: &str = "hm_session";
     info(title = "hypermon API", version = "1"),
     tags(
         (name = "auth"), (name = "tenants"), (name = "users"), (name = "vms"), (name = "images"),
-        (name = "hosts"), (name = "tasks"), (name = "audit"),
+        (name = "hosts"), (name = "tasks"), (name = "audit"), (name = "events"),
     )
 )]
 struct ApiDoc;
@@ -55,6 +56,7 @@ fn api() -> OpenApiRouter<AppState> {
         .merge(users::routes())
         .merge(tokens::routes())
         .merge(audit::routes())
+        .merge(events::routes())
 }
 
 /// The API router (mounted under `/api/v1`) and its OpenAPI document.
@@ -98,13 +100,18 @@ impl FromRequestParts<AppState> for Principal {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let secret = session_secret(&parts.headers).ok_or_else(ApiError::unauthorized)?;
-        let hash = hm_pki::hash_secret(&secret);
-        let user_id = if secret.starts_with(TOKEN_PREFIX) {
-            hm_db::rbac::resolve_token(&state.db, &hash).await?
-        } else {
-            hm_db::sessions::resolve(&state.db, &hash).await?
-        }
-        .ok_or_else(ApiError::unauthorized)?;
-        Principal::load(&state.db, user_id).await
+        principal_for_secret(state, &secret).await
     }
+}
+
+/// The principal a session ID or API token stands for, if still valid.
+async fn principal_for_secret(state: &AppState, secret: &str) -> Result<Principal, ApiError> {
+    let hash = hm_pki::hash_secret(secret);
+    let user_id = if secret.starts_with(TOKEN_PREFIX) {
+        hm_db::rbac::resolve_token(&state.db, &hash).await?
+    } else {
+        hm_db::sessions::resolve(&state.db, &hash).await?
+    }
+    .ok_or_else(ApiError::unauthorized)?;
+    Principal::load(&state.db, user_id).await
 }

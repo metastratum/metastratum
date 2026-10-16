@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { api, ApiError, errorText, ok, type Cluster, type Host, type Vm } from '../api/client'
 import HostFaceplate from '../components/HostFaceplate.vue'
 import InfraTabs from '../components/InfraTabs.vue'
 import ModalDialog from '../components/ModalDialog.vue'
+import { useLiveRefresh } from '../stores/live'
 
 const hosts = ref<Host[] | null>(null)
 const vms = ref<Vm[]>([])
@@ -51,12 +52,8 @@ async function saveHost() {
   }
 }
 
-let timer = 0
-onMounted(() => {
-  void load()
-  timer = window.setInterval(load, 5000)
-})
-onUnmounted(() => clearInterval(timer))
+onMounted(load)
+useLiveRefresh(['host', 'vm', 'cluster'], load)
 
 const byHost = computed(() => {
   const m = new Map<string, Vm[]>()

@@ -6,6 +6,7 @@ use hm_ovsdb::Northbound;
 use hm_pki::Ca;
 
 use crate::agents::Agents;
+use crate::events::Hub;
 
 #[derive(Clone)]
 pub struct AppState(Arc<Inner>);
@@ -22,6 +23,8 @@ pub struct Inner {
     pub secure_cookies: bool,
     /// Base URL users reach the controller at, for OIDC redirect URIs.
     pub public_url: String,
+    /// Change notifications for live updates.
+    pub events: Hub,
 }
 
 impl AppState {

@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+bytes = "1"
 futures.workspace = true
 reqwest = { workspace = true, features = ["json", "cookies"] }
 rustls.workspace = true

@@ -1,3 +1,4 @@
+import { ref } from 'vue'
 import type { Vm } from './api/client'
 
 export type Tone = 'on' | 'busy' | 'fault' | 'off' | 'unknown'
@@ -88,9 +89,13 @@ export function mib(n: number): string {
   return n >= 1024 ? `${Math.round((n / 1024) * 10) / 10} GiB` : `${n} MiB`
 }
 
+// Ticks so relative times shown on screen stay current.
+const clock = ref(Date.now())
+if (typeof window !== 'undefined') window.setInterval(() => (clock.value = Date.now()), 30_000)
+
 export function ago(iso: string | null | undefined): string {
   if (!iso) return '—'
-  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000)
+  const s = Math.max(0, (Math.max(clock.value, Date.now()) - new Date(iso).getTime()) / 1000)
   if (s < 60) return 'just now'
   if (s < 3600) return `${Math.floor(s / 60)} min ago`
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`

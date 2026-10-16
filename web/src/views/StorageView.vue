@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { api, errorText, ok, type Cluster, type Pool } from '../api/client'
 import InfraTabs from '../components/InfraTabs.vue'
 import ModalDialog from '../components/ModalDialog.vue'
+import { useLiveRefresh } from '../stores/live'
 
 const pools = ref<Pool[] | null>(null)
 const clusters = ref<Cluster[]>([])
@@ -15,6 +16,7 @@ async function load() {
   ])
 }
 onMounted(load)
+useLiveRefresh(['storage_pool', 'cluster'], load)
 
 const clusterName = (id: string) => clusters.value.find((c) => c.id === id)?.name ?? id.slice(0, 8)
 type Config = Record<string, unknown>

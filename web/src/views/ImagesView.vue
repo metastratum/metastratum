@@ -4,6 +4,7 @@ import { api, ApiError, ok, type Image } from '../api/client'
 import IdChip from '../components/IdChip.vue'
 import ModalDialog from '../components/ModalDialog.vue'
 import { ago } from '../state'
+import { useLiveRefresh } from '../stores/live'
 import { useScope } from '../stores/scope'
 
 const scope = useScope()
@@ -18,6 +19,7 @@ async function load() {
   images.value = await ok(api.GET('/api/v1/images', { params: { query: { tenant_id: scope.current } } }))
 }
 watch(() => scope.current, load, { immediate: true })
+useLiveRefresh(['image'], load)
 
 async function add() {
   error.value = ''
