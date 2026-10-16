@@ -17,6 +17,8 @@ const vpcs = ref<Vpc[]>([])
 const groups = ref<SecurityGroup[]>([])
 const networkId = ref<string | null>(null)
 const groupIds = ref<string[]>([])
+// null: decided by the cluster (migratable when it has more than one host).
+const migratable = ref<boolean | null>(null)
 const loaded = ref(false)
 const name = ref('')
 const imageId = ref('')
@@ -62,6 +64,7 @@ async function submit() {
           network_id: networkId.value,
           // Leave the choice to the server when the tenant has no groups yet.
           security_group_ids: groups.value.length ? groupIds.value : null,
+          migratable: migratable.value,
           name: name.value,
           image_id: imageId.value,
           vcpus: vcpus.value,
@@ -159,6 +162,21 @@ async function submit() {
           <input v-model.number="disk" type="number" min="1" max="16384" required />
         </label>
       </div>
+      <label class="field">
+        <span class="label">Live migration</span>
+        <select v-model="migratable">
+          <option :value="null">Automatic</option>
+          <option :value="true">Allowed</option>
+          <option :value="false">Off</option>
+        </select>
+        <span class="hint">
+          <template v-if="migratable === null">Allowed when the VM’s cluster has more than one host.</template>
+          <template v-else-if="migratable">
+            The VM can move between hosts while it runs; it gets a CPU model all hosts of the cluster share.
+          </template>
+          <template v-else>The VM stays on its host and gets the host’s full CPU and disk caching.</template>
+        </span>
+      </label>
       <label class="field">
         <span class="label">SSH public keys</span>
         <textarea v-model="sshKey" rows="3" placeholder="ssh-ed25519 AAAA… one per line" />

@@ -52,6 +52,7 @@ async fn host(pool: &PgPool) -> hosts::Host {
 async fn vm(pool: &PgPool, tenant: &tenants::Tenant, host: &hosts::Host, name: &str) -> vms::Vm {
     let spec = VmSpec {
         cpu: None,
+        migratable: true,
         vcpus: 1,
         memory_mib: 512,
         firmware: Default::default(),
@@ -358,6 +359,7 @@ async fn scheduling_snapshot_reports_allocations_and_liveness(pool: PgPool) {
         .unwrap();
     let spec = VmSpec {
         cpu: None,
+        migratable: true,
         vcpus: 3,
         memory_mib: 1024,
         firmware: Default::default(),

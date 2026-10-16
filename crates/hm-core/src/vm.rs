@@ -31,6 +31,15 @@ pub struct VmSpec {
     /// which get their host's CPU as is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu: Option<CpuSpec>,
+    /// Whether the VM may live-migrate. If not, it gets its host's CPU with
+    /// every feature, and disks use the host's page cache: faster, but tied
+    /// to the host. VMs from before this setting existed could migrate.
+    #[serde(default = "yes")]
+    pub migratable: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// A named CPU model with feature adjustments.

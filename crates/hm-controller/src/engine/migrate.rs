@@ -108,6 +108,8 @@ pub async fn evacuate(ctx: &TaskCtx) -> Result<()> {
         .filter(|v| v.status == "ready")
         .collect();
     let (running, stopped): (Vec<_>, Vec<_>) = vms.into_iter().partition(|v| v.power == "running");
+    // VMs bound to the host stay, like stopped ones; they keep running.
+    let (running, bound): (Vec<_>, Vec<_>) = running.into_iter().partition(|v| v.spec.0.migratable);
     let n = running.len().max(1) as f32;
     for (i, vm) in running.iter().enumerate() {
         let span = Span(i as f32 / n, (i + 1) as f32 / n);
@@ -139,9 +141,15 @@ pub async fn evacuate(ctx: &TaskCtx) -> Result<()> {
             failures.join("; ")
         );
     }
-    if !stopped.is_empty() {
-        let names: Vec<_> = stopped.iter().map(|v| v.name.as_str()).collect();
-        tracing::info!(%host, stopped = ?names, "stopped VMs stay on the evacuated host");
+    let staying: Vec<String> = bound
+        .iter()
+        .map(|v| format!("{} (not migratable)", v.name))
+        .chain(stopped.iter().map(|v| format!("{} (stopped)", v.name)))
+        .collect();
+    if !staying.is_empty() {
+        tracing::info!(%host, staying = ?staying, "VMs that stay on the evacuated host");
+        ctx.step(&format!("staying: {}", staying.join(", ")), 1.0)
+            .await;
     }
     Ok(())
 }

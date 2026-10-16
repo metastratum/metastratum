@@ -64,6 +64,8 @@ pub struct VmView {
     vcpus: u32,
     memory_mib: u64,
     firmware: Firmware,
+    /// Can live-migrate; otherwise it has its host's CPU and disk caching.
+    migratable: bool,
     disks: Vec<DiskSpec>,
     nics: Vec<NicView>,
     /// The live migration in progress, if any.
@@ -179,6 +181,7 @@ fn view(vm: Vm, ctx: &Context) -> VmView {
         vcpus: spec.vcpus,
         memory_mib: spec.memory_mib,
         firmware: spec.firmware,
+        migratable: spec.migratable,
         disks: spec.disks,
         nics: spec
             .nics
@@ -284,6 +287,11 @@ pub struct CreateVm {
     /// Security groups for the NIC (the tenant's own); its `default` group
     /// otherwise. An empty list blocks all traffic but DHCP.
     security_group_ids: Option<Vec<SecurityGroupId>>,
+    /// Whether the VM may live-migrate to other hosts of its cluster. If
+    /// not, it gets its host's full CPU feature set and disks use the host's
+    /// page cache. By default VMs are migratable when their cluster has more
+    /// than one host.
+    migratable: Option<bool>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -422,9 +430,25 @@ async fn create_vm(
         size_bytes: req.disk_gib * GIB,
         image_id: Some(req.image_id),
     };
+    // A VM whose cluster is a single host has nowhere to migrate to; let it
+    // use everything the host offers instead.
+    let migratable = match req.migratable {
+        Some(m) => m,
+        None => match host.cluster {
+            Some(c) => hm_db::sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM hosts WHERE cluster_id = $1 AND state <> 'decommissioned'",
+            )
+            .bind(c)
+            .fetch_one(&mut *tx)
+            .await?
+                > 1,
+            None => false,
+        },
+    };
     let mut spec = VmSpec {
         // The create task sets the cluster's baseline CPU before defining the VM.
         cpu: None,
+        migratable,
         vcpus: req.vcpus,
         memory_mib: req.memory_mib,
         firmware: req.firmware,

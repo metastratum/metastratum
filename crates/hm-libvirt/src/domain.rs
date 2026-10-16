@@ -75,6 +75,9 @@ pub struct DomainDef {
     /// The guest CPU; the host's own (passthrough) when unset. VMs that
     /// should migrate get their cluster's baseline model.
     pub cpu: Option<crate::cpu::CpuModel>,
+    /// Let disks use the host's page cache (`writeback`). Faster, but unsafe
+    /// for live migration of shared disks, which need `none`.
+    pub host_cache: bool,
 }
 
 impl DomainDef {
@@ -111,9 +114,10 @@ impl DomainDef {
                 .attr("name", "qemu")
                 .attr("type", &d.format);
             if d.device == DiskDevice::Disk {
-                // No host page cache: required for safe live migration of
-                // disks on shared storage, and the guest caches anyway.
-                driver = driver.attr("cache", "none").attr("discard", "unmap");
+                // Without the host page cache, disks on shared storage can
+                // live-migrate safely; VMs that never migrate may use it.
+                let cache = if self.host_cache { "writeback" } else { "none" };
+                driver = driver.attr("cache", cache).attr("discard", "unmap");
             }
             let (kind, source) = match &d.source {
                 DiskSource::File(path) => ("file", El::new("source").attr("file", path)),
@@ -337,6 +341,7 @@ mod tests {
                     readonly: true,
                 },
             ],
+            host_cache: false,
             cpu: Some(crate::cpu::CpuModel {
                 model: "EPYC-Milan".into(),
                 vendor: Some("AMD".into()),
@@ -365,6 +370,17 @@ mod tests {
             got, want,
             "domain XML changed; rerun with UPDATE_GOLDEN=1 if intended"
         );
+    }
+
+    #[test]
+    fn host_bound_vms_get_the_host_cpu_and_cache() {
+        let mut d = sample();
+        d.cpu = None;
+        d.host_cache = true;
+        let xml = d.to_xml();
+        assert!(xml.contains("<cpu mode='host-passthrough'/>"), "{xml}");
+        assert!(xml.contains("cache='writeback'"), "{xml}");
+        assert!(!xml.contains("cache='none'"), "{xml}");
     }
 
     /// Validates against libvirt's RelaxNG schema when `virt-xml-validate` is

@@ -19,6 +19,7 @@ fn def(uuid: &str) -> DomainDef {
         disks: vec![],
         nics: vec![],
         cpu: None,
+        host_cache: false,
     }
 }
 

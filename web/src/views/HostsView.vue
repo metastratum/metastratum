@@ -158,7 +158,7 @@ async function createToken() {
             <strong>Evacuate</strong>
             <p class="muted hint">
               Puts the host in maintenance and live-migrates its running VMs to other hosts of its cluster, one at a
-              time. Stopped VMs stay. Follow it in Tasks.
+              time. Stopped VMs, and VMs that are not migratable, stay. Follow it in Tasks.
             </p>
           </div>
           <button

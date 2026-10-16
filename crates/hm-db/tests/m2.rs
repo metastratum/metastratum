@@ -91,6 +91,7 @@ async fn allocate(
     let id = VmId::new();
     let spec = VmSpec {
         cpu: None,
+        migratable: true,
         vcpus,
         memory_mib: mem,
         firmware: Default::default(),

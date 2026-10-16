@@ -110,7 +110,7 @@ async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
     // A CPU model every host of the cluster runs, so the VM can migrate
     // anywhere in it. Kept in the spec: the VM keeps it for life.
     let mut spec = spec.clone();
-    if spec.cpu.is_none() {
+    if spec.migratable && spec.cpu.is_none() {
         spec.cpu = baseline_cpu(ctx, host).await;
         if spec.cpu.is_some() {
             hm_db::vms::set_spec(db, vm.id, &spec).await?;

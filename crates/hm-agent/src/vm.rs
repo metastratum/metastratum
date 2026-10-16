@@ -145,7 +145,9 @@ pub async fn domain(
             Firmware::Uefi => hm_libvirt::Firmware::Uefi,
         },
         disks,
-        cpu: spec.cpu.as_ref().map(cpu_model),
+        // A VM that never migrates gets everything its host offers.
+        cpu: spec.cpu.as_ref().filter(|_| spec.migratable).map(cpu_model),
+        host_cache: !spec.migratable,
         nics: spec
             .nics
             .iter()

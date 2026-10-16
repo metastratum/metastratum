@@ -235,6 +235,53 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
         .await?;
     assert_eq!(st, 409);
 
+    // A VM that may not migrate: refused, and it sees more of the host's CPU
+    // than the cluster's baseline gives the observer.
+    let bound = api
+        .post(
+            "/vms",
+            json!({"name": format!("{run}-bound"), "vcpus": 1, "memory_mib": 512, "disk_gib": 3,
+                   "image_id": image, "password": PW, "migratable": false}),
+        )
+        .await?;
+    let bound_id = bound["id"].as_str().unwrap();
+    assert_eq!(bound["migratable"], false);
+    running(api, bound_id).await?;
+    let (st, body) = api
+        .try_send(
+            Method::POST,
+            &format!("/vms/{bound_id}/migrate"),
+            Some(json!({})),
+        )
+        .await?;
+    assert_eq!(st, 409, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("not migratable"),
+        "{body}"
+    );
+    let flags = |out: String| -> usize {
+        // Skip the echoed command; terminal escapes may precede the line.
+        out.lines()
+            .filter(|l| !l.contains("grep"))
+            .find_map(|l| {
+                l.split_once("flags")
+                    .and_then(|(_, rest)| rest.split_once(':'))
+            })
+            .map(|(_, list)| list.split_whitespace().count())
+            .unwrap_or(0)
+    };
+    let mut c = api.console(bound_id, "serial").await?;
+    let host_flags = flags(sh(&mut c, "grep -m1 ^flags /proc/cpuinfo").await?);
+    let baseline_flags = flags(sh(&mut o, "grep -m1 ^flags /proc/cpuinfo").await?);
+    eprintln!("CPU flags: host {host_flags}, cluster baseline {baseline_flags}");
+    assert!(
+        host_flags > baseline_flags,
+        "host {host_flags} vs baseline {baseline_flags}"
+    );
+
     if std::env::var_os("HM_E2E_EVACUATE").is_some() {
         let host = back["host_id"].as_str().unwrap().to_owned();
         let t = api

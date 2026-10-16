@@ -195,6 +195,7 @@ async fn the_model_snapshot_has_everything_the_compiler_needs(pool: PgPool) {
             host_id: host.id,
             spec: &VmSpec {
                 cpu: None,
+                migratable: true,
                 vcpus: 1,
                 memory_mib: 512,
                 firmware: Default::default(),

@@ -26,7 +26,7 @@ function tone(state: string) {
           <StatusLed :tone="tone(t.state)" />
           <div class="what">
             <span>{{ taskLabel(t) }}</span>
-            <span class="when">{{ t.state === 'running' && t.step ? t.step : ago(t.created_at) }}</span>
+            <span class="when">{{ (t.state === 'running' || t.step?.startsWith('staying:')) && t.step ? t.step : ago(t.created_at) }}</span>
             <span v-if="t.error" class="error-text err">{{ t.error }}</span>
           </div>
           <progress v-if="t.state === 'running'" :value="t.progress ?? 0" max="1" />

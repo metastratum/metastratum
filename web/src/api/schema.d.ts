@@ -1059,6 +1059,8 @@ export interface components {
             id: components["schemas"]["VmId"];
             /** Format: int64 */
             memory_mib: number;
+            /** @description Can live-migrate; otherwise it has its host's CPU and disk caching. */
+            migratable: boolean;
             migration?: components["schemas"]["MigrationView"] | null;
             name: string;
             nics: components["schemas"]["NicView"][];
@@ -1249,6 +1251,13 @@ export interface components {
             image_id: components["schemas"]["ImageId"];
             /** Format: int64 */
             memory_mib: number;
+            /**
+             * @description Whether the VM may live-migrate to other hosts of its cluster. If
+             *     not, it gets its host's full CPU feature set and disks use the host's
+             *     page cache. By default VMs are migratable when their cluster has more
+             *     than one host.
+             */
+            migratable?: boolean | null;
             /** @description DNS-style label, unique within the tenant. */
             name: string;
             network_id?: components["schemas"]["NetworkId"] | null;
@@ -1784,6 +1793,8 @@ export interface components {
             id: components["schemas"]["VmId"];
             /** Format: int64 */
             memory_mib: number;
+            /** @description Can live-migrate; otherwise it has its host's CPU and disk caching. */
+            migratable: boolean;
             migration?: components["schemas"]["MigrationView"] | null;
             name: string;
             nics: components["schemas"]["NicView"][];

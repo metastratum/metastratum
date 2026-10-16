@@ -154,8 +154,8 @@ async function remove() {
         <button
           v-if="session.me?.provider_admin"
           class="btn"
-          :disabled="!running"
-          title="Move the running VM to another host"
+          :disabled="!running || !vm.migratable"
+          :title="vm.migratable ? 'Move the running VM to another host' : 'This VM is not migratable'"
           @click="migrating = true"
         >
           Migrate
@@ -221,6 +221,8 @@ async function remove() {
             <dt>VM ID</dt><dd><IdChip :value="vm.id" /></dd>
             <dt>Tenant</dt><dd><IdChip :value="vm.tenant_id" /></dd>
             <dt>Firmware</dt><dd>{{ vm.firmware === 'uefi' ? 'UEFI' : 'BIOS' }}</dd>
+            <dt>Live migration</dt>
+            <dd>{{ vm.migratable ? 'Allowed' : 'Off: host CPU and disk caching' }}</dd>
             <dt>Created</dt><dd>{{ new Date(vm.created_at).toLocaleString() }}</dd>
           </dl>
         </section>

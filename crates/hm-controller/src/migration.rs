@@ -33,6 +33,12 @@ pub async fn plan(
     if vm.status != "ready" {
         return refuse(format!("{} is busy ({})", vm.name, vm.status));
     }
+    if !vm.spec.0.migratable {
+        return refuse(format!(
+            "{} is not migratable: it uses its host's full CPU and disk caching",
+            vm.name
+        ));
+    }
     if vm.power != "running" {
         return refuse(format!(
             "{} is not running; only running VMs can be live-migrated",
