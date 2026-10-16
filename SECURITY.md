@@ -50,8 +50,8 @@ The boundaries metastratum enforces:
   tenants below what its user holds; it then also cannot change its user's
   account or make other tokens. Session cookies are `HttpOnly`,
   `SameSite=Strict` (so requests from other sites do not carry them: the
-  defence against cross-site request forgery) and, with `--secure-cookies`,
-  `Secure`. Sessions end after 12
+  defence against cross-site request forgery) and `Secure` when a trusted
+  proxy says the client came over HTTPS. Sessions end after 12
   hours, at sign-out, or when the user's password changes or the account is
   disabled.
 - **Sign-in through identity providers** uses the authorization code flow
@@ -82,7 +82,7 @@ The boundaries metastratum enforces:
   and failed sign-ins per account (see [operations](docs/operations.md#rate-limits)).
 - **Browsers**: a Content-Security-Policy allowing scripts only from the
   controller, framing denied, `nosniff`, no referrers to other sites, and
-  `Strict-Transport-Security` with `--secure-cookies`.
+  `Strict-Transport-Security` on requests that came over HTTPS.
 - **Audit**: every change made through the API, and every sign-in,
   successful or not, is recorded with who made it; the API offers no way to
   alter the record. So are the cleanups that follow deletions.
@@ -135,9 +135,9 @@ A review of the whole system before calling it hardened. Fixed:
 - **The controller serves plain HTTP.** Sessions and passwords would cross
   the network in clear text.
   *Mitigation:* put a TLS-terminating proxy in front of it, listen on
-  localhost or a private address only, and set `--secure-cookies` (cookies
-  only over HTTPS, and HSTS), `--public-url https://...` and
-  `--trusted-proxies`.
+  localhost or a private address only, list the proxy in
+  `--trusted-proxies` and have it set `X-Forwarded-Proto` (then cookies are
+  `Secure` and HSTS is on), and set `--public-url https://...`.
 - **A compromised controller compromises everything.** It holds the master
   key, both CAs and the database credentials, and drives every host.
   *Mitigation:* treat controllers like the CA they are: dedicated machines,
@@ -192,8 +192,9 @@ A review of the whole system before calling it hardened. Fixed:
 
 What metastratum offers but leaves to the deployment to switch on:
 
-- HTTPS in front of the controllers; `--secure-cookies`, `--public-url`,
-  `--trusted-proxies`; the API listening on a private address.
+- HTTPS in front of the controllers, with `X-Forwarded-Proto` from a proxy
+  in `--trusted-proxies`; `--public-url`; the API listening on a private
+  address.
 - TLS for OVN's northbound database and `--ovn-sb` for the southbound one,
   with the plain listeners removed.
 - `--redis-url` with more than one controller.

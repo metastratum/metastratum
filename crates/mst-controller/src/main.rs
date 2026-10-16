@@ -134,9 +134,6 @@ struct ServeArgs {
     /// Built web UI to serve at `/`.
     #[arg(long, env = "MST_WEB_DIR")]
     web_dir: Option<PathBuf>,
-    /// Mark session cookies Secure (when served over HTTPS).
-    #[arg(long, env = "MST_SECURE_COOKIES")]
-    secure_cookies: bool,
     /// Address to serve Prometheus metrics on (`/metrics`), e.g.
     /// 127.0.0.1:9180. Kept off the API address: metrics name hosts and
     /// count resources across tenants.
@@ -147,8 +144,10 @@ struct ServeArgs {
     /// limits on its own.
     #[arg(long, env = "MST_REDIS_URL", hide_env_values = true)]
     redis_url: Option<String>,
-    /// Load balancers in front of the API (addresses or CIDRs), whose
-    /// X-Forwarded-For header gives the client's address for rate limits.
+    /// Load balancers in front of the API (addresses or CIDRs). Their
+    /// X-Forwarded-For header gives the client's address for rate limits,
+    /// and X-Forwarded-Proto: https marks the session cookie Secure and
+    /// turns on Strict-Transport-Security.
     #[arg(long, env = "MST_TRUSTED_PROXIES", value_delimiter = ',')]
     trusted_proxies: Vec<ratelimit::Cidr>,
     /// Identity provider issuer URLs that sub-tenants may use although they
@@ -341,7 +340,6 @@ async fn serve(db: mst_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> 
         agents: Agents::default(),
         net: net::Reconciler::new(db.clone(), nb),
         replica: replica.clone(),
-        secure_cookies: args.secure_cookies,
         public_url: args
             .public_url
             .clone()

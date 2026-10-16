@@ -16,7 +16,7 @@ use utoipa_axum::routes;
 use super::SESSION_COOKIE;
 use crate::authz::Principal;
 use crate::error::{ApiError, ApiResult};
-use crate::ratelimit::ClientIp;
+use crate::ratelimit::{ClientIp, Https};
 use crate::state::AppState;
 
 const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
@@ -105,6 +105,7 @@ async fn resolve_tenant(
 async fn login(
     State(state): State<AppState>,
     Extension(ClientIp(ip)): Extension<ClientIp>,
+    Extension(Https(https)): Extension<Https>,
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<Response> {
     // Failures count against the account wherever they come from.
@@ -161,16 +162,17 @@ async fn login(
         }
     };
 
-    let headers = open_session(&state, &user, "password").await?;
+    let headers = open_session(&state, &user, "password", https).await?;
     Ok((StatusCode::NO_CONTENT, headers).into_response())
 }
 
 /// Starts a session for a user who just proved who they are, and returns the
-/// `Set-Cookie` header carrying it.
+/// `Set-Cookie` header carrying it (Secure when the client came over HTTPS).
 pub async fn open_session(
     state: &AppState,
     user: &mst_db::users::User,
     method: &str,
+    https: bool,
 ) -> ApiResult<HeaderMap> {
     metrics::counter!("mst_logins_total", "method" => method.to_owned(), "outcome" => "succeeded")
         .increment(1);
@@ -195,7 +197,7 @@ pub async fn open_session(
     if let Err(e) = mst_db::audit::record(&state.db, entry).await {
         tracing::error!(error = %e, "writing audit log");
     }
-    let secure = if state.secure_cookies { "; Secure" } else { "" };
+    let secure = if https { "; Secure" } else { "" };
     let cookie = format!(
         "{SESSION_COOKIE}={secret}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{secure}",
         SESSION_TTL.as_secs()
@@ -217,14 +219,20 @@ pub async fn tenant_by_path(
 }
 
 #[utoipa::path(post, path = "/auth/logout", tag = "auth", responses((status = 204)))]
-async fn logout(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<impl IntoResponse> {
+async fn logout(
+    State(state): State<AppState>,
+    Extension(Https(https)): Extension<Https>,
+    headers: HeaderMap,
+) -> ApiResult<impl IntoResponse> {
     if let Some(secret) = super::session_secret(&headers) {
         mst_db::sessions::delete(&state.db, &mst_pki::hash_secret(&secret)).await?;
     }
+    let secure = if https { "; Secure" } else { "" };
+    let cookie = format!("{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{secure}");
     let mut out = HeaderMap::new();
     out.insert(
         header::SET_COOKIE,
-        HeaderValue::from_static("mst_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"),
+        HeaderValue::from_str(&cookie).map_err(ApiError::internal)?,
     );
     Ok((StatusCode::NO_CONTENT, out))
 }

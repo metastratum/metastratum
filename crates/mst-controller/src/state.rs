@@ -25,14 +25,13 @@ pub struct Inner {
     /// Identifies this controller replica (agent session ownership, task
     /// leases).
     pub replica: String,
-    /// Mark session cookies `Secure` (set when served over HTTPS).
-    pub secure_cookies: bool,
     /// Base URL users reach the controller at, for OIDC redirect URIs.
     pub public_url: String,
     /// Change notifications for live updates.
     pub events: Hub,
     pub limits: crate::ratelimit::Limits,
-    /// Proxies whose `X-Forwarded-For` names the client.
+    /// Proxies whose `X-Forwarded-For` names the client, and whose
+    /// `X-Forwarded-Proto` says whether it came over HTTPS.
     pub trusted_proxies: Vec<crate::ratelimit::Cidr>,
     /// Identity provider issuers sub-tenants may use on internal addresses.
     pub trusted_oidc_issuers: Vec<String>,

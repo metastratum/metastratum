@@ -29,7 +29,6 @@ DATABASE_URL=postgres://metastratum:...@db.example.net/metastratum?sslmode=verif
 MST_MASTER_KEY_FILE=/run/credentials/mst-controller.service/master.key
 MST_LISTEN=127.0.0.1:8080              # behind the HTTPS proxy
 MST_PUBLIC_URL=https://cloud.example.net
-MST_SECURE_COOKIES=true
 MST_TRUSTED_PROXIES=127.0.0.1
 MST_AGENT_LISTEN=0.0.0.0:8443
 MST_AGENT_NAMES=ctl1.example.net,10.0.0.21
@@ -57,8 +56,10 @@ The proxy must:
 - pass WebSocket upgrades (`/api/v1/console/...`, the virtual consoles);
 - not buffer `/api/v1/events` (Server-Sent Events, the UI's live updates),
   and allow idle connections of a few minutes on both;
-- set `X-Forwarded-For`, and be listed in `--trusted-proxies` so rate
-  limits see clients rather than the proxy;
+- be listed in `--trusted-proxies`, and set `X-Forwarded-For` (so rate
+  limits see clients rather than the proxy) and `X-Forwarded-Proto`,
+  replacing whatever the client sent. `X-Forwarded-Proto: https` marks the
+  session cookie `Secure` and turns on Strict-Transport-Security;
 - reach `/healthz`, which answers 200 while the replica can reach Postgres.
 
 **Agent traffic** does not go through that proxy. Each host dials a

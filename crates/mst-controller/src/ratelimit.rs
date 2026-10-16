@@ -234,7 +234,8 @@ impl Limits {
     }
 }
 
-/// Networks whose `X-Forwarded-For` is believed (the load balancers).
+/// Networks whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed
+/// (the load balancers).
 #[derive(Clone, Debug)]
 pub struct Cidr {
     net: IpAddr,
@@ -304,6 +305,22 @@ pub fn client_ip(peer: SocketAddr, headers: &HeaderMap, trusted: &[Cidr]) -> IpA
         .unwrap_or(peer)
 }
 
+/// Whether the client reached us over HTTPS: only a trusted proxy can say
+/// so, in the `X-Forwarded-Proto` it adds (the last one). The controller
+/// itself serves plain HTTP.
+pub fn forwarded_https(peer: SocketAddr, headers: &HeaderMap, trusted: &[Cidr]) -> bool {
+    if !trusted.iter().any(|c| c.contains(peer.ip())) {
+        return false;
+    }
+    headers
+        .get_all("x-forwarded-proto")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .last()
+        .is_some_and(|p| p.trim().eq_ignore_ascii_case("https"))
+}
+
 pub fn too_many(retry: Duration) -> Response {
     let mut resp = crate::error::ApiError::new(
         StatusCode::TOO_MANY_REQUESTS,
@@ -323,8 +340,12 @@ pub fn too_many(retry: Duration) -> Response {
 #[derive(Clone, Copy)]
 pub struct ClientIp(pub IpAddr);
 
-/// Limits requests per client, and records the client's address for
-/// handlers.
+/// Whether the client reached us over HTTPS (see `forwarded_https`).
+#[derive(Clone, Copy)]
+pub struct Https(pub bool);
+
+/// Limits requests per client, and records the client's address, and
+/// whether it came over HTTPS, for handlers.
 pub async fn limit(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -335,13 +356,21 @@ pub async fn limit(
     if let Err(retry) = state.limits.requests.take(&ip).await {
         return too_many(retry);
     }
+    let https = forwarded_https(peer, req.headers(), &state.trusted_proxies);
     req.extensions_mut().insert(ClientIp(ip));
+    req.extensions_mut().insert(Https(https));
     next.run(req).await
 }
 
 /// Headers that keep browsers from misusing what the controller serves.
-pub async fn harden(State(state): State<AppState>, req: Request, next: Next) -> Response {
+pub async fn harden(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    req: Request,
+    next: Next,
+) -> Response {
     let api = req.uri().path().starts_with("/api/");
+    let https = forwarded_https(peer, req.headers(), &state.trusted_proxies);
     let mut resp = next.run(req).await;
     let h = resp.headers_mut();
     let mut set = |name: HeaderName, value: &'static str| {
@@ -361,7 +390,7 @@ pub async fn harden(State(state): State<AppState>, req: Request, next: Next) -> 
          img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; \
          object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
     );
-    if state.secure_cookies {
+    if https {
         set(header::STRICT_TRANSPORT_SECURITY, "max-age=31536000");
     }
     if api {
@@ -423,6 +452,28 @@ mod tests {
         );
         assert!(down.take(&key).await.is_ok());
         assert!(down.take(&key).await.is_err());
+    }
+
+    #[test]
+    fn forwarded_proto_is_believed_only_from_trusted_proxies() {
+        let trusted: Vec<Cidr> = vec!["10.0.0.0/8".parse().unwrap()];
+        let https = |peer: &str, values: &[&str]| {
+            let mut h = HeaderMap::new();
+            for v in values {
+                h.append("x-forwarded-proto", v.parse().unwrap());
+            }
+            forwarded_https(peer.parse().unwrap(), &h, &trusted)
+        };
+        assert!(https("10.0.0.5:1000", &["https"]));
+        assert!(https("10.0.0.5:1000", &["HTTPS"]));
+        assert!(!https("10.0.0.5:1000", &["http"]));
+        assert!(!https("10.0.0.5:1000", &[]));
+        // A client's own header comes first; the proxy's (last) counts.
+        assert!(!https("10.0.0.5:1000", &["https, http"]));
+        assert!(!https("10.0.0.5:1000", &["https", "http"]));
+        assert!(https("10.0.0.5:1000", &["http", "https"]));
+        // Not from a proxy: the header is ignored.
+        assert!(!https("8.8.8.8:1000", &["https"]));
     }
 
     #[test]

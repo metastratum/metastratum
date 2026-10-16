@@ -12,10 +12,10 @@ use std::pin::Pin;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
+use axum::{Extension, Json};
 use mst_core::ids::TenantId;
 use openidconnect::core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata};
 use openidconnect::{
@@ -31,6 +31,7 @@ use utoipa_axum::routes;
 use super::auth::{open_session, tenant_by_path};
 use crate::authz::{Perm, Principal, Role, audit, authorize_resource};
 use crate::error::{ApiError, ApiResult};
+use crate::ratelimit::Https;
 use crate::state::AppState;
 
 pub fn routes() -> OpenApiRouter<AppState> {
@@ -301,6 +302,7 @@ pub struct CallbackQuery {
 #[utoipa::path(get, path = "/auth/oidc/callback", tag = "auth", params(CallbackQuery), responses((status = 303)))]
 async fn callback(
     State(state): State<AppState>,
+    Extension(Https(https)): Extension<Https>,
     Query(q): Query<CallbackQuery>,
 ) -> ApiResult<Response> {
     if let Some(e) = &q.error {
@@ -330,7 +332,7 @@ async fn callback(
     .await
     {
         Ok(user) => {
-            let headers = open_session(&state, &user, "oidc").await?;
+            let headers = open_session(&state, &user, "oidc", https).await?;
             Ok((headers, Redirect::to(&pending.return_to)).into_response())
         }
         Err(message) => {
