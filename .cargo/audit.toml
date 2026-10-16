@@ -1,0 +1,13 @@
+# Exceptions for `cargo audit`, each with why it does not apply. Review them
+# whenever the dependency changes.
+
+[advisories]
+ignore = [
+    # rsa (Marvin attack, no fixed release): recovers an RSA private key
+    # from the timing of private-key operations (decryption, signing).
+    # hypermon has rsa only through openidconnect, and only verifies
+    # identity providers' ID token signatures with their public keys; it
+    # authenticates to them with a client secret, never an RSA key of its
+    # own.
+    "RUSTSEC-2023-0071",
+]

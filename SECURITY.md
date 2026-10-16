@@ -13,7 +13,7 @@ vulnerability reporting for this repository, rather than in a public issue.
 | Tenant administrators | their tenant and its sub-tenants, nothing above or beside it |
 | Tenant users | what their roles allow in their tenant's subtree |
 | Guests (the VMs) | nothing; they are assumed hostile |
-| Hosts | their own VMs, and, through libvirt, the other hosts (see below) |
+| Hosts | their own VMs; they can disturb, but not take over, migrations between other hosts (see below) |
 | Controller replicas | everything; they hold the master key |
 
 The boundaries hypermon enforces:
@@ -85,7 +85,15 @@ The boundaries hypermon enforces:
   `Strict-Transport-Security` with `--secure-cookies`.
 - **Audit**: every change made through the API, and every sign-in,
   successful or not, is recorded with who made it; the API offers no way to
-  alter the record.
+  alter the record. So are the cleanups that follow deletions.
+- **Leaving nothing behind**: deleting a pool or an image, or decommissioning
+  a host, has the hosts let go of mounts, credentials and cached data
+  (hosts that were down do so when they reconnect); Delete, rather than
+  Unlink, also removes hypermon's data from the storage, or hypermon from
+  the machine.
+- **Dependencies** are checked against the RustSec and npm advisory
+  databases (`cargo audit`, `npm audit`). One advisory is recorded as not
+  applying, with the reason, in `.cargo/audit.toml`.
 
 ## Review, October 2026
 
@@ -110,34 +118,94 @@ A review of the whole system before calling it hardened. Fixed:
 | API tokens carried all of their user's rights | tokens can be limited to roles at tenants |
 | Hosts' ovn-controller used the southbound database with no TLS or RBAC: any host could rewrite every host's flows | agents set up TLS with a certificate per chassis from a separate OVN CA, under OVN's RBAC (`--ovn-sb`) |
 | Unchecked whether IPv6 gets around IPv4-only networks | tested: guests reach no neighbour over IPv6, and cannot advertise themselves as router |
+| Deleting a pool, an image or a host left mounts, storage credentials (Ceph keyrings, libvirt secrets) and cached data on hosts | hosts let go of them at once, or when they reconnect; Delete also removes hypermon's data from the storage or the machine |
+| A dependency (`inout` 0.2.3) had been yanked | updated to 0.2.4 |
 
-Not fixed, and worth knowing:
+## Known issues, and what to do about them
 
+- **Without TLS, OVN's databases are open.** Whoever reaches the northbound
+  database can rewrite every tenant's network; whoever reaches the
+  southbound one, every host's flows. hypermon supports TLS for both but
+  cannot impose it on OVN.
+  *Mitigation:* serve the northbound database over TLS (`--ovn-nb ssl:...`
+  with `--ovn-ca-cert`, `--ovn-certificate`, `--ovn-private-key`), and run
+  the controllers with `--ovn-sb ssl:...` so hosts reach the southbound one
+  over TLS under OVN's RBAC; then remove the plain listeners
+  ([operations](docs/operations.md#ovn)).
+- **The controller serves plain HTTP.** Sessions and passwords would cross
+  the network in clear text.
+  *Mitigation:* put a TLS-terminating proxy in front of it, listen on
+  localhost or a private address only, and set `--secure-cookies` (cookies
+  only over HTTPS, and HSTS), `--public-url https://...` and
+  `--trusted-proxies`.
+- **A compromised controller compromises everything.** It holds the master
+  key, both CAs and the database credentials, and drives every host.
+  *Mitigation:* treat controllers like the CA they are: dedicated machines,
+  the hardened systemd unit in `deploy/systemd`, the master key and keys
+  passed as systemd credentials readable by the service only, the master
+  key kept out of the database's backups (backed up separately), and the
+  database reachable by the controllers only, over TLS.
+- **Local accounts have no second factor or idle timeout.** A session lasts
+  12 hours unless its user signs out.
+  *Mitigation:* sign people in through an identity provider that enforces
+  multi-factor authentication (per tenant, and for the provider tenant
+  too), and keep local accounts for break-glass use with long passwords.
+  Give automation scoped API tokens that expire.
+- **Rate limits are per controller without Redis.** N controllers allow N
+  times the sign-in attempts, and a restart resets them.
+  *Mitigation:* share them through Redis (`--redis-url`, `rediss://` for
+  TLS).
 - **A host may be able to disrupt a migration it is not part of.** It
   cannot send a VM in: the destination accepts only the source's one-off
   certificate (tried on the lab: QEMU refused another host's, then took
   the source's). By occupying the destination's migration port first and
-  stalling, it might make the migration fail; it would then be undone, the
-  VM still running on its source. Keep hosts off networks guests or
-  tenants reach.
+  stalling, it might make the migration fail; the migration would be
+  undone, the VM still running on its source.
+  *Mitigation:* keep hosts on a management network that guests and tenants
+  cannot reach, and let only hosts reach the migration ports
+  (49152-49215).
 - **OVN cannot revoke certificates.** Open vSwitch has no revocation
-  lists, so a decommissioned host's southbound certificate stays valid until
-  it expires (up to 30 days), held by OVN's RBAC to that host's chassis.
-  OVN is the admin's, so decommissioning leaves the chassis; delete it
-  (`ovn-sbctl chassis-del`) if the machine leaves OVN too. Reinstall a host you no longer trust, and replace
-  the CA if one was compromised (every host must then enroll again).
-- **OVN's databases need TLS configured.** Without `--ovn-sb` and TLS on
-  the northbound database, anyone who reaches them controls every
-  tenant's network and every host's flows
-  ([operations](docs/operations.md#ovn)).
-- **Without Redis** (`--redis-url`), rate limits are per replica: N
-  replicas allow N times the budget, and a restart resets it.
-- **Limits are per cluster, and opt-in.** Without them set, a VM can slow
-  down others on the same host or storage. CPU and memory are shared by
-  the overcommit ratios alone.
+  lists, so a decommissioned host's southbound certificate stays valid
+  until it expires (up to 30 days), held by OVN's RBAC to that host's
+  chassis. OVN is the admin's, so decommissioning leaves the chassis.
+  *Mitigation:* delete the chassis (`ovn-sbctl chassis-del`) when a machine
+  leaves OVN too. Reinstall a host you no longer trust, and replace the CA
+  if one was compromised (every host must then enroll again).
+- **Tenants' own cloud-init user data is stored as given**, in the
+  database, on the host's seed image and in the guest. (Passwords given as
+  such are hashed before they are stored; the API never returns user
+  data.)
+  *Mitigation:* put no secrets in user data; use SSH keys or the password
+  field.
+- **Per-VM limits are opt-in.** Without them, a VM can slow down others on
+  the same host or storage; CPU and memory are shared by the overcommit
+  ratios alone.
+  *Mitigation:* set disk and network limits on each cluster
+  ([operations](docs/operations.md#limits)), and keep overcommit modest.
 - **Networking is IPv4 only.** Port security, security groups and
-  guardrails are written for IPv4; guests' IPv6 is dropped.
-- **Inline styles are allowed** by the CSP (the serial terminal and the UI
-  set some); inline scripts are not.
-- The controller serves plain HTTP; HTTPS is the job of the proxy in front
-  of it. Without `--secure-cookies`, session cookies are sent over HTTP too.
+  guardrails are written for IPv4; guests' IPv6 is dropped (tested), not
+  filtered.
+- **Inline styles are allowed** by the Content-Security-Policy (the serial
+  terminal and the UI set some); inline scripts are not.
+
+## Deployment checklist
+
+What hypermon offers but leaves to the deployment to switch on:
+
+- HTTPS in front of the controllers; `--secure-cookies`, `--public-url`,
+  `--trusted-proxies`; the API listening on a private address.
+- TLS for OVN's northbound database and `--ovn-sb` for the southbound one,
+  with the plain listeners removed.
+- `--redis-url` with more than one controller.
+- The master key and other keys as systemd credentials; the master key out
+  of the database's backups.
+- PostgreSQL over TLS (`sslmode=verify-full`), reachable by the
+  controllers only.
+- A management network for hosts and controllers that guests and tenants
+  cannot reach; migration ports (49152-49215) open between hosts only;
+  `--metrics-listen` on a private address.
+- Fencing on every host of clusters with high availability.
+- Per-VM limits on clusters.
+- Sign-in through identity providers with multi-factor authentication;
+  scoped, expiring API tokens for automation.
+- `cargo audit` and `npm audit` with every update.

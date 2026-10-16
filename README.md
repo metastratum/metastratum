@@ -48,6 +48,10 @@ export DATABASE_URL=postgres://hypermon:hypermon@127.0.0.1:55432/hypermon
 cargo test
 ```
 
+Check dependencies for known vulnerabilities with `cargo audit` (install
+it with `cargo install cargo-audit`; exceptions, each with its reason, are in
+`.cargo/audit.toml`) and `npm audit` in `web/`.
+
 Some tests need extra tools or services and skip themselves without them:
 
 - `virt-xml-validate` and `qemu-img` (ship with libvirt and QEMU)
