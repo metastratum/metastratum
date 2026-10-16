@@ -106,7 +106,12 @@ async fn vms_are_held_to_their_clusters_limits() -> anyhow::Result<()> {
         json!({"vm_net_mbps": c["vm_net_mbps"], "vm_disk_iops": c["vm_disk_iops"],
                "vm_disk_mbps": c["vm_disk_mbps"]})
     };
-    set_limits(&api, &clusters, json!({"vm_net_mbps": 50, "vm_disk_mbps": 20})).await?;
+    set_limits(
+        &api,
+        &clusters,
+        json!({"vm_net_mbps": 50, "vm_disk_mbps": 20}),
+    )
+    .await?;
     let image = api.image().await?;
     let run = format!("lim-{}", std::process::id());
     let mut vms = vec![];

@@ -204,6 +204,62 @@ pub async fn reload_libvirt() {
     );
 }
 
+/// QEMU's TLS files (`/etc/pki/qemu`): the host's identity, except while a
+/// migration's own credentials are put in place for QEMU to load.
+const QEMU_DIR: &str = "/etc/pki/qemu";
+
+/// Which side of a migration's TLS this host is.
+#[derive(Clone, Copy, Debug)]
+pub enum MigrationEnd {
+    /// The destination, accepting the VM.
+    Server,
+    /// The source, sending it.
+    Client,
+}
+
+/// Puts one migration's credentials where QEMU reads them: its CA as the
+/// only one trusted, and this end's certificate. QEMU loads them when
+/// libvirt sets up the migration's TLS (in Prepare on the destination, as
+/// Perform starts on the source); [`restore_qemu_identity`] then puts the
+/// host's own back. The caller holds the agent's QEMU TLS lock throughout.
+pub fn install_migration_tls(tls: &hm_proto::MigrationTls, end: MigrationEnd) -> Result<()> {
+    let key = Access::Group(qemu_group());
+    let name = match end {
+        MigrationEnd::Server => "server",
+        MigrationEnd::Client => "client",
+    };
+    let file = |f: &str| format!("{QEMU_DIR}/{f}");
+    write_if_changed(Path::new(&file("ca-cert.pem")), &tls.ca_pem, Access::Public)?;
+    write_if_changed(
+        Path::new(&file(&format!("{name}-cert.pem"))),
+        &tls.cert_pem,
+        Access::Public,
+    )?;
+    write_if_changed(
+        Path::new(&file(&format!("{name}-key.pem"))),
+        &tls.key_pem,
+        key,
+    )?;
+    // The CA's revocation list is not this CA's.
+    match std::fs::remove_file(file("ca-crl.pem")) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
+}
+
+/// Puts the host's own identity, and revocation list, back for QEMU.
+pub fn restore_qemu_identity(id: &HostIdentity) -> Result<()> {
+    install(id)?;
+    if let Ok(crl) = std::fs::read_to_string("/etc/pki/CA/cacrl.pem") {
+        write_if_changed(
+            Path::new(&format!("{QEMU_DIR}/ca-crl.pem")),
+            &crl,
+            Access::Public,
+        )?;
+    }
+    Ok(())
+}
+
 /// Installs the controller CA's revocation list where QEMU (migration
 /// streams) and libvirt look for it, so they refuse revoked certificates.
 pub async fn install_crl(pem: &str) -> Result<()> {

@@ -319,6 +319,17 @@ message MigrationStep {
   string name = 8;
   // Finish and Confirm: undo instead.
   bool cancelled = 9;
+  // Prepare (the destination's server certificate) and Perform (the
+  // source's client certificate): this migration's own TLS credentials,
+  // from a CA made for it alone. QEMU on each side trusts only that CA for
+  // it, so only the source can send the VM in.
+  MigrationTls tls = 10;
+}
+
+message MigrationTls {
+  string ca_pem = 1;
+  string cert_pem = 2;
+  string key_pem = 3;
 }
 
 // Whether libvirt listens for TLS connections from other hosts: only

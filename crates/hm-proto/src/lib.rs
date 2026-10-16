@@ -14,7 +14,8 @@ pub use v1::*;
 /// 1: before versioning (agents sent no version). 2: versions, capabilities
 /// and the controller's welcome. 3: migrations the controller drives
 /// (`MigrationStep`), so hosts' libvirt need not listen for each other.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// 4: credentials of their own for each migration (`MigrationStep.tls`).
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The oldest agent protocol a controller of this build still serves.
 /// Upgrades go controllers first, then agents; agents between this and

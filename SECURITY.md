@@ -72,7 +72,9 @@ The boundaries hypermon enforces:
   which install the CA's revocation list.
   Hosts' libvirt does not listen on the network: the controller drives
   live migrations on each host's own libvirt, and only QEMU sends the VM
-  over, with TLS and host certificates. The controller reaches
+  over, with TLS. Each migration gets certificates of its own, from a CA
+  made for it alone: the destination accepts the VM from that source
+  only, and the source sends it to that destination only. The controller reaches
   OVN's northbound database over TLS with a client certificate; hosts reach
   the southbound one with certificates from a CA of its own, naming their
   chassis, under OVN's RBAC.
@@ -102,6 +104,7 @@ A review of the whole system before calling it hardened. Fixed:
 | Hosts' certificates were valid for a year | 30 days, renewed automatically; longer ones are renewed at once |
 | Hosts' libvirt accepted any certificate the controller's CA issued (replicas' too) | only host certificates (`tls_allowed_dn_list`, kept by the agent) |
 | Nothing kept a VM from taking all of a host's disk or network bandwidth | per-VM disk (IOPS, MB/s) and network (Mbit/s each way) limits per cluster, enforced by QEMU and OVN, changed live |
+| The destination of a live migration accepted the incoming VM from any certificate the controller's CA issued: another host could send it a VM of its own instead of the source's | each migration gets a CA and certificates of its own; QEMU on each side trusts only that CA while it sets up the migration's TLS |
 | Host certificates could not be revoked | the controller's CA keeps a revocation list that hosts install for QEMU and libvirt: a renewed host's previous certificate is revoked once it uses the new one, a decommissioned host's at once |
 | For live migration, each host's libvirt accepted connections from the other hosts with full control: one compromised host could take over the rest | the controller drives migrations on each host's own libvirt; libvirt's TLS listener is closed (opened only while an older agent in the cluster still migrates peer to peer) |
 | API tokens carried all of their user's rights | tokens can be limited to roles at tenants |
@@ -110,11 +113,13 @@ A review of the whole system before calling it hardened. Fixed:
 
 Not fixed, and worth knowing:
 
-- **During a live migration**, the destination's QEMU accepts the incoming
-  VM from any client certificate the controller's CA issued (hosts' and
-  controller replicas'), not only the source's. Another host that is taken over could race to send a VM of
-  its own instead, for the seconds a migration takes to start. Keep hosts
-  off networks guests or tenants reach.
+- **A host may be able to disrupt a migration it is not part of.** It
+  cannot send a VM in: the destination accepts only the source's one-off
+  certificate (tried on the lab: QEMU refused another host's, then took
+  the source's). By occupying the destination's migration port first and
+  stalling, it might make the migration fail; it would then be undone, the
+  VM still running on its source. Keep hosts off networks guests or
+  tenants reach.
 - **OVN cannot revoke certificates.** Open vSwitch has no revocation
   lists, so a decommissioned host's southbound certificate stays valid until
   it expires (up to 30 days), held by OVN's RBAC to that host's chassis.

@@ -157,6 +157,9 @@ pub struct JobStats {
     pub elapsed_ms: u64,
     pub data_total: u64,
     pub data_processed: u64,
+    /// Of local disks copied over NBD (also counted in `data_processed`
+    /// by some libvirt versions).
+    pub disk_processed: u64,
     pub data_remaining: u64,
     pub dirty_pages_per_s: u64,
     /// The pause at the switch-over, once known.
@@ -678,6 +681,7 @@ impl Libvirt {
                 "time_elapsed" => st.elapsed_ms = v,
                 "data_total" => st.data_total = v,
                 "data_processed" => st.data_processed = v,
+                "disk_processed" => st.disk_processed = v,
                 "data_remaining" => st.data_remaining = v,
                 "memory_dirty_rate" => st.dirty_pages_per_s = v,
                 "downtime" => st.downtime_ms = Some(v),

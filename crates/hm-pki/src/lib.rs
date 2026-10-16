@@ -259,6 +259,37 @@ pub fn common_name(cert_der: &[u8]) -> Result<String> {
 }
 
 /// Not-after time of a DER certificate, as a Unix timestamp.
+/// Credentials for one live migration's TLS: a CA made for it alone, a
+/// server certificate for the destination and a client certificate for the
+/// source. Each side trusts only this CA while the migration's TLS is set
+/// up, so the destination accepts only that source, and the source talks
+/// only to that destination. PEM throughout.
+pub struct MigrationCredentials {
+    pub ca_pem: String,
+    pub server_cert_pem: String,
+    pub server_key_pem: String,
+    pub client_cert_pem: String,
+    pub client_key_pem: String,
+}
+
+impl MigrationCredentials {
+    /// `dest_names`: the names and addresses the source reaches the
+    /// destination by (it checks the server certificate for them).
+    /// `source`: names the source in its certificate.
+    pub fn generate(dest_names: &[String], source: &str, lifetime: Duration) -> Result<Self> {
+        let ca = Ca::generate("hypermon migration", lifetime)?;
+        let (server_cert_pem, server_key_pem) = ca.issue_server(dest_names, lifetime)?;
+        let (client_cert_pem, client_key_pem) = ca.issue_client(source, lifetime)?;
+        Ok(Self {
+            ca_pem: ca.cert_pem().to_owned(),
+            server_cert_pem,
+            server_key_pem,
+            client_cert_pem,
+            client_key_pem,
+        })
+    }
+}
+
 /// A certificate's serial number, as lowercase hex.
 pub fn serial_of(cert_der: &[u8]) -> Result<String> {
     let (_, cert) = x509_parser::parse_x509_certificate(cert_der)
@@ -349,6 +380,43 @@ impl FromStr for JoinToken {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn migration_credentials_trust_only_each_other() {
+        let m = MigrationCredentials::generate(
+            &["10.0.0.2".into(), "host2".into()],
+            "source-host",
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+        let other = MigrationCredentials::generate(
+            &["10.0.0.2".into()],
+            "source-host",
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+        let issuer = |pem: &str| {
+            let der = pem_to_der(pem).unwrap();
+            let (_, c) = x509_parser::parse_x509_certificate(&der).unwrap();
+            c.issuer().to_string()
+        };
+        let subject = |pem: &str| {
+            let der = pem_to_der(pem).unwrap();
+            let (_, c) = x509_parser::parse_x509_certificate(&der).unwrap();
+            c.subject().to_string()
+        };
+        assert_eq!(issuer(&m.server_cert_pem), subject(&m.ca_pem));
+        assert_eq!(issuer(&m.client_cert_pem), subject(&m.ca_pem));
+        assert_eq!(
+            common_name(&pem_to_der(&m.client_cert_pem).unwrap()).unwrap(),
+            "source-host"
+        );
+        // A fresh CA each time: one migration's certificates open no other.
+        assert_ne!(
+            fingerprint(&pem_to_der(&m.ca_pem).unwrap()),
+            fingerprint(&pem_to_der(&other.ca_pem).unwrap())
+        );
+    }
 
     #[test]
     fn revocation_lists_name_revoked_serials() {

@@ -363,6 +363,11 @@ async fn transfer(ctx: &TaskCtx, m: &Migration, span: Span) -> Result<()> {
 
 /// The first agent protocol with migrations the controller drives.
 pub const DRIVEN_PROTOCOL: u32 = 3;
+/// The first with TLS credentials of their own for each migration.
+const OWN_TLS_PROTOCOL: i32 = 4;
+/// How long a migration's credentials are valid: QEMU checks them when the
+/// copy starts; this only bounds a migration's wait to start.
+const OWN_TLS_LIFETIME: Duration = Duration::from_secs(86400);
 
 /// What an agent hands back from a migration step.
 #[derive(Debug, Default, Deserialize)]
@@ -493,6 +498,40 @@ async fn transfer_driven(ctx: &TaskCtx, m: &Migration, span: Span) -> Result<()>
         h.name = domain_name(&xml).context("the domain XML has no name")?;
         h.phase = "preparing".into();
         save(&h).await?;
+        // Credentials for this migration alone, when both hosts take them:
+        // the destination then accepts the VM from this source only (the
+        // CA's other certificates, other hosts' among them, open nothing),
+        // and the source sends it to this destination only.
+        let source = hm_db::hosts::get(db, src).await?;
+        let own_tls = if source.agent_protocol >= OWN_TLS_PROTOCOL
+            && dest.agent_protocol >= OWN_TLS_PROTOCOL
+        {
+            Some(hm_pki::MigrationCredentials::generate(
+                &[dest.address.clone(), dest.name.clone()],
+                &src.to_string(),
+                OWN_TLS_LIFETIME,
+            )?)
+        } else {
+            tracing::warn!(vm = %vm_id, "a host's agent predates per-migration TLS; any host certificate can send this VM in");
+            None
+        };
+        let tls = |server: bool| {
+            own_tls.as_ref().map(|t| hm_proto::MigrationTls {
+                ca_pem: t.ca_pem.clone(),
+                cert_pem: if server {
+                    &t.server_cert_pem
+                } else {
+                    &t.client_cert_pem
+                }
+                .clone(),
+                key_pem: if server {
+                    &t.server_key_pem
+                } else {
+                    &t.client_key_pem
+                }
+                .clone(),
+            })
+        };
         let begin_cookie = cookie(&begin.cookie);
         let prepared = run(
             dst,
@@ -500,6 +539,7 @@ async fn transfer_driven(ctx: &TaskCtx, m: &Migration, span: Span) -> Result<()>
             &|c| {
                 c.cookie = begin_cookie.clone();
                 c.xml = xml.clone();
+                c.tls = tls(true);
             },
             QUICK,
         )
@@ -523,6 +563,7 @@ async fn transfer_driven(ctx: &TaskCtx, m: &Migration, span: Span) -> Result<()>
             &|c| {
                 c.cookie = prepared_cookie.clone();
                 c.uri = uri.clone();
+                c.tls = tls(false);
             },
             TRANSFER,
         );

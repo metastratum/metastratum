@@ -43,6 +43,9 @@ pub struct Agent {
     pub files: vm::VmFiles,
     /// Largest image download.
     pub max_image_bytes: u64,
+    /// Held while QEMU's TLS files are changed, and while a migration's own
+    /// credentials are in place for QEMU to load.
+    pub qemu_tls: tokio::sync::Mutex<()>,
     /// The OVN southbound remote the controller manages access to, if any.
     pub ovn_sb_remote: std::sync::Mutex<String>,
     /// Domain lifecycle changes from libvirt, forwarded while a session is up.
@@ -218,7 +221,10 @@ impl Agent {
                         tracing::info!(protocol = w.protocol_version, version = %w.controller_version, "controller says hello");
                         *self.ovn_sb_remote.lock().unwrap() = w.ovn_sb_remote.clone();
                         if !w.crl_pem.is_empty()
-                            && let Err(e) = crate::tls::install_crl(&w.crl_pem).await
+                            && let Err(e) = {
+                                let _held = self.qemu_tls.lock().await;
+                                crate::tls::install_crl(&w.crl_pem).await
+                            }
                         {
                             tracing::warn!(error = %format!("{e:#}"), "installing the revocation list");
                         }
@@ -402,10 +408,50 @@ impl Agent {
                     copy_disks: &c.copy_disks,
                     max_bandwidth_mib: None,
                 };
-                let out = self
-                    .lv
-                    .migration_step(&c.vm_id, &to, step, c.cookie)
-                    .await?;
+                let out = match (&c.tls, which) {
+                    (Some(tls), Step::Prepare) => {
+                        // The destination's QEMU loads its TLS credentials
+                        // while the incoming domain is readied.
+                        let _held = self.qemu_tls.lock().await;
+                        crate::tls::install_migration_tls(tls, crate::tls::MigrationEnd::Server)?;
+                        let r = self.lv.migration_step(&c.vm_id, &to, step, c.cookie).await;
+                        self.restore_qemu_identity();
+                        r?
+                    }
+                    (Some(tls), Step::Perform) => {
+                        // The source's QEMU loads them as the copy starts:
+                        // keep them in place until data flows.
+                        let held = self.qemu_tls.lock().await;
+                        crate::tls::install_migration_tls(tls, crate::tls::MigrationEnd::Client)?;
+                        let perform = self.lv.migration_step(&c.vm_id, &to, step, c.cookie);
+                        tokio::pin!(perform);
+                        let deadline = tokio::time::Instant::now() + Duration::from_secs(1800);
+                        let done = loop {
+                            tokio::select! {
+                                r = &mut perform => break Some(r),
+                                () = tokio::time::sleep(Duration::from_millis(250)) => {
+                                    let flowing = self.lv.job_stats(&c.vm_id).await.is_ok_and(|st| {
+                                        st.active && (st.data_processed > 0 || st.disk_processed > 0)
+                                    });
+                                    if flowing || tokio::time::Instant::now() > deadline {
+                                        break None;
+                                    }
+                                }
+                            }
+                        };
+                        self.restore_qemu_identity();
+                        drop(held);
+                        match done {
+                            Some(r) => r?,
+                            None => perform.await?,
+                        }
+                    }
+                    _ => {
+                        self.lv
+                            .migration_step(&c.vm_id, &to, step, c.cookie)
+                            .await?
+                    }
+                };
                 if matches!(which, Step::Finish | Step::Confirm) {
                     // The domain arrived here, or left: say so at once.
                     let _ = self.full_sync(tx).await;
@@ -427,6 +473,7 @@ impl Agent {
                 }
             }
             Cmd::InstallCrl(c) => {
+                let _held = self.qemu_tls.lock().await;
                 crate::tls::install_crl(&c.crl_pem).await?;
                 tracing::info!("installed a new revocation list");
             }
@@ -562,11 +609,22 @@ impl Agent {
         renewed
             .save(&self.state_dir)
             .context("storing the renewed certificate")?;
-        crate::tls::install(&renewed)?;
+        {
+            let _held = self.qemu_tls.lock().await;
+            crate::tls::install(&renewed)?;
+        }
         crate::tls::reload_libvirt().await;
         *self.identity.write().unwrap() = renewed;
         tracing::info!("host certificate renewed");
         Ok(())
+    }
+
+    /// Puts the host's identity back for QEMU after a migration's own.
+    fn restore_qemu_identity(&self) {
+        let id = self.identity.read().unwrap().clone();
+        if let Err(e) = crate::tls::restore_qemu_identity(&id) {
+            tracing::error!(error = %format!("{e:#}"), "restoring QEMU's TLS files");
+        }
     }
 
     /// Whether a domain here has a job going (a migration in or out).

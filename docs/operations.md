@@ -169,7 +169,12 @@ without restarting.
 
 Hosts' libvirt does not listen on the network: the controller drives live
 migrations on each host's own libvirt, and QEMU sends the VM over TLS
-(migration ports 49152-49215 must be open between hosts). The agent closes
+(migration ports 49152-49215 must be open between hosts). Each migration
+gets certificates of its own from a CA the controller makes for it, so the
+destination accepts the VM from that source only. The agent puts them in
+`/etc/pki/qemu` just while QEMU loads them, and the host's own back after;
+between hosts with older agents, any host certificate is accepted (the
+controller logs a warning). The agent closes
 libvirt's TLS listener, and opens it only while a host in its cluster runs
 an agent from before protocol 3, which migrates peer to peer; it then also
 limits it to host certificates (`tls_allowed_dn_list`). Either change

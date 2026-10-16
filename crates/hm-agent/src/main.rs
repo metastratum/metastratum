@@ -122,6 +122,7 @@ async fn main() -> anyhow::Result<()> {
         pools,
         max_image_bytes: args.image_max_gib << 30,
         ovn_sb_remote: Default::default(),
+        qemu_tls: Default::default(),
         files: vm::VmFiles {
             cloud_init_dir: args.data_dir.join("cloud-init"),
         },
