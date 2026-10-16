@@ -253,7 +253,7 @@ async fn prepare(ctx: &TaskCtx, m: &Migration) -> Result<()> {
     let agents = &ctx.state.agents;
     let dest = m.dest_host_id;
     for (_, d, pool) in local_disks(ctx, &vm).await? {
-        let p = crate::api::agent_pool(&pool);
+        let p = crate::api::agent_pool(&pool)?;
         if let Some(image) = d.image_id {
             let image = hm_db::images::get(db, image).await?;
             let cmd = EnsureImage {
@@ -286,7 +286,7 @@ async fn prepare(ctx: &TaskCtx, m: &Migration) -> Result<()> {
         if let std::collections::btree_map::Entry::Vacant(e) = pools.entry(d.pool_id) {
             e.insert(crate::api::agent_pool(
                 &hm_db::storage_pools::get(db, d.pool_id).await?,
-            ));
+            )?);
         }
     }
     let define = DefineVm {
@@ -458,7 +458,7 @@ async fn commit(ctx: &TaskCtx, m: &Migration) -> Result<()> {
             for (_, d, pool) in local_disks(ctx, &vm).await? {
                 let cmd = DeleteVolume {
                     volume_id: d.volume_id.to_string(),
-                    pool: Some(crate::api::agent_pool(&pool)),
+                    pool: Some(crate::api::agent_pool(&pool)?),
                 };
                 if let Err(e) = agents.call(src, Cmd::DeleteVolume(cmd), QUICK).await {
                     tracing::warn!(vm = %vm_id, error = %e, "deleting the source's copy of a volume; it is left behind");
@@ -505,7 +505,7 @@ async fn rollback(ctx: &TaskCtx, m: &Migration) -> Result<()> {
             for (_, d, pool) in local_disks(ctx, &vm).await? {
                 let cmd = DeleteVolume {
                     volume_id: d.volume_id.to_string(),
-                    pool: Some(crate::api::agent_pool(&pool)),
+                    pool: Some(crate::api::agent_pool(&pool)?),
                 };
                 if let Err(e) = agents.call(dst, Cmd::DeleteVolume(cmd), QUICK).await {
                     tracing::warn!(vm = %vm_id, error = %e, "deleting the destination's copy of a volume");

@@ -6,7 +6,7 @@ use anyhow::Context;
 use hm_db::sqlx::PgPool;
 use hm_pki::Ca;
 
-const CA_NAME: &str = "ca";
+pub const CA_NAME: &str = "ca";
 const CA_LIFETIME: Duration = Duration::from_secs(10 * 365 * 86400);
 const SERVER_LIFETIME: Duration = Duration::from_secs(365 * 86400);
 
@@ -18,11 +18,13 @@ pub const SERVER_NAME: &str = "hm-controller";
 pub async fn load_or_create(db: &PgPool) -> anyhow::Result<Ca> {
     if hm_db::pki::get(db, CA_NAME).await?.is_none() {
         let ca = Ca::generate("hypermon CA", CA_LIFETIME)?;
-        if hm_db::pki::insert_if_absent(db, CA_NAME, ca.cert_pem(), &ca.key_pem()).await? {
+        let key = crate::secrets::seal(crate::secrets::CA_KEY, &ca.key_pem());
+        if hm_db::pki::insert_if_absent(db, CA_NAME, ca.cert_pem(), &key).await? {
             tracing::info!(fingerprint = %ca.fingerprint(), "generated new CA");
         }
     }
     let (cert, key) = hm_db::pki::get(db, CA_NAME).await?.context("CA vanished")?;
+    let key = crate::secrets::open(crate::secrets::CA_KEY, &key)?;
     Ok(Ca::from_pem(&cert, &key)?)
 }
 

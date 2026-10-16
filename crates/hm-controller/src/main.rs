@@ -8,6 +8,7 @@ mod engine;
 mod error;
 mod events;
 mod migration;
+mod secrets;
 mod net;
 mod state;
 
@@ -37,6 +38,11 @@ struct Args {
     /// Postgres connection URL.
     #[arg(long, env = "DATABASE_URL", global = true)]
     database_url: Option<String>,
+    /// File holding the master key that seals secrets in the database (the
+    /// CA key, storage keys, identity provider secrets). Create one with
+    /// `hm-controller gen-master-key`; keep it out of the database's backups.
+    #[arg(long, global = true, env = "HM_MASTER_KEY_FILE")]
+    master_key_file: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -63,6 +69,8 @@ enum Cmd {
     },
     /// Print the OpenAPI document.
     Openapi,
+    /// Print a new random master key, for --master-key-file.
+    GenMasterKey,
 }
 
 #[derive(clap::Args)]
@@ -106,6 +114,16 @@ async fn main() -> anyhow::Result<()> {
         println!("{}", api::router().1.to_pretty_json()?);
         return Ok(());
     }
+    if let Cmd::GenMasterKey = args.cmd {
+        println!("{}", hm_pki::Sealer::generate_key());
+        return Ok(());
+    }
+    // Before anything reads a secret (every remaining command uses the CA).
+    secrets::init(
+        args.master_key_file
+            .as_deref()
+            .context("--master-key-file or HM_MASTER_KEY_FILE is required (see `hm-controller gen-master-key`)")?,
+    )?;
 
     let url = args
         .database_url
@@ -151,7 +169,7 @@ async fn main() -> anyhow::Result<()> {
             println!("{token}");
             Ok(())
         }
-        Cmd::Openapi => unreachable!("handled above"),
+        Cmd::Openapi | Cmd::GenMasterKey => unreachable!("handled above"),
     }
 }
 
@@ -185,6 +203,7 @@ async fn bootstrap(db: hm_db::sqlx::PgPool, user: &str, password: &str) -> anyho
 }
 
 async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
+    secrets::seal_existing(&db).await.context("sealing stored secrets")?;
     let ca = ca::load_or_create(&db).await?;
     let (cert_chain, key) = ca::server_identity(&ca, &args.agent_names)?;
     let ca_pem = ca.cert_pem().to_owned();

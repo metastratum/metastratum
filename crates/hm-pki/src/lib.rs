@@ -9,6 +9,10 @@
 //! fingerprint of the CA certificate alongside a one-time secret, the same idea
 //! as kubeadm's discovery token CA hash.
 
+pub mod sealing;
+
+pub use sealing::{SealError, Sealer, is_sealed};
+
 use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;

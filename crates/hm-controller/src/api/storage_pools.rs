@@ -140,9 +140,10 @@ async fn create_pool(
     let kind = req.kind.as_deref().unwrap_or("");
     validate_config(kind, &req.config)?;
     let name = valid_name(&req.name)?;
+    let mut config = req.config.clone();
+    seal_config(&mut config);
     let mut tx = state.db.begin().await?;
-    let id =
-        hm_db::storage_pools::create(&mut tx, name, kind, &req.config, &req.cluster_ids).await?;
+    let id = hm_db::storage_pools::create(&mut tx, name, kind, &config, &req.cluster_ids).await?;
     tx.commit().await?;
     audit(
         &state.db,
@@ -192,8 +193,10 @@ async fn update_pool(
             "detaching clusters from a pool with volumes is not supported yet",
         ));
     }
+    let mut config = req.config.clone();
+    seal_config(&mut config);
     let mut tx = state.db.begin().await?;
-    hm_db::storage_pools::update(&mut tx, id, name, &req.config, &req.cluster_ids).await?;
+    hm_db::storage_pools::update(&mut tx, id, name, &config, &req.cluster_ids).await?;
     tx.commit().await?;
     audit(
         &state.db,
@@ -297,11 +300,25 @@ pub fn clusters_for(
 }
 
 /// The pool as the agent needs it, secrets included.
-pub fn agent_pool(pool: &hm_db::storage_pools::Pool) -> hm_proto::Pool {
-    hm_proto::Pool {
+/// A pool as an agent needs it, secrets opened.
+pub fn agent_pool(pool: &hm_db::storage_pools::Pool) -> anyhow::Result<hm_proto::Pool> {
+    let mut config = pool.config.clone();
+    if let Some(key) = config.get("key").and_then(|k| k.as_str()) {
+        config["key"] = crate::secrets::open(crate::secrets::POOL_KEY, key)?.into();
+    }
+    Ok(hm_proto::Pool {
         id: pool.id.to_string(),
         kind: pool.kind.clone(),
-        config_json: pool.config.to_string(),
+        config_json: config.to_string(),
+    })
+}
+
+/// Seals a config's secrets that came in as plaintext.
+fn seal_config(config: &mut serde_json::Value) {
+    if let Some(key) = config.get("key").and_then(|k| k.as_str())
+        && !hm_pki::is_sealed(key)
+    {
+        config["key"] = crate::secrets::seal(crate::secrets::POOL_KEY, key).into();
     }
 }
 

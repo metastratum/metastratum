@@ -6,7 +6,8 @@
 #
 # Environment:
 #   HM_CONTROLLER  agent endpoint the hosts dial (default https://10.77.0.1:8443)
-#   DATABASE_URL   controller database, used to issue join tokens
+#   DATABASE_URL        controller database, used to issue join tokens
+#   HM_MASTER_KEY_FILE  the controller's master key (join tokens use its CA)
 set -euo pipefail
 
 LAB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

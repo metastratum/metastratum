@@ -146,6 +146,11 @@ and the lab's OVN.
 export DATABASE_URL=postgres://hypermon:hypermon@127.0.0.1:55432/hypermon
 cargo build -p hm-controller
 (cd web && npm run build)
+# Secrets in the database (the CA key, storage keys, identity provider
+# secrets) are sealed with a master key kept outside it.
+mkdir -p ~/.config/hypermon
+(umask 077; target/debug/hm-controller gen-master-key > ~/.config/hypermon/master.key)
+export HM_MASTER_KEY_FILE=~/.config/hypermon/master.key
 HM_ADMIN_PASSWORD='choose-a-long-password' target/debug/hm-controller bootstrap
 target/debug/hm-controller serve --listen 127.0.0.1:18080 \
   --agent-listen 10.77.0.1:8443 --agent-names 10.77.0.1 \

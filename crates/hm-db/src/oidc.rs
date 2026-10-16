@@ -214,3 +214,19 @@ pub async fn sync_roles(
     }
     Ok(())
 }
+
+/// Every tenant's client secret, as stored.
+pub async fn client_secrets(db: impl PgExecutor<'_>) -> Result<Vec<(TenantId, String)>> {
+    Ok(sqlx::query_as("SELECT tenant_id, client_secret FROM identity_providers")
+        .fetch_all(db)
+        .await?)
+}
+
+pub async fn set_client_secret(db: impl PgExecutor<'_>, tenant: TenantId, secret: &str) -> Result<()> {
+    sqlx::query("UPDATE identity_providers SET client_secret = $2 WHERE tenant_id = $1")
+        .bind(tenant)
+        .bind(secret)
+        .execute(db)
+        .await?;
+    Ok(())
+}

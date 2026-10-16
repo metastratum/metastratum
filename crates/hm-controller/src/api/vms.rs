@@ -833,7 +833,7 @@ async fn update_vm(
         if let std::collections::btree_map::Entry::Vacant(e) = pools.entry(d.pool_id) {
             e.insert(super::agent_pool(
                 &hm_db::storage_pools::get(&mut *tx, d.pool_id).await?,
-            ));
+            ).map_err(ApiError::internal)?);
         }
     }
     let define = hm_proto::DefineVm {

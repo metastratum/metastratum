@@ -202,7 +202,10 @@ async fn start(State(state): State<AppState>, Query(q): Query<StartQuery>) -> Ap
     let client = CoreClient::from_provider_metadata(
         meta,
         ClientId::new(provider.client_id.clone()),
-        Some(ClientSecret::new(provider.client_secret.clone())),
+        Some(ClientSecret::new(
+            crate::secrets::open(&crate::secrets::idp_secret(provider.tenant_id), &provider.client_secret)
+                .map_err(ApiError::internal)?,
+        )),
     )
     .set_redirect_uri(RedirectUrl::new(redirect_uri(&state)).map_err(ApiError::internal)?);
     let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
@@ -317,7 +320,10 @@ async fn finish(
     let client = CoreClient::from_provider_metadata(
         meta,
         ClientId::new(provider.client_id.clone()),
-        Some(ClientSecret::new(provider.client_secret.clone())),
+        Some(ClientSecret::new(
+            crate::secrets::open(&crate::secrets::idp_secret(provider.tenant_id), &provider.client_secret)
+                .map_err(|e| e.to_string())?,
+        )),
     )
     .set_redirect_uri(RedirectUrl::new(redirect_uri(state)).map_err(|e| e.to_string())?);
     let tokens = client
@@ -522,7 +528,7 @@ async fn put_provider(
     authorize_resource(&state.db, &p, Perm::UserWrite, id, "tenant").await?;
     let existing = hm_db::oidc::get(&state.db, id).await?;
     let client_secret = match (req.client_secret.filter(|s| !s.is_empty()), &existing) {
-        (Some(s), _) => s,
+        (Some(s), _) => crate::secrets::seal(&crate::secrets::idp_secret(id), &s),
         (None, Some(e)) => e.client_secret.clone(),
         (None, None) => return Err(ApiError::bad_request("a client secret is required")),
     };

@@ -65,7 +65,7 @@ async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
     for disk in &spec.disks {
         if let std::collections::btree_map::Entry::Vacant(e) = pools.entry(disk.pool_id) {
             let p = hm_db::storage_pools::get(db, disk.pool_id).await?;
-            e.insert(crate::api::agent_pool(&p));
+            e.insert(crate::api::agent_pool(&p)?);
         }
     }
 
@@ -220,7 +220,7 @@ pub async fn delete(ctx: &TaskCtx) -> Result<()> {
         .context("removing domain")?;
         ctx.step("volumes", 0.5).await;
         for vol in hm_db::vms::volumes_for_vm(db, id).await? {
-            let pool = crate::api::agent_pool(&hm_db::storage_pools::get(db, vol.pool_id).await?);
+            let pool = crate::api::agent_pool(&hm_db::storage_pools::get(db, vol.pool_id).await?)?;
             call(
                 ctx,
                 host,
