@@ -1,13 +1,14 @@
 # Local development dependencies.
 #   docker compose -f deploy/dev/compose.yaml up -d
-#   export DATABASE_URL=postgres://hypermon:hypermon@127.0.0.1:55432/hypermon
+#   export DATABASE_URL=postgres://metastratum:metastratum@127.0.0.1:55432/metastratum
+name: metastratum
 services:
   postgres:
     image: postgres:18
     environment:
-      POSTGRES_USER: hypermon
-      POSTGRES_PASSWORD: hypermon
-      POSTGRES_DB: hypermon
+      POSTGRES_USER: metastratum
+      POSTGRES_PASSWORD: metastratum
+      POSTGRES_DB: metastratum
     ports:
       - "127.0.0.1:55432:5432"
     volumes:

@@ -41,8 +41,8 @@ async function signOut() {
 <template>
   <template v-if="session.me">
     <header class="bar">
-      <RouterLink to="/vms" class="mark" aria-label="hypermon home">
-        <span class="tape">hypermon</span>
+      <RouterLink to="/vms" class="mark" aria-label="metastratum home">
+        <span class="tape">metastratum</span>
       </RouterLink>
       <nav aria-label="Main">
         <RouterLink to="/vms">Machines</RouterLink>

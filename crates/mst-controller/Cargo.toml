@@ -1,0 +1,52 @@
+[package]
+name = "mst-controller"
+description = "metastratum control plane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+argon2 = "0.6"
+axum = { workspace = true, features = ["ws"] }
+base64.workspace = true
+chrono.workspace = true
+clap.workspace = true
+futures.workspace = true
+mst-authz.workspace = true
+mst-core = { workspace = true, features = ["sqlx", "utoipa"] }
+mst-db.workspace = true
+mst-libvirt.workspace = true
+mst-netplan.workspace = true
+mst-ovsdb.workspace = true
+mst-pki.workspace = true
+mst-proto.workspace = true
+mst-scheduler.workspace = true
+mst-storage.workspace = true
+mst-virtrpc.workspace = true
+metrics = "0.24"
+redis = { version = "1.7", default-features = false, features = ["script", "connection-manager", "tokio-rustls-comp"] }
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+openidconnect = { version = "4", default-features = false }
+rand.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+serde.workspace = true
+serde_json.workspace = true
+sha-crypt = { version = "0.6", features = ["getrandom"] }
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
+tower-http = { workspace = true, features = ["fs", "trace"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+utoipa.workspace = true
+utoipa-axum.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+rustls.workspace = true
+
+[lints]
+workspace = true

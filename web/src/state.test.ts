@@ -26,7 +26,7 @@ describe('vmState', () => {
     expect(vmState(vm('ready', 'missing'))).toEqual({ tone: 'fault', text: 'Missing on host' })
   })
 
-  it('shows transitions only while hypermon is doing the work', () => {
+  it('shows transitions only while metastratum is doing the work', () => {
     expect(vmState(vm('ready', 'stopped', { active_task: 'vm.start' }))).toEqual({ tone: 'busy', text: 'Starting' })
     expect(vmState(vm('ready', 'running', { active_task: 'vm.start' }))).toEqual({ tone: 'on', text: 'Running' })
     expect(vmState(vm('ready', 'running', { active_task: 'vm.stop' }))).toEqual({ tone: 'busy', text: 'Shutting down' })
@@ -45,17 +45,17 @@ describe('powerNote', () => {
     power_observed_at: new Date().toISOString(),
     desired_power: 'running',
     host_connected: true,
-    host_name: 'hm-host1',
+    host_name: 'mst-host1',
     active_task: null,
   }
   it('explains why a VM stopped', () => {
     expect(powerNote(base)).toBe('The guest OS shut down · just now')
-    expect(powerNote({ ...base, power_reason: null })).toBe('Stopped without a request from hypermon · just now')
+    expect(powerNote({ ...base, power_reason: null })).toBe('Stopped without a request from metastratum · just now')
     expect(powerNote({ ...base, power_reason: null, desired_power: 'stopped' })).toBeNull()
   })
   it('flags an ignored shutdown request and an unreachable host', () => {
     expect(powerNote({ ...base, power: 'running', power_reason: null, desired_power: 'stopped' })).toMatch(/still running/)
-    expect(powerNote({ ...base, host_connected: false })).toBe('hm-host1 isn’t reporting, so this may be out of date. Last known state: stopped.')
+    expect(powerNote({ ...base, host_connected: false })).toBe('mst-host1 isn’t reporting, so this may be out of date. Last known state: stopped.')
   })
 })
 

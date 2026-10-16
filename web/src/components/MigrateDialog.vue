@@ -68,7 +68,7 @@ async function submit() {
         <legend class="label">Destination</legend>
         <label class="check">
           <input v-model="choice" type="radio" :value="null" :disabled="!anyUsable" />
-          Let hypermon choose
+          Let metastratum choose
         </label>
         <label v-for="o in options" :key="o.host.id" class="check" :class="{ off: o.why }">
           <input v-model="choice" type="radio" :value="o.host.id" :disabled="!!o.why" />

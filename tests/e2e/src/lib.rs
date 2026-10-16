@@ -1,7 +1,7 @@
 //! Helpers for end-to-end tests against a live controller and lab.
 //!
-//! Tests run only when `HM_E2E_URL` is set, e.g.
-//! `HM_E2E_URL=http://127.0.0.1:18080 HM_E2E_PASSWORD=... cargo test -p hm-e2e -- --nocapture`.
+//! Tests run only when `MST_E2E_URL` is set, e.g.
+//! `MST_E2E_URL=http://127.0.0.1:18080 MST_E2E_PASSWORD=... cargo test -p mst-e2e -- --nocapture`.
 
 use std::time::{Duration, Instant};
 
@@ -18,8 +18,8 @@ pub struct Api {
 
 /// Returns a logged-in client, or `None` when e2e tests are not configured.
 pub async fn connect() -> Result<Option<Api>> {
-    let Ok(base) = std::env::var("HM_E2E_URL") else {
-        eprintln!("HM_E2E_URL not set; skipping");
+    let Ok(base) = std::env::var("MST_E2E_URL") else {
+        eprintln!("MST_E2E_URL not set; skipping");
         return Ok(None);
     };
     // reqwest uses the process-wide rustls provider.
@@ -29,8 +29,8 @@ pub async fn connect() -> Result<Option<Api>> {
         base: base.trim_end_matches('/').to_owned(),
         http,
     };
-    let user = std::env::var("HM_E2E_USER").unwrap_or_else(|_| "admin".into());
-    let password = std::env::var("HM_E2E_PASSWORD").context("HM_E2E_PASSWORD is required")?;
+    let user = std::env::var("MST_E2E_USER").unwrap_or_else(|_| "admin".into());
+    let password = std::env::var("MST_E2E_PASSWORD").context("MST_E2E_PASSWORD is required")?;
     api.send(
         reqwest::Method::POST,
         "/auth/login",
@@ -233,7 +233,7 @@ impl Api {
         {
             return Ok(i["id"].as_str().unwrap().to_owned());
         }
-        let url = std::env::var("HM_E2E_IMAGE_URL").unwrap_or_else(|_| {
+        let url = std::env::var("MST_E2E_IMAGE_URL").unwrap_or_else(|_| {
             "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2".into()
         });
         let img = self
@@ -379,9 +379,9 @@ impl Console {
     }
 }
 
-/// With `HM_E2E_DEBUG` set, prints console traffic to stderr.
+/// With `MST_E2E_DEBUG` set, prints console traffic to stderr.
 fn debug(dir: &str, data: &[u8]) {
-    if std::env::var_os("HM_E2E_DEBUG").is_some() {
+    if std::env::var_os("MST_E2E_DEBUG").is_some() {
         eprintln!("{dir} {:?}", String::from_utf8_lossy(data));
     }
 }

@@ -1,5 +1,5 @@
 {
-  "name": "hypermon-web",
+  "name": "metastratum-web",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -8,7 +8,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest run",
-    "api": "cargo run -q -p hm-controller -- openapi > openapi.json && npx -y -p typescript@5.9.3 -p openapi-typescript@7.13.0 openapi-typescript openapi.json -o src/api/schema.d.ts",
+    "api": "cargo run -q -p mst-controller -- openapi > openapi.json && npx -y -p typescript@5.9.3 -p openapi-typescript@7.13.0 openapi-typescript openapi.json -o src/api/schema.d.ts",
     "e2e": "playwright test"
   },
   "dependencies": {

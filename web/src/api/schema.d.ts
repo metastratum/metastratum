@@ -325,10 +325,10 @@ export interface paths {
         /**
          * Takes a host out of service for good; it must have no VMs. It leaves its
          *     cluster and its certificates are revoked, so its agent cannot connect
-         *     again. With `wipe`, its agent first removes hypermon from the machine:
+         *     again. With `wipe`, its agent first removes metastratum from the machine:
          *     lets go of storage pools, deletes cached images, local volumes, seeds,
-         *     hypermon's TLS files and libvirt secrets, puts back the OVN southbound
-         *     settings hypermon changed (OVN itself, which the admin set up, stays),
+         *     metastratum's TLS files and libvirt secrets, puts back the OVN southbound
+         *     settings metastratum changed (OVN itself, which the admin set up, stays),
          *     removes its own identity and stops. To use the machine again, enroll it
          *     anew.
          */
@@ -625,7 +625,7 @@ export interface paths {
         /**
          * Removes a pool that holds no VM disks. By default it is only unlinked:
          *     hosts unmount it and forget its credentials, and its storage is left as
-         *     it is; with `delete_data` hypermon's data on the storage goes too.
+         *     it is; with `delete_data` metastratum's data on the storage goes too.
          */
         delete: operations["delete_pool"];
         options?: never;
@@ -1440,7 +1440,7 @@ export interface components {
             /** @description Name in the hosts' `ovn-bridge-mappings`. */
             physical_network: string;
             pool_end: string;
-            /** @description The range hypermon hands out (VPC gateways, floating IPs). */
+            /** @description The range metastratum hands out (VPC gateways, floating IPs). */
             pool_start: string;
             /**
              * Format: int64
@@ -1550,7 +1550,7 @@ export interface components {
         JoinTokenView: {
             /** Format: date-time */
             expires_at: string;
-            /** @description Pass to `hm-agent --join-token`. Shown only once. */
+            /** @description Pass to `mst-agent --join-token`. Shown only once. */
             token: string;
         };
         /** @enum {string} */
@@ -2793,9 +2793,9 @@ export interface operations {
         parameters: {
             query?: {
                 /**
-                 * @description Also remove hypermon from the machine (its agent does, if
+                 * @description Also remove metastratum from the machine (its agent does, if
                  *     connected). Without it the host is only unlinked: retired in
-                 *     hypermon, the machine left as it is.
+                 *     metastratum, the machine left as it is.
                  */
                 wipe?: boolean;
             };
@@ -3659,7 +3659,7 @@ export interface operations {
         parameters: {
             query?: {
                 /**
-                 * @description Also remove hypermon's data from the pool's storage (cached images,
+                 * @description Also remove metastratum's data from the pool's storage (cached images,
                  *     volumes left). Without it the pool is only unlinked: hosts let go of
                  *     it, and the storage is left as it is. Data on storage another pool
                  *     uses always stays.

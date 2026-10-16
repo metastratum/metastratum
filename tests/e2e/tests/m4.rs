@@ -7,12 +7,12 @@
 //! ID), lose few pings, and the connection must still work afterwards.
 //!
 //! Cancelling a migration leaves the VM where it was. With
-//! `HM_E2E_EVACUATE=1` a host is also evacuated; that moves every VM on it,
+//! `MST_E2E_EVACUATE=1` a host is also evacuated; that moves every VM on it,
 //! not only the test's.
 
 use std::time::Duration;
 
-use hm_e2e::{Api, Console};
+use mst_e2e::{Api, Console};
 use reqwest::Method;
 use serde_json::{Value, json};
 
@@ -66,7 +66,7 @@ fn ping_counts(log: &str) -> Option<(u32, u32)> {
 
 #[tokio::test]
 async fn live_migration_keeps_vms_running_and_reachable() -> anyhow::Result<()> {
-    let Some(api) = hm_e2e::connect().await? else {
+    let Some(api) = mst_e2e::connect().await? else {
         return Ok(());
     };
     let run = format!(
@@ -322,7 +322,7 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
     let task = migrate(api, bound_id, json!({})).await?;
     assert_eq!(task["state"], "succeeded", "{task}");
 
-    if std::env::var_os("HM_E2E_EVACUATE").is_some() {
+    if std::env::var_os("MST_E2E_EVACUATE").is_some() {
         let host = back["host_id"].as_str().unwrap().to_owned();
         let t = api
             .post(&format!("/hosts/{host}/evacuate"), json!({}))

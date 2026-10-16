@@ -1,0 +1,13 @@
+[package]
+name = "mst-scheduler"
+description = "VM placement: filters and weighers over host capacity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mst-core.workspace = true
+
+[lints]
+workspace = true

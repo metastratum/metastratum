@@ -1,11 +1,11 @@
-# hypermon
+# metastratum
 
 A KVM-based virtual machine management platform: multiple hypervisor hosts,
 OVN-backed virtual networks with ACLs, live migration, nested multi-tenancy and
 a web UI with a virtual console. Controllers run as several replicas; hosts
 that fail are fenced and their VMs restarted elsewhere.
 
-- [Running hypermon](docs/operations.md): controllers in several places,
+- [Running metastratum](docs/operations.md): controllers in several places,
   PostgreSQL and OVN underneath, host failure, upgrades, monitoring
 - [Security](SECURITY.md): the security model, and what the last review
   found
@@ -14,24 +14,24 @@ that fail are fenced and their VMs restarted elsewhere.
 
 | Path | What |
 |---|---|
-| `crates/hm-core` | Shared domain types (IDs, tenant paths, VM specs) |
-| `crates/hm-db` | Postgres repositories |
-| `crates/hm-pki` | Internal CA, certificate issuance, join tokens |
-| `crates/hm-proto` | gRPC protocol between controller and agents (`proto/agent.proto`) |
-| `crates/hm-virtrpc` | Native async client for libvirt's RPC protocol, generated from `remote_protocol.x` |
-| `crates/hm-libvirt` | Domain XML and the agent's libvirt facade (events, consoles) |
-| `crates/hm-netplan` | The network plane as a pure function: model → OVN northbound rows → one transaction |
-| `crates/hm-ovsdb` | OVSDB client for the OVN northbound database |
-| `crates/hm-storage` | Host storage pools: local qcow2, NFS, Ceph RBD |
-| `crates/hm-controller` | Control plane: REST API, agent endpoint, task engine, console relay |
-| `crates/hm-agent` | Host agent: drives libvirt, storage and consoles on each hypervisor |
-| `crates/hmctl` | Admin CLI (placeholder) |
+| `crates/mst-core` | Shared domain types (IDs, tenant paths, VM specs) |
+| `crates/mst-db` | Postgres repositories |
+| `crates/mst-pki` | Internal CA, certificate issuance, join tokens |
+| `crates/mst-proto` | gRPC protocol between controller and agents (`proto/agent.proto`) |
+| `crates/mst-virtrpc` | Native async client for libvirt's RPC protocol, generated from `remote_protocol.x` |
+| `crates/mst-libvirt` | Domain XML and the agent's libvirt facade (events, consoles) |
+| `crates/mst-netplan` | The network plane as a pure function: model → OVN northbound rows → one transaction |
+| `crates/mst-ovsdb` | OVSDB client for the OVN northbound database |
+| `crates/mst-storage` | Host storage pools: local qcow2, NFS, Ceph RBD |
+| `crates/mst-controller` | Control plane: REST API, agent endpoint, task engine, console relay |
+| `crates/mst-agent` | Host agent: drives libvirt, storage and consoles on each hypervisor |
+| `crates/mstctl` | Admin CLI (placeholder) |
 | `web/` | Web UI (Vue 3 + TypeScript) |
 | `tests/e2e` | End-to-end tests against a running controller and lab |
 | `migrations/` | SQL migrations (sqlx) |
 | `deploy/dev` | Local dev dependencies (Postgres, Dex as a test identity provider) |
 | `deploy/systemd` | Units for the controller and the agent |
-| `docs/` | Operating hypermon |
+| `docs/` | Operating metastratum |
 | `deploy/lab` | Nested-KVM lab: 1 control VM + 3 hypervisor VMs |
 
 ## Development
@@ -43,8 +43,8 @@ tests need Postgres, which `deploy/dev/compose.yaml` provides in Docker:
 ```sh
 sudo pacman -S --needed rustup protobuf docker   # Arch; Debian: protobuf-compiler
 rustup target add x86_64-unknown-linux-musl
-docker compose -p hypermon -f deploy/dev/compose.yaml up -d
-export DATABASE_URL=postgres://hypermon:hypermon@127.0.0.1:55432/hypermon
+docker compose -p metastratum -f deploy/dev/compose.yaml up -d
+export DATABASE_URL=postgres://metastratum:metastratum@127.0.0.1:55432/metastratum
 cargo test
 ```
 
@@ -55,14 +55,14 @@ it with `cargo install cargo-audit`; exceptions, each with its reason, are in
 Some tests need extra tools or services and skip themselves without them:
 
 - `virt-xml-validate` and `qemu-img` (ship with libvirt and QEMU)
-- a libvirt daemon: `HM_TEST_LIBVIRT_SOCKET=/run/libvirt/virtqemud-sock`
+- a libvirt daemon: `MST_TEST_LIBVIRT_SOCKET=/run/libvirt/virtqemud-sock`
   (your user needs `qemu:///system` access; the tests create and remove
   small throwaway domains)
-- a Redis server, for shared rate limits: `HM_TEST_REDIS_URL=redis://127.0.0.1:56379`
+- a Redis server, for shared rate limits: `MST_TEST_REDIS_URL=redis://127.0.0.1:56379`
   (in the dev compose file)
 - empty OVN northbound databases that nothing else uses (plain, over TLS,
   and a three-server cluster): `deploy/lab/lab.sh testdb` starts them on the
-  lab and prints the `HM_TEST_OVN_NB_*` variables to export
+  lab and prints the `MST_TEST_OVN_NB_*` variables to export
 
 The web UI lives in `web/`:
 
@@ -80,11 +80,11 @@ npm run api     # regenerate the typed API client after changing the REST API
 
 | VM | Address | Role |
 |---|---|---|
-| `hm-ctl` | 10.77.0.10 | Postgres, OVN central (NB/SB, northd), NFS export, single-node Ceph |
-| `hm-host1..3` | 10.77.0.11–13 | Hypervisors: libvirt/QEMU, OVS, ovn-controller |
+| `mst-ctl` | 10.77.0.10 | Postgres, OVN central (NB/SB, northd), NFS export, single-node Ceph |
+| `mst-host1..3` | 10.77.0.11–13 | Hypervisors: libvirt/QEMU, OVS, ovn-controller |
 
 It needs about 25 GiB of RAM, 14 vCPUs and roughly 15 GB of disk in
-`/var/lib/libvirt/images/hm-lab` (plus a 30 GB thin disk for Ceph).
+`/var/lib/libvirt/images/mst-lab` (plus a 30 GB thin disk for Ceph).
 
 ### One-time host setup
 
@@ -136,7 +136,7 @@ It needs about 25 GiB of RAM, 14 vCPUs and roughly 15 GB of disk in
 ```sh
 deploy/lab/lab.sh up        # create networks, storage pool and VMs; wait until ready
 deploy/lab/lab.sh status
-deploy/lab/lab.sh ssh hm-host1 [cmd...]
+deploy/lab/lab.sh ssh mst-host1 [cmd...]
 deploy/lab/lab.sh ceph      # (re)run the Ceph setup; prints the RBD pool config
 deploy/lab/lab.sh ovn-tls   # serve OVN's northbound database over TLS too; prints the controller flags
 deploy/lab/lab.sh ovn-sb-tls # serve the southbound over TLS with RBAC, for --ovn-sb (see the script)
@@ -144,32 +144,32 @@ deploy/lab/lab.sh testdb    # throwaway OVN northbound databases for tests
 deploy/lab/lab.sh down      # remove VMs and networks; keeps the cached base image
 ```
 
-`up` also sets up Ceph on `hm-ctl` (cephadm; one monitor, manager and OSD,
-pool `hypermon`, client `client.hypermon`) and installs the `rbd` tools on
+`up` also sets up Ceph on `mst-ctl` (cephadm; one monitor, manager and OSD,
+pool `metastratum`, client `client.metastratum`) and installs the `rbd` tools on
 the hypervisors. On a lab created before Ceph was added, `lab.sh ceph` grows
-`hm-ctl` and restarts it once.
+`mst-ctl` and restarts it once.
 
 `up` checks the requirements above first. Once the VMs boot, it verifies
 internet access through NAT and that every hypervisor VM has a usable
 `/dev/kvm`. If anything fails, it stops with the fix.
 
-### Running hypermon against the lab
+### Running metastratum against the lab
 
 The controller runs on your machine and is reachable by the lab hosts as
 `10.77.0.1`, the host side of the lab network. It uses the local dev Postgres
 and the lab's OVN.
 
 ```sh
-export DATABASE_URL=postgres://hypermon:hypermon@127.0.0.1:55432/hypermon
-cargo build -p hm-controller
+export DATABASE_URL=postgres://metastratum:metastratum@127.0.0.1:55432/metastratum
+cargo build -p mst-controller
 (cd web && npm run build)
 # Secrets in the database (the CA key, storage keys, identity provider
 # secrets) are sealed with a master key kept outside it.
-mkdir -p ~/.config/hypermon
-(umask 077; target/debug/hm-controller gen-master-key > ~/.config/hypermon/master.key)
-export HM_MASTER_KEY_FILE=~/.config/hypermon/master.key
-HM_ADMIN_PASSWORD='choose-a-long-password' target/debug/hm-controller bootstrap
-target/debug/hm-controller serve --listen 127.0.0.1:18080 \
+mkdir -p ~/.config/metastratum
+(umask 077; target/debug/mst-controller gen-master-key > ~/.config/metastratum/master.key)
+export MST_MASTER_KEY_FILE=~/.config/metastratum/master.key
+MST_ADMIN_PASSWORD='choose-a-long-password' target/debug/mst-controller bootstrap
+target/debug/mst-controller serve --listen 127.0.0.1:18080 \
   --agent-listen 10.77.0.1:8443 --agent-names 10.77.0.1 \
   --ovn-nb tcp:10.77.0.10:6641 --web-dir web/dist
 ```
@@ -178,7 +178,7 @@ Whoever reaches the northbound database can rewrite every tenant's network,
 so beyond trying things out, use TLS: `deploy/lab/lab.sh ovn-tls` sets it up
 on the lab and prints the `--ovn-nb ssl:...` flags to use instead. Likewise
 for the southbound database the hosts use: create a server certificate with
-`hm-controller ovn-certificate --name hm-ctl --out-dir deploy/lab/.state/ovn-sb-pki`,
+`mst-controller ovn-certificate --name mst-ctl --out-dir deploy/lab/.state/ovn-sb-pki`,
 run `deploy/lab/lab.sh ovn-sb-tls`, and add `--ovn-sb ssl:10.77.0.10:6644`;
 the agents then switch their hosts over.
 
@@ -206,7 +206,7 @@ its next start.
 Add `--metrics-listen 127.0.0.1:9180` for Prometheus metrics, and run a
 second replica beside it (another `--listen` and `--agent-listen`, the same
 database and master key) to try out several controllers; give the agents
-both endpoints, comma-separated, in `HM_CONTROLLER`. Tenants' identity
+both endpoints, comma-separated, in `MST_CONTROLLER`. Tenants' identity
 providers must be on public addresses; to try Dex (below) in a sub-tenant,
 add `--trusted-oidc-issuers http://127.0.0.1:5556/dex`.
 
@@ -219,7 +219,7 @@ cluster granted to them (Tenants → Resources).
 Tenants can sign in through their own OpenID Connect provider (Tenants →
 Sign-in). For trying that out, the dev compose file runs
 [Dex](https://dexidp.io/) at `http://127.0.0.1:5556/dex`, with client ID
-`hypermon`, secret `hypermon-dev-secret`, and a mock login that signs everyone
+`metastratum`, secret `metastratum-dev-secret`, and a mock login that signs everyone
 in as Kilgore Trout in group `authors` (add `groups` to the scopes). The
 controller builds its redirect URI from `--public-url` (default
 `http://<listen address>`); set it when users reach the controller under
@@ -230,39 +230,39 @@ another address.
 Both suites run against the controller above and skip unless pointed at it:
 
 ```sh
-HM_E2E_URL=http://127.0.0.1:18080 HM_E2E_PASSWORD=... cargo test -p hm-e2e -- --nocapture
-cd web && HM_E2E_URL=http://127.0.0.1:18080 HM_E2E_PASSWORD=... npm run e2e
+MST_E2E_URL=http://127.0.0.1:18080 MST_E2E_PASSWORD=... cargo test -p mst-e2e -- --nocapture
+cd web && MST_E2E_URL=http://127.0.0.1:18080 MST_E2E_PASSWORD=... npm run e2e
 ```
 
 The Rust suite creates two VMs, checks both consoles, pings across the overlay
 network between hosts, power-cycles and deletes them; checks tenant isolation,
 inherited roles, quotas, the audit log and API tokens; and boots VMs from the
-lab's NFS export and, with `HM_E2E_RBD_KEY` set to the key `lab.sh ceph`
+lab's NFS export and, with `MST_E2E_RBD_KEY` set to the key `lab.sh ceph`
 prints, from Ceph RBD. For networking it builds VPCs in a child tenant and
 checks isolation between them, SNAT to the lab's external network
 (10.78.0.0/24, registered as `lab-external` on first run), a floating IP that
 only answers SSH while a security group allows it, and a parent's guardrail
 that closes it again regardless. For live migration it moves VMs on local
 disk, NFS and Ceph while another VM pings them and holds a TCP connection to
-them, and checks the guests never restarted; with `HM_E2E_EVACUATE=1` it also
-evacuates a host (which moves every VM on it, not only the test's). With `HM_E2E_DEX=http://127.0.0.1:5556/dex` it also
+them, and checks the guests never restarted; with `MST_E2E_EVACUATE=1` it also
+evacuates a host (which moves every VM on it, not only the test's). With `MST_E2E_DEX=http://127.0.0.1:5556/dex` it also
 signs in through Dex and checks how groups become roles. It also checks that
 live updates (`/api/v1/events`) reach only those allowed to see the change.
 For hardening it checks that tenants' images (and, with Dex, identity
 providers) cannot reach internal addresses, and that hosts renew their
 certificates and migrate with the new ones. With a second replica in
-`HM_E2E_URL2` it checks both serve every host; with `HM_E2E_FENCE=1` it
+`MST_E2E_URL2` it checks both serve every host; with `MST_E2E_FENCE=1` it
 freezes a lab host, waits for it to be fenced and its VM restarted on
 another, then starts the host again and returns it to service. Cluster
 limits are checked from inside guests: a disk write and a transfer between
-two VMs run at the limits' pace, and speed up once they are lifted. `HM_E2E_DEBUG=1` prints
+two VMs run at the limits' pace, and speed up once they are lifted. `MST_E2E_DEBUG=1` prints
 console traffic. The browser suite does the VM lifecycle and tenant
 management through the UI with Playwright, using your installed Chrome.
 
 ## License
 
 MIT; see [LICENSE](LICENSE). The exception is libvirt's protocol definition in
-`crates/hm-virtrpc/proto/`, which keeps its LGPL-2.1-or-later licence and ends
-up in `hm-agent`. [LICENSING.md](LICENSING.md) explains how the two fit
+`crates/mst-virtrpc/proto/`, which keeps its LGPL-2.1-or-later licence and ends
+up in `mst-agent`. [LICENSING.md](LICENSING.md) explains how the two fit
 together, what distributing agent binaries involves, and how to rebuild the
 agent with a modified protocol definition.

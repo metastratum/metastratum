@@ -1,11 +1,11 @@
-// Protocol between hm-controller and hm-agent.
+// Protocol between mst-controller and mst-agent.
 //
 // Agents always dial the controller. `Enrollment` is served with server-only
 // TLS (the agent pins the CA from its join token); `AgentControl` requires the
 // client certificate issued during enrollment.
 syntax = "proto3";
 
-package hypermon.agent.v1;
+package metastratum.agent.v1;
 
 service Enrollment {
   rpc Enroll(EnrollRequest) returns (EnrollResponse);
@@ -86,7 +86,7 @@ message HostFacts {
   string agent_version = 9;
   // Physical networks OVS bridges reach (names from ovn-bridge-mappings).
   repeated string physical_networks = 10;
-  // The host-model CPU (`hm_core::vm::CpuSpec` as JSON), for cluster
+  // The host-model CPU (`mst_core::vm::CpuSpec` as JSON), for cluster
   // baselines; empty if unknown.
   string cpu_json = 11;
   // Whether libvirt accepts TLS connections from other hosts, which live
@@ -108,7 +108,7 @@ message Hello {
   repeated DomainState domains = 2;
   // The protocol revision the agent speaks (0: from before versioning).
   uint32 protocol_version = 3;
-  // Commands it handles, by name (see hm_proto::capability).
+  // Commands it handles, by name (see mst_proto::capability).
   repeated string capabilities = 4;
 }
 
@@ -120,7 +120,7 @@ message Heartbeat {
   bool complete = 2;
 }
 
-// Observed state of a hypermon-managed libvirt domain.
+// Observed state of a metastratum-managed libvirt domain.
 message DomainState {
   string vm_id = 1;
   uint64 generation = 2;
@@ -240,7 +240,7 @@ message DeleteVolume {
 }
 
 // Define (or redefine) the domain for a VM. `spec_json` is an
-// `hm_core::vm::VmSpec`; shared Rust types avoid duplicating the schema here.
+// `mst_core::vm::VmSpec`; shared Rust types avoid duplicating the schema here.
 message DefineVm {
   string vm_id = 1;
   string tenant_id = 2;
@@ -287,7 +287,7 @@ message UndefineVm {
   string vm_id = 1;
 }
 
-// The CPU model all of `cpus_json` (each an `hm_core::vm::CpuSpec`) can run,
+// The CPU model all of `cpus_json` (each an `mst_core::vm::CpuSpec`) can run,
 // keeping only features that survive migration. Returns a CpuSpec.
 message BaselineCpu {
   repeated string cpus_json = 1;
@@ -351,7 +351,7 @@ message LibvirtTls {
 }
 
 // A storage pool was deleted: let go of it on this host (unmount, keyring,
-// libvirt secret) and, if asked, remove hypermon's data from its storage
+// libvirt secret) and, if asked, remove metastratum's data from its storage
 // (only one host is asked, and only when no other pool uses that storage).
 message RemovePool {
   Pool pool = 1;
@@ -365,9 +365,9 @@ message DeleteImage {
   repeated Pool pools = 2;
 }
 
-// The host is being decommissioned and wiped: remove hypermon from it. Lets
-// go of pools; removes cached images, local volumes, seeds, hypermon's TLS
-// files and libvirt secrets; puts back the OVN southbound settings hypermon
+// The host is being decommissioned and wiped: remove metastratum from it. Lets
+// go of pools; removes cached images, local volumes, seeds, metastratum's TLS
+// files and libvirt secrets; puts back the OVN southbound settings metastratum
 // changed (OVN itself is the admin's and stays); then the agent's identity
 // and service. Returns a report (JSON).
 message Decommission {}
@@ -384,7 +384,7 @@ message MigrateVm {
   repeated string copy_disks = 3;
 }
 
-// Progress of the VM's migration job. Returns hm_libvirt::JobStats as JSON.
+// Progress of the VM's migration job. Returns mst_libvirt::JobStats as JSON.
 message MigrationStats {
   string vm_id = 1;
 }

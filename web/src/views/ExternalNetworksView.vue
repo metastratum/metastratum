@@ -64,7 +64,7 @@ async function submit() {
       <div class="actions"><button class="btn primary" @click="edit()">Add external network</button></div>
     </header>
     <p class="intro">
-      Networks outside hypermon that VPCs route to: the internet uplink, a datacenter VLAN. Each is a physical network
+      Networks outside metastratum that VPCs route to: the internet uplink, a datacenter VLAN. Each is a physical network
       on the hosts’ OVS bridges (<span class="mono">ovn-bridge-mappings</span>); VPC gateways run on hosts that reach it.
       Tenants use the ones granted to them.
     </p>

@@ -10,7 +10,7 @@ type VmLike = Pick<Vm, 'status' | 'power' | 'host_connected' | 'active_task'>
  * running, amber while something is in progress, red when broken, dark when
  * off, hollow when we cannot currently know.
  *
- * Only observed facts are shown: what the host reports, and work hypermon is
+ * Only observed facts are shown: what the host reports, and work metastratum is
  * actually doing. The requested power state is not used to guess at
  * transitions; see `powerNote` for when it differs.
  */
@@ -78,7 +78,7 @@ export function powerNote(vm: Pick<Vm, 'status' | 'power' | 'power_reason' | 'po
   if (vm.power === 'stopped' || vm.power === 'crashed') {
     const reason = vm.power_reason ? REASONS[vm.power_reason] : null
     if (reason) return `${reason} · ${ago(vm.power_observed_at)}`
-    if (vm.desired_power === 'running') return `Stopped without a request from hypermon · ${ago(vm.power_observed_at)}`
+    if (vm.desired_power === 'running') return `Stopped without a request from metastratum · ${ago(vm.power_observed_at)}`
   }
   return null
 }

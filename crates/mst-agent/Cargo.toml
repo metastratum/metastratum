@@ -1,0 +1,29 @@
+[package]
+name = "mst-agent"
+description = "metastratum host agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+futures.workspace = true
+mst-core.workspace = true
+mst-libvirt.workspace = true
+mst-pki.workspace = true
+mst-proto.workspace = true
+base64.workspace = true
+mst-storage.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

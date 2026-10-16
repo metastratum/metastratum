@@ -1,0 +1,19 @@
+[package]
+name = "mst-virtrpc"
+description = "Native async client for libvirt's RPC protocol"
+version.workspace = true
+edition.workspace = true
+# proto/remote_protocol.x is libvirt's, under the LGPL-2.1-or-later; the rest
+# of the crate is MIT like the workspace. See LICENSING.md.
+license = "MIT AND LGPL-2.1-or-later"
+rust-version.workspace = true
+
+[dependencies]
+# `time` is needed for rustix 1.1.5's net module to compile.
+rustix = { version = "1.1", features = ["net", "time"] }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

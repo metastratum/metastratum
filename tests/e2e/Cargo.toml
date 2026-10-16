@@ -1,5 +1,5 @@
 [package]
-name = "hm-e2e"
+name = "mst-e2e"
 description = "End-to-end tests against a running controller and lab"
 version.workspace = true
 edition.workspace = true

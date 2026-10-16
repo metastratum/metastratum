@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use hm_e2e::Api;
+use mst_e2e::Api;
 use reqwest::Method;
 use serde_json::{Value, json};
 
@@ -53,7 +53,7 @@ fn number(out: &str, key: &str) -> f64 {
 }
 
 /// Seconds a direct (uncached) write of 100 MB takes inside the guest.
-async fn disk_seconds(serial: &mut hm_e2e::Console) -> anyhow::Result<f64> {
+async fn disk_seconds(serial: &mut mst_e2e::Console) -> anyhow::Result<f64> {
     let (out, rc) = serial
         .run(
             "debian",
@@ -65,7 +65,7 @@ async fn disk_seconds(serial: &mut hm_e2e::Console) -> anyhow::Result<f64> {
     Ok(number(&out, "SECONDS="))
 }
 
-async fn net_seconds(serial: &mut hm_e2e::Console, to: &str) -> anyhow::Result<f64> {
+async fn net_seconds(serial: &mut mst_e2e::Console, to: &str) -> anyhow::Result<f64> {
     let (out, rc) = serial
         .run(
             "debian",
@@ -98,7 +98,7 @@ async fn set_limits(api: &Api, clusters: &[Value], limits: Value) -> anyhow::Res
 
 #[tokio::test]
 async fn vms_are_held_to_their_clusters_limits() -> anyhow::Result<()> {
-    let Some(api) = hm_e2e::connect().await? else {
+    let Some(api) = mst_e2e::connect().await? else {
         return Ok(());
     };
     let clusters = api.get("/clusters").await?.as_array().unwrap().clone();

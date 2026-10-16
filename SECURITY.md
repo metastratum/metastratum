@@ -16,7 +16,7 @@ vulnerability reporting for this repository, rather than in a public issue.
 | Hosts | their own VMs; they can disturb, but not take over, migrations between other hosts (see below) |
 | Controller replicas | everything; they hold the master key |
 
-The boundaries hypermon enforces:
+The boundaries metastratum enforces:
 
 - **Between tenants.** Every API call is authorized against the caller's
   role bindings, which apply to the tenant they are made at and its
@@ -89,7 +89,7 @@ The boundaries hypermon enforces:
 - **Leaving nothing behind**: deleting a pool or an image, or decommissioning
   a host, has the hosts let go of mounts, credentials and cached data
   (hosts that were down do so when they reconnect); Delete, rather than
-  Unlink, also removes hypermon's data from the storage, or hypermon from
+  Unlink, also removes metastratum's data from the storage, or metastratum from
   the machine.
 - **Dependencies** are checked against the RustSec and npm advisory
   databases (`cargo audit`, `npm audit`). One advisory is recorded as not
@@ -118,14 +118,14 @@ A review of the whole system before calling it hardened. Fixed:
 | API tokens carried all of their user's rights | tokens can be limited to roles at tenants |
 | Hosts' ovn-controller used the southbound database with no TLS or RBAC: any host could rewrite every host's flows | agents set up TLS with a certificate per chassis from a separate OVN CA, under OVN's RBAC (`--ovn-sb`) |
 | Unchecked whether IPv6 gets around IPv4-only networks | tested: guests reach no neighbour over IPv6, and cannot advertise themselves as router |
-| Deleting a pool, an image or a host left mounts, storage credentials (Ceph keyrings, libvirt secrets) and cached data on hosts | hosts let go of them at once, or when they reconnect; Delete also removes hypermon's data from the storage or the machine |
+| Deleting a pool, an image or a host left mounts, storage credentials (Ceph keyrings, libvirt secrets) and cached data on hosts | hosts let go of them at once, or when they reconnect; Delete also removes metastratum's data from the storage or the machine |
 | A dependency (`inout` 0.2.3) had been yanked | updated to 0.2.4 |
 
 ## Known issues, and what to do about them
 
 - **Without TLS, OVN's databases are open.** Whoever reaches the northbound
   database can rewrite every tenant's network; whoever reaches the
-  southbound one, every host's flows. hypermon supports TLS for both but
+  southbound one, every host's flows. metastratum supports TLS for both but
   cannot impose it on OVN.
   *Mitigation:* serve the northbound database over TLS (`--ovn-nb ssl:...`
   with `--ovn-ca-cert`, `--ovn-certificate`, `--ovn-private-key`), and run
@@ -190,7 +190,7 @@ A review of the whole system before calling it hardened. Fixed:
 
 ## Deployment checklist
 
-What hypermon offers but leaves to the deployment to switch on:
+What metastratum offers but leaves to the deployment to switch on:
 
 - HTTPS in front of the controllers; `--secure-cookies`, `--public-url`,
   `--trusted-proxies`; the API listening on a private address.

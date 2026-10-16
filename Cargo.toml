@@ -9,17 +9,17 @@ license = "MIT"
 rust-version = "1.97"
 
 [workspace.dependencies]
-hm-authz = { path = "crates/hm-authz" }
-hm-core = { path = "crates/hm-core" }
-hm-db = { path = "crates/hm-db" }
-hm-libvirt = { path = "crates/hm-libvirt" }
-hm-ovsdb = { path = "crates/hm-ovsdb" }
-hm-netplan = { path = "crates/hm-netplan" }
-hm-pki = { path = "crates/hm-pki" }
-hm-proto = { path = "crates/hm-proto" }
-hm-scheduler = { path = "crates/hm-scheduler" }
-hm-storage = { path = "crates/hm-storage" }
-hm-virtrpc = { path = "crates/hm-virtrpc" }
+mst-authz = { path = "crates/mst-authz" }
+mst-core = { path = "crates/mst-core" }
+mst-db = { path = "crates/mst-db" }
+mst-libvirt = { path = "crates/mst-libvirt" }
+mst-ovsdb = { path = "crates/mst-ovsdb" }
+mst-netplan = { path = "crates/mst-netplan" }
+mst-pki = { path = "crates/mst-pki" }
+mst-proto = { path = "crates/mst-proto" }
+mst-scheduler = { path = "crates/mst-scheduler" }
+mst-storage = { path = "crates/mst-storage" }
+mst-virtrpc = { path = "crates/mst-virtrpc" }
 
 anyhow = "1"
 async-stream = "0.3"

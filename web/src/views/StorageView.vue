@@ -188,32 +188,32 @@ async function submit() {
         <template v-if="dialog.kind === 'unlink'">
           <p>Unlink <strong>{{ dialog.pool.name }}</strong>? It must hold no VM disks.</p>
           <ul class="consequences">
-            <li>hypermon forgets the pool: tenants can no longer put disks on it.</li>
+            <li>metastratum forgets the pool: tenants can no longer put disks on it.</li>
             <li>Every host unmounts it and forgets its credentials.</li>
             <li>
-              Its storage is left exactly as it is: hypermon’s cached images and anything else on
+              Its storage is left exactly as it is: metastratum’s cached images and anything else on
               <span class="mono">{{ where(dialog.pool) }}</span> stay. Adding the pool again later finds them there.
             </li>
           </ul>
-          <p class="muted">To also remove hypermon’s data from the storage, choose Delete instead.</p>
+          <p class="muted">To also remove metastratum’s data from the storage, choose Delete instead.</p>
         </template>
         <template v-else-if="dialog.kind === 'delete'">
           <p>
             Delete <strong>{{ dialog.pool.name }}</strong>? It must hold no VM disks. This can’t be undone:
           </p>
           <ul class="consequences">
-            <li>hypermon forgets the pool, and every host unmounts it and forgets its credentials.</li>
+            <li>metastratum forgets the pool, and every host unmounts it and forgets its credentials.</li>
             <li v-if="sharing(dialog.pool).length">
               The data on its storage stays: {{ sharing(dialog.pool).map((p) => p.name).join(', ') }} uses the same
               storage.
             </li>
             <li v-else-if="dialog.pool.kind === 'nfs'" class="error-text">
-              hypermon’s files on <span class="mono">{{ cfg(dialog.pool).server }}:{{ cfg(dialog.pool).export }}</span>
+              metastratum’s files on <span class="mono">{{ cfg(dialog.pool).server }}:{{ cfg(dialog.pool).export }}</span>
               are deleted: its cached images (<span class="mono">images/</span>) and any volumes left. Other files
               there are left alone.
             </li>
             <li v-else class="error-text">
-              hypermon’s images in Ceph pool <span class="mono">{{ cfg(dialog.pool).pool }}</span> are deleted
+              metastratum’s images in Ceph pool <span class="mono">{{ cfg(dialog.pool).pool }}</span> are deleted
               (<span class="mono">img-*</span>). Other images there are left alone.
             </li>
           </ul>
@@ -262,7 +262,7 @@ async function submit() {
               </label>
               <label class="field">
                 <span class="label">Ceph user</span>
-                <input v-model="form.user" required placeholder="hypermon" class="mono" />
+                <input v-model="form.user" required placeholder="metastratum" class="mono" />
               </label>
             </div>
             <label class="field">

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 
-test.skip(!process.env.HM_E2E_URL, 'set HM_E2E_URL to a running controller')
+test.skip(!process.env.MST_E2E_URL, 'set MST_E2E_URL to a running controller')
 
 // The controller's Content-Security-Policy must not block anything the UI
 // does (an inline script or a third-party resource would be refused).
@@ -15,8 +15,8 @@ test.afterEach(() => {
   expect(cspViolations).toEqual([])
 })
 
-const user = process.env.HM_E2E_USER ?? 'admin'
-const password = process.env.HM_E2E_PASSWORD ?? ''
+const user = process.env.MST_E2E_USER ?? 'admin'
+const password = process.env.MST_E2E_PASSWORD ?? ''
 
 async function signIn(page: Page) {
   await page.goto('/vms')
@@ -239,7 +239,7 @@ test('destructive operations say what they remove, and ask first', async ({ page
     .locator('article', { hasText: idle.name, hasNotText: 'Decommissioned' })
     .getByRole('button', { name: 'Manage' })
     .click()
-  // Unlink: the machine is left alone; Delete: hypermon is removed from it,
+  // Unlink: the machine is left alone; Delete: metastratum is removed from it,
   // OVN stays. Both wait for the name. (Cancelled here.)
   for (const [action, says] of [
     ['Unlink', 'Nothing on the machine changes'],

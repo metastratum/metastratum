@@ -57,7 +57,7 @@ type DecommissionReport = {
   certificates_revoked: number
   notes: string[]
 }
-// Unlink retires the host in hypermon only; Delete also wipes hypermon from
+// Unlink retires the host in metastratum only; Delete also wipes metastratum from
 // the machine.
 const decommissioning = ref<Host | null>(null)
 const wipe = ref(false)
@@ -168,8 +168,8 @@ async function createToken() {
       <div class="body">
         <p v-if="tokenError" class="error-text">{{ tokenError }}</p>
         <template v-else-if="token">
-          <p>On the new hypervisor, install <span class="mono">hm-agent</span> and start it once with this token:</p>
-          <pre class="cmd mono">hm-agent --controller https://CONTROLLER:8443 \
+          <p>On the new hypervisor, install <span class="mono">mst-agent</span> and start it once with this token:</p>
+          <pre class="cmd mono">mst-agent --controller https://CONTROLLER:8443 \
   --join-token {{ token.token }}</pre>
           <p class="muted">
             The token works for one host and expires {{ new Date(token.expires_at).toLocaleTimeString() }}. The host
@@ -223,7 +223,7 @@ async function createToken() {
       <form v-else class="form" @submit.prevent="decommission">
         <template v-if="!wipe">
           <p>
-            Unlink <strong>{{ decommissioning.name }}</strong>? This can’t be undone: hypermon retires the host, and
+            Unlink <strong>{{ decommissioning.name }}</strong>? This can’t be undone: metastratum retires the host, and
             leaves the machine as it is.
           </p>
           <ul class="report">
@@ -232,30 +232,30 @@ async function createToken() {
               Its certificates are revoked: its agent can no longer connect, and other hosts no longer trust it.
             </li>
             <li>
-              Nothing on the machine changes: hypermon’s files, mounts, TLS settings and its agent stay, and so does
+              Nothing on the machine changes: metastratum’s files, mounts, TLS settings and its agent stay, and so does
               OVN.
             </li>
             <li>
-              To use the machine with hypermon again, remove the agent’s identity
-              (<span class="mono">/var/lib/hypermon-agent</span>) and enroll it anew.
+              To use the machine with metastratum again, remove the agent’s identity
+              (<span class="mono">/var/lib/metastratum-agent</span>) and enroll it anew.
             </li>
           </ul>
-          <p class="muted">To also remove hypermon from the machine, choose Delete instead.</p>
+          <p class="muted">To also remove metastratum from the machine, choose Delete instead.</p>
         </template>
         <template v-else>
           <p>
-            Delete <strong>{{ decommissioning.name }}</strong>? This can’t be undone: hypermon retires the host and is
+            Delete <strong>{{ decommissioning.name }}</strong>? This can’t be undone: metastratum retires the host and is
             removed from the machine.
           </p>
           <ul class="report">
             <li>The host leaves its cluster and its certificates are revoked.</li>
             <li class="error-text">
-              Storage pools are unmounted, and cached images, local volumes, cloud-init seeds, hypermon’s TLS files
+              Storage pools are unmounted, and cached images, local volumes, cloud-init seeds, metastratum’s TLS files
               and libvirt secrets are deleted.
             </li>
             <li>
-              OVN stays as you set it up; only what hypermon changed goes back (the southbound address, and
-              hypermon’s TLS settings).
+              OVN stays as you set it up; only what metastratum changed goes back (the southbound address, and
+              metastratum’s TLS settings).
             </li>
             <li>The agent removes its identity, then stops and disables itself.</li>
             <li v-if="!decommissioning.connected">
@@ -317,7 +317,7 @@ async function createToken() {
             <strong>Decommission</strong>
             <p class="muted hint">
               Takes the host out of service for good. Unlink retires it here and leaves the machine alone; Delete also
-              removes hypermon from the machine. It must have no VMs.
+              removes metastratum from the machine. It must have no VMs.
             </p>
           </div>
           <SplitButton

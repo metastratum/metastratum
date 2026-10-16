@@ -13,7 +13,7 @@ static SESSIONS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// network (and hand the response back as a disk).
 #[tokio::test]
 async fn tenant_images_are_not_fetched_from_internal_addresses() -> anyhow::Result<()> {
-    let Some(admin) = hm_e2e::connect().await? else {
+    let Some(admin) = mst_e2e::connect().await? else {
         return Ok(());
     };
     let run = format!(
@@ -87,21 +87,21 @@ async fn tenant_images_are_not_fetched_from_internal_addresses() -> anyhow::Resu
     Ok(())
 }
 
-/// With two controller replicas (`HM_E2E_URL2`), each serves every host:
+/// With two controller replicas (`MST_E2E_URL2`), each serves every host:
 /// consoles and VM operations work through either, whichever holds the
 /// host's agent session.
 #[tokio::test]
 async fn every_replica_reaches_every_host() -> anyhow::Result<()> {
     let _sessions = SESSIONS.lock().await;
-    let Some(a) = hm_e2e::connect().await? else {
+    let Some(a) = mst_e2e::connect().await? else {
         return Ok(());
     };
-    let Ok(url2) = std::env::var("HM_E2E_URL2") else {
-        eprintln!("HM_E2E_URL2 not set; skipping");
+    let Ok(url2) = std::env::var("MST_E2E_URL2") else {
+        eprintln!("MST_E2E_URL2 not set; skipping");
         return Ok(());
     };
-    let password = std::env::var("HM_E2E_PASSWORD")?;
-    let b = hm_e2e::Api::login(&url2, "admin", &password, None).await?;
+    let password = std::env::var("MST_E2E_PASSWORD")?;
+    let b = mst_e2e::Api::login(&url2, "admin", &password, None).await?;
     // Both see the same sessions.
     let hosts_a = a.get("/hosts").await?;
     let hosts_b = b.get("/hosts").await?;
@@ -172,19 +172,19 @@ fn virsh(args: &[&str]) -> anyhow::Result<String> {
 
 /// A host that stops responding is fenced and its VMs on shared storage
 /// restart elsewhere. Destructive: freezes a lab host. Runs with
-/// `HM_E2E_FENCE=1`, on the machine running the lab (hosts are fenced with
+/// `MST_E2E_FENCE=1`, on the machine running the lab (hosts are fenced with
 /// libvirt there).
 #[tokio::test]
 async fn failed_hosts_are_fenced_and_their_vms_restart_elsewhere() -> anyhow::Result<()> {
     let _sessions = SESSIONS.lock().await;
-    let Some(api) = hm_e2e::connect().await? else {
+    let Some(api) = mst_e2e::connect().await? else {
         return Ok(());
     };
-    if std::env::var_os("HM_E2E_FENCE").is_none() {
-        eprintln!("HM_E2E_FENCE not set; skipping");
+    if std::env::var_os("MST_E2E_FENCE").is_none() {
+        eprintln!("MST_E2E_FENCE not set; skipping");
         return Ok(());
     }
-    let hosts = hm_e2e::in_service(&api.get("/hosts").await?);
+    let hosts = mst_e2e::in_service(&api.get("/hosts").await?);
     let cluster = hosts[0]["cluster_id"].as_str().unwrap().to_owned();
     let c = api
         .get("/clusters")
@@ -334,10 +334,10 @@ async fn failed_hosts_are_fenced_and_their_vms_restart_elsewhere() -> anyhow::Re
 #[tokio::test]
 async fn hosts_renew_their_certificates() -> anyhow::Result<()> {
     let _sessions = SESSIONS.lock().await;
-    let Some(api) = hm_e2e::connect().await? else {
+    let Some(api) = mst_e2e::connect().await? else {
         return Ok(());
     };
-    let before = hm_e2e::in_service(&api.get("/hosts").await?);
+    let before = mst_e2e::in_service(&api.get("/hosts").await?);
     let asked = chrono::Utc::now();
     for h in &before {
         let id = h["id"].as_str().unwrap();

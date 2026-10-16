@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use hm_e2e::{Api, Console};
+use mst_e2e::{Api, Console};
 use serde_json::{Value, json};
 
 const BOOT: Duration = Duration::from_secs(5 * 60);
@@ -21,7 +21,7 @@ async fn create(api: &Api, image: &str, name: &str) -> anyhow::Result<Value> {
 
 #[tokio::test]
 async fn vm_lifecycle_consoles_and_network() -> anyhow::Result<()> {
-    let Some(api) = hm_e2e::connect().await? else {
+    let Some(api) = mst_e2e::connect().await? else {
         return Ok(());
     };
     let run = format!(
@@ -111,7 +111,7 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn unauthenticated_requests_are_rejected() -> anyhow::Result<()> {
-    let Ok(base) = std::env::var("HM_E2E_URL") else {
+    let Ok(base) = std::env::var("MST_E2E_URL") else {
         return Ok(());
     };
     let _ = rustls::crypto::ring::default_provider().install_default();

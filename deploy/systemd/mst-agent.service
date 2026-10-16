@@ -1,0 +1,14 @@
+[Unit]
+Description=metastratum host agent
+Documentation=https://github.com/iksteen/metastratum
+After=network-online.target libvirtd.service virtqemud.service ovn-controller.service
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/metastratum/agent.env
+ExecStart=/usr/local/bin/mst-agent
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+[package]
+name = "mst-libvirt"
+description = "libvirt integration for the metastratum agent: domain XML and an async facade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64.workspace = true
+quick-xml = "0.42"
+mst-virtrpc.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

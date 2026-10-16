@@ -2,8 +2,8 @@ import { defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 
 // The dev server proxies the API (including console WebSockets) to a
-// controller started with `hm-controller serve --listen 127.0.0.1:18080`.
-const controller = process.env.HM_API ?? 'http://127.0.0.1:18080'
+// controller started with `mst-controller serve --listen 127.0.0.1:18080`.
+const controller = process.env.MST_API ?? 'http://127.0.0.1:18080'
 
 export default defineConfig({
   plugins: [vue()],

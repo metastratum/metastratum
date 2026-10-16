@@ -1,11 +1,11 @@
 //! M2 end to end: VMs on a shared NFS pool, and pool grants.
 //!
-//! Uses the NFS export at HM_E2E_NFS (default the lab's
-//! 10.77.0.10:/srv/nfs/hypermon), attached to the `default` cluster.
+//! Uses the NFS export at MST_E2E_NFS (default the lab's
+//! 10.77.0.10:/srv/nfs/metastratum), attached to the `default` cluster.
 
 use std::time::Duration;
 
-use hm_e2e::Api;
+use mst_e2e::Api;
 use reqwest::Method;
 use serde_json::{Value, json};
 
@@ -24,8 +24,9 @@ async fn nfs_pool(admin: &Api) -> anyhow::Result<String> {
     if let Some(id) = find().await? {
         return Ok(id);
     }
-    let nfs = std::env::var("HM_E2E_NFS").unwrap_or_else(|_| "10.77.0.10:/srv/nfs/hypermon".into());
-    let (server, export) = nfs.split_once(':').expect("HM_E2E_NFS is server:/export");
+    let nfs =
+        std::env::var("MST_E2E_NFS").unwrap_or_else(|_| "10.77.0.10:/srv/nfs/metastratum".into());
+    let (server, export) = nfs.split_once(':').expect("MST_E2E_NFS is server:/export");
     let clusters = admin.get("/clusters").await?;
     let default = clusters
         .as_array()
@@ -60,7 +61,7 @@ async fn volumes_in(admin: &Api, pool: &str) -> anyhow::Result<i64> {
 
 #[tokio::test]
 async fn vm_on_nfs_pool() -> anyhow::Result<()> {
-    let Some(admin) = hm_e2e::connect().await? else {
+    let Some(admin) = mst_e2e::connect().await? else {
         return Ok(());
     };
     let pool = nfs_pool(&admin).await?;
@@ -117,7 +118,7 @@ async fn vm_on_nfs_pool() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn shared_pools_need_a_grant() -> anyhow::Result<()> {
-    let Some(admin) = hm_e2e::connect().await? else {
+    let Some(admin) = mst_e2e::connect().await? else {
         return Ok(());
     };
     let pool = nfs_pool(&admin).await?;
@@ -170,15 +171,15 @@ async fn shared_pools_need_a_grant() -> anyhow::Result<()> {
     result
 }
 
-/// Runs when HM_E2E_RBD_KEY holds the key of the lab's `client.hypermon`
+/// Runs when MST_E2E_RBD_KEY holds the key of the lab's `client.metastratum`
 /// (`deploy/lab/lab.sh ceph` prints it).
 #[tokio::test]
 async fn vm_on_rbd_pool() -> anyhow::Result<()> {
-    let Some(admin) = hm_e2e::connect().await? else {
+    let Some(admin) = mst_e2e::connect().await? else {
         return Ok(());
     };
-    let Ok(key) = std::env::var("HM_E2E_RBD_KEY") else {
-        eprintln!("HM_E2E_RBD_KEY not set; skipping");
+    let Ok(key) = std::env::var("MST_E2E_RBD_KEY") else {
+        eprintln!("MST_E2E_RBD_KEY not set; skipping");
         return Ok(());
     };
     let pools = admin.get("/storage-pools").await?;
@@ -198,7 +199,7 @@ async fn vm_on_rbd_pool() -> anyhow::Result<()> {
                 .find(|c| c["name"] == "default")
                 .unwrap()["id"]
                 .clone();
-            let config = json!({"monitors": ["10.77.0.10:6789"], "pool": "hypermon", "user": "hypermon", "key": key});
+            let config = json!({"monitors": ["10.77.0.10:6789"], "pool": "metastratum", "user": "metastratum", "key": key});
             let p = admin.post("/storage-pools", json!({"name": "e2e-rbd", "kind": "rbd", "config": config, "cluster_ids": [default]})).await?;
             assert_eq!(
                 p["config"]["key"], "(set)",

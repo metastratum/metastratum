@@ -1,7 +1,7 @@
 -- M2: role bindings, API tokens, quotas, resource grants and the audit log.
 
 -- A user holds a role at a tenant; it applies to that tenant and every tenant
--- below it. Roles are built in (see hm-authz).
+-- below it. Roles are built in (see mst-authz).
 CREATE TABLE role_bindings (
     id          uuid PRIMARY KEY,
     user_id     uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,

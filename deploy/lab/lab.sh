@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Nested-KVM development lab for hypermon.
+# Nested-KVM development lab for metastratum.
 #
-#   hm-ctl    10.77.0.10   Postgres, OVN central (NB/SB + northd), NFS export,
-#                          single-node Ceph (cephadm) for RBD
-#   hm-host1  10.77.0.11   libvirt/QEMU, OVS + ovn-controller   (nested KVM)
-#   hm-host2  10.77.0.12   〃
-#   hm-host3  10.77.0.13   〃
+#   mst-ctl    10.77.0.10   Postgres, OVN central (NB/SB + northd), NFS export,
+#                           single-node Ceph (cephadm) for RBD
+#   mst-host1  10.77.0.11   libvirt/QEMU, OVS + ovn-controller   (nested KVM)
+#   mst-host2  10.77.0.12   〃
+#   mst-host3  10.77.0.13   〃
 #
 # Networks:
-#   hm-lab  10.77.0.0/24  management + Geneve underlay (NAT to the internet)
-#   hm-ext  10.78.0.0/24  "external" provider network for floating IPs (NAT)
+#   mst-lab  10.77.0.0/24  management + Geneve underlay (NAT to the internet)
+#   mst-ext  10.78.0.0/24  "external" provider network for floating IPs (NAT)
 #
 # Usage: deploy/lab/lab.sh up | down | status | ceph | ovn-tls | ovn-sb-tls | testdb | ssh <vm> [cmd...] | ip <vm>
 #
@@ -17,7 +17,7 @@
 #           and prints the controller's flags for it
 #   ovn-sb-tls  serves the southbound database over TLS with OVN's RBAC
 #           (ssl:10.77.0.10:6644), with a certificate from the controller
-#   testdb  (re)starts empty, unused OVN northbound databases on hm-ctl for
+#   testdb  (re)starts empty, unused OVN northbound databases on mst-ctl for
 #           integration tests (plain, TLS and a three-server cluster) and
 #           prints the variables that point the tests at them
 #
@@ -30,18 +30,18 @@ set -euo pipefail
 LAB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE="$LAB_DIR/.state"
 export LIBVIRT_DEFAULT_URI=qemu:///system
-POOL=hm-lab
-POOL_PATH=/var/lib/libvirt/images/hm-lab
+POOL=mst-lab
+POOL_PATH=/var/lib/libvirt/images/mst-lab
 BASE_URL=https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2
 BASE_VOL=debian-13-base.qcow2
 SSH_KEY="$STATE/id_ed25519"
 
 # name ip mac vcpus mem_mib disk_gib role
 VMS=(
-  "hm-ctl   10.77.0.10 52:54:00:77:00:10 2 7168  20 ctl"
-  "hm-host1 10.77.0.11 52:54:00:77:00:11 4 6144  40 host"
-  "hm-host2 10.77.0.12 52:54:00:77:00:12 4 6144  40 host"
-  "hm-host3 10.77.0.13 52:54:00:77:00:13 4 6144  40 host"
+  "mst-ctl   10.77.0.10 52:54:00:77:00:10 2 7168  20 ctl"
+  "mst-host1 10.77.0.11 52:54:00:77:00:11 4 6144  40 host"
+  "mst-host2 10.77.0.12 52:54:00:77:00:12 4 6144  40 host"
+  "mst-host3 10.77.0.13 52:54:00:77:00:13 4 6144  40 host"
 )
 
 log() { printf '\e[1;34m==>\e[0m %s\n' "$*"; }
@@ -125,7 +125,7 @@ user_data() { # user_data <name> <ip> <role> <ext_mac>
 hostname: $name
 manage_etc_hosts: true
 users:
-  - name: hm
+  - name: mst
     groups: [sudo]
     shell: /bin/bash
     sudo: "ALL=(ALL) NOPASSWD:ALL"
@@ -134,29 +134,29 @@ write_files:
   - path: /etc/hosts
     append: true
     content: |
-      10.77.0.10 hm-ctl
-      10.77.0.11 hm-host1
-      10.77.0.12 hm-host2
-      10.77.0.13 hm-host3
+      10.77.0.10 mst-ctl
+      10.77.0.11 mst-host1
+      10.77.0.12 mst-host2
+      10.77.0.13 mst-host3
 package_update: true
 EOF
   if [[ $role == ctl ]]; then
     cat <<'EOF'
 packages: [postgresql, ovn-central, nfs-kernel-server, qemu-utils]
 runcmd:
-  - [sh, -c, "sudo -u postgres psql -c \"CREATE ROLE hypermon LOGIN PASSWORD 'hypermon'\""]
-  - [sh, -c, "sudo -u postgres createdb -O hypermon hypermon"]
+  - [sh, -c, "sudo -u postgres psql -c \"CREATE ROLE metastratum LOGIN PASSWORD 'metastratum'\""]
+  - [sh, -c, "sudo -u postgres createdb -O metastratum metastratum"]
   - [sh, -c, "pg=$(ls -d /etc/postgresql/*/main); echo \"listen_addresses = '*'\" >> $pg/postgresql.conf; echo 'host all all 10.77.0.0/24 scram-sha-256' >> $pg/pg_hba.conf; systemctl restart postgresql"]
   - [ovn-nbctl, set-connection, "ptcp:6641"]
   - [ovn-sbctl, set-connection, "ptcp:6642"]
-  - [mkdir, -p, /srv/nfs/hypermon]
-  - [sh, -c, "echo '/srv/nfs/hypermon 10.77.0.0/24(rw,sync,no_subtree_check,no_root_squash)' > /etc/exports && exportfs -ra"]
+  - [mkdir, -p, /srv/nfs/metastratum]
+  - [sh, -c, "echo '/srv/nfs/metastratum 10.77.0.0/24(rw,sync,no_subtree_check,no_root_squash)' > /etc/exports && exportfs -ra"]
 EOF
   else
     cat <<EOF
 packages: [qemu-system-x86, qemu-utils, libvirt-daemon-system, openvswitch-switch, ovn-host, nfs-common, genisoimage, ovmf]
 runcmd:
-  - [usermod, -aG, libvirt, hm]
+  - [usermod, -aG, libvirt, mst]
   # OVS resets system-id from this file at every start; keep the chassis name
   # stable across reboots.
   - [sh, -c, "echo $name > /etc/openvswitch/system-id.conf"]
@@ -192,14 +192,14 @@ create_vm() { # create_vm <line>
   virsh vol-upload --pool "$POOL" "$seed" "$dir/seed.iso"
 
   local extra=()
-  [[ $role == host ]] && extra+=(--network "network=hm-ext,mac=$ext_mac,model=virtio")
+  [[ $role == host ]] && extra+=(--network "network=mst-ext,mac=$ext_mac,model=virtio")
   virt-install --noautoconsole --import \
     --name "$name" --vcpus "$vcpus" --memory "$mem" \
     --cpu host-passthrough --osinfo debian13 \
     --boot uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no \
     --disk "vol=$POOL/$vol,bus=virtio" \
     --disk "vol=$POOL/$seed,device=cdrom" \
-    --network "network=hm-lab,mac=$mac,model=virtio" \
+    --network "network=mst-lab,mac=$mac,model=virtio" \
     "${extra[@]}" \
     --graphics none --console pty,target_type=serial >/dev/null
 }
@@ -207,7 +207,7 @@ create_vm() { # create_vm <line>
 ssh_vm() { # ssh_vm <name> [cmd...]
   local name=$1; shift
   ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -o LogLevel=ERROR -o ConnectTimeout=5 "hm@$(vm_field "$name" 1)" "$@"
+    -o LogLevel=ERROR -o ConnectTimeout=5 "mst@$(vm_field "$name" 1)" "$@"
 }
 
 wait_ready() {
@@ -241,79 +241,79 @@ then re-create the lab: $0 down && $0 up"
 cmd_up() {
   preflight
   mkdir -p "$STATE"
-  [[ -f $SSH_KEY ]] || ssh-keygen -q -t ed25519 -N '' -C hm-lab -f "$SSH_KEY"
+  [[ -f $SSH_KEY ]] || ssh-keygen -q -t ed25519 -N '' -C mst-lab -f "$SSH_KEY"
   local hosts="" line
   for line in "${VMS[@]}"; do
     read -r name ip mac _ <<<"$line"
     hosts+="<host mac='$mac' name='$name' ip='$ip'/>"
   done
-  ensure_network hm-lab 10.77.0 "$hosts"
-  ensure_network hm-ext 10.78.0
+  ensure_network mst-lab 10.77.0 "$hosts"
+  ensure_network mst-ext 10.78.0
   ensure_pool
   ensure_base_image
   for line in "${VMS[@]}"; do create_vm "$line"; done
   wait_ready
   cmd_ceph
-  log "lab is up. DATABASE_URL=postgres://hypermon:hypermon@10.77.0.10/hypermon"
+  log "lab is up. DATABASE_URL=postgres://metastratum:metastratum@10.77.0.10/metastratum"
 }
 
 CEPH_MEM_MIB=7168
-CEPH_DISK=hm-ctl-ceph.qcow2
+CEPH_DISK=mst-ctl-ceph.qcow2
 
-# Single-node Ceph on hm-ctl for RBD storage pools: one monitor, one manager
+# Single-node Ceph on mst-ctl for RBD storage pools: one monitor, one manager
 # and one OSD on a dedicated disk, replication size 1. Safe to rerun.
 cmd_ceph() {
   local cur
-  cur=$(virsh dominfo hm-ctl | awk '/Max memory/ {print int($3 / 1024)}')
-  if ! virsh domblklist hm-ctl | grep -q "$CEPH_DISK" || ((cur < CEPH_MEM_MIB)); then
-    log "giving hm-ctl ${CEPH_MEM_MIB} MiB and a Ceph disk (restarts hm-ctl)"
+  cur=$(virsh dominfo mst-ctl | awk '/Max memory/ {print int($3 / 1024)}')
+  if ! virsh domblklist mst-ctl | grep -q "$CEPH_DISK" || ((cur < CEPH_MEM_MIB)); then
+    log "giving mst-ctl ${CEPH_MEM_MIB} MiB and a Ceph disk (restarts mst-ctl)"
     virsh vol-info --pool "$POOL" "$CEPH_DISK" >/dev/null 2>&1 ||
       virsh vol-create-as "$POOL" "$CEPH_DISK" 30G --format qcow2 >/dev/null
-    virsh domblklist hm-ctl | grep -q "$CEPH_DISK" ||
-      virsh attach-disk hm-ctl --source "$POOL_PATH/$CEPH_DISK" --target vdb --driver qemu --subdriver qcow2 --targetbus virtio --config >/dev/null
-    virsh setmaxmem hm-ctl "${CEPH_MEM_MIB}M" --config >/dev/null
-    virsh setmem hm-ctl "${CEPH_MEM_MIB}M" --config >/dev/null
-    virsh shutdown hm-ctl >/dev/null
-    for _ in $(seq 60); do [[ $(virsh domstate hm-ctl) == "shut off" ]] && break; sleep 2; done
-    virsh start hm-ctl >/dev/null
-    for _ in $(seq 60); do ssh_vm hm-ctl true >/dev/null 2>&1 && break; sleep 5; done
+    virsh domblklist mst-ctl | grep -q "$CEPH_DISK" ||
+      virsh attach-disk mst-ctl --source "$POOL_PATH/$CEPH_DISK" --target vdb --driver qemu --subdriver qcow2 --targetbus virtio --config >/dev/null
+    virsh setmaxmem mst-ctl "${CEPH_MEM_MIB}M" --config >/dev/null
+    virsh setmem mst-ctl "${CEPH_MEM_MIB}M" --config >/dev/null
+    virsh shutdown mst-ctl >/dev/null
+    for _ in $(seq 60); do [[ $(virsh domstate mst-ctl) == "shut off" ]] && break; sleep 2; done
+    virsh start mst-ctl >/dev/null
+    for _ in $(seq 60); do ssh_vm mst-ctl true >/dev/null 2>&1 && break; sleep 5; done
   fi
 
-  log "installing Ceph on hm-ctl (first run downloads the Ceph container image)"
-  ssh_vm hm-ctl sudo bash -s <<'REMOTE'
+  log "installing Ceph on mst-ctl (first run downloads the Ceph container image)"
+  ssh_vm mst-ctl sudo bash -s <<'REMOTE'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 command -v cephadm >/dev/null || { apt-get update -qq; apt-get install -y -qq cephadm podman ceph-common >/dev/null; }
 if [ ! -e /etc/ceph/ceph.conf ]; then
   cephadm bootstrap --mon-ip 10.77.0.10 --single-host-defaults --skip-dashboard \
-    --skip-monitoring-stack --skip-firewalld --allow-fqdn-hostname >/var/log/hypermon-ceph-bootstrap.log 2>&1
+    --skip-monitoring-stack --skip-firewalld --allow-fqdn-hostname >/var/log/metastratum-ceph-bootstrap.log 2>&1
 fi
 ceph config set global mon_allow_pool_size_one true
 ceph config set global osd_pool_default_size 1
 if ! ceph osd ls | grep -q .; then
-  ceph orch daemon add osd hm-ctl:/dev/vdb >/dev/null
+  ceph orch daemon add osd mst-ctl:/dev/vdb >/dev/null
 fi
 for _ in $(seq 60); do [ "$(ceph osd stat -f json | python3 -c 'import json,sys; print(json.load(sys.stdin)["num_up_osds"])')" -ge 1 ] && break; sleep 5; done
-if ! ceph osd pool ls | grep -qx hypermon; then
-  ceph osd pool create hypermon 32 >/dev/null
-  ceph osd pool set hypermon size 1 --yes-i-really-mean-it >/dev/null
-  rbd pool init hypermon
+if ! ceph osd pool ls | grep -qx metastratum; then
+  ceph osd pool create metastratum 32 >/dev/null
+  ceph osd pool set metastratum size 1 --yes-i-really-mean-it >/dev/null
+  rbd pool init metastratum
 fi
-ceph auth get-or-create client.hypermon mon 'profile rbd' osd 'profile rbd pool=hypermon' >/dev/null
+ceph auth get-or-create client.metastratum mon 'profile rbd' osd 'profile rbd pool=metastratum' >/dev/null
 REMOTE
 
   local h
-  for h in hm-host1 hm-host2 hm-host3; do
+  for h in mst-host1 mst-host2 mst-host3; do
     ssh_vm "$h" 'command -v rbd >/dev/null || { sudo apt-get update -qq; sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ceph-common >/dev/null; }'
   done
 
   local key
-  key=$(ssh_vm hm-ctl sudo ceph auth get-key client.hypermon)
+  key=$(ssh_vm mst-ctl sudo ceph auth get-key client.metastratum)
   log "Ceph is up. Storage pool config for the API:"
-  printf '  {"monitors": ["10.77.0.10:6789"], "pool": "hypermon", "user": "hypermon", "key": "%s"}\n' "$key"
+  printf '  {"monitors": ["10.77.0.10:6789"], "pool": "metastratum", "user": "metastratum", "key": "%s"}\n' "$key"
 }
 
-# Bash run on hm-ctl: make_pki <dir> <name>... creates a CA in <dir> and a
+# Bash run on mst-ctl: make_pki <dir> <name>... creates a CA in <dir> and a
 # certificate and key per name, signed by it. Like ovs-pki's, the
 # certificates name nothing: OVN checks the CA, not names. Keeps what exists.
 read -r -d '' MAKE_PKI <<'SH' || true
@@ -321,7 +321,7 @@ make_pki() {
   local dir=$1 who; shift
   mkdir -p "$dir" && cd "$dir" && umask 077
   [[ -f ca.pem ]] || openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-    -nodes -days 3650 -subj /CN=hm-ovn-ca -keyout ca-key.pem -out ca.pem 2>/dev/null
+    -nodes -days 3650 -subj /CN=mst-ovn-ca -keyout ca-key.pem -out ca.pem 2>/dev/null
   for who; do
     [[ -f $who.pem ]] && continue
     openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
@@ -336,16 +336,16 @@ SH
 # a client certificate for the controller.
 cmd_ovn_tls() {
   log "serving the OVN northbound database over TLS on ssl:10.77.0.10:6643"
-  { echo "$MAKE_PKI"; cat <<'REMOTE'; } | ssh_vm hm-ctl sudo bash -s
+  { echo "$MAKE_PKI"; cat <<'REMOTE'; } | ssh_vm mst-ctl sudo bash -s
 set -euo pipefail
-make_pki /etc/ovn/hm-pki nb controller
-ovn-nbctl set-ssl /etc/ovn/hm-pki/nb-key.pem /etc/ovn/hm-pki/nb.pem /etc/ovn/hm-pki/ca.pem
+make_pki /etc/ovn/mst-pki nb controller
+ovn-nbctl set-ssl /etc/ovn/mst-pki/nb-key.pem /etc/ovn/mst-pki/nb.pem /etc/ovn/mst-pki/ca.pem
 ovn-nbctl set-connection ptcp:6641 pssl:6643
 REMOTE
   mkdir -p "$STATE/ovn-pki"
   local f
   for f in ca.pem controller.pem controller-key.pem; do
-    (umask 077; ssh_vm hm-ctl sudo cat "/etc/ovn/hm-pki/$f" > "$STATE/ovn-pki/$f")
+    (umask 077; ssh_vm mst-ctl sudo cat "/etc/ovn/mst-pki/$f" > "$STATE/ovn-pki/$f")
   done
   log "controller flags:"
   echo "  --ovn-nb ssl:10.77.0.10:6643 --ovn-ca-cert $STATE/ovn-pki/ca.pem \\"
@@ -356,23 +356,23 @@ REMOTE
 # RBAC: each host may change its own chassis only. The server certificate
 # comes from the controller's OVN CA, which the agents' certificates come
 # from too: create it first with
-#   hm-controller ovn-certificate --name hm-ctl --out-dir deploy/lab/.state/ovn-sb-pki
+#   mst-controller ovn-certificate --name mst-ctl --out-dir deploy/lab/.state/ovn-sb-pki
 # then run the controllers with --ovn-sb ssl:10.77.0.10:6644. The plain
 # listener on 6642 stays for hosts that have not switched yet.
 cmd_ovn_sb_tls() {
   local dir="$STATE/ovn-sb-pki" f
-  for f in ca.pem hm-ctl.pem hm-ctl-key.pem; do
+  for f in ca.pem mst-ctl.pem mst-ctl-key.pem; do
     [[ -f $dir/$f ]] || die "$dir/$f is missing; see the comment above cmd_ovn_sb_tls"
   done
   log "serving the OVN southbound database over TLS with RBAC on ssl:10.77.0.10:6644"
-  ssh_vm hm-ctl sudo install -d -m 700 /etc/ovn/hm-sb-pki
-  for f in ca.pem hm-ctl.pem hm-ctl-key.pem; do
-    ssh_vm hm-ctl sudo sh -c "'umask 077; cat > /etc/ovn/hm-sb-pki/$f'" < "$dir/$f"
+  ssh_vm mst-ctl sudo install -d -m 700 /etc/ovn/mst-sb-pki
+  for f in ca.pem mst-ctl.pem mst-ctl-key.pem; do
+    ssh_vm mst-ctl sudo sh -c "'umask 077; cat > /etc/ovn/mst-sb-pki/$f'" < "$dir/$f"
   done
-  ssh_vm hm-ctl sudo bash -s <<'REMOTE'
+  ssh_vm mst-ctl sudo bash -s <<'REMOTE'
 set -euo pipefail
-p=/etc/ovn/hm-sb-pki
-ovn-sbctl set-ssl $p/hm-ctl-key.pem $p/hm-ctl.pem $p/ca.pem
+p=/etc/ovn/mst-sb-pki
+ovn-sbctl set-ssl $p/mst-ctl-key.pem $p/mst-ctl.pem $p/ca.pem
 if ! ovn-sbctl --bare --columns=target list Connection | grep -qx 'pssl:6644'; then
   ovn-sbctl -- --id=@c create Connection 'target="pssl:6644"' role=ovn-controller \
     -- add SB_Global . connections @c
@@ -383,13 +383,13 @@ REMOTE
 
 cmd_testdb() {
   log "starting scratch OVN northbound databases on 10.77.0.10"
-  { echo "$MAKE_PKI"; cat <<'REMOTE'; } | ssh_vm hm-ctl sudo bash -s
+  { echo "$MAKE_PKI"; cat <<'REMOTE'; } | ssh_vm mst-ctl sudo bash -s
 set -euo pipefail
-for u in hm-test-nb hm-test-nb-ssl hm-test-nb-c1 hm-test-nb-c2 hm-test-nb-c3; do
+for u in mst-test-nb mst-test-nb-ssl mst-test-nb-c1 mst-test-nb-c2 mst-test-nb-c3; do
   systemctl stop $u 2>/dev/null || true
   systemctl reset-failed $u 2>/dev/null || true
 done
-d=/run/hm-test-nb
+d=/run/mst-test-nb
 rm -rf $d && mkdir -p $d/pki
 schema=/usr/share/ovn/ovn-nb.ovsschema
 run() { # run <unit> <db> <args...>
@@ -400,12 +400,12 @@ run() { # run <unit> <db> <args...>
 
 # Standalone, plain TCP.
 ovsdb-tool create $d/nb.db $schema
-run hm-test-nb $d/nb.db --remote=ptcp:6651:10.77.0.10
+run mst-test-nb $d/nb.db --remote=ptcp:6651:10.77.0.10
 
 # Standalone over TLS.
 make_pki $d/pki server client
 ovsdb-tool create $d/nb-ssl.db $schema
-run hm-test-nb-ssl $d/nb-ssl.db --remote=pssl:6652:10.77.0.10 \
+run mst-test-nb-ssl $d/nb-ssl.db --remote=pssl:6652:10.77.0.10 \
   --private-key=$d/pki/server-key.pem --certificate=$d/pki/server.pem --ca-cert=$d/pki/ca.pem
 
 # A three-server cluster: clients on 6653-6655, Raft on 6663-6665.
@@ -414,19 +414,19 @@ for i in 2 3; do
   ovsdb-tool join-cluster $d/c$i.db OVN_Northbound tcp:10.77.0.10:666$((i + 2)) tcp:10.77.0.10:6663
 done
 for i in 1 2 3; do
-  run hm-test-nb-c$i $d/c$i.db --remote=ptcp:665$((i + 2)):10.77.0.10
+  run mst-test-nb-c$i $d/c$i.db --remote=ptcp:665$((i + 2)):10.77.0.10
 done
 REMOTE
   mkdir -p "$STATE/test-nb-pki"
   local f
   for f in ca.pem client.pem client-key.pem; do
-    (umask 077; ssh_vm hm-ctl sudo cat "/run/hm-test-nb/pki/$f" > "$STATE/test-nb-pki/$f")
+    (umask 077; ssh_vm mst-ctl sudo cat "/run/mst-test-nb/pki/$f" > "$STATE/test-nb-pki/$f")
   done
   cat <<EOF
-export HM_TEST_OVN_NB_SCRATCH=tcp:10.77.0.10:6651
-export HM_TEST_OVN_NB_SSL=ssl:10.77.0.10:6652
-export HM_TEST_OVN_NB_PKI=$STATE/test-nb-pki
-export HM_TEST_OVN_NB_CLUSTER=tcp:10.77.0.10:6653,tcp:10.77.0.10:6654,tcp:10.77.0.10:6655
+export MST_TEST_OVN_NB_SCRATCH=tcp:10.77.0.10:6651
+export MST_TEST_OVN_NB_SSL=ssl:10.77.0.10:6652
+export MST_TEST_OVN_NB_PKI=$STATE/test-nb-pki
+export MST_TEST_OVN_NB_CLUSTER=tcp:10.77.0.10:6653,tcp:10.77.0.10:6654,tcp:10.77.0.10:6655
 EOF
 }
 
@@ -443,7 +443,7 @@ cmd_down() {
     virsh vol-delete --pool "$POOL" "$name-seed.iso" >/dev/null 2>&1 || true
   done
   virsh vol-delete --pool "$POOL" "$CEPH_DISK" >/dev/null 2>&1 || true
-  for net in hm-lab hm-ext; do
+  for net in mst-lab mst-ext; do
     virsh net-destroy "$net" >/dev/null 2>&1 || true
     virsh net-undefine "$net" >/dev/null 2>&1 || true
   done
@@ -451,8 +451,8 @@ cmd_down() {
 }
 
 cmd_status() {
-  virsh list --all | grep -E 'Id|---|hm-' || true
-  virsh net-list --all | grep -E 'Name|---|hm-' || true
+  virsh list --all | grep -E 'Id|---|mst-' || true
+  virsh net-list --all | grep -E 'Name|---|mst-' || true
 }
 
 main() {

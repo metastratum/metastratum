@@ -13,7 +13,7 @@ CREATE TABLE storage_pools (
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 
--- The built-in local pool has a fixed ID (hm_core::ids::LOCAL_POOL).
+-- The built-in local pool has a fixed ID (mst_core::ids::LOCAL_POOL).
 INSERT INTO storage_pools (id, name, kind) VALUES ('00000000-0000-0000-0000-000000000001', 'local', 'local');
 
 CREATE TABLE storage_pool_clusters (

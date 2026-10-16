@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use hm_e2e::Api;
+use mst_e2e::Api;
 use reqwest::Method;
 use serde_json::{Value, json};
 
@@ -36,7 +36,7 @@ async fn create_vm(
 
 #[tokio::test]
 async fn nested_tenancy_roles_quotas_audit_and_tokens() -> anyhow::Result<()> {
-    let Some(admin) = hm_e2e::connect().await? else {
+    let Some(admin) = mst_e2e::connect().await? else {
         return Ok(());
     };
     let base = admin.base.clone();

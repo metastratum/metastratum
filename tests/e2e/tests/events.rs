@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use hm_e2e::Api;
+use mst_e2e::Api;
 use reqwest::Method;
 use serde_json::json;
 
@@ -11,7 +11,7 @@ const PASSWORD: &str = "e2e-password-1";
 
 #[tokio::test]
 async fn changes_reach_only_those_who_may_see_them() -> anyhow::Result<()> {
-    let Some(admin) = hm_e2e::connect().await? else {
+    let Some(admin) = mst_e2e::connect().await? else {
         return Ok(());
     };
     let base = admin.base.clone();

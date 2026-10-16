@@ -9,10 +9,10 @@ web:
 oauth2:
   skipApprovalScreen: true
 staticClients:
-  - id: hypermon
-    name: hypermon
+  - id: metastratum
+    name: metastratum
     # Development only.
-    secret: hypermon-dev-secret
+    secret: metastratum-dev-secret
     redirectURIs:
       - http://127.0.0.1:18080/api/v1/auth/oidc/callback
       - http://127.0.0.1:5173/api/v1/auth/oidc/callback

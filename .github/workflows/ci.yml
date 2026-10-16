@@ -6,7 +6,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  DATABASE_URL: postgres://hypermon:hypermon@localhost:5432/hypermon
+  DATABASE_URL: postgres://metastratum:metastratum@localhost:5432/metastratum
 
 jobs:
   rust:
@@ -15,12 +15,12 @@ jobs:
       postgres:
         image: postgres:18
         env:
-          POSTGRES_USER: hypermon
-          POSTGRES_PASSWORD: hypermon
-          POSTGRES_DB: hypermon
+          POSTGRES_USER: metastratum
+          POSTGRES_PASSWORD: metastratum
+          POSTGRES_DB: metastratum
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U hypermon" --health-interval 5s --health-timeout 5s --health-retries 10
+          --health-cmd "pg_isready -U metastratum" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libvirt-clients qemu-utils
@@ -33,7 +33,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all
       # The agent ships as a static binary.
-      - run: cargo build --release -p hm-agent --target x86_64-unknown-linux-musl
+      - run: cargo build --release -p mst-agent --target x86_64-unknown-linux-musl
 
   web:
     runs-on: ubuntu-24.04

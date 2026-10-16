@@ -32,7 +32,7 @@ CREATE TABLE migrations (
 CREATE INDEX migrations_by_dest ON migrations (dest_host_id);
 
 -- A migration is announced as a change to its VM.
-CREATE OR REPLACE FUNCTION hm_notify_change() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION mst_notify_change() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
     rec record;
     row_id uuid;
@@ -61,7 +61,7 @@ BEGIN
     ELSE
         SELECT path::text INTO tenant_path FROM tenants WHERE tenants.id = rec.tenant_id;
     END IF;
-    PERFORM pg_notify('hm_events', json_build_object(
+    PERFORM pg_notify('mst_events', json_build_object(
         'kind', TG_ARGV[0],
         'id', row_id,
         'op', CASE WHEN TG_TABLE_NAME IN ('security_group_rules', 'migrations') THEN 'update' ELSE lower(TG_OP) END,
@@ -72,4 +72,4 @@ END
 $$;
 
 CREATE TRIGGER migrations_notify AFTER INSERT OR UPDATE OR DELETE ON migrations
-    FOR EACH ROW EXECUTE FUNCTION hm_notify_change('vm');
+    FOR EACH ROW EXECUTE FUNCTION mst_notify_change('vm');

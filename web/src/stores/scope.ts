@@ -4,7 +4,7 @@ import { useSession } from './session'
 
 export type Role = 'admin' | 'operator' | 'viewer'
 
-/** What each built-in role may do; mirrors hm-authz. */
+/** What each built-in role may do; mirrors mst-authz. */
 const ROLE_PERMS: Record<Role, ReadonlySet<string>> = {
   admin: new Set(['*']),
   operator: new Set([
@@ -24,7 +24,7 @@ const ROLE_PERMS: Record<Role, ReadonlySet<string>> = {
 }
 const RANK: Record<Role, number> = { admin: 3, operator: 2, viewer: 1 }
 
-const KEY = 'hypermon.scope'
+const KEY = 'metastratum.scope'
 
 function remembered(): string | null {
   try {

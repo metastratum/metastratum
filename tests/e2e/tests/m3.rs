@@ -11,7 +11,7 @@
 
 use std::time::{Duration, Instant};
 
-use hm_e2e::Api;
+use mst_e2e::Api;
 
 /// Sends router advertisements for 2001:db8:66::/64 (autoconfiguration on)
 /// to all nodes on the first non-loopback interface.
@@ -39,7 +39,7 @@ const EXT_NAME: &str = "lab-external";
 
 #[tokio::test]
 async fn vpcs_security_groups_guardrails_and_floating_ips() -> anyhow::Result<()> {
-    let Some(admin) = hm_e2e::connect().await? else {
+    let Some(admin) = mst_e2e::connect().await? else {
         return Ok(());
     };
     let run = format!(

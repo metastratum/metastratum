@@ -64,7 +64,7 @@ async function submit() {
 <template>
   <div class="page">
     <form class="card" @submit.prevent="submit">
-      <span class="tape">hypermon</span>
+      <span class="tape">metastratum</span>
       <h1>Sign in</h1>
       <label class="field">
         <span class="label">Tenant</span>

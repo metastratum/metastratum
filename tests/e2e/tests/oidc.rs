@@ -1,13 +1,13 @@
 //! Per-tenant OIDC sign-in against Dex (deploy/dev/compose.yaml), whose mock
 //! connector signs everyone in as Kilgore Trout, member of `authors`.
 //!
-//! Runs when HM_E2E_DEX holds Dex's issuer URL, e.g.
-//! `HM_E2E_DEX=http://127.0.0.1:5556/dex`. The controller's public URL must
+//! Runs when MST_E2E_DEX holds Dex's issuer URL, e.g.
+//! `MST_E2E_DEX=http://127.0.0.1:5556/dex`. The controller's public URL must
 //! be one of the redirect URIs registered in deploy/dev/dex.yaml, and as
 //! Dex is on an internal address, the controller must trust it for
 //! sub-tenants (`--trusted-oidc-issuers`).
 
-use hm_e2e::Api;
+use mst_e2e::Api;
 use reqwest::Method;
 use serde_json::{Value, json};
 
@@ -58,11 +58,11 @@ fn roles(me: &Value) -> Vec<String> {
 
 #[tokio::test]
 async fn tenant_users_sign_in_with_their_identity_provider() -> anyhow::Result<()> {
-    let Ok(issuer) = std::env::var("HM_E2E_DEX") else {
-        eprintln!("HM_E2E_DEX not set; skipping");
+    let Ok(issuer) = std::env::var("MST_E2E_DEX") else {
+        eprintln!("MST_E2E_DEX not set; skipping");
         return Ok(());
     };
-    let Some(admin) = hm_e2e::connect().await? else {
+    let Some(admin) = mst_e2e::connect().await? else {
         return Ok(());
     };
     let base = admin.base.clone();
@@ -115,7 +115,7 @@ async fn scenario(
         json!({
             "name": "Dex",
             "issuer": issuer,
-            "client_id": "hypermon",
+            "client_id": "metastratum",
             "scopes": "openid profile email groups",
             "role_mappings": mappings,
         })
@@ -146,7 +146,7 @@ async fn scenario(
         assert!(body.to_string().contains("public"), "{internal}: {body}");
     }
     let mut first = config(json!([{"group": "authors", "role": "viewer"}]));
-    first["client_secret"] = json!("hypermon-dev-secret");
+    first["client_secret"] = json!("metastratum-dev-secret");
     let (st, view) = admin.try_send(Method::PUT, &idp, Some(first)).await?;
     assert_eq!(st, 200, "{view}");
     assert!(view.get("client_secret").is_none(), "{view}");

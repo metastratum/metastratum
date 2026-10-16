@@ -14,7 +14,7 @@ CREATE TABLE external_networks (
     physical_network  text NOT NULL,
     cidr              cidr NOT NULL,
     gateway           inet NOT NULL,
-    -- Addresses hypermon hands out: VPC gateways and floating IPs.
+    -- Addresses metastratum hands out: VPC gateways and floating IPs.
     pool_start        inet NOT NULL,
     pool_end          inet NOT NULL,
     created_at        timestamptz NOT NULL DEFAULT now(),
@@ -146,7 +146,7 @@ ALTER TABLE quotas ADD CONSTRAINT quotas_resource_check
 -- Live updates for the new tables (see the events migration). External
 -- networks are provider infrastructure; rule changes are announced as
 -- changes to their group.
-CREATE OR REPLACE FUNCTION hm_notify_change() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION mst_notify_change() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
     rec record;
     row_id uuid;
@@ -169,7 +169,7 @@ BEGIN
     ELSE
         SELECT path::text INTO tenant_path FROM tenants WHERE tenants.id = rec.tenant_id;
     END IF;
-    PERFORM pg_notify('hm_events', json_build_object(
+    PERFORM pg_notify('mst_events', json_build_object(
         'kind', TG_ARGV[0],
         'id', row_id,
         'op', CASE WHEN TG_TABLE_NAME = 'security_group_rules' THEN 'update' ELSE lower(TG_OP) END,
@@ -179,16 +179,16 @@ BEGIN
 END
 $$;
 CREATE TRIGGER security_group_rules_notify AFTER INSERT OR UPDATE OR DELETE ON security_group_rules
-    FOR EACH ROW EXECUTE FUNCTION hm_notify_change('security_group');
+    FOR EACH ROW EXECUTE FUNCTION mst_notify_change('security_group');
 CREATE TRIGGER vpcs_notify AFTER INSERT OR UPDATE OR DELETE ON vpcs
-    FOR EACH ROW EXECUTE FUNCTION hm_notify_change('vpc');
+    FOR EACH ROW EXECUTE FUNCTION mst_notify_change('vpc');
 CREATE TRIGGER networks_notify AFTER INSERT OR UPDATE OR DELETE ON networks
-    FOR EACH ROW EXECUTE FUNCTION hm_notify_change('network');
+    FOR EACH ROW EXECUTE FUNCTION mst_notify_change('network');
 CREATE TRIGGER external_ips_notify AFTER INSERT OR UPDATE OR DELETE ON external_ips
-    FOR EACH ROW EXECUTE FUNCTION hm_notify_change('external_ip');
+    FOR EACH ROW EXECUTE FUNCTION mst_notify_change('external_ip');
 CREATE TRIGGER security_groups_notify AFTER INSERT OR UPDATE OR DELETE ON security_groups
-    FOR EACH ROW EXECUTE FUNCTION hm_notify_change('security_group');
+    FOR EACH ROW EXECUTE FUNCTION mst_notify_change('security_group');
 CREATE TRIGGER network_policies_notify AFTER INSERT OR UPDATE OR DELETE ON network_policies
-    FOR EACH ROW EXECUTE FUNCTION hm_notify_change('network_policy');
+    FOR EACH ROW EXECUTE FUNCTION mst_notify_change('network_policy');
 CREATE TRIGGER external_networks_notify AFTER INSERT OR UPDATE OR DELETE ON external_networks
-    FOR EACH ROW EXECUTE FUNCTION hm_notify_change('external_network');
+    FOR EACH ROW EXECUTE FUNCTION mst_notify_change('external_network');
