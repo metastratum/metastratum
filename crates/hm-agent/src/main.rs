@@ -104,6 +104,9 @@ async fn main() -> anyhow::Result<()> {
             tracing::warn!(error = %format!("{e:#}"), "installing TLS certificates; live migration will fail")
         }
     }
+    if let Err(e) = tls::restrict_libvirt_clients().await {
+        tracing::warn!(error = %format!("{e:#}"), "restricting libvirt's TLS clients to hosts");
+    }
 
     let pools = Pools::new(&args.data_dir);
     let agent = Arc::new(session::Agent {

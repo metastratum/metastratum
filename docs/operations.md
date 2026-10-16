@@ -141,9 +141,12 @@ every host. Create a PKI with `ovs-pki` (or any CA), then:
 
 Hosts enroll with a single-use join token (Infrastructure → Hosts, or
 `hm-controller join-token`) and get a certificate from the controller's CA,
-valid for a year. Agents renew it when a third of that is left, or on
+valid for 30 days. Agents renew it when a third of that is left, or on
 demand (Renew certificate on the host), and libvirt picks up the new one
-without restarting. `hm_host_cert_expiry_timestamp_seconds` shows how long
+without restarting. The agent also limits libvirt's TLS listener to host
+certificates (`tls_allowed_dn_list` in `libvirtd.conf` or
+`virtproxyd.conf`; it restarts libvirt once to apply that, which running
+VMs do not notice). `hm_host_cert_expiry_timestamp_seconds` shows how long
 each has.
 
 Put a host in maintenance before working on it; Evacuate also live-migrates

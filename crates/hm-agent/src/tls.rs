@@ -129,6 +129,58 @@ pub fn install(id: &HostIdentity) -> Result<bool> {
     Ok(changed)
 }
 
+/// Which clients libvirt's TLS listener lets in: host certificates, whose
+/// common name is the host's ID. The controller's CA also issues
+/// certificates to controller replicas and its agent endpoint; those have
+/// no business with libvirt.
+const ALLOWED_DN: &str = "O=hypermon,CN=????????-????-????-????-????????????";
+const MANAGED: &str = "# Set by hypermon's agent: only hypermon hosts may connect over TLS.";
+
+/// Restricts libvirt's TLS clients to host certificates
+/// (`tls_allowed_dn_list`), restarting the daemon if that changed its
+/// configuration. Running VMs are not affected by the restart.
+pub async fn restrict_libvirt_clients() -> Result<()> {
+    // Monolithic daemon, or the modular one that serves remote clients.
+    for daemon in ["libvirtd", "virtproxyd"] {
+        let conf = format!("/etc/libvirt/{daemon}.conf");
+        let Ok(current) = std::fs::read_to_string(&conf) else {
+            continue;
+        };
+        let updated = with_allowed_dn(&current);
+        if !write_if_changed(Path::new(&conf), &updated, Access::Public)? {
+            continue;
+        }
+        let active = tokio::process::Command::new("systemctl")
+            .args(["is-active", "-q", &format!("{daemon}.service")])
+            .status()
+            .await
+            .is_ok_and(|s| s.success());
+        if active {
+            tracing::info!(%daemon, "restarting libvirt to restrict its TLS clients to hosts");
+            let status = tokio::process::Command::new("systemctl")
+                .args(["restart", &format!("{daemon}.service")])
+                .status()
+                .await?;
+            if !status.success() {
+                anyhow::bail!("restarting {daemon} failed");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A libvirt daemon configuration with hypermon's `tls_allowed_dn_list`
+/// in place of any other.
+fn with_allowed_dn(conf: &str) -> String {
+    let want = format!("tls_allowed_dn_list = [\"{ALLOWED_DN}\"]");
+    let mut lines: Vec<&str> = conf
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("tls_allowed_dn_list") && *l != MANAGED)
+        .collect();
+    lines.extend([MANAGED, want.as_str()]);
+    lines.join("\n") + "\n"
+}
+
 /// Makes libvirt pick up renewed certificates for new TLS connections,
 /// without restarting it.
 pub async fn reload_libvirt() {
@@ -157,4 +209,21 @@ pub async fn listening() -> bool {
         .await,
         Ok(Ok(_))
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn libvirt_clients_are_restricted_once() {
+        let stock = "#tls_allowed_dn_list = [\"DN1\", \"DN2\"]\nlisten_tls = 1\ntls_allowed_dn_list = [\"*\"]\n";
+        let once = super::with_allowed_dn(stock);
+        assert_eq!(super::with_allowed_dn(&once), once, "idempotent");
+        let set: Vec<&str> = once
+            .lines()
+            .filter(|l| l.starts_with("tls_allowed_dn_list"))
+            .collect();
+        assert_eq!(set.len(), 1, "{once}");
+        assert!(set[0].contains("O=hypermon,CN=????????-"), "{once}");
+        assert!(once.contains("listen_tls = 1"));
+    }
 }

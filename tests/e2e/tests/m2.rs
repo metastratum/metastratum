@@ -367,6 +367,84 @@ async fn scenario(admin: &Api, base: &str, run: &str, w: &World) -> anyhow::Resu
     .await?;
     assert_eq!(status(&bot, Method::GET, "/vms", None).await, 401);
 
+    // Scoped tokens do what both their scopes and their user allow.
+    let viewer_a1 = json!([{"tenant_id": w.a1, "role": "viewer"}]);
+    let tok = otto
+        .post("/tokens", json!({"name": "ro", "scopes": viewer_a1}))
+        .await?;
+    assert_eq!(tok["scopes"], viewer_a1);
+    let ro = Api::with_token(base, tok["token"].as_str().unwrap())?;
+    assert_eq!(
+        ro.get(&format!("/vms?tenant_id={}", w.a1))
+            .await?
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let vm1_id = vm1["id"].as_str().unwrap();
+    assert_eq!(
+        status(&ro, Method::POST, &format!("/vms/{vm1_id}/stop"), None).await,
+        403,
+        "a viewer scope cannot stop VMs its user could"
+    );
+    // Nor act as its user: no new tokens, no password change.
+    assert_eq!(
+        status(&ro, Method::POST, "/tokens", Some(json!({"name": "wider"}))).await,
+        403
+    );
+    let otto_id = otto.get("/auth/me").await?["user_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(
+        status(
+            &ro,
+            Method::PATCH,
+            &format!("/users/{otto_id}"),
+            Some(json!({"password": "taken-over-by-a-token"}))
+        )
+        .await,
+        200
+    );
+    // A scope cannot exceed what the user holds.
+    let (st, body) = otto
+        .try_send(
+            Method::POST,
+            "/tokens",
+            Some(json!({"name": "admin", "scopes": [{"tenant_id": w.a1, "role": "admin"}]})),
+        )
+        .await?;
+    assert_eq!(st, 400, "{body}");
+    // An admin's token scoped to a sub-tenant stays there.
+    let tok_a = alice
+        .post(
+            "/tokens",
+            json!({"name": "a1-only", "scopes": [{"tenant_id": w.a1, "role": "admin"}]}),
+        )
+        .await?;
+    let a1_admin = Api::with_token(base, tok_a["token"].as_str().unwrap())?;
+    assert_eq!(
+        status(
+            &a1_admin,
+            Method::GET,
+            &format!("/audit?tenant_id={}", w.a1),
+            None
+        )
+        .await,
+        200
+    );
+    assert_eq!(
+        status(
+            &a1_admin,
+            Method::GET,
+            &format!("/audit?tenant_id={}", w.a),
+            None
+        )
+        .await,
+        403
+    );
+
     // A tenant with VMs cannot be deleted.
     assert_eq!(
         status(admin, Method::DELETE, &format!("/tenants/{}", w.a1), None).await,

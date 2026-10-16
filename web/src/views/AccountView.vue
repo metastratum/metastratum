@@ -4,9 +4,11 @@ import { api, errorText, ok, type Token } from '../api/client'
 import IdChip from '../components/IdChip.vue'
 import ModalDialog from '../components/ModalDialog.vue'
 import { ago } from '../state'
+import { useScope, type Role } from '../stores/scope'
 import { useSession } from '../stores/session'
 
 const session = useSession()
+const scope = useScope()
 const tokens = ref<Token[] | null>(null)
 const error = ref('')
 
@@ -17,11 +19,11 @@ onMounted(load)
 
 // Creating a token; its secret is shown once.
 const creating = ref(false)
-const form = ref({ name: '', days: 90 as number | null })
+const form = ref({ name: '', days: 90 as number | null, limited: false, tenant: '', role: 'viewer' as Role })
 const secret = ref('')
 const busy = ref(false)
 function startCreate() {
-  form.value = { name: '', days: 90 }
+  form.value = { name: '', days: 90, limited: false, tenant: scope.current, role: 'viewer' }
   secret.value = ''
   error.value = ''
   creating.value = true
@@ -30,7 +32,9 @@ async function create() {
   error.value = ''
   busy.value = true
   try {
-    const t = await ok(api.POST('/api/v1/tokens', { body: { name: form.value.name, expires_in_days: form.value.days } }))
+    const f = form.value
+    const scopes = f.limited ? [{ tenant_id: f.tenant, role: f.role }] : null
+    const t = await ok(api.POST('/api/v1/tokens', { body: { name: f.name, expires_in_days: f.days, scopes } }))
     secret.value = t.token
     await load()
   } catch (e) {
@@ -71,6 +75,9 @@ async function changePassword() {
   }
 }
 
+const tenantName = (id: string) => scope.byId.get(id)?.name ?? 'a tenant you can no longer see'
+const access = (t: Token) =>
+  t.scopes ? t.scopes.map((s) => `${s.role} at ${tenantName(s.tenant_id)}`).join(', ') : 'Everything you can do'
 const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDateString() : 'Never')
 </script>
 
@@ -116,7 +123,7 @@ const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDate
       <div class="actions"><button class="btn primary" @click="startCreate">Create token</button></div>
     </header>
     <p class="intro">
-      For scripts and automation. A token acts as you, with your roles; send it as
+      For scripts and automation. A token acts as you, with your roles or fewer; send it as
       <span class="mono">Authorization: Bearer …</span>.
     </p>
     <p v-if="error && !creating" class="error-text">{{ error }}</p>
@@ -125,6 +132,7 @@ const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDate
         <thead>
           <tr>
             <th>Name</th>
+            <th>Access</th>
             <th>Created</th>
             <th>Last used</th>
             <th>Expires</th>
@@ -134,6 +142,7 @@ const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDate
         <tbody>
           <tr v-for="t in tokens" :key="t.id">
             <td>{{ t.name }}</td>
+            <td class="muted">{{ access(t) }}</td>
             <td class="muted">{{ ago(t.created_at) }}</td>
             <td class="muted">{{ t.last_used_at ? ago(t.last_used_at) : 'Never' }}</td>
             <td class="muted">{{ expiry(t) }}</td>
@@ -157,6 +166,30 @@ const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDate
           <span class="hint">So you can tell your tokens apart.</span>
         </label>
         <label class="field">
+          <span class="label">Access</span>
+          <select v-model="form.limited">
+            <option :value="false">Everything you can do</option>
+            <option :value="true">One role, at one tenant</option>
+          </select>
+          <span class="hint">A limited token can’t change your account or make other tokens.</span>
+        </label>
+        <div v-if="form.limited" class="pair">
+          <label class="field">
+            <span class="label">Role</span>
+            <select v-model="form.role">
+              <option value="viewer">Viewer</option>
+              <option value="operator">Operator</option>
+              <option value="admin">Admin</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="label">At tenant</span>
+            <select v-model="form.tenant" required>
+              <option v-for="t in scope.tenants" :key="t.id" :value="t.id">{{ t.name }}{{ t.slug_path ? ` (/${t.slug_path})` : '' }}</option>
+            </select>
+          </label>
+        </div>
+        <label class="field">
           <span class="label">Expires</span>
           <select v-model="form.days">
             <option :value="7">In 7 days</option>
@@ -177,6 +210,11 @@ const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDate
 </template>
 
 <style scoped>
+.pair {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 12px;
+}
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));

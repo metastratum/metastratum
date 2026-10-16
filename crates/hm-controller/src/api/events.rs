@@ -171,6 +171,7 @@ mod tests {
                 tenant: acme.clone(),
                 role: Role::Operator,
             }],
+            limited: false,
         };
         assert!(visible(&p, None, &change("vm", Some(&dev))));
         assert!(!visible(&p, None, &change("vm", Some(&other))));

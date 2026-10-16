@@ -47,6 +47,27 @@ pub enum Perm {
 }
 
 impl Perm {
+    pub const ALL: [Perm; 18] = [
+        Perm::TenantRead,
+        Perm::TenantWrite,
+        Perm::UserRead,
+        Perm::UserWrite,
+        Perm::QuotaWrite,
+        Perm::GrantWrite,
+        Perm::VmRead,
+        Perm::VmWrite,
+        Perm::VmConsole,
+        Perm::ImageRead,
+        Perm::ImageWrite,
+        Perm::NetworkRead,
+        Perm::NetworkWrite,
+        Perm::PolicyWrite,
+        Perm::TaskRead,
+        Perm::AuditRead,
+        Perm::InfraRead,
+        Perm::InfraWrite,
+    ];
+
     /// Permissions governing a tenant from above.
     pub fn checked_on_parent(self) -> bool {
         matches!(self, Perm::QuotaWrite | Perm::GrantWrite)
@@ -145,6 +166,31 @@ pub fn scopes(bindings: &[Binding], perm: Perm) -> Vec<&TenantPath> {
     for p in paths {
         if !out.iter().any(|o| o.is_ancestor_or_self_of(p)) {
             out.push(p);
+        }
+    }
+    out
+}
+
+/// What two sets of bindings both allow, as bindings: where a binding of
+/// each covers a common subtree, the deeper tenant with the weaker role.
+/// Roles are nested (admin ⊇ operator ⊇ viewer), so this is exact:
+/// `allows(intersect(a, b), p, t) == allows(a, p, t) && allows(b, p, t)`.
+pub fn intersect(a: &[Binding], b: &[Binding]) -> Vec<Binding> {
+    let mut out = vec![];
+    for x in a {
+        for y in b {
+            let tenant = if x.tenant.is_ancestor_or_self_of(&y.tenant) {
+                &y.tenant
+            } else if y.tenant.is_ancestor_or_self_of(&x.tenant) {
+                &x.tenant
+            } else {
+                continue;
+            };
+            // Role's order runs from most to least powerful.
+            out.push(Binding {
+                tenant: tenant.clone(),
+                role: x.role.max(y.role),
+            });
         }
     }
     out
@@ -257,5 +303,42 @@ mod tests {
             assert_eq!(r.as_str().parse::<Role>().unwrap(), r);
         }
         assert!("root".parse::<Role>().is_err());
+    }
+
+    #[test]
+    fn intersections_allow_what_both_allow() {
+        let t = tree();
+        let all = [
+            t.root.clone(),
+            t.acme.clone(),
+            t.dev.clone(),
+            t.globex.clone(),
+        ];
+        let b = |tenant: &TenantPath, role| Binding {
+            tenant: tenant.clone(),
+            role,
+        };
+        let user = [b(&t.root, Role::Operator), b(&t.dev, Role::Admin)];
+        let token = [b(&t.acme, Role::Admin), b(&t.globex, Role::Viewer)];
+        let both = intersect(&user, &token);
+        let perms = [
+            Perm::TenantRead,
+            Perm::UserWrite,
+            Perm::VmWrite,
+            Perm::VmRead,
+            Perm::InfraRead,
+            Perm::InfraWrite,
+        ];
+        for target in &all {
+            for perm in perms {
+                assert_eq!(
+                    allows(&both, perm, target),
+                    allows(&user, perm, target) && allows(&token, perm, target),
+                    "{perm:?} at {target:?}"
+                );
+            }
+        }
+        // Disjoint subtrees leave nothing.
+        assert!(intersect(&[b(&t.acme, Role::Admin)], &[b(&t.globex, Role::Admin)]).is_empty());
     }
 }

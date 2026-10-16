@@ -245,7 +245,8 @@ async fn update_user(
     Json(req): Json<UpdateUser>,
 ) -> ApiResult<Json<UserView>> {
     let user = hm_db::users::get(&state.db, id).await?;
-    let is_self = id == p.user_id;
+    // A scoped token acts within its scopes only, not as its user.
+    let is_self = id == p.user_id && !p.limited;
     if !is_self || req.disabled.is_some() {
         authorize_resource(&state.db, &p, Perm::UserWrite, user.tenant_id, "user").await?;
     }

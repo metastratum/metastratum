@@ -18,7 +18,12 @@ pub struct Principal {
     /// The tenant the user belongs to (and signs in to).
     pub tenant_id: TenantId,
     pub tenant_path: TenantPath,
+    /// What the principal may do: its user's roles, narrowed to the token's
+    /// scopes when it signed in with a scoped token.
     pub bindings: Vec<Binding>,
+    /// Signed in with a scoped token: it may not act as its user beyond
+    /// those scopes, so not change the account or make tokens either.
+    pub limited: bool,
 }
 
 impl Principal {
@@ -41,7 +46,44 @@ impl Principal {
             tenant_id: tenant.id,
             tenant_path: tenant.path,
             bindings,
+            limited: false,
         })
+    }
+
+    /// Narrows the principal to an API token's scopes. Scopes at tenants
+    /// that no longer exist grant nothing.
+    pub async fn limit_to(
+        mut self,
+        db: &PgPool,
+        scopes: &[hm_db::rbac::TokenScope],
+    ) -> ApiResult<Self> {
+        let ids: Vec<TenantId> = scopes.iter().map(|s| s.tenant_id).collect();
+        let paths = hm_db::rbac::tenant_paths(db, &ids).await?;
+        let scope: Vec<Binding> = scopes
+            .iter()
+            .filter_map(|s| {
+                Some(Binding {
+                    tenant: paths.iter().find(|(id, _)| *id == s.tenant_id)?.1.clone(),
+                    role: s.role.parse().ok()?,
+                })
+            })
+            .collect();
+        self.bindings = hm_authz::intersect(&self.bindings, &scope);
+        self.limited = true;
+        Ok(self)
+    }
+
+    /// Requires a principal that may act as its user: not a scoped token.
+    pub fn require_full(&self) -> ApiResult<()> {
+        if self.limited {
+            Err(ApiError::new(
+                axum::http::StatusCode::FORBIDDEN,
+                "forbidden",
+                "a scoped API token cannot do this; sign in, or use an unscoped token",
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     pub fn can(&self, perm: Perm, target: &TenantPath) -> bool {

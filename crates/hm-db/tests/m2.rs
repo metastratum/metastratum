@@ -188,7 +188,11 @@ async fn root_admin_count_ignores_disabled_users_and_other_tenants(pool: PgPool)
 async fn api_tokens_resolve_until_expired_or_user_disabled(pool: PgPool) {
     let t = tree(&pool).await;
     let u = user(&pool, t.acme.id, "bot").await;
-    rbac::create_token(&pool, u.id, "ci", "h1", None)
+    let scope = [rbac::TokenScope {
+        tenant_id: t.acme.id,
+        role: "viewer".into(),
+    }];
+    rbac::create_token(&pool, u.id, "ci", "h1", None, Some(&scope))
         .await
         .unwrap();
     rbac::create_token(
@@ -197,11 +201,14 @@ async fn api_tokens_resolve_until_expired_or_user_disabled(pool: PgPool) {
         "old",
         "h2",
         Some(Utc::now() - chrono::Duration::seconds(1)),
+        None,
     )
     .await
     .unwrap();
-    assert_eq!(rbac::resolve_token(&pool, "h1").await.unwrap(), Some(u.id));
-    assert_eq!(rbac::resolve_token(&pool, "h2").await.unwrap(), None);
+    let live = rbac::resolve_token(&pool, "h1").await.unwrap().unwrap();
+    assert_eq!(live.user_id, u.id);
+    assert_eq!(live.scopes.map(|s| s.0), Some(scope.to_vec()));
+    assert!(rbac::resolve_token(&pool, "h2").await.unwrap().is_none());
     assert!(
         rbac::tokens_of(&pool, u.id).await.unwrap()[1]
             .last_used_at
@@ -229,7 +236,7 @@ async fn api_tokens_resolve_until_expired_or_user_disabled(pool: PgPool) {
     )
     .await
     .unwrap();
-    assert_eq!(rbac::resolve_token(&pool, "h1").await.unwrap(), None);
+    assert!(rbac::resolve_token(&pool, "h1").await.unwrap().is_none());
 }
 
 #[sqlx::test(migrator = "hm_db::MIGRATOR")]

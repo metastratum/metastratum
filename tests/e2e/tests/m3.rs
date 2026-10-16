@@ -12,6 +12,24 @@
 use std::time::{Duration, Instant};
 
 use hm_e2e::Api;
+
+/// Sends router advertisements for 2001:db8:66::/64 (autoconfiguration on)
+/// to all nodes on the first non-loopback interface.
+const ROGUE_RA: &str = r#"
+import socket, struct, time
+ifname = next(n for _, n in socket.if_nameindex() if n != "lo")
+idx = socket.if_nametoindex(ifname)
+s = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_ICMPV6)
+s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, 255)
+s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, idx)
+ra = struct.pack("!BBHBBHII", 134, 0, 0, 64, 0, 1800, 0, 0)
+prefix = struct.pack("!BBBBIII", 3, 4, 64, 0xC0, 86400, 14400, 0)
+prefix += socket.inet_pton(socket.AF_INET6, "2001:db8:66::")
+for _ in range(3):
+    s.sendto(ra + prefix, ("ff02::1", 0, 0, idx))
+    time.sleep(0.5)
+print("sent on", ifname)
+"#;
 use reqwest::Method;
 use serde_json::{Value, json};
 
@@ -295,6 +313,63 @@ async fn scenario(admin: &Api, run: &str, p: &str, c: &str) -> anyhow::Result<()
         )
         .await?;
     assert_ne!(rc, 0, "a1 must not reach b1 in another VPC:\n{out}");
+
+    // Networks are IPv4 only, and IPv6 must not become a way around that:
+    // a guest reaches no neighbour over IPv6, and cannot advertise itself
+    // as their router.
+    let mut neighbour = cid.console(a2_id, "serial").await?;
+    let (out, _) = neighbour
+        .run(
+            "debian",
+            "e2e-password",
+            // Let the kernel act on advertisements itself (systemd-networkd
+            // turns that off and handles them in its own way), so that a2
+            // would surely take one that reached it.
+            "i=$(ip -o link | awk -F': ' '!/ lo:/{print $2; exit}'); \
+             sudo sysctl -qw net.ipv6.conf.$i.accept_ra=2 net.ipv6.conf.$i.autoconf=1; \
+             echo LL=$(ip -6 -o addr show dev $i scope link | awk '{print $4}' | cut -d/ -f1) \
+             RA=$(cat /proc/sys/net/ipv6/conf/$i/accept_ra)",
+        )
+        .await?;
+    assert!(
+        out.contains("RA=2"),
+        "a2 does not accept router advertisements:\n{out}"
+    );
+    let a2_ll = out
+        .split("LL=")
+        .last()
+        .and_then(|l| l.split_whitespace().next())
+        .filter(|l| l.starts_with("fe80"))
+        .unwrap_or_else(|| panic!("a2 has no IPv6 link-local address:\n{out}"))
+        .to_owned();
+    let (out, rc) = serial
+        .run(
+            "debian",
+            "e2e-password",
+            &format!(
+                "ping -6 -c2 -W2 {a2_ll}%$(ip -o link | awk -F': ' '!/ lo:/{{print $2; exit}}')"
+            ),
+        )
+        .await?;
+    assert_ne!(rc, 0, "a1 must not reach a2 over IPv6:\n{out}");
+    let script = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, ROGUE_RA);
+    let (out, rc) = serial
+        .run(
+            "debian",
+            "e2e-password",
+            &format!("echo {script} | base64 -d | sudo python3 -"),
+        )
+        .await?;
+    assert_eq!(rc, 0, "sending the router advertisement:\n{out}");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let (out, _) = neighbour
+        .run("debian", "e2e-password", "ip -6 addr; ip -6 route")
+        .await?;
+    assert!(
+        !out.contains("2001:db8:66"),
+        "a2 took a1's router advertisement:\n{out}"
+    );
+    drop(neighbour);
     drop(serial);
 
     // A floating IP for a2: closed until a group allows SSH.

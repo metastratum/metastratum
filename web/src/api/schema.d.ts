@@ -1300,6 +1300,11 @@ export interface components {
              */
             expires_in_days?: number | null;
             name: string;
+            /**
+             * @description Limit the token to these roles (each at most what you hold there);
+             *     omit for a token that may do everything you may.
+             */
+            scopes?: components["schemas"]["TokenScope"][] | null;
         };
         CreateUser: {
             display_name?: string;
@@ -1779,6 +1784,11 @@ export interface components {
              */
             slug_path: string;
         };
+        /** @description A role a token is limited to, at a tenant and its sub-tenants. */
+        TokenScope: {
+            role: string;
+            tenant_id: components["schemas"]["TenantId"];
+        };
         TokenView: {
             /** Format: date-time */
             created_at: string;
@@ -1789,6 +1799,11 @@ export interface components {
             /** Format: date-time */
             last_used_at?: string | null;
             name: string;
+            /**
+             * @description What the token is limited to; absent when it may do all its user
+             *     may. It never allows more than its user's roles.
+             */
+            scopes?: components["schemas"]["TokenScope"][] | null;
         };
         UpdateExternalNetwork: {
             name: string;

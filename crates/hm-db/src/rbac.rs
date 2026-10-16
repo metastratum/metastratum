@@ -108,6 +108,22 @@ pub async fn grants_of(
         .collect())
 }
 
+/// The paths of tenants that still exist, by ID.
+pub async fn tenant_paths(
+    db: impl PgExecutor<'_>,
+    ids: &[TenantId],
+) -> Result<Vec<(TenantId, TenantPath)>> {
+    let rows: Vec<(TenantId, String)> =
+        sqlx::query_as("SELECT id, path::text FROM tenants WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(db)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, p)| Some((id, TenantPath::parse(&p)?)))
+        .collect())
+}
+
 /// Number of enabled users holding `admin` at the root tenant. Used to refuse
 /// changes that would leave nobody able to administer the provider.
 pub async fn root_admin_count(db: impl PgExecutor<'_>) -> Result<i64> {
@@ -120,6 +136,13 @@ pub async fn root_admin_count(db: impl PgExecutor<'_>) -> Result<i64> {
     .await?)
 }
 
+/// A role an API token is limited to, at a tenant (and its sub-tenants).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TokenScope {
+    pub tenant_id: TenantId,
+    pub role: String,
+}
+
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct ApiToken {
     pub id: Uuid,
@@ -128,6 +151,15 @@ pub struct ApiToken {
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
+    /// `None`: all its user's rights.
+    pub scopes: Option<sqlx::types::Json<Vec<TokenScope>>>,
+}
+
+/// A token in use: its user, and what it is limited to.
+#[derive(Clone, Debug, sqlx::FromRow)]
+pub struct LiveToken {
+    pub user_id: UserId,
+    pub scopes: Option<sqlx::types::Json<Vec<TokenScope>>>,
 }
 
 pub async fn create_token(
@@ -136,23 +168,26 @@ pub async fn create_token(
     name: &str,
     token_hash: &str,
     expires_at: Option<DateTime<Utc>>,
+    scopes: Option<&[TokenScope]>,
 ) -> Result<ApiToken> {
     Ok(sqlx::query_as(
-        "INSERT INTO api_tokens (id, user_id, name, token_hash, expires_at) VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, user_id, name, created_at, expires_at, last_used_at",
+        "INSERT INTO api_tokens (id, user_id, name, token_hash, expires_at, scopes)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, user_id, name, created_at, expires_at, last_used_at, scopes",
     )
     .bind(Uuid::now_v7())
     .bind(user_id)
     .bind(name)
     .bind(token_hash)
     .bind(expires_at)
+    .bind(scopes.map(sqlx::types::Json))
     .fetch_one(db)
     .await?)
 }
 
 pub async fn tokens_of(db: impl PgExecutor<'_>, user_id: UserId) -> Result<Vec<ApiToken>> {
     Ok(sqlx::query_as(
-        "SELECT id, user_id, name, created_at, expires_at, last_used_at FROM api_tokens
+        "SELECT id, user_id, name, created_at, expires_at, last_used_at, scopes FROM api_tokens
          WHERE user_id = $1 ORDER BY created_at DESC",
     )
     .bind(user_id)
@@ -170,13 +205,13 @@ pub async fn delete_token(db: impl PgExecutor<'_>, id: Uuid, user_id: UserId) ->
     Ok(res.rows_affected() == 1)
 }
 
-/// Resolves a live token to its (enabled) user and records its use.
-pub async fn resolve_token(db: impl PgExecutor<'_>, token_hash: &str) -> Result<Option<UserId>> {
-    Ok(sqlx::query_scalar(
+/// Resolves a live token of an enabled user, and records its use.
+pub async fn resolve_token(db: impl PgExecutor<'_>, token_hash: &str) -> Result<Option<LiveToken>> {
+    Ok(sqlx::query_as(
         "UPDATE api_tokens t SET last_used_at = now() FROM users u
          WHERE t.token_hash = $1 AND (t.expires_at IS NULL OR t.expires_at > now())
            AND u.id = t.user_id AND NOT u.disabled
-         RETURNING t.user_id",
+         RETURNING t.user_id, t.scopes",
     )
     .bind(token_hash)
     .fetch_optional(db)

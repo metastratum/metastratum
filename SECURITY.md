@@ -46,7 +46,9 @@ The boundaries hypermon enforces:
 
 - **Passwords** are hashed with Argon2id; sign-in takes as long whether or
   not the account exists. **Sessions and API tokens** are random 256-bit
-  values, stored only as hashes. Session cookies are `HttpOnly`,
+  values, stored only as hashes. A token can be limited to roles at
+  tenants below what its user holds; it then also cannot change its user's
+  account or make other tokens. Session cookies are `HttpOnly`,
   `SameSite=Strict` (so requests from other sites do not carry them: the
   defence against cross-site request forgery) and, with `--secure-cookies`,
   `Secure`. Sessions end after 12
@@ -63,10 +65,10 @@ The boundaries hypermon enforces:
   with mutual TLS under the controller's CA; certificates name what they
   belong to (hosts by ID, replicas by name), and are checked against the
   database (a host's current or just-renewed certificate; a live replica).
-  Hosts' certificates last a year and are renewed automatically; their
+  Hosts' certificates last 30 days and are renewed automatically; their
   subjects are chosen by the controller, not taken from the request.
   Libvirt (live migration) uses TLS between hosts with the same
-  certificates. The controller can reach OVN over TLS with a client
+  certificates, and accepts host certificates only. The controller can reach OVN over TLS with a client
   certificate.
 - **Abuse**: requests and password sign-ins are rate limited per client,
   and failed sign-ins per account (see [operations](docs/operations.md#rate-limits)).
@@ -91,31 +93,30 @@ A review of the whole system before calling it hardened. Fixed:
 | No limit on sign-in attempts | rate limits per client and per account |
 | No browser security headers | CSP and the headers above |
 | An agent from another version could be sent commands it does not know | protocol versions and capabilities |
+| Hosts' certificates were valid for a year | 30 days, renewed automatically; longer ones are renewed at once |
+| Hosts' libvirt accepted any certificate the controller's CA issued (replicas' too) | only host certificates (`tls_allowed_dn_list`, kept by the agent) |
+| API tokens carried all of their user's rights | tokens can be limited to roles at tenants |
+| Unchecked whether IPv6 gets around IPv4-only networks | tested: guests reach no neighbour over IPv6, and cannot advertise themselves as router |
 
 Not fixed, and worth knowing:
 
 - **A compromised host can take over the other hosts.** For live migration,
-  each host's libvirt accepts TLS connections from any certificate the
-  controller's CA issued, with full control. Restricting libvirt to host
-  certificates (`tls_allowed_dn_list`) would keep other holders of CA
-  certificates out, but not another host: live migration needs that access.
-  Treat hosts as one trust domain, and keep them off networks guests or
-  tenants reach.
+  each host's libvirt accepts TLS connections from the other hosts, with
+  full control. Treat hosts as one trust domain, and keep them off networks
+  guests or tenants reach.
 - **No certificate revocation.** A decommissioned host's certificate is
   refused by the controllers, but other hosts' libvirt accepts it until it
-  expires (up to a year). Reinstall a host you no longer trust, and replace
+  expires (up to 30 days). Reinstall a host you no longer trust, and replace
   the CA if one was compromised (every host must then enroll again).
 - **OVN southbound access** is not configured by hypermon. With plain TCP,
   anyone who reaches it controls every host's flows. Use TLS with OVN's
   RBAC ([operations](docs/operations.md#ovn)).
 - **Rate limits are per replica**, in memory: N replicas allow N times the
   budget, and a restart resets it.
-- **API tokens carry all of their user's rights**; there are no scopes yet.
-  Give automation its own user with only the roles it needs.
 - **No limits on guests' disk or network bandwidth**: a VM can slow down
   others on the same host or storage.
 - **Networking is IPv4 only.** Port security, security groups and
-  guardrails are written for IPv4.
+  guardrails are written for IPv4; guests' IPv6 is dropped.
 - **Inline styles are allowed** by the CSP (the serial terminal and the UI
   set some); inline scripts are not.
 - The controller serves plain HTTP; HTTPS is the job of the proxy in front

@@ -115,12 +115,19 @@ impl FromRequestParts<AppState> for Principal {
 /// The principal a session ID or API token stands for, if still valid.
 async fn principal_for_secret(state: &AppState, secret: &str) -> Result<Principal, ApiError> {
     let hash = hm_pki::hash_secret(secret);
-    let user_id = if secret.starts_with(TOKEN_PREFIX) {
-        hm_db::rbac::resolve_token(&state.db, &hash).await?
-    } else {
-        hm_db::sessions::resolve(&state.db, &hash).await?
+    if secret.starts_with(TOKEN_PREFIX) {
+        let token = hm_db::rbac::resolve_token(&state.db, &hash)
+            .await?
+            .ok_or_else(ApiError::unauthorized)?;
+        let p = Principal::load(&state.db, token.user_id).await?;
+        return match token.scopes {
+            Some(scopes) => p.limit_to(&state.db, &scopes).await,
+            None => Ok(p),
+        };
     }
-    .ok_or_else(ApiError::unauthorized)?;
+    let user_id = hm_db::sessions::resolve(&state.db, &hash)
+        .await?
+        .ok_or_else(ApiError::unauthorized)?;
     Principal::load(&state.db, user_id).await
 }
 

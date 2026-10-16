@@ -20,7 +20,9 @@ use tonic::{Request, Response, Status, Streaming};
 use super::Tunnel;
 use crate::state::AppState;
 
-const HOST_CERT_LIFETIME: Duration = Duration::from_secs(365 * 86400);
+/// Short, so a leaked certificate is not useful for long; agents renew it
+/// when a third is left.
+pub const HOST_CERT_LIFETIME: Duration = Duration::from_secs(30 * 86400);
 /// Agents heartbeat every few seconds; a silent session is presumed dead.
 const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -337,6 +339,7 @@ impl AgentControl for AgentControlService {
             .map_err(internal)?;
         observe_domains(&state, host, &hello.domains, true).await;
         tracing::info!(%host, "agent session established");
+        renew_if_outlived(&state, host).await;
 
         tokio::spawn(async move {
             loop {
@@ -404,6 +407,31 @@ impl AgentControl for AgentControlService {
         }
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
+}
+
+/// Asks a host to renew a certificate issued for longer than hosts get now
+/// (under an earlier policy), so it does not stay valid that long.
+async fn renew_if_outlived(state: &AppState, host: HostId) {
+    let Ok(h) = hm_db::hosts::get(&state.db, host).await else {
+        return;
+    };
+    let limit = chrono::Utc::now()
+        + chrono::Duration::from_std(HOST_CERT_LIFETIME).unwrap_or_default()
+        + chrono::Duration::days(1);
+    if h.cert_expires_at <= limit {
+        return;
+    }
+    tracing::info!(%host, expires = %h.cert_expires_at, "certificate outlives the current policy; asking the host to renew");
+    let agents = state.agents.clone();
+    tokio::spawn(async move {
+        let renew = hm_proto::command::Cmd::RenewCertificate(hm_proto::RenewCertificate {});
+        if let Err(e) = agents
+            .send_local(host, renew, Duration::from_secs(60))
+            .await
+        {
+            tracing::warn!(%host, error = %e, "asking the host to renew its certificate");
+        }
+    });
 }
 
 /// Serves other replicas: commands and consoles for agents connected here.
