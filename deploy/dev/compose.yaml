@@ -1,0 +1,16 @@
+# Local development dependencies.
+#   docker compose -f deploy/dev/compose.yaml up -d
+#   export DATABASE_URL=postgres://hypermon:hypermon@127.0.0.1:55432/hypermon
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: hypermon
+      POSTGRES_PASSWORD: hypermon
+      POSTGRES_DB: hypermon
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+volumes:
+  pgdata:
