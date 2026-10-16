@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Nested-KVM development lab for hypermon.
 #
-#   hm-ctl    10.77.0.10   Postgres, OVN central (NB/SB + northd), NFS export
+#   hm-ctl    10.77.0.10   Postgres, OVN central (NB/SB + northd), NFS export,
+#                          single-node Ceph (cephadm) for RBD
 #   hm-host1  10.77.0.11   libvirt/QEMU, OVS + ovn-controller   (nested KVM)
 #   hm-host2  10.77.0.12   〃
 #   hm-host3  10.77.0.13   〃
@@ -10,7 +11,7 @@
 #   hm-lab  10.77.0.0/24  management + Geneve underlay (NAT to the internet)
 #   hm-ext  10.78.0.0/24  "external" provider network for floating IPs (NAT)
 #
-# Usage: deploy/lab/lab.sh up | down | status | ssh <vm> [cmd...] | ip <vm>
+# Usage: deploy/lab/lab.sh up | down | status | ceph | ssh <vm> [cmd...] | ip <vm>
 #
 # Requirements: libvirt system daemon (virtqemud) running, the invoking user
 # in the `libvirt` group, nested virtualisation enabled, genisoimage, curl.
@@ -29,7 +30,7 @@ SSH_KEY="$STATE/id_ed25519"
 
 # name ip mac vcpus mem_mib disk_gib role
 VMS=(
-  "hm-ctl   10.77.0.10 52:54:00:77:00:10 2 3072  20 ctl"
+  "hm-ctl   10.77.0.10 52:54:00:77:00:10 2 7168  20 ctl"
   "hm-host1 10.77.0.11 52:54:00:77:00:11 4 6144  40 host"
   "hm-host2 10.77.0.12 52:54:00:77:00:12 4 6144  40 host"
   "hm-host3 10.77.0.13 52:54:00:77:00:13 4 6144  40 host"
@@ -239,7 +240,64 @@ cmd_up() {
   ensure_base_image
   for line in "${VMS[@]}"; do create_vm "$line"; done
   wait_ready
+  cmd_ceph
   log "lab is up. DATABASE_URL=postgres://hypermon:hypermon@10.77.0.10/hypermon"
+}
+
+CEPH_MEM_MIB=7168
+CEPH_DISK=hm-ctl-ceph.qcow2
+
+# Single-node Ceph on hm-ctl for RBD storage pools: one monitor, one manager
+# and one OSD on a dedicated disk, replication size 1. Safe to rerun.
+cmd_ceph() {
+  local cur
+  cur=$(virsh dominfo hm-ctl | awk '/Max memory/ {print int($3 / 1024)}')
+  if ! virsh domblklist hm-ctl | grep -q "$CEPH_DISK" || ((cur < CEPH_MEM_MIB)); then
+    log "giving hm-ctl ${CEPH_MEM_MIB} MiB and a Ceph disk (restarts hm-ctl)"
+    virsh vol-info --pool "$POOL" "$CEPH_DISK" >/dev/null 2>&1 ||
+      virsh vol-create-as "$POOL" "$CEPH_DISK" 30G --format qcow2 >/dev/null
+    virsh domblklist hm-ctl | grep -q "$CEPH_DISK" ||
+      virsh attach-disk hm-ctl --source "$POOL_PATH/$CEPH_DISK" --target vdb --driver qemu --subdriver qcow2 --targetbus virtio --config >/dev/null
+    virsh setmaxmem hm-ctl "${CEPH_MEM_MIB}M" --config >/dev/null
+    virsh setmem hm-ctl "${CEPH_MEM_MIB}M" --config >/dev/null
+    virsh shutdown hm-ctl >/dev/null
+    for _ in $(seq 60); do [[ $(virsh domstate hm-ctl) == "shut off" ]] && break; sleep 2; done
+    virsh start hm-ctl >/dev/null
+    for _ in $(seq 60); do ssh_vm hm-ctl true >/dev/null 2>&1 && break; sleep 5; done
+  fi
+
+  log "installing Ceph on hm-ctl (first run downloads the Ceph container image)"
+  ssh_vm hm-ctl sudo bash -s <<'REMOTE'
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+command -v cephadm >/dev/null || { apt-get update -qq; apt-get install -y -qq cephadm podman ceph-common >/dev/null; }
+if [ ! -e /etc/ceph/ceph.conf ]; then
+  cephadm bootstrap --mon-ip 10.77.0.10 --single-host-defaults --skip-dashboard \
+    --skip-monitoring-stack --skip-firewalld --allow-fqdn-hostname >/var/log/hypermon-ceph-bootstrap.log 2>&1
+fi
+ceph config set global mon_allow_pool_size_one true
+ceph config set global osd_pool_default_size 1
+if ! ceph osd ls | grep -q .; then
+  ceph orch daemon add osd hm-ctl:/dev/vdb >/dev/null
+fi
+for _ in $(seq 60); do [ "$(ceph osd stat -f json | python3 -c 'import json,sys; print(json.load(sys.stdin)["num_up_osds"])')" -ge 1 ] && break; sleep 5; done
+if ! ceph osd pool ls | grep -qx hypermon; then
+  ceph osd pool create hypermon 32 >/dev/null
+  ceph osd pool set hypermon size 1 --yes-i-really-mean-it >/dev/null
+  rbd pool init hypermon
+fi
+ceph auth get-or-create client.hypermon mon 'profile rbd' osd 'profile rbd pool=hypermon' >/dev/null
+REMOTE
+
+  local h
+  for h in hm-host1 hm-host2 hm-host3; do
+    ssh_vm "$h" 'command -v rbd >/dev/null || { sudo apt-get update -qq; sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ceph-common >/dev/null; }'
+  done
+
+  local key
+  key=$(ssh_vm hm-ctl sudo ceph auth get-key client.hypermon)
+  log "Ceph is up. Storage pool config for the API:"
+  printf '  {"monitors": ["10.77.0.10:6789"], "pool": "hypermon", "user": "hypermon", "key": "%s"}\n' "$key"
 }
 
 cmd_down() {
@@ -254,6 +312,7 @@ cmd_down() {
     virsh vol-delete --pool "$POOL" "$name.qcow2" >/dev/null 2>&1 || true
     virsh vol-delete --pool "$POOL" "$name-seed.iso" >/dev/null 2>&1 || true
   done
+  virsh vol-delete --pool "$POOL" "$CEPH_DISK" >/dev/null 2>&1 || true
   for net in hm-lab hm-ext; do
     virsh net-destroy "$net" >/dev/null 2>&1 || true
     virsh net-undefine "$net" >/dev/null 2>&1 || true
@@ -271,6 +330,7 @@ main() {
     up) cmd_up ;;
     down) cmd_down ;;
     status) cmd_status ;;
+    ceph) cmd_ceph ;;
     ssh) shift; ssh_vm "$@" ;;
     ip) vm_field "$2" 1 ;;
     *) sed -n '2,20p' "$0"; exit 1 ;;

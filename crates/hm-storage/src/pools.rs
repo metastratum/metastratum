@@ -7,6 +7,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
+use crate::rbd::{RbdConfig, RbdPool};
 use crate::{Error, FilePool, Result, run};
 
 /// A pool description from the controller.
@@ -34,12 +35,28 @@ fn default_nfs_options() -> String {
 #[derive(Clone)]
 pub enum Pool {
     File(FilePool),
+    Rbd(RbdPool),
 }
 
 impl Pool {
-    pub fn files(&self) -> &FilePool {
+    pub async fn ensure_image(&self, id: &str, url: &str, format: &str) -> Result<()> {
         match self {
-            Pool::File(f) => f,
+            Pool::File(p) => p.ensure_image(id, url, format).await,
+            Pool::Rbd(p) => p.ensure_image(id, url, format).await,
+        }
+    }
+
+    pub async fn ensure_volume(&self, id: &str, size: u64, image: Option<&str>) -> Result<()> {
+        match self {
+            Pool::File(p) => p.ensure_volume(id, size, image).await,
+            Pool::Rbd(p) => p.ensure_volume(id, size, image).await,
+        }
+    }
+
+    pub async fn delete_volume(&self, id: &str) -> Result<()> {
+        match self {
+            Pool::File(p) => p.delete_volume(id).await,
+            Pool::Rbd(p) => p.delete_volume(id).await,
         }
     }
 }
@@ -82,6 +99,11 @@ impl Pools {
                 p.init().await?;
                 probe_writable(&mountpoint).await?;
                 Pool::File(p)
+            }
+            "rbd" => {
+                let cfg: RbdConfig = serde_json::from_value(spec.config.clone())
+                    .map_err(|e| Error::Pool(format!("RBD config: {e}")))?;
+                Pool::Rbd(RbdPool::new(cfg, &self.mountpoint(spec)?).await?)
             }
             other => return Err(Error::Pool(format!("pool kind {other} is not supported"))),
         };
@@ -157,8 +179,10 @@ mod tests {
             kind: "local".into(),
             config: serde_json::json!({}),
         };
-        let p = pools.get(&spec).await.unwrap();
-        assert!(p.files().volume_path("v1").unwrap().starts_with(&dir));
+        let Pool::File(p) = pools.get(&spec).await.unwrap() else {
+            panic!("local pools are file pools")
+        };
+        assert!(p.volume_path("v1").unwrap().starts_with(&dir));
         assert!(dir.join("images").is_dir() && dir.join("volumes").is_dir());
 
         let bad = PoolSpec {

@@ -36,6 +36,7 @@ pub mod err {
     pub const INVALID_ARG: i32 = 8;
     pub const NO_DOMAIN: i32 = 42;
     pub const OPERATION_INVALID: i32 = 55;
+    pub const NO_SECRET: i32 = 66;
     pub const NO_DOMAIN_METADATA: i32 = 80;
 }
 

@@ -7,8 +7,10 @@
 //! prepares pools on demand from the descriptions the controller sends.
 
 mod pools;
+mod rbd;
 
 pub use pools::{Pool, PoolSpec, Pools};
+pub use rbd::RbdPool;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -52,12 +54,12 @@ fn safe_id(id: &str) -> Result<&str> {
 }
 
 #[derive(Deserialize)]
-struct ImgInfo {
-    format: String,
+pub(crate) struct ImgInfo {
+    pub(crate) format: String,
     #[serde(rename = "virtual-size")]
-    virtual_size: u64,
+    pub(crate) virtual_size: u64,
     #[serde(rename = "backing-filename")]
-    backing_filename: Option<String>,
+    pub(crate) backing_filename: Option<String>,
 }
 
 pub(crate) async fn run(tool: &'static str, args: &[&str]) -> Result<Vec<u8>> {
@@ -71,7 +73,7 @@ pub(crate) async fn run(tool: &'static str, args: &[&str]) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
-async fn img_info(path: &Path, format: Option<&str>) -> Result<ImgInfo> {
+pub(crate) async fn img_info(path: &Path, format: Option<&str>) -> Result<ImgInfo> {
     let p = path.to_string_lossy();
     let mut args = vec!["info", "--output=json"];
     if let Some(f) = format {
@@ -144,23 +146,7 @@ impl FilePool {
         let part = dest.with_extension(format!("{unique}.part"));
         let converted = dest.with_extension(format!("{unique}.tmp"));
         let result = async {
-            download(url, &part).await?;
-            let declared = match format {
-                "qcow2" | "raw" => format,
-                other => return Err(Error::InvalidImage(format!("unsupported format {other}"))),
-            };
-            let info = img_info(&part, Some(declared)).await?;
-            if info.backing_filename.is_some() {
-                return Err(Error::InvalidImage(
-                    "image references a backing file".into(),
-                ));
-            }
-            let (src, dst) = (part.to_string_lossy(), converted.to_string_lossy());
-            run(
-                "qemu-img",
-                &["convert", "-f", declared, "-O", "qcow2", &src, &dst],
-            )
-            .await?;
+            fetch(url, format, &part, &converted, "qcow2").await?;
             set_mode(&converted, 0o644).await?;
             // Another host finished first: keep its copy, which running VMs
             // may already use as a backing file.
@@ -236,7 +222,7 @@ impl FilePool {
     }
 }
 
-fn random_suffix() -> String {
+pub(crate) fn random_suffix() -> String {
     use std::hash::{BuildHasher, Hasher};
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
     h.write_u128(
@@ -251,6 +237,36 @@ fn random_suffix() -> String {
 async fn set_mode(path: &Path, mode: u32) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).await?;
+    Ok(())
+}
+
+/// Downloads `url` to `part`, checks it, and converts it to `out_format` at
+/// `out`. Downloads must not reference backing files, which a hostile image
+/// could use to read arbitrary host files.
+pub(crate) async fn fetch(
+    url: &str,
+    format: &str,
+    part: &Path,
+    out: &Path,
+    out_format: &str,
+) -> Result<()> {
+    download(url, part).await?;
+    let declared = match format {
+        "qcow2" | "raw" => format,
+        other => return Err(Error::InvalidImage(format!("unsupported format {other}"))),
+    };
+    let info = img_info(part, Some(declared)).await?;
+    if info.backing_filename.is_some() {
+        return Err(Error::InvalidImage(
+            "image references a backing file".into(),
+        ));
+    }
+    let (src, dst) = (part.to_string_lossy(), out.to_string_lossy());
+    run(
+        "qemu-img",
+        &["convert", "-f", declared, "-O", out_format, &src, &dst],
+    )
+    .await?;
     Ok(())
 }
 

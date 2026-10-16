@@ -64,11 +64,11 @@ npm run api     # regenerate the typed API client after changing the REST API
 
 | VM | Address | Role |
 |---|---|---|
-| `hm-ctl` | 10.77.0.10 | Postgres, OVN central (NB/SB, northd), NFS export |
+| `hm-ctl` | 10.77.0.10 | Postgres, OVN central (NB/SB, northd), NFS export, single-node Ceph |
 | `hm-host1..3` | 10.77.0.11–13 | Hypervisors: libvirt/QEMU, OVS, ovn-controller |
 
-It needs about 21 GiB of RAM, 14 vCPUs and roughly 10 GB of disk in
-`/var/lib/libvirt/images/hm-lab`.
+It needs about 25 GiB of RAM, 14 vCPUs and roughly 15 GB of disk in
+`/var/lib/libvirt/images/hm-lab` (plus a 30 GB thin disk for Ceph).
 
 ### One-time host setup
 
@@ -121,8 +121,14 @@ It needs about 21 GiB of RAM, 14 vCPUs and roughly 10 GB of disk in
 deploy/lab/lab.sh up        # create networks, storage pool and VMs; wait until ready
 deploy/lab/lab.sh status
 deploy/lab/lab.sh ssh hm-host1 [cmd...]
+deploy/lab/lab.sh ceph      # (re)run the Ceph setup; prints the RBD pool config
 deploy/lab/lab.sh down      # remove VMs and networks; keeps the cached base image
 ```
+
+`up` also sets up Ceph on `hm-ctl` (cephadm; one monitor, manager and OSD,
+pool `hypermon`, client `client.hypermon`) and installs the `rbd` tools on
+the hypervisors. On a lab created before Ceph was added, `lab.sh ceph` grows
+`hm-ctl` and restarts it once.
 
 `up` checks the requirements above first. Once the VMs boot, it verifies
 internet access through NAT and that every hypervisor VM has a usable
@@ -166,7 +172,10 @@ cd web && HM_E2E_URL=http://127.0.0.1:18080 HM_E2E_PASSWORD=... npm run e2e
 ```
 
 The Rust suite creates two VMs, checks both consoles, pings across the overlay
-network between hosts, power-cycles and deletes them. `HM_E2E_DEBUG=1` prints
+network between hosts, power-cycles and deletes them; checks tenant isolation,
+inherited roles, quotas, the audit log and API tokens; and boots VMs from the
+lab's NFS export and, with `HM_E2E_RBD_KEY` set to the key `lab.sh ceph`
+prints, from Ceph RBD. `HM_E2E_DEBUG=1` prints
 console traffic. The browser suite does the same through the UI with Playwright,
 using your installed Chrome.
 

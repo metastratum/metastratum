@@ -169,3 +169,83 @@ async fn shared_pools_need_a_grant() -> anyhow::Result<()> {
         .await?;
     result
 }
+
+/// Runs when HM_E2E_RBD_KEY holds the key of the lab's `client.hypermon`
+/// (`deploy/lab/lab.sh ceph` prints it).
+#[tokio::test]
+async fn vm_on_rbd_pool() -> anyhow::Result<()> {
+    let Some(admin) = hm_e2e::connect().await? else {
+        return Ok(());
+    };
+    let Ok(key) = std::env::var("HM_E2E_RBD_KEY") else {
+        eprintln!("HM_E2E_RBD_KEY not set; skipping");
+        return Ok(());
+    };
+    let pools = admin.get("/storage-pools").await?;
+    let pool = match pools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "e2e-rbd")
+    {
+        Some(p) => p["id"].as_str().unwrap().to_owned(),
+        None => {
+            let clusters = admin.get("/clusters").await?;
+            let default = clusters
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["name"] == "default")
+                .unwrap()["id"]
+                .clone();
+            let config = json!({"monitors": ["10.77.0.10:6789"], "pool": "hypermon", "user": "hypermon", "key": key});
+            let p = admin.post("/storage-pools", json!({"name": "e2e-rbd", "kind": "rbd", "config": config, "cluster_ids": [default]})).await?;
+            assert_eq!(
+                p["config"]["key"], "(set)",
+                "the key must never be returned"
+            );
+            p["id"].as_str().unwrap().to_owned()
+        }
+    };
+    let image = admin.image().await?;
+    let before = volumes_in(&admin, &pool).await?;
+    let name = format!(
+        "e2e-rbd-{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs()
+    );
+    let vm = admin
+        .post(
+            "/vms",
+            json!({"name": name, "vcpus": 1, "memory_mib": 1024, "disk_gib": 5, "image_id": image,
+                   "password": "e2e-password", "storage_pool_id": pool}),
+        )
+        .await?;
+    let id = vm["id"].as_str().unwrap().to_owned();
+    let result = async {
+        admin
+            .wait_task(vm["task_id"].as_str().unwrap(), Duration::from_secs(900))
+            .await?;
+        admin
+            .wait_vm(&id, Duration::from_secs(30), |v| v["power"] == "running")
+            .await?;
+        let mut serial = admin.console(&id, "serial").await?;
+        let (out, rc) = serial
+            .run("debian", "e2e-password", "lsblk -dn -o SIZE /dev/vda")
+            .await?;
+        assert_eq!(rc, 0, "{out}");
+        assert!(out.contains("5G"), "{out}");
+        assert_eq!(volumes_in(&admin, &pool).await?, before + 1);
+        anyhow::Ok(())
+    }
+    .await;
+    let (_, t) = admin
+        .send(Method::DELETE, &format!("/vms/{id}"), None)
+        .await?;
+    admin
+        .wait_task(t["task_id"].as_str().unwrap(), Duration::from_secs(120))
+        .await?;
+    assert_eq!(volumes_in(&admin, &pool).await?, before);
+    result
+}

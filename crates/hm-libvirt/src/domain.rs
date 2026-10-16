@@ -18,10 +18,27 @@ pub enum DiskDevice {
     Cdrom,
 }
 
+/// Where a disk's data lives.
+#[derive(Clone, Debug)]
+pub enum DiskSource {
+    File(String),
+    /// A Ceph RBD image, reached directly by QEMU.
+    Rbd {
+        /// `pool/image`.
+        name: String,
+        /// Monitor `(host, port)`s.
+        monitors: Vec<(String, u16)>,
+        /// Ceph client name without the `client.` prefix.
+        user: String,
+        /// libvirt secret holding the client's key.
+        secret_uuid: String,
+    },
+}
+
 #[derive(Clone, Debug)]
 pub struct Disk {
     pub device: DiskDevice,
-    pub path: String,
+    pub source: DiskSource,
     /// "qcow2" or "raw".
     pub format: String,
     /// "vda", "sda", ...
@@ -93,11 +110,37 @@ impl DomainDef {
             if d.device == DiskDevice::Disk {
                 driver = driver.attr("discard", "unmap");
             }
+            let (kind, source) = match &d.source {
+                DiskSource::File(path) => ("file", El::new("source").attr("file", path)),
+                DiskSource::Rbd {
+                    name,
+                    monitors,
+                    user,
+                    secret_uuid,
+                } => (
+                    "network",
+                    El::new("source")
+                        .attr("protocol", "rbd")
+                        .attr("name", name)
+                        .children(
+                            monitors
+                                .iter()
+                                .map(|(h, p)| El::new("host").attr("name", h).attr("port", p)),
+                        )
+                        .child(
+                            El::new("auth").attr("username", user).child(
+                                El::new("secret")
+                                    .attr("type", "ceph")
+                                    .attr("uuid", secret_uuid),
+                            ),
+                        ),
+                ),
+            };
             El::new("disk")
-                .attr("type", "file")
+                .attr("type", kind)
                 .attr("device", device)
                 .child(driver)
-                .child(El::new("source").attr("file", &d.path))
+                .child(source)
                 .child(El::new("target").attr("dev", &d.target).attr("bus", &d.bus))
                 .maybe(d.readonly.then(|| El::new("readonly")))
                 .maybe(d.boot_order.map(|o| El::new("boot").attr("order", o)))
@@ -249,7 +292,7 @@ mod tests {
             disks: vec![
                 Disk {
                     device: DiskDevice::Disk,
-                    path: "/var/lib/hypermon/pools/local/vol-1.qcow2".into(),
+                    source: DiskSource::File("/var/lib/hypermon/pools/local/vol-1.qcow2".into()),
                     format: "qcow2".into(),
                     target: "vda".into(),
                     bus: "virtio".into(),
@@ -257,8 +300,22 @@ mod tests {
                     readonly: false,
                 },
                 Disk {
+                    device: DiskDevice::Disk,
+                    source: DiskSource::Rbd {
+                        name: "hypermon/vol-2".into(),
+                        monitors: vec![("10.77.0.10".into(), 6789)],
+                        user: "hypermon".into(),
+                        secret_uuid: "0199f0a2-7b3c-7d00-8000-0000000000c1".into(),
+                    },
+                    format: "raw".into(),
+                    target: "vdb".into(),
+                    bus: "virtio".into(),
+                    boot_order: None,
+                    readonly: false,
+                },
+                Disk {
                     device: DiskDevice::Cdrom,
-                    path: "/var/lib/hypermon/cloud-init/vm-1.iso".into(),
+                    source: DiskSource::File("/var/lib/hypermon/cloud-init/vm-1.iso".into()),
                     format: "raw".into(),
                     target: "sda".into(),
                     bus: "sata".into(),

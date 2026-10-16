@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use hm_core::vm::{Firmware, VmSpec};
-use hm_libvirt::{Disk, DiskDevice, DomainDef, Nic};
+use hm_libvirt::{Disk, DiskDevice, DiskSource, DomainDef, Nic};
 use hm_storage::Pool;
 
 /// OVS integration bridge managed by ovn-controller.
@@ -67,14 +67,26 @@ pub async fn domain(
         let pool = pools
             .get(&d.pool_id.to_string())
             .with_context(|| format!("storage pool {} of disk {i} was not provided", d.pool_id))?;
+        let volume = d.volume_id.to_string();
+        let (source, format) = match pool {
+            Pool::File(f) => (
+                DiskSource::File(f.volume_path(&volume)?.to_string_lossy().into_owned()),
+                "qcow2",
+            ),
+            Pool::Rbd(r) => (
+                DiskSource::Rbd {
+                    name: r.volume_path(&volume)?,
+                    monitors: r.monitor_addrs(),
+                    user: r.user.clone(),
+                    secret_uuid: d.pool_id.to_string(),
+                },
+                "raw",
+            ),
+        };
         disks.push(Disk {
             device: DiskDevice::Disk,
-            path: pool
-                .files()
-                .volume_path(&d.volume_id.to_string())?
-                .to_string_lossy()
-                .into_owned(),
-            format: "qcow2".into(),
+            source,
+            format: format.into(),
             // vda, vdb, ...; specs stay far below 26 disks.
             target: format!("vd{}", (b'a' + i as u8) as char),
             bus: "virtio".into(),
@@ -88,7 +100,7 @@ pub async fn domain(
         write_seed(&seed, vm_id, &ci.hostname, &ci.user_data).await?;
         disks.push(Disk {
             device: DiskDevice::Cdrom,
-            path: seed.to_string_lossy().into_owned(),
+            source: DiskSource::File(seed.to_string_lossy().into_owned()),
             format: "raw".into(),
             target: "sda".into(),
             bus: "sata".into(),

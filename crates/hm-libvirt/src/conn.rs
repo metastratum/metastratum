@@ -367,6 +367,42 @@ impl Libvirt {
         Ok(c.open_stream(proc::DOMAIN_OPEN_CONSOLE, &args).await?)
     }
 
+    /// Makes sure a Ceph secret with this UUID exists and holds `key` (the
+    /// base64 key from `ceph auth get-key`), for RBD disks to authenticate
+    /// with. The value is set every time, so a rotated key takes effect.
+    pub async fn ensure_ceph_secret(&self, uuid: &str, usage: &str, key: &str) -> Result<()> {
+        use base64::Engine;
+        let value = base64::engine::general_purpose::STANDARD
+            .decode(key.trim())
+            .map_err(|_| hm_virtrpc::Error::Protocol("Ceph key is not valid base64".into()))?;
+        let c = self.client().await?;
+        let secret = match c
+            .secret_lookup_by_uuid(&SecretLookupByUuidArgs {
+                uuid: uuid_bytes(uuid)?,
+            })
+            .await
+        {
+            Ok(r) => r.secret,
+            Err(e) if e.code() == Some(err::NO_SECRET) => {
+                let xml = format!(
+                    "<secret ephemeral='no' private='yes'><uuid>{uuid}</uuid><usage type='ceph'><name>{}</name></usage></secret>",
+                    crate::xml::escape(usage)
+                );
+                c.secret_define_xml(&SecretDefineXmlArgs { xml, flags: 0 })
+                    .await?
+                    .secret
+            }
+            Err(e) => return Err(e.into()),
+        };
+        c.secret_set_value(&SecretSetValueArgs {
+            secret,
+            value,
+            flags: 0,
+        })
+        .await?;
+        Ok(())
+    }
+
     /// Streams domain lifecycle changes. Survives daemon restarts: after each
     /// (re)connection it re-registers and sends [`Change::Resync`].
     pub fn watch(&self) -> mpsc::Receiver<Change> {

@@ -29,6 +29,16 @@
       <target dev='vda' bus='virtio'/>
       <boot order='1'/>
     </disk>
+    <disk type='network' device='disk'>
+      <driver name='qemu' type='raw' discard='unmap'/>
+      <source protocol='rbd' name='hypermon/vol-2'>
+        <host name='10.77.0.10' port='6789'/>
+        <auth username='hypermon'>
+          <secret type='ceph' uuid='0199f0a2-7b3c-7d00-8000-0000000000c1'/>
+        </auth>
+      </source>
+      <target dev='vdb' bus='virtio'/>
+    </disk>
     <disk type='file' device='cdrom'>
       <driver name='qemu' type='raw'/>
       <source file='/var/lib/hypermon/cloud-init/vm-1.iso'/>

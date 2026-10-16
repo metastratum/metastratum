@@ -225,7 +225,15 @@ impl Agent {
             kind: spec.kind.clone(),
             config,
         };
-        Ok(self.pools.get(&spec).await?)
+        let pool = self.pools.get(&spec).await?;
+        // QEMU authenticates to Ceph with a libvirt secret; the pool ID
+        // doubles as its UUID.
+        if let hm_storage::Pool::Rbd(rbd) = &pool {
+            self.lv
+                .ensure_ceph_secret(&spec.id, &format!("hypermon pool {}", spec.id), &rbd.key)
+                .await?;
+        }
+        Ok(pool)
     }
 
     async fn report_power(&self, vm_id: &str, tx: &mpsc::Sender<AgentMessage>) {
@@ -254,20 +262,18 @@ impl Agent {
             Cmd::EnsureImage(c) => {
                 tracing::info!(image = %c.image_id, url = %c.source_url, "ensuring image");
                 let pool = self.pool(c.pool.as_ref()).await?;
-                pool.files()
-                    .ensure_image(&c.image_id, &c.source_url, &c.format)
+                pool.ensure_image(&c.image_id, &c.source_url, &c.format)
                     .await?;
             }
             Cmd::EnsureVolume(c) => {
                 let image = Some(c.image_id.as_str()).filter(|s| !s.is_empty());
                 let pool = self.pool(c.pool.as_ref()).await?;
-                pool.files()
-                    .ensure_volume(&c.volume_id, c.size_bytes, image)
+                pool.ensure_volume(&c.volume_id, c.size_bytes, image)
                     .await?;
             }
             Cmd::DeleteVolume(c) => {
                 let pool = self.pool(c.pool.as_ref()).await?;
-                pool.files().delete_volume(&c.volume_id).await?;
+                pool.delete_volume(&c.volume_id).await?;
             }
             Cmd::DefineVm(c) => {
                 let spec: hm_core::vm::VmSpec =
