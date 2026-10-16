@@ -16,13 +16,15 @@ pub struct RoleBinding {
     pub tenant_id: TenantId,
     pub tenant_name: String,
     pub role: String,
+    /// `manual`, or `oidc` when derived from identity-provider groups.
+    pub source: String,
     pub created_at: DateTime<Utc>,
 }
 
 macro_rules! binding_query {
     ($where:literal) => {
         concat!(
-            "SELECT b.id, b.user_id, u.username, b.tenant_id, t.name AS tenant_name, b.role, b.created_at
+            "SELECT b.id, b.user_id, u.username, b.tenant_id, t.name AS tenant_name, b.role, b.source, b.created_at
              FROM role_bindings b JOIN users u ON u.id = b.user_id JOIN tenants t ON t.id = b.tenant_id ",
             $where,
             " ORDER BY t.path, u.username, b.role"

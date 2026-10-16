@@ -5,6 +5,7 @@ import { mib, vmState } from '../state'
 import StatusLed from './StatusLed.vue'
 
 const props = defineProps<{ host: Host; vms: Vm[] }>()
+const emit = defineEmits<{ manage: [] }>()
 
 // Bays are the host's memory: each VM occupies a share proportional to what
 // it was allocated, and the rest is blanking panel.
@@ -24,6 +25,9 @@ const usedPct = computed(() => Math.min(100, (props.host.allocated_memory_mib / 
       <span class="tape">{{ host.name }}</span>
       <StatusLed :tone="host.connected ? 'on' : 'fault'" :label="host.connected ? 'Connected' : 'Not connected'" />
       <span v-if="!host.kvm" class="error-text">No KVM</span>
+      <span v-if="host.state === 'maintenance'" class="tag maint">Maintenance</span>
+      <span class="tag" :class="{ stray: !host.cluster_name }">{{ host.cluster_name ?? 'No cluster' }}</span>
+      <button type="button" class="btn small manage" @click="emit('manage')">Manage</button>
       <dl class="specs mono">
         <div><dt>addr</dt><dd>{{ host.address }}</dd></div>
         <div><dt>cpu</dt><dd>{{ host.cpu_count }}</dd></div>
@@ -171,5 +175,15 @@ footer {
   .specs {
     margin-left: 0;
   }
+}
+.tag.maint {
+  border-color: var(--led-busy);
+  color: var(--led-busy);
+}
+.tag.stray {
+  border-style: dashed;
+}
+.manage {
+  order: 10;
 }
 </style>

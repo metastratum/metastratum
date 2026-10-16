@@ -762,6 +762,11 @@ export interface components {
             /** Format: uuid */
             id: string;
             role: string;
+            /**
+             * @description `manual`, or `oidc` when the identity provider's groups gave it (it
+             *     is then re-synced at each sign-in).
+             */
+            source: string;
             tenant_id: components["schemas"]["TenantId"];
             tenant_name: string;
             user_id: components["schemas"]["UserId"];
@@ -974,6 +979,8 @@ export interface components {
         };
         Me: {
             display_name: string;
+            /** @description Signs in with a password (rather than through an identity provider). */
+            local: boolean;
             /** @description Whether the user administers the provider (hosts, enrollment). */
             provider_admin: boolean;
             /** @description Roles the user holds; each also applies to the tenant's sub-tenants. */

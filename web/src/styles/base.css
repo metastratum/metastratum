@@ -119,6 +119,133 @@ a {
   color: var(--led-fault);
 }
 
+.muted {
+  color: var(--muted);
+}
+.btn.small {
+  height: 26px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+/* Page scaffolding shared by the list and management views. */
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.page-head h1 {
+  font-size: 22px;
+}
+.page-head .actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.intro {
+  max-width: 72ch;
+  margin: 0 0 20px;
+  color: var(--muted);
+}
+.empty-state {
+  display: grid;
+  gap: 14px;
+  justify-items: start;
+  padding: 28px;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius);
+}
+.empty-state p {
+  margin: 0;
+  color: var(--muted);
+}
+.tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  font: 500 10.5px var(--font-label);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Tables of records. */
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.data {
+  width: 100%;
+  border-collapse: collapse;
+}
+.data th {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--rule);
+  text-align: left;
+  font: 500 11px var(--font-label);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.data td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: middle;
+}
+.data tbody tr:last-child td {
+  border-bottom: 0;
+}
+.data .num {
+  text-align: right;
+}
+.data .end {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Forms inside dialogs and panels. */
+.form {
+  display: grid;
+  gap: 16px;
+  margin: 0;
+  padding: 18px;
+}
+.form p {
+  margin: 0;
+}
+.form footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.form .row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+.secret {
+  margin: 0;
+  padding: 12px;
+  overflow-x: auto;
+  border-radius: var(--radius);
+  background: var(--sunken);
+  font: 400 12px/1.5 var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

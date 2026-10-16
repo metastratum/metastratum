@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { ref, watch } from 'vue'
 import { api, ApiError, ok, type Image } from '../api/client'
 import IdChip from '../components/IdChip.vue'
 import ModalDialog from '../components/ModalDialog.vue'
 import { ago } from '../state'
-import { useSession } from '../stores/session'
+import { useScope } from '../stores/scope'
 
-const session = useSession()
+const scope = useScope()
 const images = ref<Image[] | null>(null)
 const adding = ref(false)
 const form = ref({ name: '', source_url: '', format: 'qcow2', shared: false })
@@ -14,14 +14,15 @@ const error = ref('')
 const rowError = ref<Record<string, string>>({})
 
 async function load() {
-  images.value = await ok(api.GET('/api/v1/images', { params: { query: {} } }))
+  if (!scope.current) return
+  images.value = await ok(api.GET('/api/v1/images', { params: { query: { tenant_id: scope.current } } }))
 }
-onMounted(load)
+watch(() => scope.current, load, { immediate: true })
 
 async function add() {
   error.value = ''
   try {
-    await ok(api.POST('/api/v1/images', { body: { ...form.value } }))
+    await ok(api.POST('/api/v1/images', { body: { ...form.value, tenant_id: scope.current } }))
     adding.value = false
     form.value = { name: '', source_url: '', format: 'qcow2', shared: false }
     await load()
@@ -40,14 +41,14 @@ async function remove(img: Image) {
   }
 }
 
-const own = (img: Image) => img.tenant_id === session.me?.tenant_id
+const own = (img: Image) => img.tenant_id === scope.current
 </script>
 
 <template>
   <section>
     <header class="head">
       <h1>Images</h1>
-      <button class="btn primary" @click="adding = true">Add image</button>
+      <button v-if="scope.can('image.write')" class="btn primary" @click="adding = true">Add image</button>
     </header>
     <p class="intro">
       Hosts download an image the first time a VM needs it, then reuse their copy. VM disks are thin copies of
@@ -56,7 +57,7 @@ const own = (img: Image) => img.tenant_id === session.me?.tenant_id
 
     <div v-if="images && !images.length" class="empty">
       <p>Add an image so VMs have something to boot. Any cloud image in qcow2 or raw format works.</p>
-      <button class="btn primary" @click="adding = true">Add image</button>
+      <button v-if="scope.can('image.write')" class="btn primary" @click="adding = true">Add image</button>
     </div>
 
     <ul v-else-if="images" class="list">
@@ -71,7 +72,7 @@ const own = (img: Image) => img.tenant_id === session.me?.tenant_id
         <div class="meta">
           <IdChip :value="img.id" short />
           <span class="muted">Added {{ ago(img.created_at) }}</span>
-          <button v-if="own(img)" class="btn danger small" @click="remove(img)">Delete</button>
+          <button v-if="own(img) && scope.can('image.write')" class="btn danger small" @click="remove(img)">Delete</button>
           <span v-if="rowError[img.id]" class="error-text">{{ rowError[img.id] }}</span>
         </div>
       </li>

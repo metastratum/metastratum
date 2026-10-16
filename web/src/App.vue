@@ -2,16 +2,26 @@
 import { watch } from 'vue'
 import { useRouter } from 'vue-router'
 import TaskTray from './components/TaskTray.vue'
+import TenantPicker from './components/TenantPicker.vue'
+import { useScope } from './stores/scope'
 import { useSession } from './stores/session'
 import { useTasks } from './stores/tasks'
 
 const session = useSession()
+const scope = useScope()
 const tasks = useTasks()
 const router = useRouter()
 
 watch(
   () => session.me,
-  (me) => (me ? tasks.start() : tasks.stop()),
+  (me) => {
+    if (me) {
+      tasks.start()
+      void scope.load()
+    } else {
+      tasks.stop()
+    }
+  },
   { immediate: true },
 )
 
@@ -30,15 +40,19 @@ async function signOut() {
       <nav aria-label="Main">
         <RouterLink to="/vms">Machines</RouterLink>
         <RouterLink to="/images">Images</RouterLink>
-        <RouterLink v-if="session.me.provider_admin" to="/hosts">Hosts</RouterLink>
+        <RouterLink to="/tenants">Tenants</RouterLink>
+        <RouterLink v-if="scope.can('audit.read')" to="/audit">Audit</RouterLink>
+        <RouterLink v-if="session.me.provider_admin" to="/infrastructure" :class="{ 'router-link-active': $route.meta.infra }">
+          Infrastructure
+        </RouterLink>
       </nav>
       <div class="right">
-        <span class="tenant" :title="`Signed in to ${session.me.tenant_name}`">
-          <span class="label">Tenant</span>
-          {{ session.me.tenant_name }}
-        </span>
+        <TenantPicker class="tenant" />
         <TaskTray />
-        <button type="button" class="signout" :title="`Signed in as ${session.me.username}`" @click="signOut">Sign out</button>
+        <RouterLink to="/account" class="account" :title="`Signed in as ${session.me.username}`">
+          {{ session.me.display_name || session.me.username }}
+        </RouterLink>
+        <button type="button" class="signout" @click="signOut">Sign out</button>
       </div>
     </header>
     <main>
@@ -104,14 +118,19 @@ nav a.router-link-active {
   gap: 14px;
   margin-left: auto;
 }
-.tenant {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
+.account {
+  max-width: 160px;
+  overflow: hidden;
+  color: var(--bar-ink);
   font-weight: 500;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.tenant .label {
-  color: rgb(227 232 236 / 55%);
+.account:hover,
+.account.router-link-active {
+  text-decoration: underline;
+  text-underline-offset: 4px;
 }
 .signout {
   border: 0;
@@ -144,7 +163,11 @@ main {
   nav a {
     padding: 0 10px;
   }
-  .tenant {
+  nav {
+    overflow-x: auto;
+  }
+  .tenant :deep(.label),
+  .account {
     display: none;
   }
   main {

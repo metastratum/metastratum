@@ -77,6 +77,8 @@ pub struct Me {
     tenant_name: String,
     /// Whether the user administers the provider (hosts, enrollment).
     provider_admin: bool,
+    /// Signs in with a password (rather than through an identity provider).
+    local: bool,
 }
 
 async fn resolve_tenant(
@@ -223,6 +225,7 @@ async fn me(State(state): State<AppState>, p: Principal) -> ApiResult<Json<Me>> 
         })
         .collect();
     Ok(Json(Me {
+        local: user.password_hash.is_some(),
         roles,
         user_id: user.id,
         username: user.username,

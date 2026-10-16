@@ -1,20 +1,34 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, ok, type Vm } from '../api/client'
 import CreateVmDialog from '../components/CreateVmDialog.vue'
 import StatusLed from '../components/StatusLed.vue'
 import { ago, mib, vmState } from '../state'
+import { useScope } from '../stores/scope'
 import { useTasks } from '../stores/tasks'
 
 const router = useRouter()
 const tasks = useTasks()
+const scope = useScope()
 const vms = ref<Vm[] | null>(null)
 const creating = ref(false)
 
 async function load() {
-  vms.value = await ok(api.GET('/api/v1/vms', { params: { query: { descendants: true } } }))
+  if (!scope.current) return
+  const tenant = scope.current
+  const list = await ok(api.GET('/api/v1/vms', { params: { query: { tenant_id: tenant, descendants: true } } }))
+  if (tenant === scope.current) vms.value = list
 }
+watch(
+  () => scope.current,
+  () => {
+    vms.value = null
+    void load()
+  },
+)
+// Name the tenant when the list spans sub-tenants.
+const mixed = computed(() => vms.value?.some((v) => v.tenant_id !== scope.current) ?? false)
 
 let timer = 0
 let unlisten = () => {}
@@ -40,12 +54,12 @@ function created(vm: Vm) {
     <header class="head">
       <h1>Virtual machines</h1>
       <span v-if="vms" class="count mono">{{ vms.length }}</span>
-      <button class="btn primary" @click="creating = true">Create VM</button>
+      <button v-if="scope.can('vm.write')" class="btn primary" @click="creating = true">Create VM</button>
     </header>
 
     <div v-if="vms && !vms.length" class="empty">
-      <p>No virtual machines yet. Create one from an image to get started.</p>
-      <button class="btn primary" @click="creating = true">Create VM</button>
+      <p>No virtual machines in {{ scope.tenant?.name ?? 'this tenant' }} yet.<template v-if="scope.can('vm.write')"> Create one from an image to get started.</template></p>
+      <button v-if="scope.can('vm.write')" class="btn primary" @click="creating = true">Create VM</button>
     </div>
 
     <div v-else-if="vms" class="table-wrap">
@@ -53,6 +67,7 @@ function created(vm: Vm) {
         <thead>
           <tr>
             <th>Name</th>
+            <th v-if="mixed">Tenant</th>
             <th>State</th>
             <th>Address</th>
             <th>Host</th>
@@ -66,6 +81,7 @@ function created(vm: Vm) {
             <td>
               <RouterLink :to="{ name: 'vm', params: { id: vm.id } }" class="name" @click.stop>{{ vm.name }}</RouterLink>
             </td>
+            <td v-if="mixed" class="muted">{{ scope.byId.get(vm.tenant_id)?.name ?? '—' }}</td>
             <td><StatusLed :tone="vmState(vm).tone" :label="vmState(vm).text" /></td>
             <td class="mono">{{ vm.nics[0]?.ip ?? '—' }}</td>
             <td class="mono">{{ vm.host_name ?? '—' }}</td>

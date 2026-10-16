@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ApiError } from '../api/client'
+import { api, ApiError } from '../api/client'
 import { useSession } from '../stores/session'
 
 const session = useSession()
@@ -10,17 +10,44 @@ const route = useRoute()
 
 const username = ref('')
 const password = ref('')
-const tenant = ref('')
-const error = ref('')
+const tenant = ref(typeof route.query.tenant === 'string' ? route.query.tenant : '')
+// Set when an identity provider sent the browser back with a problem.
+const error = ref(typeof route.query.error === 'string' ? route.query.error : '')
 const busy = ref(false)
+const provider = ref<string | null>(null)
+
+const next = computed(() =>
+  typeof route.query.next === 'string' && route.query.next.startsWith('/') && !route.query.next.startsWith('//')
+    ? route.query.next
+    : '/vms',
+)
+
+// Offer the tenant's identity provider once the tenant is known.
+let timer = 0
+watch(
+  tenant,
+  (t) => {
+    clearTimeout(timer)
+    provider.value = null
+    timer = window.setTimeout(async () => {
+      const { data } = await api.GET('/api/v1/auth/methods', { params: { query: { tenant: t.trim() } } })
+      if (t === tenant.value) provider.value = data?.oidc ?? null
+    }, 300)
+  },
+  { immediate: true },
+)
+
+const ssoHref = computed(
+  () =>
+    `/api/v1/auth/oidc/start?${new URLSearchParams({ tenant: tenant.value.trim(), return_to: next.value })}`,
+)
 
 async function submit() {
   error.value = ''
   busy.value = true
   try {
     await session.login(username.value, password.value, tenant.value)
-    const next = typeof route.query.next === 'string' && route.query.next.startsWith('/') ? route.query.next : '/vms'
-    await router.replace(next)
+    await router.replace(next.value)
   } catch (e) {
     error.value =
       e instanceof ApiError && e.status === 401
@@ -38,20 +65,24 @@ async function submit() {
       <span class="tape">hypermon</span>
       <h1>Sign in</h1>
       <label class="field">
-        <span class="label">Username</span>
-        <input v-model="username" autocomplete="username" required autofocus />
-      </label>
-      <label class="field">
-        <span class="label">Password</span>
-        <input v-model="password" type="password" autocomplete="current-password" required />
-      </label>
-      <label class="field">
         <span class="label">Tenant</span>
         <input v-model="tenant" placeholder="acme/dev" autocomplete="organization" />
         <span class="hint">Leave empty if your account belongs to the provider.</span>
       </label>
+      <a v-if="provider" class="btn primary sso" :href="ssoHref">Continue with {{ provider }}</a>
+      <div v-if="provider" class="or label" aria-hidden="true">or with a password</div>
+      <label class="field">
+        <span class="label">Username</span>
+        <input v-model="username" autocomplete="username" :required="!provider" autofocus />
+      </label>
+      <label class="field">
+        <span class="label">Password</span>
+        <input v-model="password" type="password" autocomplete="current-password" :required="!provider" />
+      </label>
       <p v-if="error" class="error-text" role="alert">{{ error }}</p>
-      <button class="btn primary submit" :disabled="busy">{{ busy ? 'Signing in…' : 'Sign in' }}</button>
+      <button class="btn submit" :class="{ primary: !provider }" :disabled="busy || !username || !password">
+        {{ busy ? 'Signing in…' : 'Sign in' }}
+      </button>
     </form>
   </div>
 </template>
@@ -89,8 +120,21 @@ h1 {
 .error-text {
   margin: 0;
 }
-.submit {
+.submit,
+.sso {
   justify-content: center;
   height: 38px;
+  text-decoration: none;
+}
+.or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.or::before,
+.or::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--rule);
 }
 </style>

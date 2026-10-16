@@ -7,6 +7,13 @@ export type Image = Schemas['ImageView']
 export type Host = Schemas['HostView']
 export type Task = Schemas['TaskView']
 export type Me = Schemas['Me']
+export type Tenant = Schemas['TenantView']
+export type User = Schemas['UserView']
+export type Binding = Schemas['BindingView']
+export type Cluster = Schemas['ClusterView']
+export type Pool = Schemas['PoolView']
+export type AuditEntry = Schemas['AuditEntry']
+export type Token = Schemas['TokenView']
 
 /** Raised for any non-2xx API response, carrying the server's message. */
 export class ApiError extends Error {
@@ -45,6 +52,11 @@ export async function ok<T>(
     throw new ApiError(response.status, e.error ?? 'error', e.message ?? `Request failed (${response.status})`)
   }
   return data as T
+}
+
+/** The message to show for a failed request. */
+export function errorText(e: unknown): string {
+  return e instanceof ApiError ? e.message : 'The controller isn’t responding. Try again.'
 }
 
 /** WebSocket URL for a path on this origin. */

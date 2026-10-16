@@ -1,11 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { api, ApiError, ok, type Image, type Vm } from '../api/client'
+import { api, ApiError, ok, type Image, type Schemas, type Vm } from '../api/client'
+import { useScope } from '../stores/scope'
 import ModalDialog from './ModalDialog.vue'
 
 const emit = defineEmits<{ close: []; created: [vm: Vm] }>()
 
+const scope = useScope()
+const tenantId = scope.current
 const images = ref<Image[]>([])
+const clusters = ref<Schemas['UsableCluster'][]>([])
+const pools = ref<Schemas['UsablePool'][]>([])
+const clusterId = ref<string | null>(null)
+const poolId = ref<string | null>(null)
 const loaded = ref(false)
 const name = ref('')
 const imageId = ref('')
@@ -21,8 +28,14 @@ const MEMORY = [512, 1024, 2048, 4096, 8192, 16384]
 const nameOk = computed(() => /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(name.value))
 
 onMounted(async () => {
-  images.value = await ok(api.GET('/api/v1/images', { params: { query: {} } }))
+  const path = { params: { path: { id: tenantId } } }
+  ;[images.value, clusters.value, pools.value] = await Promise.all([
+    ok(api.GET('/api/v1/images', { params: { query: { tenant_id: tenantId } } })),
+    ok(api.GET('/api/v1/tenants/{id}/clusters', path)),
+    ok(api.GET('/api/v1/tenants/{id}/storage-pools', path)),
+  ])
   imageId.value = images.value[0]?.id ?? ''
+  poolId.value = pools.value.find((p) => p.kind === 'local')?.id ?? pools.value[0]?.id ?? null
   loaded.value = true
 })
 
@@ -33,6 +46,9 @@ async function submit() {
     const res = await ok(
       api.POST('/api/v1/vms', {
         body: {
+          tenant_id: tenantId,
+          cluster_id: clusterId.value,
+          storage_pool_id: poolId.value,
           name: name.value,
           image_id: imageId.value,
           vcpus: vcpus.value,
@@ -53,10 +69,14 @@ async function submit() {
 </script>
 
 <template>
-  <ModalDialog title="Create VM" @close="emit('close')">
+  <ModalDialog :title="`Create VM in ${scope.tenant?.name ?? 'tenant'}`" @close="emit('close')">
     <p v-if="loaded && !images.length" class="body empty">
       There are no images to boot from yet.
       <RouterLink to="/images" @click="emit('close')">Add an image</RouterLink> first.
+    </p>
+    <p v-else-if="loaded && !clusters.length" class="body empty">
+      {{ scope.tenant?.name }} hasn’t been given a cluster to run VMs on. Ask an administrator of the tenant above
+      it.
     </p>
     <form v-else class="body" @submit.prevent="submit">
       <label class="field">
@@ -72,6 +92,23 @@ async function submit() {
           <option v-for="i in images" :key="i.id" :value="i.id">{{ i.name }}</option>
         </select>
       </label>
+      <div v-if="clusters.length > 1 || pools.length > 1" class="row two">
+        <label class="field">
+          <span class="label">Cluster</span>
+          <select v-model="clusterId">
+            <option :value="null">Any with room</option>
+            <option v-for="c in clusters" :key="c.id" :value="c.id">{{ c.name }}</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="label">Disk storage</span>
+          <select v-model="poolId">
+            <option v-for="p in pools" :key="p.id" :value="p.id">
+              {{ p.kind === 'local' ? 'Local disk on the host' : `${p.name} (${p.kind})` }}
+            </option>
+          </select>
+        </label>
+      </div>
       <div class="row">
         <label class="field">
           <span class="label">vCPUs</span>
@@ -121,6 +158,9 @@ async function submit() {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 12px;
+}
+.row.two {
+  grid-template-columns: 1fr 1fr;
 }
 footer {
   display: flex;

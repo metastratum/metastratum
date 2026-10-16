@@ -45,6 +45,22 @@ pub async fn delete(db: impl PgExecutor<'_>, id_hash: &str) -> Result<()> {
     Ok(())
 }
 
+/// Ends a user's sessions, except optionally the one making the request.
+pub async fn delete_for_user(
+    db: impl PgExecutor<'_>,
+    user_id: UserId,
+    except_hash: Option<&str>,
+) -> Result<u64> {
+    Ok(
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND id_hash IS DISTINCT FROM $2")
+            .bind(user_id)
+            .bind(except_hash)
+            .execute(db)
+            .await?
+            .rows_affected(),
+    )
+}
+
 pub async fn purge_expired(db: impl PgExecutor<'_>) -> Result<u64> {
     Ok(
         sqlx::query("DELETE FROM sessions WHERE expires_at <= now()")

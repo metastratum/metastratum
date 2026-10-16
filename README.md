@@ -15,14 +15,14 @@ a web UI with a virtual console.
 | `crates/hm-virtrpc` | Native async client for libvirt's RPC protocol, generated from `remote_protocol.x` |
 | `crates/hm-libvirt` | Domain XML and the agent's libvirt facade (events, consoles) |
 | `crates/hm-ovsdb` | OVSDB client and OVN northbound operations |
-| `crates/hm-storage` | Host storage pools (local qcow2 for now) |
+| `crates/hm-storage` | Host storage pools: local qcow2, NFS, Ceph RBD |
 | `crates/hm-controller` | Control plane: REST API, agent endpoint, task engine, console relay |
 | `crates/hm-agent` | Host agent: drives libvirt, storage and consoles on each hypervisor |
 | `crates/hmctl` | Admin CLI (placeholder) |
 | `web/` | Web UI (Vue 3 + TypeScript) |
 | `tests/e2e` | End-to-end tests against a running controller and lab |
 | `migrations/` | SQL migrations (sqlx) |
-| `deploy/dev` | Local dev dependencies (Postgres) |
+| `deploy/dev` | Local dev dependencies (Postgres, Dex as a test identity provider) |
 | `deploy/lab` | Nested-KVM lab: 1 control VM + 3 hypervisor VMs |
 
 ## Development
@@ -160,7 +160,18 @@ DATABASE_URL=... deploy/lab/agent.sh
 
 Open http://127.0.0.1:18080 and sign in as `admin`. Add an image (for example
 `https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2`)
-before creating VMs.
+before creating VMs. Hosts only take VMs once they are in a cluster
+(Infrastructure → Clusters, then Manage on a host); sub-tenants also need that
+cluster granted to them (Tenants → Resources).
+
+Tenants can sign in through their own OpenID Connect provider (Tenants →
+Sign-in). For trying that out, the dev compose file runs
+[Dex](https://dexidp.io/) at `http://127.0.0.1:5556/dex`, with client ID
+`hypermon`, secret `hypermon-dev-secret`, and a mock login that signs everyone
+in as Kilgore Trout in group `authors` (add `groups` to the scopes). The
+controller builds its redirect URI from `--public-url` (default
+`http://<listen address>`); set it when users reach the controller under
+another address.
 
 ### End-to-end tests
 
@@ -175,9 +186,10 @@ The Rust suite creates two VMs, checks both consoles, pings across the overlay
 network between hosts, power-cycles and deletes them; checks tenant isolation,
 inherited roles, quotas, the audit log and API tokens; and boots VMs from the
 lab's NFS export and, with `HM_E2E_RBD_KEY` set to the key `lab.sh ceph`
-prints, from Ceph RBD. `HM_E2E_DEBUG=1` prints
-console traffic. The browser suite does the same through the UI with Playwright,
-using your installed Chrome.
+prints, from Ceph RBD. With `HM_E2E_DEX=http://127.0.0.1:5556/dex` it also
+signs in through Dex and checks how groups become roles. `HM_E2E_DEBUG=1`
+prints console traffic. The browser suite does the VM lifecycle and tenant
+management through the UI with Playwright, using your installed Chrome.
 
 ## License
 

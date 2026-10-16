@@ -66,6 +66,9 @@ pub struct BindingView {
     tenant_name: String,
     #[schema(value_type = String)]
     role: String,
+    /// `manual`, or `oidc` when the identity provider's groups gave it (it
+    /// is then re-synced at each sign-in).
+    source: String,
     created_at: DateTime<Utc>,
 }
 
@@ -78,6 +81,7 @@ impl From<hm_db::rbac::RoleBinding> for BindingView {
             tenant_id: b.tenant_id,
             tenant_name: b.tenant_name,
             role: b.role,
+            source: b.source,
             created_at: b.created_at,
         }
     }
@@ -236,6 +240,7 @@ async fn keep_a_root_admin(state: &AppState, losing: UserId) -> ApiResult<()> {
 async fn update_user(
     State(state): State<AppState>,
     p: Principal,
+    headers: axum::http::HeaderMap,
     Path(id): Path<UserId>,
     Json(req): Json<UpdateUser>,
 ) -> ApiResult<Json<UserView>> {
@@ -271,6 +276,13 @@ async fn update_user(
         },
     )
     .await?;
+    if password_hash.is_some() {
+        // A new password signs the account out everywhere else.
+        let current = super::session_secret(&headers)
+            .filter(|_| is_self)
+            .map(|s| hm_pki::hash_secret(&s));
+        hm_db::sessions::delete_for_user(&state.db, id, current.as_deref()).await?;
+    }
     let changed: Vec<&str> = [
         ("display_name", req.display_name.is_some()),
         ("email", email.is_some()),
