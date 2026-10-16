@@ -43,6 +43,21 @@ service AgentControl {
   // Swaps the host's certificate for a new one (new key), before the old
   // expires. Authenticated by the current certificate.
   rpc Renew(RenewRequest) returns (RenewResponse);
+  // A certificate for the host's ovn-controller to reach the OVN southbound
+  // database, from the controller's OVN CA, naming the host's chassis (for
+  // OVN's RBAC). Only when the controller manages southbound access (its
+  // Welcome names the remote).
+  rpc OvnCredentials(OvnCredentialsRequest) returns (OvnCredentialsResponse);
+}
+
+message OvnCredentialsRequest {
+  string csr_pem = 1;
+}
+
+message OvnCredentialsResponse {
+  string cert_pem = 1;
+  // The CA the southbound servers' certificates chain to.
+  string ca_pem = 2;
 }
 
 message EnrollRequest {
@@ -136,6 +151,9 @@ message ControllerMessage {
 message Welcome {
   uint32 protocol_version = 1;
   string controller_version = 2;
+  // OVN southbound remote(s) for ovn-controller, over TLS (ssl:...); empty
+  // when the controller leaves southbound access to the deployment.
+  string ovn_sb_remote = 3;
 }
 
 message Command {

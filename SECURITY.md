@@ -57,7 +57,7 @@ The boundaries hypermon enforces:
 - **Sign-in through identity providers** uses the authorization code flow
   with PKCE, a nonce and a state value, verifies the ID token's signature,
   issuer and audience, and follows no redirects.
-- **Secrets kept in the database** (the CA's private key, storage
+- **Secrets kept in the database** (the CAs' private keys, storage
   credentials, identity provider client secrets, BMC passwords) are sealed
   with XChaCha20-Poly1305 under a master key kept outside the database,
   bound to what they belong to. API responses never contain them.
@@ -68,8 +68,10 @@ The boundaries hypermon enforces:
   Hosts' certificates last 30 days and are renewed automatically; their
   subjects are chosen by the controller, not taken from the request.
   Libvirt (live migration) uses TLS between hosts with the same
-  certificates, and accepts host certificates only. The controller can reach OVN over TLS with a client
-  certificate.
+  certificates, and accepts host certificates only. The controller reaches
+  OVN's northbound database over TLS with a client certificate; hosts reach
+  the southbound one with certificates from a CA of its own, naming their
+  chassis, under OVN's RBAC.
 - **Abuse**: requests and password sign-ins are rate limited per client,
   and failed sign-ins per account (see [operations](docs/operations.md#rate-limits)).
 - **Browsers**: a Content-Security-Policy allowing scripts only from the
@@ -96,6 +98,7 @@ A review of the whole system before calling it hardened. Fixed:
 | Hosts' certificates were valid for a year | 30 days, renewed automatically; longer ones are renewed at once |
 | Hosts' libvirt accepted any certificate the controller's CA issued (replicas' too) | only host certificates (`tls_allowed_dn_list`, kept by the agent) |
 | API tokens carried all of their user's rights | tokens can be limited to roles at tenants |
+| Hosts' ovn-controller used the southbound database with no TLS or RBAC: any host could rewrite every host's flows | agents set up TLS with a certificate per chassis from a separate OVN CA, under OVN's RBAC (`--ovn-sb`) |
 | Unchecked whether IPv6 gets around IPv4-only networks | tested: guests reach no neighbour over IPv6, and cannot advertise themselves as router |
 
 Not fixed, and worth knowing:
@@ -108,12 +111,12 @@ Not fixed, and worth knowing:
   refused by the controllers, but other hosts' libvirt accepts it until it
   expires (up to 30 days). Reinstall a host you no longer trust, and replace
   the CA if one was compromised (every host must then enroll again).
-- **OVN southbound access** is not configured by hypermon. With plain TCP,
-  anyone who reaches it controls every host's flows. Use TLS with OVN's
-  RBAC ([operations](docs/operations.md#ovn)).
-- **Rate limits are per replica** unless the controllers share a Redis
-  (`--redis-url`): then N replicas allow N times the budget, and a restart
-  resets it.
+- **OVN's databases need TLS configured.** Without `--ovn-sb` and TLS on
+  the northbound database, anyone who reaches them controls every
+  tenant's network and every host's flows
+  ([operations](docs/operations.md#ovn)).
+- **Without Redis** (`--redis-url`), rate limits are per replica: N
+  replicas allow N times the budget, and a restart resets it.
 - **No limits on guests' disk or network bandwidth**: a VM can slow down
   others on the same host or storage.
 - **Networking is IPv4 only.** Port security, security groups and

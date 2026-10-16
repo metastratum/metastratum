@@ -14,6 +14,11 @@ pub struct AppState(Arc<Inner>);
 pub struct Inner {
     pub db: PgPool,
     pub ca: Ca,
+    /// Signs hosts' certificates for the OVN southbound database.
+    pub ovn_ca: Ca,
+    /// Southbound remote(s) agents point ovn-controller at, over TLS; empty
+    /// when southbound access is left to the deployment.
+    pub ovn_sb_remote: String,
     pub agents: Agents,
     /// Keeps OVN in line with the network model.
     pub net: Reconciler,

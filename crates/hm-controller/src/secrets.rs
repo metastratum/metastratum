@@ -12,6 +12,7 @@ use hm_pki::{Sealer, is_sealed};
 static SEALER: OnceLock<Sealer> = OnceLock::new();
 
 pub const CA_KEY: &str = "ca.key";
+pub const OVN_CA_KEY: &str = "ovn-ca.key";
 pub const POOL_KEY: &str = "storage_pool.key";
 
 pub fn idp_secret(tenant: hm_core::ids::TenantId) -> String {

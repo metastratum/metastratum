@@ -17,24 +17,25 @@ use crate::enroll::HostIdentity;
 /// libvirt's TLS port.
 const LIBVIRT_TLS_PORT: u16 = 16514;
 
-/// Who may read a file: (mode, group). QEMU runs unprivileged and must read
-/// its key; libvirt runs as root.
+/// Who may read a file. QEMU runs unprivileged and must read its key;
+/// libvirt runs as root.
 #[derive(Clone, Copy)]
-enum Access {
+pub(crate) enum Access {
     Public,
     RootOnly,
-    Qemu(u32),
+    /// Root, and this group.
+    Group(u32),
 }
 
-fn write_if_changed(path: &Path, data: &str, access: Access) -> Result<bool> {
+pub(crate) fn write_if_changed(path: &Path, data: &str, access: Access) -> Result<bool> {
     use std::os::unix::fs::{OpenOptionsExt, chown};
     let mode = match access {
         Access::Public => 0o644,
         Access::RootOnly => 0o600,
-        Access::Qemu(_) => 0o640,
+        Access::Group(_) => 0o640,
     };
     let gid = match access {
-        Access::Qemu(g) => g,
+        Access::Group(g) => g,
         _ => 0,
     };
     if let (Ok(cur), Ok(meta)) = (std::fs::read_to_string(path), std::fs::metadata(path))
@@ -64,13 +65,18 @@ fn write_if_changed(path: &Path, data: &str, access: Access) -> Result<bool> {
 
 /// The group QEMU runs in on this distribution.
 fn qemu_group() -> u32 {
+    group_id(&["libvirt-qemu", "qemu", "kvm"])
+}
+
+/// The ID of the first of these groups that exists, else root's.
+pub(crate) fn group_id(names: &[&str]) -> u32 {
     let groups = std::fs::read_to_string("/etc/group").unwrap_or_default();
-    for want in ["libvirt-qemu", "qemu", "kvm"] {
+    for want in names {
         if let Some(gid) = groups
             .lines()
             .filter_map(|l| {
                 let f: Vec<&str> = l.split(':').collect();
-                (f.len() > 2 && f[0] == want)
+                (f.len() > 2 && f[0] == *want)
                     .then(|| f[2].parse().ok())
                     .flatten()
             })
@@ -85,7 +91,7 @@ fn qemu_group() -> u32 {
 /// Installs the host identity for libvirt and QEMU TLS. Returns whether any
 /// file changed (a running daemon then needs restarting to notice).
 pub fn install(id: &HostIdentity) -> Result<bool> {
-    let qemu = Access::Qemu(qemu_group());
+    let qemu = Access::Group(qemu_group());
     let files: [(&str, &str, Access); 10] = [
         ("/etc/pki/CA/cacert.pem", &id.ca_pem, Access::Public),
         (

@@ -43,6 +43,8 @@ pub struct Agent {
     pub files: vm::VmFiles,
     /// Largest image download.
     pub max_image_bytes: u64,
+    /// The OVN southbound remote the controller manages access to, if any.
+    pub ovn_sb_remote: std::sync::Mutex<String>,
     /// Domain lifecycle changes from libvirt, forwarded while a session is up.
     pub changes: tokio::sync::Mutex<mpsc::Receiver<Change>>,
 }
@@ -87,7 +89,7 @@ impl Agent {
             .collect())
     }
 
-    async fn channel(&self) -> Result<Channel> {
+    pub(crate) async fn channel(&self) -> Result<Channel> {
         let tls = self.identity.read().unwrap().tls();
         Endpoint::from_shared(self.controller())?
             .tls_config(tls)?
@@ -214,6 +216,11 @@ impl Agent {
                     Some(controller_message::Msg::Command(cmd)) => cmd,
                     Some(controller_message::Msg::Welcome(w)) => {
                         tracing::info!(protocol = w.protocol_version, version = %w.controller_version, "controller says hello");
+                        *self.ovn_sb_remote.lock().unwrap() = w.ovn_sb_remote.clone();
+                        if !w.ovn_sb_remote.is_empty() {
+                            let this = self.clone();
+                            tokio::spawn(async move { this.keep_ovn_access().await });
+                        }
                         continue;
                     }
                     None => continue,
@@ -491,9 +498,23 @@ impl Agent {
         Ok(())
     }
 
-    /// Renews the certificate once two thirds of its lifetime have passed.
+    /// Sets up ovn-controller's access to the southbound database, when the
+    /// controller manages it.
+    async fn keep_ovn_access(&self) {
+        let remote = self.ovn_sb_remote.lock().unwrap().clone();
+        if remote.is_empty() {
+            return;
+        }
+        if let Err(e) = crate::ovn::ensure(self, &remote).await {
+            tracing::warn!(error = %format!("{e:#}"), "setting up OVN southbound access; will retry");
+        }
+    }
+
+    /// Renews the certificate once two thirds of its lifetime have passed
+    /// (and the OVN one alike).
     pub async fn keep_certificate_fresh(self: std::sync::Arc<Self>) {
         loop {
+            self.keep_ovn_access().await;
             let due = {
                 let id = self.identity.read().unwrap();
                 hm_pki::pem_to_der(&id.cert_pem)

@@ -38,6 +38,7 @@ HM_OVN_NB=ssl:10.0.0.31:6641,ssl:10.0.0.32:6641,ssl:10.0.0.33:6641
 HM_OVN_CA_CERT=/etc/hypermon/ovn/ca.pem
 HM_OVN_CERTIFICATE=/etc/hypermon/ovn/controller.pem
 HM_OVN_PRIVATE_KEY=/run/credentials/hm-controller.service/ovn-key.pem
+HM_OVN_SB=ssl:10.0.0.31:6642,ssl:10.0.0.32:6642,ssl:10.0.0.33:6642
 HM_METRICS_LISTEN=10.0.0.21:9180
 HM_REDIS_URL=rediss://:...@redis.example.net:6380
 ```
@@ -122,22 +123,41 @@ with `ovn-northd` beside them (`ovn-ctl --db-nb-cluster-local-addr ...`).
 Give the controllers all three northbound servers; they use the leader and
 follow it when it changes.
 
-Use TLS: whoever can write the northbound database can rewrite every
-tenant's network, and whoever can write the southbound one, the flows on
-every host. Create a PKI with `ovs-pki` (or any CA), then:
+Use TLS for both: whoever can write the northbound database can rewrite
+every tenant's network, and whoever can write the southbound one, the flows
+on every host.
 
-- northbound: `ovn-nbctl set-ssl <key> <cert> <ca>` and
-  `ovn-nbctl set-connection pssl:6641`; the controllers get the CA and a
-  client certificate (`--ovn-ca-cert`, `--ovn-certificate`,
-  `--ovn-private-key`);
-- southbound: `ovn-sbctl set-ssl ...`, `ovn-sbctl set-connection
-  role=ovn-controller pssl:6642`, and on every host `ovs-vsctl set-ssl` with
-  that host's certificate and `external_ids:ovn-remote=ssl:...`. With
-  `role=ovn-controller`, OVN's RBAC limits each host to its own chassis; it
-  requires each host's certificate to carry its chassis name
-  (`external_ids:system-id`) as common name.
+**Northbound**, which only the controllers use: create a PKI with
+`ovs-pki` (or any CA), give the servers a certificate
+(`ovn-nbctl set-ssl <key> <cert> <ca>`, `ovn-nbctl set-connection
+pssl:6641`), and the controllers the CA and a client certificate
+(`--ovn-ca-cert`, `--ovn-certificate`, `--ovn-private-key`). Keep this PKI
+apart from the southbound's: hosts must never reach the northbound
+database.
 
-`deploy/lab/lab.sh ovn-tls` does the northbound half on the lab.
+**Southbound**, which every host's `ovn-controller` uses, hypermon sets up
+itself. The controller keeps a CA for it (separate from the one for agents
+and replicas), and with `--ovn-sb ssl:...` each agent gets a certificate
+from it naming its chassis, installs it (`ovs-vsctl set-ssl`), points
+`ovn-controller` at the southbound remote, and renews the certificate like
+its own. OVN's RBAC then holds each host to its own chassis: a host that is
+taken over cannot rewrite the others' bindings or flows. The chassis name is
+the host's Open vSwitch `system-id`; two live hosts cannot have the same
+one. On the southbound servers:
+
+```sh
+hm-controller ovn-certificate --name sb1 --out-dir /tmp/sb1   # on a controller
+ovn-sbctl set-ssl /etc/ovn/sb1-key.pem /etc/ovn/sb1.pem /etc/ovn/ca.pem
+ovn-sbctl set-connection role=ovn-controller pssl:6642
+```
+
+To move hosts over without interruption, add the TLS listener beside the
+plain one first (as `deploy/lab/lab.sh ovn-sb-tls` does on the lab), start
+the controllers with `--ovn-sb`, and remove the plain listener once every
+host has switched (`ovn-sbctl list Connection`, and each host's
+`external_ids:ovn-remote`).
+
+`deploy/lab/lab.sh ovn-tls` and `ovn-sb-tls` set up both on the lab.
 
 ## Hosts
 

@@ -76,6 +76,19 @@ enum Cmd {
     Openapi,
     /// Print a new random master key, for --master-key-file.
     GenMasterKey,
+    /// Issue a certificate for an OVN southbound server from the controller's
+    /// OVN CA, which hosts' ovn-controller trusts. Writes ca.pem, NAME.pem and
+    /// NAME-key.pem to the directory.
+    OvnCertificate {
+        /// Names the server (the certificate's common name).
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        out_dir: PathBuf,
+        /// Validity in days.
+        #[arg(long, default_value_t = 365)]
+        days: u64,
+    },
 }
 
 #[derive(clap::Args)]
@@ -98,6 +111,13 @@ struct ServeArgs {
     /// database, list its servers comma-separated; the leader is used.
     #[arg(long, env = "HM_OVN_NB")]
     ovn_nb: String,
+    /// OVN southbound database for hosts' ovn-controller, over TLS, e.g.
+    /// ssl:10.0.0.31:6642,ssl:10.0.0.32:6642. Agents then get certificates
+    /// for it from the controller's OVN CA, named after their chassis (for
+    /// OVN's RBAC), and point ovn-controller at it. The southbound servers
+    /// need certificates from that CA too: see `ovn-certificate`.
+    #[arg(long, env = "HM_OVN_SB")]
+    ovn_sb: Option<String>,
     /// CA certificate that signed the northbound servers' certificates
     /// (PEM), for ssl: remotes.
     #[arg(long, env = "HM_OVN_CA_CERT", requires_all = ["ovn_certificate", "ovn_private_key"])]
@@ -207,6 +227,39 @@ async fn main() -> anyhow::Result<()> {
             println!("{token}");
             Ok(())
         }
+        Cmd::OvnCertificate {
+            name,
+            out_dir,
+            days,
+        } => {
+            let ca = ca::load_or_create_ovn(&db).await?;
+            let (cert, key) = ca.issue_server(
+                std::slice::from_ref(&name),
+                Duration::from_secs(days * 86400),
+            )?;
+            std::fs::create_dir_all(&out_dir)?;
+            let write = |file: String, data: &str, mode: u32| -> anyhow::Result<()> {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                let path = out_dir.join(file);
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(mode)
+                    .open(&path)
+                    .and_then(|mut f| f.write_all(data.as_bytes()))
+                    .with_context(|| format!("writing {}", path.display()))
+            };
+            write("ca.pem".into(), ca.cert_pem(), 0o644)?;
+            write(format!("{name}.pem"), &cert, 0o644)?;
+            write(format!("{name}-key.pem"), &key, 0o600)?;
+            println!(
+                "wrote ca.pem, {name}.pem and {name}-key.pem to {}",
+                out_dir.display()
+            );
+            Ok(())
+        }
         Cmd::Openapi | Cmd::GenMasterKey => unreachable!("handled above"),
     }
 }
@@ -246,6 +299,12 @@ async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
         .await
         .context("sealing stored secrets")?;
     let ca = ca::load_or_create(&db).await?;
+    let ovn_ca = ca::load_or_create_ovn(&db).await?;
+    if let Some(sb) = &args.ovn_sb
+        && sb.split(',').any(|r| !r.trim().starts_with("ssl:"))
+    {
+        anyhow::bail!("--ovn-sb takes ssl: remotes only: OVN's RBAC works over TLS");
+    }
     let (cert_chain, key) = ca::server_identity(&ca, &args.agent_names)?;
     let ca_pem = ca.cert_pem().to_owned();
     let replica = format!("{}-{}", hostname(), uuid::Uuid::now_v7().simple());
@@ -274,6 +333,8 @@ async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
     let state = AppState::new(Inner {
         db: db.clone(),
         ca,
+        ovn_ca,
+        ovn_sb_remote: args.ovn_sb.clone().unwrap_or_default(),
         agents: Agents::default(),
         net: net::Reconciler::new(db.clone(), nb),
         replica: replica.clone(),

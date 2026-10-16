@@ -291,6 +291,51 @@ impl AgentControl for AgentControlService {
         Ok(Response::new(hm_proto::RenewResponse { cert_pem }))
     }
 
+    async fn ovn_credentials(
+        &self,
+        req: Request<hm_proto::OvnCredentialsRequest>,
+    ) -> Result<Response<hm_proto::OvnCredentialsResponse>, Status> {
+        let host_id = self.authenticate(&req).await?;
+        let state = &self.0;
+        if state.ovn_sb_remote.is_empty() {
+            return Err(Status::failed_precondition(
+                "this controller does not manage OVN southbound access",
+            ));
+        }
+        let host = hm_db::hosts::get(&state.db, host_id)
+            .await
+            .map_err(internal)?;
+        // The chassis this host reported, which no other live host may
+        // have (a unique index): OVN's RBAC trusts the certificate's name.
+        if host.ovn_chassis.is_empty() {
+            return Err(Status::failed_precondition(
+                "the host reports no OVN chassis name (Open vSwitch system-id)",
+            ));
+        }
+        let cert_pem = state
+            .ovn_ca
+            .sign_host_csr(
+                &req.get_ref().csr_pem,
+                &host.ovn_chassis,
+                &[],
+                HOST_CERT_LIFETIME,
+            )
+            .map_err(|e| Status::invalid_argument(format!("invalid CSR: {e}")))?;
+        crate::authz::audit(
+            &state.db,
+            None,
+            None,
+            "host.ovn_cert",
+            Some(("host", host_id.0)),
+            serde_json::json!({"chassis": host.ovn_chassis}),
+        )
+        .await;
+        Ok(Response::new(hm_proto::OvnCredentialsResponse {
+            cert_pem,
+            ca_pem: state.ovn_ca.cert_pem().to_owned(),
+        }))
+    }
+
     async fn session(
         &self,
         req: Request<Streaming<AgentMessage>>,
@@ -328,6 +373,7 @@ impl AgentControl for AgentControlService {
                 hm_proto::Welcome {
                     protocol_version: hm_proto::PROTOCOL_VERSION,
                     controller_version: env!("CARGO_PKG_VERSION").to_owned(),
+                    ovn_sb_remote: state.ovn_sb_remote.clone(),
                 },
             )),
         };

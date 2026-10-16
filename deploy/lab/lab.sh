@@ -11,10 +11,12 @@
 #   hm-lab  10.77.0.0/24  management + Geneve underlay (NAT to the internet)
 #   hm-ext  10.78.0.0/24  "external" provider network for floating IPs (NAT)
 #
-# Usage: deploy/lab/lab.sh up | down | status | ceph | ovn-tls | testdb | ssh <vm> [cmd...] | ip <vm>
+# Usage: deploy/lab/lab.sh up | down | status | ceph | ovn-tls | ovn-sb-tls | testdb | ssh <vm> [cmd...] | ip <vm>
 #
 #   ovn-tls also serves the northbound database over TLS (ssl:10.77.0.10:6643)
 #           and prints the controller's flags for it
+#   ovn-sb-tls  serves the southbound database over TLS with OVN's RBAC
+#           (ssl:10.77.0.10:6644), with a certificate from the controller
 #   testdb  (re)starts empty, unused OVN northbound databases on hm-ctl for
 #           integration tests (plain, TLS and a three-server cluster) and
 #           prints the variables that point the tests at them
@@ -350,6 +352,35 @@ REMOTE
   echo "  --ovn-certificate $STATE/ovn-pki/controller.pem --ovn-private-key $STATE/ovn-pki/controller-key.pem"
 }
 
+# Serves the southbound database over TLS as well, on 6644, with OVN's
+# RBAC: each host may change its own chassis only. The server certificate
+# comes from the controller's OVN CA, which the agents' certificates come
+# from too: create it first with
+#   hm-controller ovn-certificate --name hm-ctl --out-dir deploy/lab/.state/ovn-sb-pki
+# then run the controllers with --ovn-sb ssl:10.77.0.10:6644. The plain
+# listener on 6642 stays for hosts that have not switched yet.
+cmd_ovn_sb_tls() {
+  local dir="$STATE/ovn-sb-pki" f
+  for f in ca.pem hm-ctl.pem hm-ctl-key.pem; do
+    [[ -f $dir/$f ]] || die "$dir/$f is missing; see the comment above cmd_ovn_sb_tls"
+  done
+  log "serving the OVN southbound database over TLS with RBAC on ssl:10.77.0.10:6644"
+  ssh_vm hm-ctl sudo install -d -m 700 /etc/ovn/hm-sb-pki
+  for f in ca.pem hm-ctl.pem hm-ctl-key.pem; do
+    ssh_vm hm-ctl sudo sh -c "'umask 077; cat > /etc/ovn/hm-sb-pki/$f'" < "$dir/$f"
+  done
+  ssh_vm hm-ctl sudo bash -s <<'REMOTE'
+set -euo pipefail
+p=/etc/ovn/hm-sb-pki
+ovn-sbctl set-ssl $p/hm-ctl-key.pem $p/hm-ctl.pem $p/ca.pem
+if ! ovn-sbctl --bare --columns=target list Connection | grep -qx 'pssl:6644'; then
+  ovn-sbctl -- --id=@c create Connection 'target="pssl:6644"' role=ovn-controller \
+    -- add SB_Global . connections @c
+fi
+ovn-sbctl --columns=target,role list Connection
+REMOTE
+}
+
 cmd_testdb() {
   log "starting scratch OVN northbound databases on 10.77.0.10"
   { echo "$MAKE_PKI"; cat <<'REMOTE'; } | ssh_vm hm-ctl sudo bash -s
@@ -432,9 +463,10 @@ main() {
     ceph) cmd_ceph ;;
     testdb) cmd_testdb ;;
     ovn-tls) cmd_ovn_tls ;;
+    ovn-sb-tls) cmd_ovn_sb_tls ;;
     ssh) shift; ssh_vm "$@" ;;
     ip) vm_field "$2" 1 ;;
-    *) sed -n '2,25p' "$0"; exit 1 ;;
+    *) sed -n '2,27p' "$0"; exit 1 ;;
   esac
 }
 

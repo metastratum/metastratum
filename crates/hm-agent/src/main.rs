@@ -4,6 +4,7 @@
 mod console;
 mod enroll;
 mod facts;
+mod ovn;
 mod session;
 mod tls;
 mod vm;
@@ -120,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
         lv: lv.clone(),
         pools,
         max_image_bytes: args.image_max_gib << 30,
+        ovn_sb_remote: Default::default(),
         files: vm::VmFiles {
             cloud_init_dir: args.data_dir.join("cloud-init"),
         },
