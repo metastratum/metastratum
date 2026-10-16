@@ -2,10 +2,11 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use argon2::{Argon2, PasswordHasher, PasswordVerifier};
+use axum::Extension;
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use hm_core::ids::{TenantId, UserId};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -15,6 +16,7 @@ use utoipa_axum::routes;
 use super::SESSION_COOKIE;
 use crate::authz::Principal;
 use crate::error::{ApiError, ApiResult};
+use crate::ratelimit::ClientIp;
 use crate::state::AppState;
 
 const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
@@ -98,11 +100,24 @@ async fn resolve_tenant(
 }
 
 #[utoipa::path(post, path = "/auth/login", tag = "auth", request_body = LoginRequest,
-    responses((status = 204, description = "Logged in; session cookie set"), (status = 401)))]
+    responses((status = 204, description = "Logged in; session cookie set"), (status = 401),
+        (status = 429, description = "Too many attempts; see Retry-After")))]
 async fn login(
     State(state): State<AppState>,
+    Extension(ClientIp(ip)): Extension<ClientIp>,
     Json(req): Json<LoginRequest>,
-) -> ApiResult<impl IntoResponse> {
+) -> ApiResult<Response> {
+    // Failures count against the account wherever they come from.
+    let account = format!(
+        "{}/{}",
+        req.tenant.as_deref().unwrap_or("").trim_matches('/'),
+        req.username.to_lowercase()
+    );
+    if let Err(retry) =
+        (state.limits.logins.take(&ip)).and_then(|()| state.limits.login_failures.check(&account))
+    {
+        return Ok(crate::ratelimit::too_many(retry));
+    }
     let user = match resolve_tenant(&state, req.tenant.as_deref()).await? {
         Some(t) => hm_db::users::find_by_username(&state.db, t.id, &req.username).await?,
         None => None,
@@ -121,6 +136,9 @@ async fn login(
     let user = match user {
         Some(u) if ok && !u.disabled => u,
         other => {
+            let _ = state.limits.login_failures.take(&account);
+            metrics::counter!("hm_logins_total", "method" => "password", "outcome" => "failed")
+                .increment(1);
             let entry = hm_db::audit::Entry {
                 user_id: other.as_ref().map(|u| u.id),
                 username: Some(&req.username),
@@ -142,7 +160,7 @@ async fn login(
     };
 
     let headers = open_session(&state, &user, "password").await?;
-    Ok((StatusCode::NO_CONTENT, headers))
+    Ok((StatusCode::NO_CONTENT, headers).into_response())
 }
 
 /// Starts a session for a user who just proved who they are, and returns the
@@ -152,6 +170,8 @@ pub async fn open_session(
     user: &hm_db::users::User,
     method: &str,
 ) -> ApiResult<HeaderMap> {
+    metrics::counter!("hm_logins_total", "method" => method.to_owned(), "outcome" => "succeeded")
+        .increment(1);
     let secret = hm_pki::random_hex(32);
     hm_db::sessions::create(
         &state.db,

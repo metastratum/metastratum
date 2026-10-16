@@ -49,7 +49,13 @@ impl Reconciler {
     /// Runs passes forever: when kicked, and every [`RESYNC`] regardless.
     pub async fn run(self) {
         loop {
-            if let Err(e) = self.sync().await {
+            let started = std::time::Instant::now();
+            let result = self.sync().await;
+            metrics::histogram!("hm_network_pass_duration_seconds")
+                .record(started.elapsed().as_secs_f64());
+            metrics::counter!("hm_network_passes_total", "outcome" => if result.is_ok() { "ok" } else { "failed" })
+                .increment(1);
+            if let Err(e) = result {
                 tracing::warn!(error = %format!("{e:#}"), "network reconciliation failed");
             }
             tokio::select! {
@@ -85,6 +91,13 @@ impl Reconciler {
         let plan = hm_netplan::plan(&desired, &actual);
         if !plan.is_empty() {
             self.0.nb.transact(plan.ops).await.context("updating OVN")?;
+            for (op, n) in [
+                ("insert", plan.inserts),
+                ("update", plan.updates),
+                ("delete", plan.deletes),
+            ] {
+                metrics::counter!("hm_network_changes_total", "op" => op).increment(n as u64);
+            }
             tracing::info!(
                 inserts = plan.inserts,
                 updates = plan.updates,

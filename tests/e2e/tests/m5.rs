@@ -5,6 +5,10 @@ use std::time::Duration;
 use reqwest::Method;
 use serde_json::json;
 
+/// Held by tests that disturb agent sessions (renewal reconnects every agent,
+/// fencing kills a host) or need them steady, so they never overlap.
+static SESSIONS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// A tenant's image URL cannot make a host fetch from the management
 /// network (and hand the response back as a disk).
 #[tokio::test]
@@ -88,6 +92,7 @@ async fn tenant_images_are_not_fetched_from_internal_addresses() -> anyhow::Resu
 /// host's agent session.
 #[tokio::test]
 async fn every_replica_reaches_every_host() -> anyhow::Result<()> {
+    let _sessions = SESSIONS.lock().await;
     let Some(a) = hm_e2e::connect().await? else {
         return Ok(());
     };
@@ -171,6 +176,7 @@ fn virsh(args: &[&str]) -> anyhow::Result<String> {
 /// libvirt there).
 #[tokio::test]
 async fn failed_hosts_are_fenced_and_their_vms_restart_elsewhere() -> anyhow::Result<()> {
+    let _sessions = SESSIONS.lock().await;
     let Some(api) = hm_e2e::connect().await? else {
         return Ok(());
     };
@@ -327,6 +333,7 @@ async fn failed_hosts_are_fenced_and_their_vms_restart_elsewhere() -> anyhow::Re
 /// migration) uses it.
 #[tokio::test]
 async fn hosts_renew_their_certificates() -> anyhow::Result<()> {
+    let _sessions = SESSIONS.lock().await;
     let Some(api) = hm_e2e::connect().await? else {
         return Ok(());
     };

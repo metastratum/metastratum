@@ -54,6 +54,7 @@ where
                         .await;
                 if got.unwrap_or(false) {
                     tracing::info!("leading");
+                    metrics::gauge!("hm_leader").set(1.0);
                     let keepalive = async {
                         loop {
                             tokio::time::sleep(Duration::from_secs(5)).await;
@@ -66,6 +67,7 @@ where
                         () = work() => {}
                         () = keepalive => tracing::warn!("lost the database session; no longer leading"),
                     }
+                    metrics::gauge!("hm_leader").set(0.0);
                 }
             }
             Err(e) => tracing::warn!(error = %e, "leader election"),
@@ -153,6 +155,7 @@ async fn fence_and_recover(state: &AppState, host: HostId, name: &str) {
     if let Err(e) = crate::fence::power_off(&kind, &config).await {
         // Not confirmed off: leave its VMs alone; try again next round.
         tracing::error!(%host, %name, error = %format!("{e:#}"), "fencing failed; the host's VMs stay put");
+        metrics::counter!("hm_fencings_total", "outcome" => "failed").increment(1);
         crate::authz::audit(
             db,
             None,
@@ -165,6 +168,7 @@ async fn fence_and_recover(state: &AppState, host: HostId, name: &str) {
         return;
     }
     tracing::warn!(%host, %name, "host fenced (confirmed off)");
+    metrics::counter!("hm_fencings_total", "outcome" => "fenced").increment(1);
     let task = async {
         let mut tx = db.begin().await?;
         hm_db::hosts::set_state(&mut *tx, host, "fenced").await?;

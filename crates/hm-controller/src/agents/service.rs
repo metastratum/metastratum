@@ -322,10 +322,12 @@ impl AgentControl for AgentControlService {
         }
         let (tx, rx) = mpsc::channel(64);
         let welcome = ControllerMessage {
-            msg: Some(hm_proto::controller_message::Msg::Welcome(hm_proto::Welcome {
-                protocol_version: hm_proto::PROTOCOL_VERSION,
-                controller_version: env!("CARGO_PKG_VERSION").to_owned(),
-            })),
+            msg: Some(hm_proto::controller_message::Msg::Welcome(
+                hm_proto::Welcome {
+                    protocol_version: hm_proto::PROTOCOL_VERSION,
+                    controller_version: env!("CARGO_PKG_VERSION").to_owned(),
+                },
+            )),
         };
         let _ = tx.send(Ok(welcome)).await;
         let conn = state.agents.register(host, tx, &hello.capabilities);
@@ -408,14 +410,27 @@ impl AgentControl for AgentControlService {
 pub struct ReplicaControlService(pub AppState);
 
 impl ReplicaControlService {
-    fn authenticate<T>(&self, req: &Request<T>) -> Result<(), Status> {
+    /// Accepts certificates of live replicas only, so the certificate of one
+    /// that is gone (they are long-lived) opens nothing.
+    async fn authenticate<T>(&self, req: &Request<T>) -> Result<(), Status> {
         let leaf = req
             .peer_certs()
             .and_then(|c| c.first().cloned())
             .ok_or_else(|| Status::unauthenticated("client certificate required"))?;
-        match hm_pki::common_name(&leaf) {
-            Ok(cn) if cn.starts_with(super::peers::REPLICA_CN_PREFIX) => Ok(()),
-            _ => Err(Status::permission_denied("not a controller replica")),
+        let replica = match hm_pki::common_name(&leaf) {
+            Ok(cn) => cn
+                .strip_prefix(super::peers::REPLICA_CN_PREFIX)
+                .map(str::to_owned),
+            Err(_) => None,
+        }
+        .ok_or_else(|| Status::permission_denied("not a controller replica"))?;
+        if hm_db::replicas::is_live(&self.0.db, &replica)
+            .await
+            .map_err(internal)?
+        {
+            Ok(())
+        } else {
+            Err(Status::permission_denied("not a live controller replica"))
         }
     }
 }
@@ -436,7 +451,7 @@ impl hm_proto::replica_control_server::ReplicaControl for ReplicaControlService 
         &self,
         req: Request<hm_proto::ForwardedCommand>,
     ) -> Result<Response<hm_proto::CommandResult>, Status> {
-        self.authenticate(&req)?;
+        self.authenticate(&req).await?;
         let req = req.into_inner();
         let host: HostId = req
             .host_id
@@ -464,7 +479,7 @@ impl hm_proto::replica_control_server::ReplicaControl for ReplicaControlService 
         &self,
         req: Request<Streaming<TunnelChunk>>,
     ) -> Result<Response<Self::ConsoleStream>, Status> {
-        self.authenticate(&req)?;
+        self.authenticate(&req).await?;
         let md = req.metadata();
         let get = |k: &str| md.get(k).and_then(|v| v.to_str().ok()).map(str::to_owned);
         let host: HostId = get("host-id")

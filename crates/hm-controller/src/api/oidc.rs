@@ -48,24 +48,69 @@ const DISCOVERY_TTL: Duration = Duration::from_secs(300);
 #[error("{0}")]
 pub struct HttpError(String);
 
+/// Where the controller may connect on behalf of a tenant's identity
+/// provider. Sub-tenants' providers must be on the internet: otherwise a
+/// tenant administrator could make the controller probe its own network
+/// (discovery errors are shown to them).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Reach {
+    Any,
+    PublicOnly,
+}
+
+/// The provider's (root tenant's) identity provider, and issuers the
+/// operator listed in `--trusted-oidc-issuers`, may be internal.
+async fn reach(state: &AppState, tenant: TenantId, issuer: &str) -> hm_db::Result<Reach> {
+    let trusted = state
+        .trusted_oidc_issuers
+        .iter()
+        .any(|t| t.trim_end_matches('/') == issuer.trim_end_matches('/'))
+        || hm_db::tenants::get(&state.db, tenant)
+            .await?
+            .parent_id
+            .is_none();
+    Ok(if trusted {
+        Reach::Any
+    } else {
+        Reach::PublicOnly
+    })
+}
+
 /// The HTTP client openidconnect uses: our reqwest, never following
-/// redirects (an identity provider must not bounce us elsewhere).
-fn http_client()
--> impl Fn(HttpRequest) -> Pin<Box<dyn Future<Output = Result<HttpResponse, HttpError>> + Send>> {
-    static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-        reqwest::Client::builder()
+/// redirects (an identity provider must not bounce us elsewhere), and with
+/// [`Reach::PublicOnly`] connecting to public addresses only. That covers the
+/// token and key endpoints too, whose URLs the discovery document names.
+fn http_client(
+    reach: Reach,
+) -> impl Fn(HttpRequest) -> Pin<Box<dyn Future<Output = Result<HttpResponse, HttpError>> + Send>> {
+    fn build(public_only: bool) -> reqwest::Client {
+        let mut b = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(10))
-            .build()
-            .expect("HTTP client")
-    });
-    |req: HttpRequest| {
+            .timeout(Duration::from_secs(10));
+        if public_only {
+            b = b
+                .no_proxy()
+                .dns_resolver(std::sync::Arc::new(hm_storage::PublicOnly));
+        }
+        b.build().expect("HTTP client")
+    }
+    static ANY: LazyLock<reqwest::Client> = LazyLock::new(|| build(false));
+    static PUBLIC: LazyLock<reqwest::Client> = LazyLock::new(|| build(true));
+    move |req: HttpRequest| {
         Box::pin(async move {
             let req = reqwest::Request::try_from(req).map_err(|e| HttpError(e.to_string()))?;
-            let resp = CLIENT
+            let client = match reach {
+                Reach::Any => &*ANY,
+                Reach::PublicOnly => {
+                    let policy = hm_storage::FetchPolicy::default();
+                    hm_storage::check_url(req.url(), policy).map_err(HttpError)?;
+                    &*PUBLIC
+                }
+            };
+            let resp = client
                 .execute(req)
                 .await
-                .map_err(|e| HttpError(e.to_string()))?;
+                .map_err(|e| HttpError(chain(&e)))?;
             let mut out = HttpResponse::new(Vec::new());
             *out.status_mut() = resp.status();
             *out.headers_mut() = resp.headers().clone();
@@ -91,23 +136,25 @@ fn chain(e: &dyn std::error::Error) -> String {
     out
 }
 
-/// Provider metadata, discovered and cached briefly per issuer.
-async fn discover(issuer: &str) -> Result<CoreProviderMetadata, String> {
-    static CACHE: LazyLock<Mutex<HashMap<String, (Instant, CoreProviderMetadata)>>> =
-        LazyLock::new(Mutex::default);
-    if let Some((at, m)) = CACHE.lock().unwrap().get(issuer)
+/// Provider metadata, discovered and cached briefly per issuer (and reach,
+/// so a document fetched for a trusted tenant is not handed to others).
+async fn discover(issuer: &str, reach: Reach) -> Result<CoreProviderMetadata, String> {
+    type Cache = HashMap<(String, Reach), (Instant, CoreProviderMetadata)>;
+    static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Mutex::default);
+    let key = (issuer.to_owned(), reach);
+    if let Some((at, m)) = CACHE.lock().unwrap().get(&key)
         && at.elapsed() < DISCOVERY_TTL
     {
         return Ok(m.clone());
     }
     let url = IssuerUrl::new(issuer.to_owned()).map_err(|e| format!("invalid issuer URL: {e}"))?;
-    let meta = CoreProviderMetadata::discover_async(url, &http_client())
+    let meta = CoreProviderMetadata::discover_async(url, &http_client(reach))
         .await
         .map_err(|e| format!("discovering {issuer}: {}", chain(&e)))?;
     CACHE
         .lock()
         .unwrap()
-        .insert(issuer.to_owned(), (Instant::now(), meta.clone()));
+        .insert(key, (Instant::now(), meta.clone()));
     Ok(meta)
 }
 
@@ -190,7 +237,8 @@ async fn start(State(state): State<AppState>, Query(q): Query<StartQuery>) -> Ap
             "That tenant does not sign in with an identity provider.",
         ));
     };
-    let meta = match discover(&provider.issuer).await {
+    let reach = reach(&state, tenant.id, &provider.issuer).await?;
+    let meta = match discover(&provider.issuer, reach).await {
         Ok(m) => m,
         Err(e) => {
             tracing::warn!(tenant = %tenant.id, error = %e, "OIDC discovery failed");
@@ -319,7 +367,10 @@ async fn finish(
         .await
         .map_err(db_err)?
         .ok_or("This tenant no longer signs in with an identity provider.")?;
-    let meta = discover(&provider.issuer).await?;
+    let reach = reach(state, tenant_id, &provider.issuer)
+        .await
+        .map_err(db_err)?;
+    let meta = discover(&provider.issuer, reach).await?;
     let client = CoreClient::from_provider_metadata(
         meta,
         ClientId::new(provider.client_id.clone()),
@@ -336,7 +387,7 @@ async fn finish(
         .exchange_code(AuthorizationCode::new(code))
         .map_err(|e| format!("The identity provider has no token endpoint: {e}"))?
         .set_pkce_verifier(PkceCodeVerifier::new(verifier))
-        .request_async(&http_client())
+        .request_async(&http_client(reach))
         .await
         .map_err(|e| format!("Exchanging the sign-in code failed: {}", chain(&e)))?;
     let id_token = tokens
@@ -549,7 +600,10 @@ async fn put_provider(
             "an http(s) issuer URL and a client ID are required",
         ));
     }
-    discover(&req.issuer).await.map_err(ApiError::bad_request)?;
+    let reach = reach(&state, id, &req.issuer).await?;
+    discover(&req.issuer, reach)
+        .await
+        .map_err(ApiError::bad_request)?;
     let provider = hm_db::oidc::Provider {
         tenant_id: id,
         name: name.to_owned(),

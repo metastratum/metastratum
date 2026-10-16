@@ -9,8 +9,10 @@ mod error;
 mod events;
 mod fence;
 mod ha;
+mod metrics;
 mod migration;
 mod net;
+mod ratelimit;
 mod secrets;
 mod state;
 
@@ -53,7 +55,7 @@ struct Args {
 #[derive(Subcommand)]
 enum Cmd {
     /// Run the controller.
-    Serve(ServeArgs),
+    Serve(Box<ServeArgs>),
     /// Create the provider tenant and its first administrator.
     Bootstrap {
         #[arg(long, default_value = "admin")]
@@ -101,6 +103,20 @@ struct ServeArgs {
     /// Mark session cookies Secure (when served over HTTPS).
     #[arg(long, env = "HM_SECURE_COOKIES")]
     secure_cookies: bool,
+    /// Address to serve Prometheus metrics on (`/metrics`), e.g.
+    /// 127.0.0.1:9180. Kept off the API address: metrics name hosts and
+    /// count resources across tenants.
+    #[arg(long, env = "HM_METRICS_LISTEN")]
+    metrics_listen: Option<SocketAddr>,
+    /// Load balancers in front of the API (addresses or CIDRs), whose
+    /// X-Forwarded-For header gives the client's address for rate limits.
+    #[arg(long, env = "HM_TRUSTED_PROXIES", value_delimiter = ',')]
+    trusted_proxies: Vec<ratelimit::Cidr>,
+    /// Identity provider issuer URLs that sub-tenants may use although they
+    /// are on internal addresses (other tenants' providers must be public;
+    /// the provider tenant's may be anywhere).
+    #[arg(long, env = "HM_TRUSTED_OIDC_ISSUERS", value_delimiter = ',')]
+    trusted_oidc_issuers: Vec<String>,
     /// Base URL users reach the API and UI at (for OIDC redirect URIs).
     /// Defaults to http://<listen address>.
     #[arg(long, env = "HM_PUBLIC_URL")]
@@ -140,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
     hm_db::migrate(&db).await.context("running migrations")?;
 
     match args.cmd {
-        Cmd::Serve(s) => serve(db, s).await,
+        Cmd::Serve(s) => serve(db, *s).await,
         Cmd::Bootstrap {
             admin_user,
             admin_password,
@@ -209,6 +225,7 @@ async fn bootstrap(db: hm_db::sqlx::PgPool, user: &str, password: &str) -> anyho
 }
 
 async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
+    let recorder = metrics::install()?;
     secrets::seal_existing(&db)
         .await
         .context("sealing stored secrets")?;
@@ -229,6 +246,9 @@ async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
             .clone()
             .unwrap_or_else(|| format!("http://{}", args.listen)),
         events: events::Hub::default(),
+        limits: ratelimit::Limits::default(),
+        trusted_proxies: args.trusted_proxies.clone(),
+        trusted_oidc_issuers: args.trusted_oidc_issuers.clone(),
     });
     tracing::info!(%replica, fingerprint = %state.ca.fingerprint(), "controller starting");
 
@@ -306,14 +326,45 @@ async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
         app = app
             .fallback_service(ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html"))));
     }
-    let app = app.layer(TraceLayer::new_for_http()).with_state(state);
+    let app = app
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            ratelimit::limit,
+        ))
+        .layer(axum::middleware::from_fn(metrics::track_http))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            ratelimit::harden,
+        ))
+        .layer(TraceLayer::new_for_http())
+        .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     tracing::info!(addr = %args.listen, "HTTP API listening");
-    let http = axum::serve(listener, app).with_graceful_shutdown(shutdown());
+    let http = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown());
 
-    let (g, h) = tokio::join!(grpc, http);
+    let metrics_server = async {
+        let Some(addr) = args.metrics_listen else {
+            return anyhow::Ok(());
+        };
+        let app = Router::new()
+            .route("/metrics", get(metrics::render))
+            .with_state((state.clone(), recorder));
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        tracing::info!(%addr, "metrics listening");
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown())
+            .await?;
+        Ok(())
+    };
+
+    let (g, h, m) = tokio::join!(grpc, http, metrics_server);
     g?;
     h?;
+    m?;
     Ok(())
 }
 

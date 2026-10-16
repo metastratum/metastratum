@@ -21,6 +21,7 @@ pub mod quotas;
 pub mod rbac;
 pub mod replicas;
 pub mod sessions;
+pub mod stats;
 pub mod storage_pools;
 pub mod tasks;
 pub mod tenants;

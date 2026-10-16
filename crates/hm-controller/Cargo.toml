@@ -23,7 +23,10 @@ hm-ovsdb.workspace = true
 hm-pki.workspace = true
 hm-proto.workspace = true
 hm-scheduler.workspace = true
+hm-storage.workspace = true
 hm-virtrpc.workspace = true
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 openidconnect = { version = "4", default-features = false }
 rand.workspace = true
 reqwest = { workspace = true, features = ["json"] }

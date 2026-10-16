@@ -3,7 +3,9 @@
 //!
 //! Runs when HM_E2E_DEX holds Dex's issuer URL, e.g.
 //! `HM_E2E_DEX=http://127.0.0.1:5556/dex`. The controller's public URL must
-//! be one of the redirect URIs registered in deploy/dev/dex.yaml.
+//! be one of the redirect URIs registered in deploy/dev/dex.yaml, and as
+//! Dex is on an internal address, the controller must trust it for
+//! sub-tenants (`--trusted-oidc-issuers`).
 
 use hm_e2e::Api;
 use reqwest::Method;
@@ -133,6 +135,16 @@ async fn scenario(
         .try_send(Method::PUT, &idp, Some(config(json!([]))))
         .await?;
     assert_eq!(st, 400, "a provider without a client secret");
+    // Other internal addresses are off limits for a sub-tenant's provider:
+    // the controller would be probing its own network for the tenant.
+    for internal in ["http://127.0.0.1:5432/", "http://localhost:8080/realm"] {
+        let mut c = config(json!([]));
+        c["issuer"] = json!(internal);
+        c["client_secret"] = json!("x");
+        let (st, body) = admin.try_send(Method::PUT, &idp, Some(c)).await?;
+        assert_eq!(st, 400, "{internal}: {body}");
+        assert!(body.to_string().contains("public"), "{internal}: {body}");
+    }
     let mut first = config(json!([{"group": "authors", "role": "viewer"}]));
     first["client_secret"] = json!("hypermon-dev-secret");
     let (st, view) = admin.try_send(Method::PUT, &idp, Some(first)).await?;

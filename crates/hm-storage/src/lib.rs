@@ -10,7 +10,7 @@ mod fetch;
 mod pools;
 mod rbd;
 
-pub use fetch::{FetchPolicy, is_public};
+pub use fetch::{FetchPolicy, PublicOnly, check_url, is_public};
 
 pub use pools::{Pool, PoolSpec, Pools};
 pub use rbd::RbdPool;

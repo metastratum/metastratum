@@ -83,6 +83,7 @@ pub async fn run(state: AppState) {
 
 async fn execute(state: AppState, task: Task) {
     let (id, kind) = (task.id, task.kind.clone());
+    let started = std::time::Instant::now();
     tracing::info!(task = %id, %kind, attempt = task.attempts, "running task");
 
     let renew = {
@@ -117,6 +118,7 @@ async fn execute(state: AppState, task: Task) {
     renew.abort();
 
     let outcome = outcome.map_err(|e| format!("{e:#}"));
+    crate::metrics::task_finished(&kind, outcome.is_ok(), started);
     match &outcome {
         Ok(()) => tracing::info!(task = %id, %kind, "task succeeded"),
         Err(e) => tracing::warn!(task = %id, %kind, error = %e, "task failed"),

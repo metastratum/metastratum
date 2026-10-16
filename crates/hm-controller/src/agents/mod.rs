@@ -90,6 +90,11 @@ impl Agents {
         let _ = self.peers.set(p);
     }
 
+    /// Agent sessions held by this replica.
+    pub fn session_count(&self) -> usize {
+        self.conns.lock().unwrap().len()
+    }
+
     fn is_local(&self, host: HostId) -> bool {
         self.conns.lock().unwrap().contains_key(&host)
     }
@@ -148,10 +153,19 @@ impl Agents {
         cmd: command::Cmd,
         timeout: Duration,
     ) -> Result<String, AgentError> {
-        match self.peers.get() {
+        let (name, started) = (hm_proto::capability(&cmd), std::time::Instant::now());
+        let result = match self.peers.get() {
             Some(p) if !self.is_local(host) => p.forward(host, cmd, timeout).await,
             _ => self.send_local(host, cmd, timeout).await,
-        }
+        };
+        let outcome = match &result {
+            Ok(_) => "ok",
+            Err(AgentError::Failed(_)) => "failed",
+            Err(AgentError::Timeout(_)) => "timeout",
+            Err(AgentError::NotConnected | AgentError::Closed) => "unreachable",
+        };
+        crate::metrics::agent_command(name, outcome, started);
+        result
     }
 
     /// Sends a command to an agent whose session is on this replica.
@@ -274,7 +288,10 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(4);
         agents.register(host, tx, &["start_vm".to_owned()]);
         let cmd = command::Cmd::MigrateVm(hm_proto::MigrateVm::default());
-        let err = agents.send_local(host, cmd, Duration::from_secs(1)).await.unwrap_err();
+        let err = agents
+            .send_local(host, cmd, Duration::from_secs(1))
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("upgrade"), "{err}");
         assert!(rx.try_recv().is_err(), "nothing was sent");
         // An agent from before capabilities gets everything.

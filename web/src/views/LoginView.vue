@@ -52,7 +52,9 @@ async function submit() {
     error.value =
       e instanceof ApiError && e.status === 401
         ? 'That username and password don’t match an account in this tenant.'
-        : 'The controller isn’t responding. Check that it is running and try again.'
+        : e instanceof ApiError && e.status === 429
+          ? 'Too many sign-in attempts. Wait a minute, then try again.'
+          : 'The controller isn’t responding. Check that it is running and try again.'
   } finally {
     busy.value = false
   }

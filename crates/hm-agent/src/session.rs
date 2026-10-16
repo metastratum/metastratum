@@ -132,7 +132,10 @@ impl Agent {
         facts.physical_networks = crate::facts::physical_networks().await;
         let hello = Hello {
             protocol_version: hm_proto::PROTOCOL_VERSION,
-            capabilities: hm_proto::CAPABILITIES.iter().map(|c| (*c).to_owned()).collect(),
+            capabilities: hm_proto::CAPABILITIES
+                .iter()
+                .map(|c| (*c).to_owned())
+                .collect(),
             facts: Some(facts),
             domains: self.domains().await?,
         };

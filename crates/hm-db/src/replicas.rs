@@ -21,6 +21,18 @@ pub async fn heartbeat(db: impl PgExecutor<'_>, id: &str, peer_address: &str) ->
     Ok(())
 }
 
+/// Whether `id` is a replica heard from recently.
+pub async fn is_live(db: impl PgExecutor<'_>, id: &str) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM replicas
+                        WHERE id = $1 AND last_seen_at > now() - make_interval(secs => $2))",
+    )
+    .bind(id)
+    .bind(STALE_SECS as f64)
+    .fetch_one(db)
+    .await?)
+}
+
 /// Forgets replicas gone for a while (their sessions are long over).
 pub async fn purge_stale(db: impl PgExecutor<'_>) -> Result<u64> {
     Ok(

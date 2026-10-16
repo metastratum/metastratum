@@ -2,6 +2,19 @@ import { expect, test, type Page } from '@playwright/test'
 
 test.skip(!process.env.HM_E2E_URL, 'set HM_E2E_URL to a running controller')
 
+// The controller's Content-Security-Policy must not block anything the UI
+// does (an inline script or a third-party resource would be refused).
+const cspViolations: string[] = []
+test.beforeEach(({ page }) => {
+  cspViolations.length = 0
+  page.on('console', (msg) => {
+    if (msg.text().includes('Content Security Policy')) cspViolations.push(msg.text())
+  })
+})
+test.afterEach(() => {
+  expect(cspViolations).toEqual([])
+})
+
 const user = process.env.HM_E2E_USER ?? 'admin'
 const password = process.env.HM_E2E_PASSWORD ?? ''
 

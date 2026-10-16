@@ -83,8 +83,9 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
         || (a == 198 && (b == 18 || b == 19))) // benchmarking
 }
 
-/// Resolves names, keeping public addresses only.
-struct PublicOnly;
+/// Resolves names, keeping public addresses only. Address literals in URLs
+/// bypass resolvers; check those with [`check_url`].
+pub struct PublicOnly;
 
 impl reqwest::dns::Resolve for PublicOnly {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
@@ -103,7 +104,7 @@ impl reqwest::dns::Resolve for PublicOnly {
 
 /// Checks a URL before connecting: http(s) only, and no non-public address
 /// literals (names are checked when resolved).
-fn check_url(url: &reqwest::Url, policy: FetchPolicy) -> std::result::Result<(), String> {
+pub fn check_url(url: &reqwest::Url, policy: FetchPolicy) -> std::result::Result<(), String> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(format!("{}: only http and https are allowed", url.scheme()));
     }
