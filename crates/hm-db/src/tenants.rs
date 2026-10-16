@@ -38,7 +38,11 @@ impl From<Row> for Tenant {
     }
 }
 
-const COLUMNS: &str = "id, parent_id, slug, name, path::text AS path, created_at";
+macro_rules! tenant_columns {
+    () => {
+        "id, parent_id, slug, name, path::text AS path, created_at"
+    };
+}
 
 pub async fn create(
     db: impl PgExecutor<'_>,
@@ -46,8 +50,9 @@ pub async fn create(
     slug: &str,
     name: &str,
 ) -> Result<Tenant> {
-    let row: Row = sqlx::query_as(&format!(
-        "INSERT INTO tenants (id, parent_id, slug, name) VALUES ($1, $2, $3, $4) RETURNING {COLUMNS}"
+    let row: Row = sqlx::query_as(concat!(
+        "INSERT INTO tenants (id, parent_id, slug, name) VALUES ($1, $2, $3, $4) RETURNING ",
+        tenant_columns!()
     ))
     .bind(TenantId::new())
     .bind(parent_id)
@@ -60,23 +65,29 @@ pub async fn create(
 }
 
 pub async fn get(db: impl PgExecutor<'_>, id: TenantId) -> Result<Tenant> {
-    sqlx::query_as::<_, Row>(&format!("SELECT {COLUMNS} FROM tenants WHERE id = $1"))
-        .bind(id)
-        .fetch_optional(db)
-        .await?
-        .map(Into::into)
-        .ok_or_else(|| {
-            hm_core::Error::NotFound {
-                kind: "tenant",
-                id: id.to_string(),
-            }
-            .into()
-        })
+    sqlx::query_as::<_, Row>(concat!(
+        "SELECT ",
+        tenant_columns!(),
+        " FROM tenants WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(db)
+    .await?
+    .map(Into::into)
+    .ok_or_else(|| {
+        hm_core::Error::NotFound {
+            kind: "tenant",
+            id: id.to_string(),
+        }
+        .into()
+    })
 }
 
 pub async fn root(db: impl PgExecutor<'_>) -> Result<Option<Tenant>> {
-    Ok(sqlx::query_as::<_, Row>(&format!(
-        "SELECT {COLUMNS} FROM tenants WHERE parent_id IS NULL"
+    Ok(sqlx::query_as::<_, Row>(concat!(
+        "SELECT ",
+        tenant_columns!(),
+        " FROM tenants WHERE parent_id IS NULL"
     ))
     .fetch_optional(db)
     .await?
@@ -85,8 +96,10 @@ pub async fn root(db: impl PgExecutor<'_>) -> Result<Option<Tenant>> {
 
 /// The tenant and all its descendants, ordered so parents precede children.
 pub async fn subtree(db: impl PgExecutor<'_>, id: TenantId) -> Result<Vec<Tenant>> {
-    let rows: Vec<Row> = sqlx::query_as(&format!(
-        "SELECT {COLUMNS} FROM tenants
+    let rows: Vec<Row> = sqlx::query_as(concat!(
+        "SELECT ",
+        tenant_columns!(),
+        " FROM tenants
          WHERE path <@ (SELECT path FROM tenants WHERE id = $1)
          ORDER BY nlevel(path), slug"
     ))
@@ -98,8 +111,10 @@ pub async fn subtree(db: impl PgExecutor<'_>, id: TenantId) -> Result<Vec<Tenant
 
 /// The tenant's ancestors and the tenant itself, root first.
 pub async fn lineage(db: impl PgExecutor<'_>, id: TenantId) -> Result<Vec<Tenant>> {
-    let rows: Vec<Row> = sqlx::query_as(&format!(
-        "SELECT {COLUMNS} FROM tenants
+    let rows: Vec<Row> = sqlx::query_as(concat!(
+        "SELECT ",
+        tenant_columns!(),
+        " FROM tenants
          WHERE path @> (SELECT path FROM tenants WHERE id = $1)
          ORDER BY nlevel(path)"
     ))

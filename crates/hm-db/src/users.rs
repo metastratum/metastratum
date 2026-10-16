@@ -16,8 +16,11 @@ pub struct User {
     pub created_at: DateTime<Utc>,
 }
 
-const COLUMNS: &str =
-    "id, tenant_id, username, display_name, email, password_hash, disabled, created_at";
+macro_rules! user_columns {
+    () => {
+        "id, tenant_id, username, display_name, email, password_hash, disabled, created_at"
+    };
+}
 
 pub struct NewUser<'a> {
     pub tenant_id: TenantId,
@@ -28,9 +31,10 @@ pub struct NewUser<'a> {
 }
 
 pub async fn create(db: impl PgExecutor<'_>, new: NewUser<'_>) -> Result<User> {
-    sqlx::query_as(&format!(
+    sqlx::query_as(concat!(
         "INSERT INTO users (id, tenant_id, username, display_name, email, password_hash)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING {COLUMNS}"
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING ",
+        user_columns!()
     ))
     .bind(UserId::new())
     .bind(new.tenant_id)
@@ -44,17 +48,21 @@ pub async fn create(db: impl PgExecutor<'_>, new: NewUser<'_>) -> Result<User> {
 }
 
 pub async fn get(db: impl PgExecutor<'_>, id: UserId) -> Result<User> {
-    sqlx::query_as(&format!("SELECT {COLUMNS} FROM users WHERE id = $1"))
-        .bind(id)
-        .fetch_optional(db)
-        .await?
-        .ok_or_else(|| {
-            hm_core::Error::NotFound {
-                kind: "user",
-                id: id.to_string(),
-            }
-            .into()
-        })
+    sqlx::query_as(concat!(
+        "SELECT ",
+        user_columns!(),
+        " FROM users WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| {
+        hm_core::Error::NotFound {
+            kind: "user",
+            id: id.to_string(),
+        }
+        .into()
+    })
 }
 
 pub async fn find_by_username(
@@ -62,8 +70,10 @@ pub async fn find_by_username(
     tenant_id: TenantId,
     username: &str,
 ) -> Result<Option<User>> {
-    Ok(sqlx::query_as(&format!(
-        "SELECT {COLUMNS} FROM users WHERE tenant_id = $1 AND username = $2"
+    Ok(sqlx::query_as(concat!(
+        "SELECT ",
+        user_columns!(),
+        " FROM users WHERE tenant_id = $1 AND username = $2"
     ))
     .bind(tenant_id)
     .bind(username)

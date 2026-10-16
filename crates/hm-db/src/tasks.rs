@@ -29,8 +29,12 @@ pub struct Task {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
-const COLUMNS: &str = "id, tenant_id, kind, target_kind, target_id, state, params, step, \
-    step_state, progress, error, created_by, attempts, created_at, started_at, finished_at";
+macro_rules! task_columns {
+    () => {
+        "id, tenant_id, kind, target_kind, target_id, state, params, step, \
+    step_state, progress, error, created_by, attempts, created_at, started_at, finished_at"
+    };
+}
 
 pub struct NewTask<'a> {
     pub tenant_id: TenantId,
@@ -41,9 +45,10 @@ pub struct NewTask<'a> {
 }
 
 pub async fn enqueue(db: impl PgExecutor<'_>, new: NewTask<'_>) -> Result<Task> {
-    Ok(sqlx::query_as(&format!(
+    Ok(sqlx::query_as(concat!(
         "INSERT INTO tasks (id, tenant_id, kind, target_kind, target_id, params, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {COLUMNS}"
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING ",
+        task_columns!()
     ))
     .bind(TaskId::new())
     .bind(new.tenant_id)
@@ -57,24 +62,27 @@ pub async fn enqueue(db: impl PgExecutor<'_>, new: NewTask<'_>) -> Result<Task> 
 }
 
 pub async fn get(db: impl PgExecutor<'_>, id: TaskId) -> Result<Task> {
-    sqlx::query_as(&format!("SELECT {COLUMNS} FROM tasks WHERE id = $1"))
-        .bind(id)
-        .fetch_optional(db)
-        .await?
-        .ok_or_else(|| {
-            hm_core::Error::NotFound {
-                kind: "task",
-                id: id.to_string(),
-            }
-            .into()
-        })
+    sqlx::query_as(concat!(
+        "SELECT ",
+        task_columns!(),
+        " FROM tasks WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| {
+        hm_core::Error::NotFound {
+            kind: "task",
+            id: id.to_string(),
+        }
+        .into()
+    })
 }
 
 /// Claims the oldest runnable task: a pending one, or a running one whose
 /// lease has expired (its previous owner is presumed dead).
 pub async fn claim(db: impl PgExecutor<'_>, owner: &str, lease: Duration) -> Result<Option<Task>> {
-    Ok(sqlx::query_as(&format!(
-        "UPDATE tasks SET state = 'running', lease_owner = $1,
+    Ok(sqlx::query_as(concat!("UPDATE tasks SET state = 'running', lease_owner = $1,
                 lease_expires_at = now() + $2 * interval '1 millisecond',
                 attempts = attempts + 1, started_at = coalesce(started_at, now()), updated_at = now()
          WHERE id = (
@@ -83,8 +91,7 @@ pub async fn claim(db: impl PgExecutor<'_>, owner: &str, lease: Duration) -> Res
              ORDER BY created_at
              FOR UPDATE SKIP LOCKED
              LIMIT 1)
-         RETURNING {COLUMNS}"
-    ))
+         RETURNING ", task_columns!()))
     .bind(owner)
     .bind(lease.as_millis() as f64)
     .fetch_optional(db)
