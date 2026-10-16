@@ -57,7 +57,7 @@ async fn define_start_stop_undefine_with_events() {
             let ours: Vec<_> = managed.iter().filter(|d| d.meta.vm_id == uuid).collect();
             assert_eq!(ours.len(), 1, "metadata must be readable back");
             assert_eq!(
-                (ours[0].meta.generation, ours[0].power),
+                (ours[0].meta.generation, ours[0].state.power),
                 (1, Power::Stopped)
             );
 
@@ -78,7 +78,11 @@ async fn define_start_stop_undefine_with_events() {
             serial.tx.send(b"\r").await.unwrap();
 
             lv.destroy(&uuid).await.unwrap();
-            assert_eq!(lv.power(&uuid).await.unwrap(), Power::Stopped);
+            let state = lv.state(&uuid).await.unwrap();
+            assert_eq!(
+                (state.power, state.reason),
+                (Power::Stopped, Some("destroyed"))
+            );
         }
     })
     .await;

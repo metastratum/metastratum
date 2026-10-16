@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { api, ApiError, ok, type Task, type Vm } from '../api/client'
 import IdChip from '../components/IdChip.vue'
 import StatusLed from '../components/StatusLed.vue'
-import { ago, gib, mib, vmState } from '../state'
+import { ago, gib, mib, powerNote, vmState } from '../state'
 import { taskLabel, useTasks } from '../stores/tasks'
 
 // Console clients (noVNC, xterm.js) are large; load them when first opened.
@@ -23,7 +23,8 @@ const actionError = ref('')
 const confirmingDelete = ref(false)
 
 const state = computed(() => (vm.value ? vmState(vm.value) : null))
-const running = computed(() => vm.value?.power === 'running' && vm.value.status === 'ready')
+const running = computed(() => vm.value?.power === 'running' && vm.value.status === 'ready' && vm.value.host_connected)
+const note = computed(() => (vm.value ? powerNote(vm.value) : null))
 const settled = computed(() => vm.value?.status === 'ready')
 
 async function load() {
@@ -97,7 +98,7 @@ async function remove() {
         <StatusLed :tone="state.tone" :label="state.text" />
       </div>
       <div class="actions">
-        <button class="btn" :disabled="!settled || vm.power === 'running'" @click="act('start')">Start</button>
+        <button class="btn" :disabled="!settled || !vm.host_connected || vm.power === 'running'" @click="act('start')">Start</button>
         <button class="btn" :disabled="!running" title="Ask the guest OS to shut down" @click="act('stop')">Shut down</button>
         <button class="btn" :disabled="!running" title="Cut power immediately" @click="act('force')">Power off</button>
         <button class="btn" :disabled="!running" @click="act('reboot')">Reboot</button>
@@ -112,9 +113,7 @@ async function remove() {
     </header>
     <p v-if="actionError" class="error-text" role="alert">{{ actionError }}</p>
     <p v-if="vm.error" class="error-text">{{ vm.error }}</p>
-    <p v-if="vm.desired_power === 'stopped' && vm.power === 'running'" class="note">
-      The guest hasn’t shut down yet. If it ignores the request, use Power off.
-    </p>
+    <p v-if="note" class="note">{{ note }}</p>
 
     <dl class="facts">
       <div><dt class="label">Address</dt><dd class="mono">{{ vm.nics[0]?.ip ?? '—' }}</dd></div>

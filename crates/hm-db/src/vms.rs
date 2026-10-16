@@ -17,6 +17,8 @@ pub struct Vm {
     pub status: String,
     pub desired_power: String,
     pub power: String,
+    pub power_reason: Option<String>,
+    pub power_observed_at: Option<DateTime<Utc>>,
     pub error: Option<String>,
     pub created_by: Option<UserId>,
     pub created_at: DateTime<Utc>,
@@ -25,7 +27,8 @@ pub struct Vm {
 
 macro_rules! vm_columns {
     () => {
-        "id, tenant_id, name, host_id, spec, generation, status, desired_power, power, error, \
+        "id, tenant_id, name, host_id, spec, generation, status, desired_power, power, power_reason, \
+         power_observed_at, error, \
          created_by, created_at, updated_at"
     };
 }
@@ -127,19 +130,24 @@ pub async fn set_desired_power(db: impl PgExecutor<'_>, id: VmId, power: &str) -
     Ok(())
 }
 
-/// Records the power state a host reports. Returns whether it changed.
+/// Records the power state a host reports, and why it changed if known.
+/// Returns whether anything changed. This is an observation only: the
+/// desired power state changes solely through the API.
 pub async fn observe_power(
     db: impl PgExecutor<'_>,
     id: VmId,
     host_id: HostId,
     power: &str,
+    reason: Option<&str>,
 ) -> Result<bool> {
     let res = sqlx::query(
-        "UPDATE vms SET power = $3, updated_at = now() WHERE id = $1 AND host_id = $2 AND power <> $3",
+        "UPDATE vms SET power = $3, power_reason = $4, power_observed_at = now(), updated_at = now()
+         WHERE id = $1 AND host_id = $2 AND (power <> $3 OR power_reason IS DISTINCT FROM $4)",
     )
     .bind(id)
     .bind(host_id)
     .bind(power)
+    .bind(reason)
     .execute(db)
     .await?;
     Ok(res.rows_affected() == 1)

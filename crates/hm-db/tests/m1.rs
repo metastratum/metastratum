@@ -315,18 +315,18 @@ async fn vm_listing_by_subtree_and_power_observation(pool: PgPool) {
     assert_eq!(vms::list(&pool, a.id, true).await.unwrap()[0].id, v2.id);
 
     assert!(
-        vms::observe_power(&pool, v1.id, h.id, "running")
+        vms::observe_power(&pool, v1.id, h.id, "running", None)
             .await
             .unwrap()
     );
     assert!(
-        !vms::observe_power(&pool, v1.id, h.id, "running")
+        !vms::observe_power(&pool, v1.id, h.id, "running", None)
             .await
             .unwrap(),
         "no change"
     );
     assert!(
-        !vms::observe_power(&pool, v1.id, HostId::new(), "stopped")
+        !vms::observe_power(&pool, v1.id, HostId::new(), "stopped", None)
             .await
             .unwrap(),
         "wrong host"
@@ -402,4 +402,87 @@ async fn placement_prefers_free_memory_and_skips_unavailable_hosts(pool: PgPool)
         "nothing fits"
     );
     let _ = nokvm;
+}
+
+#[sqlx::test(migrator = "hm_db::MIGRATOR")]
+async fn power_observations_never_change_the_desired_state(pool: PgPool) {
+    let t = root(&pool).await;
+    let h = host(&pool).await;
+    let v = vm(&pool, &t, &h, "a").await;
+
+    assert!(
+        vms::observe_power(&pool, v.id, h.id, "running", None)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !vms::observe_power(&pool, v.id, h.id, "running", None)
+            .await
+            .unwrap(),
+        "no change"
+    );
+    let before = vms::get(&pool, v.id)
+        .await
+        .unwrap()
+        .power_observed_at
+        .unwrap();
+
+    // The guest shuts itself down: recorded with its reason, intent untouched.
+    assert!(
+        vms::observe_power(&pool, v.id, h.id, "stopped", Some("shutdown"))
+            .await
+            .unwrap()
+    );
+    let vm = vms::get(&pool, v.id).await.unwrap();
+    assert_eq!(
+        (vm.power.as_str(), vm.power_reason.as_deref()),
+        ("stopped", Some("shutdown"))
+    );
+    assert_eq!(vm.desired_power, "running");
+    assert!(vm.power_observed_at.unwrap() >= before);
+
+    // A changed reason alone is a change; reports for the wrong host are not.
+    assert!(
+        vms::observe_power(&pool, v.id, h.id, "stopped", None)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !vms::observe_power(&pool, v.id, HostId::new(), "running", None)
+            .await
+            .unwrap()
+    );
+}
+
+#[sqlx::test(migrator = "hm_db::MIGRATOR")]
+async fn active_tasks_by_target(pool: PgPool) {
+    let t = root(&pool).await;
+    let h = host(&pool).await;
+    let v = vm(&pool, &t, &h, "a").await;
+    let new = |kind| hm_db::tasks::NewTask {
+        tenant_id: t.id,
+        kind,
+        target: Some(("vm", v.id.0)),
+        params: serde_json::json!({}),
+        created_by: None,
+    };
+    let first = hm_db::tasks::enqueue(&pool, new("vm.stop")).await.unwrap();
+    hm_db::tasks::enqueue(&pool, new("vm.start")).await.unwrap();
+    assert_eq!(
+        hm_db::tasks::active_by_target(&pool).await.unwrap(),
+        vec![(v.id.0, "vm.stop".to_owned())]
+    );
+
+    let claimed = hm_db::tasks::claim(&pool, "w", std::time::Duration::from_secs(30))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.id, first.id);
+    hm_db::tasks::finish(&pool, first.id, "w", Ok(()))
+        .await
+        .unwrap();
+    assert_eq!(
+        hm_db::tasks::active_by_target(&pool).await.unwrap(),
+        vec![(v.id.0, "vm.start".to_owned())]
+    );
 }

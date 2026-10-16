@@ -268,13 +268,23 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         Accepted_VmView: {
+            /** @description Kind of the task in flight for this VM, e.g. `vm.start`. */
+            active_task?: string | null;
             /** Format: date-time */
             created_at: string;
-            /** @description What the user asked for: `running` or `stopped`. */
+            /**
+             * @description The power state last requested through the API: `running` or
+             *     `stopped`. Never changed by what happens on the host.
+             */
             desired_power: string;
             disks: components["schemas"]["DiskSpec"][];
             error?: string | null;
             firmware: components["schemas"]["Firmware"];
+            /**
+             * @description Whether the VM's host is connected and reporting. When it is not,
+             *     `power` is the last state reported and may be out of date.
+             */
+            host_connected: boolean;
             host_id?: components["schemas"]["HostId"] | null;
             host_name?: string | null;
             id: components["schemas"]["VmId"];
@@ -283,10 +293,21 @@ export interface components {
             name: string;
             nics: components["schemas"]["NicSpec"][];
             /**
-             * @description What the host reports: `running`, `stopped`, `paused`, `crashed`,
-             *     `shutting_down`, `missing` or `unknown`.
+             * @description What the host last reported: `running`, `stopped`, `paused`,
+             *     `crashed`, `shutting_down`, `missing` or `unknown`.
              */
             power: string;
+            /**
+             * Format: date-time
+             * @description When `power` (or its reason) last changed.
+             */
+            power_observed_at?: string | null;
+            /**
+             * @description Why a stopped or crashed VM stopped, when the host knew: `shutdown`
+             *     (by the guest, or a shutdown request it honoured), `destroyed`
+             *     (forced off), `crashed`, `failed`, `daemon`, ...
+             */
+            power_reason?: string | null;
             /** @description Lifecycle: `creating`, `ready`, `error` or `deleting`. */
             status: string;
             tenant_id: components["schemas"]["TenantId"];
@@ -336,7 +357,8 @@ export interface components {
             name: string;
             /**
              * @description Console password for the image's default user. Handy for the serial
-             *     console; prefer SSH keys otherwise.
+             *     console; prefer SSH keys otherwise. Only a SHA-512 crypt hash of it is
+             *     stored or passed to the guest.
              */
             password?: string | null;
             /** @description SSH public keys for the image's default user. */
@@ -475,13 +497,23 @@ export interface components {
         /** Format: uuid */
         VmId: string;
         VmView: {
+            /** @description Kind of the task in flight for this VM, e.g. `vm.start`. */
+            active_task?: string | null;
             /** Format: date-time */
             created_at: string;
-            /** @description What the user asked for: `running` or `stopped`. */
+            /**
+             * @description The power state last requested through the API: `running` or
+             *     `stopped`. Never changed by what happens on the host.
+             */
             desired_power: string;
             disks: components["schemas"]["DiskSpec"][];
             error?: string | null;
             firmware: components["schemas"]["Firmware"];
+            /**
+             * @description Whether the VM's host is connected and reporting. When it is not,
+             *     `power` is the last state reported and may be out of date.
+             */
+            host_connected: boolean;
             host_id?: components["schemas"]["HostId"] | null;
             host_name?: string | null;
             id: components["schemas"]["VmId"];
@@ -490,10 +522,21 @@ export interface components {
             name: string;
             nics: components["schemas"]["NicSpec"][];
             /**
-             * @description What the host reports: `running`, `stopped`, `paused`, `crashed`,
-             *     `shutting_down`, `missing` or `unknown`.
+             * @description What the host last reported: `running`, `stopped`, `paused`,
+             *     `crashed`, `shutting_down`, `missing` or `unknown`.
              */
             power: string;
+            /**
+             * Format: date-time
+             * @description When `power` (or its reason) last changed.
+             */
+            power_observed_at?: string | null;
+            /**
+             * @description Why a stopped or crashed VM stopped, when the host knew: `shutdown`
+             *     (by the guest, or a shutdown request it honoured), `destroyed`
+             *     (forced off), `crashed`, `failed`, `daemon`, ...
+             */
+            power_reason?: string | null;
             /** @description Lifecycle: `creating`, `ready`, `error` or `deleting`. */
             status: string;
             tenant_id: components["schemas"]["TenantId"];

@@ -214,3 +214,15 @@ pub async fn set_progress(
         .await?;
     Ok(())
 }
+
+/// The unfinished task for each target that has one (the oldest, which runs
+/// first), as `(target_id, kind)`.
+pub async fn active_by_target(db: impl PgExecutor<'_>) -> Result<Vec<(Uuid, String)>> {
+    Ok(sqlx::query_as(
+        "SELECT DISTINCT ON (target_id) target_id, kind FROM tasks
+         WHERE state IN ('pending', 'running') AND target_id IS NOT NULL
+         ORDER BY target_id, created_at, id",
+    )
+    .fetch_all(db)
+    .await?)
+}

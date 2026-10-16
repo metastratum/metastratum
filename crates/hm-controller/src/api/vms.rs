@@ -35,13 +35,25 @@ pub struct VmView {
     name: String,
     host_id: Option<HostId>,
     host_name: Option<String>,
+    /// Whether the VM's host is connected and reporting. When it is not,
+    /// `power` is the last state reported and may be out of date.
+    host_connected: bool,
     /// Lifecycle: `creating`, `ready`, `error` or `deleting`.
     status: String,
-    /// What the user asked for: `running` or `stopped`.
+    /// The power state last requested through the API: `running` or
+    /// `stopped`. Never changed by what happens on the host.
     desired_power: String,
-    /// What the host reports: `running`, `stopped`, `paused`, `crashed`,
-    /// `shutting_down`, `missing` or `unknown`.
+    /// What the host last reported: `running`, `stopped`, `paused`,
+    /// `crashed`, `shutting_down`, `missing` or `unknown`.
     power: String,
+    /// Why a stopped or crashed VM stopped, when the host knew: `shutdown`
+    /// (by the guest, or a shutdown request it honoured), `destroyed`
+    /// (forced off), `crashed`, `failed`, `daemon`, ...
+    power_reason: Option<String>,
+    /// When `power` (or its reason) last changed.
+    power_observed_at: Option<DateTime<Utc>>,
+    /// Kind of the task in flight for this VM, e.g. `vm.start`.
+    active_task: Option<String>,
     error: Option<String>,
     vcpus: u32,
     memory_mib: u64,
@@ -52,17 +64,43 @@ pub struct VmView {
     updated_at: DateTime<Utc>,
 }
 
-fn view(vm: Vm, hosts: &HashMap<HostId, String>) -> VmView {
+/// What VM views need besides the VM row: host names and liveness, and the
+/// tasks in flight.
+struct Context {
+    hosts: HashMap<HostId, (String, bool)>,
+    tasks: HashMap<uuid::Uuid, String>,
+}
+
+async fn context(state: &AppState) -> ApiResult<Context> {
+    Ok(Context {
+        hosts: hm_db::hosts::list(&state.db)
+            .await?
+            .into_iter()
+            .map(|h| (h.id, (h.name.clone(), h.is_live())))
+            .collect(),
+        tasks: hm_db::tasks::active_by_target(&state.db)
+            .await?
+            .into_iter()
+            .collect(),
+    })
+}
+
+fn view(vm: Vm, ctx: &Context) -> VmView {
     let spec = vm.spec.0;
+    let host = vm.host_id.and_then(|h| ctx.hosts.get(&h));
     VmView {
         id: vm.id,
         tenant_id: vm.tenant_id,
         name: vm.name,
-        host_name: vm.host_id.and_then(|h| hosts.get(&h).cloned()),
+        host_name: host.map(|(name, _)| name.clone()),
+        host_connected: host.is_some_and(|(_, live)| *live),
         host_id: vm.host_id,
         status: vm.status,
         desired_power: vm.desired_power,
         power: vm.power,
+        power_reason: vm.power_reason,
+        power_observed_at: vm.power_observed_at,
+        active_task: ctx.tasks.get(&vm.id.0).cloned(),
         error: vm.error,
         vcpus: spec.vcpus,
         memory_mib: spec.memory_mib,
@@ -72,14 +110,6 @@ fn view(vm: Vm, hosts: &HashMap<HostId, String>) -> VmView {
         created_at: vm.created_at,
         updated_at: vm.updated_at,
     }
-}
-
-async fn host_names(state: &AppState) -> ApiResult<HashMap<HostId, String>> {
-    Ok(hm_db::hosts::list(&state.db)
-        .await?
-        .into_iter()
-        .map(|h| (h.id, h.name))
-        .collect())
 }
 
 /// Loads a VM the principal may act on with `perm`.
@@ -108,9 +138,9 @@ async fn list_vms(
 ) -> ApiResult<Json<Vec<VmView>>> {
     let tenant = q.tenant_id.unwrap_or(p.tenant_id);
     authorize(&state.db, &p, Perm::VmRead, tenant).await?;
-    let hosts = host_names(&state).await?;
+    let ctx = context(&state).await?;
     let vms = hm_db::vms::list(&state.db, tenant, q.descendants).await?;
-    Ok(Json(vms.into_iter().map(|v| view(v, &hosts)).collect()))
+    Ok(Json(vms.into_iter().map(|v| view(v, &ctx)).collect()))
 }
 
 #[utoipa::path(get, path = "/vms/{id}", tag = "vms", params(("id" = VmId, Path)),
@@ -121,7 +151,7 @@ async fn get_vm(
     Path(id): Path<VmId>,
 ) -> ApiResult<Json<VmView>> {
     let vm = load(&state, &p, id, Perm::VmRead).await?;
-    Ok(Json(view(vm, &host_names(&state).await?)))
+    Ok(Json(view(vm, &context(&state).await?)))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -321,7 +351,7 @@ async fn create_vm(
         StatusCode::ACCEPTED,
         Json(Accepted {
             task_id: task,
-            item: view(vm, &host_names(&state).await?),
+            item: view(vm, &context(&state).await?),
         }),
     ))
 }

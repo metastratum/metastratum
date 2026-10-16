@@ -56,7 +56,8 @@ impl Agent {
             .map(|d| DomainState {
                 vm_id: d.meta.vm_id,
                 generation: d.meta.generation,
-                power: power(d.power) as i32,
+                power: power(d.state.power) as i32,
+                reason: d.state.reason.unwrap_or_default().to_owned(),
             })
             .collect())
     }
@@ -212,11 +213,12 @@ impl Agent {
     }
 
     async fn report_power(&self, vm_id: &str, tx: &mpsc::Sender<AgentMessage>) {
-        if let Ok(p) = self.lv.power(vm_id).await {
+        if let Ok(st) = self.lv.state(vm_id).await {
             let d = DomainState {
                 vm_id: vm_id.to_owned(),
                 generation: 0,
-                power: power(p) as i32,
+                power: power(st.power) as i32,
+                reason: st.reason.unwrap_or_default().to_owned(),
             };
             let _ = tx
                 .send(AgentMessage {

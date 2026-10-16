@@ -177,7 +177,10 @@ async fn observe_domains(state: &AppState, host: HostId, domains: &[DomainState]
             continue;
         };
         seen.insert(vm);
-        if let Err(e) = hm_db::vms::observe_power(&state.db, vm, host, power_name(d.power)).await {
+        let reason = Some(d.reason.as_str()).filter(|r| !r.is_empty());
+        if let Err(e) =
+            hm_db::vms::observe_power(&state.db, vm, host, power_name(d.power), reason).await
+        {
             tracing::warn!(error = %e, %vm, "recording power state");
         }
     }
@@ -190,7 +193,7 @@ async fn observe_domains(state: &AppState, host: HostId, domains: &[DomainState]
                 .iter()
                 .filter(|v| v.status == "ready" && !seen.contains(&v.id))
             {
-                let _ = hm_db::vms::observe_power(&state.db, vm.id, host, "missing").await;
+                let _ = hm_db::vms::observe_power(&state.db, vm.id, host, "missing", None).await;
             }
         }
         Err(e) => tracing::warn!(error = %e, %host, "listing VMs on host"),

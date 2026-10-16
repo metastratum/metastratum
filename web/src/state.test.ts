@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import StatusLed from './components/StatusLed.vue'
-import { mib, vmState } from './state'
+import { mib, powerNote, vmState } from './state'
 
-const vm = (status: string, power: string, desired_power = 'running') => ({ status, power, desired_power })
+const vm = (status: string, power: string, extra: Partial<{ active_task: string | null; host_connected: boolean }> = {}) => ({
+  status,
+  power,
+  host_connected: true,
+  active_task: null,
+  ...extra,
+})
 
 describe('vmState', () => {
   it('lifecycle beats power state', () => {
@@ -12,13 +18,44 @@ describe('vmState', () => {
     expect(vmState(vm('error', 'stopped'))).toEqual({ tone: 'fault', text: 'Failed' })
   })
 
-  it('reflects power, including transitions toward the desired state', () => {
+  it('shows what the host reports, never a guessed transition', () => {
     expect(vmState(vm('ready', 'running'))).toEqual({ tone: 'on', text: 'Running' })
-    expect(vmState(vm('ready', 'stopped', 'stopped'))).toEqual({ tone: 'off', text: 'Stopped' })
-    expect(vmState(vm('ready', 'running', 'stopped'))).toEqual({ tone: 'busy', text: 'Shutting down' })
-    expect(vmState(vm('ready', 'stopped', 'running'))).toEqual({ tone: 'busy', text: 'Starting' })
+    // A guest that powered itself off is simply stopped.
+    expect(vmState(vm('ready', 'stopped'))).toEqual({ tone: 'off', text: 'Stopped' })
     expect(vmState(vm('ready', 'crashed'))).toEqual({ tone: 'fault', text: 'Crashed' })
     expect(vmState(vm('ready', 'missing'))).toEqual({ tone: 'fault', text: 'Missing on host' })
+  })
+
+  it('shows transitions only while hypermon is doing the work', () => {
+    expect(vmState(vm('ready', 'stopped', { active_task: 'vm.start' }))).toEqual({ tone: 'busy', text: 'Starting' })
+    expect(vmState(vm('ready', 'running', { active_task: 'vm.start' }))).toEqual({ tone: 'on', text: 'Running' })
+    expect(vmState(vm('ready', 'running', { active_task: 'vm.stop' }))).toEqual({ tone: 'busy', text: 'Shutting down' })
+  })
+
+  it('does not present stale state as current', () => {
+    expect(vmState(vm('ready', 'running', { host_connected: false }))).toEqual({ tone: 'unknown', text: 'Host unreachable' })
+  })
+})
+
+describe('powerNote', () => {
+  const base = {
+    status: 'ready',
+    power: 'stopped',
+    power_reason: 'shutdown',
+    power_observed_at: new Date().toISOString(),
+    desired_power: 'running',
+    host_connected: true,
+    host_name: 'hm-host1',
+    active_task: null,
+  }
+  it('explains why a VM stopped', () => {
+    expect(powerNote(base)).toBe('The guest OS shut down · just now')
+    expect(powerNote({ ...base, power_reason: null })).toBe('Stopped without a request from hypermon · just now')
+    expect(powerNote({ ...base, power_reason: null, desired_power: 'stopped' })).toBeNull()
+  })
+  it('flags an ignored shutdown request and an unreachable host', () => {
+    expect(powerNote({ ...base, power: 'running', power_reason: null, desired_power: 'stopped' })).toMatch(/still running/)
+    expect(powerNote({ ...base, host_connected: false })).toBe('hm-host1 isn’t reporting, so this may be out of date. Last known state: stopped.')
   })
 })
 

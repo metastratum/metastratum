@@ -49,9 +49,7 @@ async fn list_hosts(State(state): State<AppState>, p: Principal) -> ApiResult<Js
     for h in hm_db::hosts::list(&state.db).await? {
         let vms = hm_db::vms::list_on_host(&state.db, h.id).await?;
         out.push(HostView {
-            connected: h.connected_to.is_some()
-                && h.last_seen_at
-                    .is_some_and(|t| Utc::now() - t < chrono::Duration::seconds(30)),
+            connected: h.is_live(),
             vm_count: vms.len(),
             allocated_memory_mib: vms.iter().map(|v| v.spec.0.memory_mib).sum(),
             id: h.id,

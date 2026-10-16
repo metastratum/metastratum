@@ -24,6 +24,17 @@ pub struct Host {
     pub created_at: DateTime<Utc>,
 }
 
+impl Host {
+    /// Whether the host's agent holds a session and has heartbeated recently,
+    /// i.e. what we know about its VMs is current.
+    pub fn is_live(&self) -> bool {
+        self.connected_to.is_some()
+            && self
+                .last_seen_at
+                .is_some_and(|t| Utc::now() - t < chrono::Duration::seconds(30))
+    }
+}
+
 macro_rules! host_columns {
     () => {
         "id, name, host(address) AS address, state, cpu_count, memory_mib, cpu_model, kvm, \

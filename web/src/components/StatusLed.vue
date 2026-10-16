@@ -34,6 +34,11 @@ defineProps<{ tone: Tone; label?: string }>()
   background: var(--led-fault);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--led-fault) 22%, transparent);
 }
+/* Nothing current to show: an unlit ring. */
+.led.unknown {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--led-off);
+}
 /* Activity blinks, like a drive light. */
 .led.busy {
   background: var(--led-busy);

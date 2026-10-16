@@ -39,10 +39,14 @@ pub enum Power {
 }
 
 impl Power {
-    /// From a `virDomainState`.
-    fn from_state(state: i32) -> Self {
+    /// From a `virDomainState` and its reason.
+    fn from_state(state: i32, reason: i32) -> Self {
+        const SHUTOFF_CRASHED: i32 = 3;
         match state {
-            1 | 2 => Self::Running,  // RUNNING, BLOCKED
+            1 | 2 => Self::Running, // RUNNING, BLOCKED
+            // With on_crash=destroy a crashed guest is shut off, not left in
+            // CRASHED; the reason tells the two apart.
+            5 if reason == SHUTOFF_CRASHED => Self::Crashed,
             5 => Self::Stopped,      // SHUTOFF
             3 | 7 => Self::Paused,   // PAUSED, PMSUSPENDED
             6 => Self::Crashed,      // CRASHED
@@ -52,11 +56,44 @@ impl Power {
     }
 }
 
+/// A domain's power state, and why it stopped when libvirt knows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct State {
+    pub power: Power,
+    /// For shut-off domains: `shutdown` (by the guest, or an ACPI request it
+    /// honoured), `destroyed` (forced off), `crashed`, `migrated`, `saved`,
+    /// `failed` (failed to start), `from_snapshot` or `daemon` (killed by
+    /// libvirt). `None` when libvirt does not know, e.g. after the host
+    /// restarted.
+    pub reason: Option<&'static str>,
+}
+
+impl State {
+    fn from_libvirt(state: i32, raw: i32) -> Self {
+        const SHUTOFF: i32 = 5;
+        let reason = match (state, raw) {
+            (SHUTOFF, 1) => Some("shutdown"),
+            (SHUTOFF, 2) => Some("destroyed"),
+            (SHUTOFF, 3) => Some("crashed"),
+            (SHUTOFF, 4) => Some("migrated"),
+            (SHUTOFF, 5) => Some("saved"),
+            (SHUTOFF, 6) => Some("failed"),
+            (SHUTOFF, 7) => Some("from_snapshot"),
+            (SHUTOFF, 8) => Some("daemon"),
+            _ => None,
+        };
+        Self {
+            power: Power::from_state(state, raw),
+            reason,
+        }
+    }
+}
+
 /// A hypermon-managed domain as seen on this host.
 #[derive(Clone, Debug)]
 pub struct ManagedDomain {
     pub meta: Metadata,
-    pub power: Power,
+    pub state: State,
 }
 
 #[derive(Clone, Debug)]
@@ -145,14 +182,18 @@ impl Libvirt {
         }
     }
 
-    async fn state(&self, c: &Client, dom: &NonnullDomain) -> Result<Power> {
+    async fn dom_state(&self, c: &Client, dom: &NonnullDomain) -> Result<State> {
         let st = c
             .domain_get_state(&DomainGetStateArgs {
                 dom: dom.clone(),
                 flags: 0,
             })
             .await?;
-        Ok(Power::from_state(st.state))
+        Ok(State::from_libvirt(st.state, st.reason))
+    }
+
+    async fn power_of(&self, c: &Client, dom: &NonnullDomain) -> Result<Power> {
+        Ok(self.dom_state(c, dom).await?.power)
     }
 
     pub async fn node_facts(&self) -> Result<NodeFacts> {
@@ -179,7 +220,7 @@ impl Libvirt {
     pub async fn start(&self, uuid: &str) -> Result<()> {
         let c = self.client().await?;
         let dom = self.lookup(&c, uuid).await?;
-        if self.state(&c, &dom).await? != Power::Running {
+        if self.power_of(&c, &dom).await? != Power::Running {
             c.domain_create(&DomainCreateArgs { dom }).await?;
         }
         Ok(())
@@ -189,7 +230,7 @@ impl Libvirt {
     pub async fn shutdown(&self, uuid: &str) -> Result<()> {
         let c = self.client().await?;
         let dom = self.lookup(&c, uuid).await?;
-        if self.state(&c, &dom).await? != Power::Stopped {
+        if self.power_of(&c, &dom).await? != Power::Stopped {
             c.domain_shutdown(&DomainShutdownArgs { dom }).await?;
         }
         Ok(())
@@ -199,7 +240,7 @@ impl Libvirt {
     pub async fn destroy(&self, uuid: &str) -> Result<()> {
         let c = self.client().await?;
         let dom = self.lookup(&c, uuid).await?;
-        if self.state(&c, &dom).await? != Power::Stopped {
+        if self.power_of(&c, &dom).await? != Power::Stopped {
             c.domain_destroy(&DomainDestroyArgs { dom }).await?;
         }
         Ok(())
@@ -221,7 +262,7 @@ impl Libvirt {
             Err(Error::NoDomain(_)) => return Ok(()),
             Err(e) => return Err(e),
         };
-        if self.state(&c, &dom).await? != Power::Stopped {
+        if self.power_of(&c, &dom).await? != Power::Stopped {
             c.domain_destroy(&DomainDestroyArgs { dom: dom.clone() })
                 .await?;
         }
@@ -275,8 +316,8 @@ impl Libvirt {
             let Some(meta) = parse_metadata(&xml) else {
                 continue;
             };
-            match self.state(&c, &dom).await {
-                Ok(power) => out.push(ManagedDomain { meta, power }),
+            match self.dom_state(&c, &dom).await {
+                Ok(state) => out.push(ManagedDomain { meta, state }),
                 Err(Error::Rpc(e)) if e.code() == Some(err::NO_DOMAIN) => continue,
                 Err(e) => return Err(e),
             }
@@ -285,9 +326,13 @@ impl Libvirt {
     }
 
     pub async fn power(&self, uuid: &str) -> Result<Power> {
+        Ok(self.state(uuid).await?.power)
+    }
+
+    pub async fn state(&self, uuid: &str) -> Result<State> {
         let c = self.client().await?;
         let dom = self.lookup(&c, uuid).await?;
-        self.state(&c, &dom).await
+        self.dom_state(&c, &dom).await
     }
 
     /// A socket connected directly to the domain's VNC server, passed by the
@@ -375,5 +420,57 @@ impl Libvirt {
                 return Ok(());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stop_reasons_are_reported_and_crashes_are_not_stops() {
+        let st = |s, r| State::from_libvirt(s, r);
+        assert_eq!(
+            st(5, 1),
+            State {
+                power: Power::Stopped,
+                reason: Some("shutdown")
+            }
+        );
+        assert_eq!(
+            st(5, 2),
+            State {
+                power: Power::Stopped,
+                reason: Some("destroyed")
+            }
+        );
+        assert_eq!(
+            st(5, 3),
+            State {
+                power: Power::Crashed,
+                reason: Some("crashed")
+            }
+        );
+        assert_eq!(
+            st(5, 0),
+            State {
+                power: Power::Stopped,
+                reason: None
+            }
+        );
+        assert_eq!(
+            st(6, 0),
+            State {
+                power: Power::Crashed,
+                reason: None
+            }
+        );
+        assert_eq!(
+            st(1, 1),
+            State {
+                power: Power::Running,
+                reason: None
+            }
+        );
     }
 }

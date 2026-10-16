@@ -72,6 +72,10 @@ message DomainState {
   string vm_id = 1;
   uint64 generation = 2;
   PowerState power = 3;
+  // Why a stopped or crashed domain stopped, when libvirt knows: shutdown,
+  // destroyed, crashed, migrated, saved, failed, from_snapshot or daemon.
+  // Empty otherwise.
+  string reason = 4;
 }
 
 enum PowerState {

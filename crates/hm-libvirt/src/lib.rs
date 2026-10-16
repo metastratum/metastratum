@@ -5,6 +5,6 @@ pub mod conn;
 pub mod domain;
 pub mod xml;
 
-pub use conn::{Change, Libvirt, ManagedDomain, NodeFacts, Power, system_socket};
+pub use conn::{Change, Libvirt, ManagedDomain, NodeFacts, Power, State, system_socket};
 pub use domain::{Disk, DiskDevice, DomainDef, Firmware, Metadata, Nic};
 pub use hm_virtrpc::{Stream, StreamRx, StreamTx};
