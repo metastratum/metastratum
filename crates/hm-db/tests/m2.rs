@@ -465,10 +465,10 @@ async fn tenant_contents_and_subtree_listing(pool: PgPool) {
 #[sqlx::test(migrator = "hm_db::MIGRATOR")]
 async fn storage_pools_attach_to_clusters(pool: PgPool) {
     tree(&pool).await;
-    let c1 = hm_db::clusters::create(&pool, "c1", 4.0, 1.0)
+    let c1 = hm_db::clusters::create(&pool, "c1", 4.0, 1.0, false)
         .await
         .unwrap();
-    let c2 = hm_db::clusters::create(&pool, "c2", 4.0, 1.0)
+    let c2 = hm_db::clusters::create(&pool, "c2", 4.0, 1.0, false)
         .await
         .unwrap();
     let local = hm_db::storage_pools::get(&pool, hm_core::ids::LOCAL_POOL)

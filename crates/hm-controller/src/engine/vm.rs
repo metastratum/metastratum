@@ -27,12 +27,22 @@ fn host_of(vm: &Vm) -> Result<HostId> {
     vm.host_id.context("VM is not placed on a host")
 }
 
+/// Runs a command on a host. Every command sent from here is idempotent, so
+/// one cut off by the agent reconnecting (a renewed certificate, a network
+/// blip, another controller) is simply sent again once it is back.
 async fn call(ctx: &TaskCtx, host: HostId, cmd: Cmd, timeout: Duration) -> Result<()> {
-    ctx.state
-        .agents
-        .call(host, cmd, timeout)
-        .await
-        .map_err(|e| anyhow!(e))
+    use crate::agents::AgentError;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        match ctx.state.agents.call(host, cmd.clone(), timeout).await {
+            Err(AgentError::Closed | AgentError::NotConnected)
+                if tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            r => return r.map_err(|e| anyhow!(e)),
+        }
+    }
 }
 
 pub async fn create(ctx: &TaskCtx) -> Result<()> {
@@ -46,7 +56,7 @@ pub async fn create(ctx: &TaskCtx) -> Result<()> {
     result
 }
 
-async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
+pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
     let db = &ctx.state.db;
     let vm = hm_db::vms::get(db, id).await?;
     let host = host_of(&vm)?;

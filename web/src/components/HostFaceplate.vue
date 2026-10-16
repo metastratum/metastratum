@@ -26,6 +26,7 @@ const usedPct = computed(() => Math.min(100, (props.host.allocated_memory_mib / 
       <StatusLed :tone="host.connected ? 'on' : 'fault'" :label="host.connected ? 'Connected' : 'Not connected'" />
       <span v-if="!host.kvm" class="error-text">No KVM</span>
       <span v-if="host.state === 'maintenance'" class="tag maint">Maintenance</span>
+      <span v-if="host.state === 'fenced'" class="tag fenced" title="It failed and was powered off; its VMs were moved">Fenced</span>
       <span v-if="host.connected && !host.migration_ready" class="tag stray" title="libvirt does not accept TLS connections">
         No migration
       </span>
@@ -178,6 +179,10 @@ footer {
   .specs {
     margin-left: 0;
   }
+}
+.tag.fenced {
+  border-color: var(--led-fault);
+  color: var(--led-fault);
 }
 .tag.maint {
   border-color: var(--led-busy);

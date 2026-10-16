@@ -333,6 +333,62 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/hosts/{id}/fencing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_fencing"];
+        put: operations["set_fencing"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/hosts/{id}/fencing/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Checks the fencing channel works, by reading the host's power state. It
+         *     does not power anything off.
+         */
+        post: operations["test_fencing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/hosts/{id}/renew-certificate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Has the host's agent renew its certificate now (it also does so on its
+         *     own before it expires). The agent reconnects with the new one.
+         */
+        post: operations["renew_certificate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/images": {
         parameters: {
             query?: never;
@@ -1145,6 +1201,11 @@ export interface components {
              */
             cpu_overcommit?: number | null;
             /**
+             * @description Restart a failed host's VMs elsewhere (default off). Hosts need
+             *     fencing configured.
+             */
+            ha_enabled?: boolean;
+            /**
              * Format: float
              * @description Default 1 (no memory overcommit).
              */
@@ -1159,6 +1220,11 @@ export interface components {
             cpu_overcommit: number;
             /** Format: date-time */
             created_at: string;
+            /**
+             * @description When a host fails, it is fenced (powered off) and its VMs on shared
+             *     storage restart on the cluster's other hosts.
+             */
+            ha_enabled: boolean;
             id: components["schemas"]["ClusterId"];
             /**
              * Format: float
@@ -1333,6 +1399,20 @@ export interface components {
              */
             used: number;
         };
+        Fencing: {
+            /**
+             * @description Redfish: `url`, `username`, `password`, optional `system` and
+             *     `insecure`. libvirt: `domain`, optional `socket`. The password is
+             *     write-only; omit it to keep the stored one.
+             */
+            config?: unknown;
+            /** @description `redfish` or `libvirt`; null removes fencing. */
+            kind?: string | null;
+        };
+        FencingTest: {
+            /** @description The host's power state through the fencing channel: `on` or `off`. */
+            power: string;
+        };
         /** @enum {string} */
         Firmware: "bios" | "uefi";
         FloatingIpView: {
@@ -1366,11 +1446,18 @@ export interface components {
             cluster_name?: string | null;
             /** @description Whether the host's agent has a live session (and heartbeated recently). */
             connected: boolean;
-            /** @description The controller replica holding the agent's session. */
+            /** Format: date-time */
+            connected_since?: string | null;
+            /** @description The controller replica holding the agent's session, and since when. */
             controller?: string | null;
             /** Format: int32 */
             cpu_count: number;
             cpu_model: string;
+            /**
+             * @description `redfish` or `libvirt` when the host can be fenced (powered off when
+             *     it fails, so its VMs can restart elsewhere).
+             */
+            fence_kind?: string | null;
             id: components["schemas"]["HostId"];
             kvm: boolean;
             /** Format: date-time */
@@ -2651,6 +2738,164 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_fencing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["HostId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fencing"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_fencing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["HostId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Fencing"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fencing"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    test_fencing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["HostId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FencingTest"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    renew_certificate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["HostId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

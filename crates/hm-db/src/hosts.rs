@@ -19,6 +19,9 @@ pub struct Host {
     pub physical_networks: Vec<String>,
     pub cpu_json: String,
     pub migration_ready: bool,
+    /// `redfish` or `libvirt` when the host can be fenced.
+    pub fence_kind: Option<String>,
+    pub connected_since: Option<DateTime<Utc>>,
     pub agent_version: String,
     pub cert_fingerprint: String,
     pub cert_expires_at: DateTime<Utc>,
@@ -43,7 +46,7 @@ macro_rules! host_columns {
     () => {
         "id, name, host(address) AS address, state, cpu_count, memory_mib, cpu_model, kvm, \
          libvirt_version, ovn_chassis, agent_version, cert_fingerprint, cert_expires_at, \
-         cluster_id, connected_to, last_seen_at, created_at, physical_networks, cpu_json, migration_ready"
+         cluster_id, connected_to, last_seen_at, created_at, physical_networks, cpu_json, migration_ready, fence_kind, connected_since"
     };
 }
 
@@ -159,7 +162,10 @@ pub async fn set_connected(
     id: HostId,
     replica: Option<&str>,
 ) -> Result<()> {
-    sqlx::query("UPDATE hosts SET connected_to = $2, last_seen_at = now() WHERE id = $1")
+    sqlx::query(
+        "UPDATE hosts SET connected_to = $2, last_seen_at = now(),
+                connected_since = CASE WHEN $2::text IS NULL THEN NULL ELSE now() END WHERE id = $1",
+    )
         .bind(id)
         .bind(replica)
         .execute(db)
@@ -207,4 +213,65 @@ pub async fn set_state(db: impl PgExecutor<'_>, id: HostId, state: &str) -> Resu
         .execute(db)
         .await?;
     Ok(())
+}
+
+/// How to fence a host: its kind and configuration (secrets sealed).
+pub async fn fencing(
+    db: impl PgExecutor<'_>,
+    id: HostId,
+) -> Result<Option<(String, serde_json::Value)>> {
+    let row: Option<(Option<String>, sqlx::types::Json<serde_json::Value>)> =
+        sqlx::query_as("SELECT fence_kind, fence_config FROM hosts WHERE id = $1")
+            .bind(id)
+            .fetch_optional(db)
+            .await?;
+    Ok(row.and_then(|(k, c)| k.map(|k| (k, c.0))))
+}
+
+pub async fn set_fencing(
+    db: impl PgExecutor<'_>,
+    id: HostId,
+    fencing: Option<(&str, &serde_json::Value)>,
+) -> Result<()> {
+    sqlx::query("UPDATE hosts SET fence_kind = $2, fence_config = $3 WHERE id = $1")
+        .bind(id)
+        .bind(fencing.map(|f| f.0))
+        .bind(sqlx::types::Json(
+            fencing
+                .map(|f| f.1.clone())
+                .unwrap_or_else(|| serde_json::json!({})),
+        ))
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// Records a renewed certificate; the previous one stays valid as well.
+pub async fn renew_cert(
+    db: impl PgExecutor<'_>,
+    id: HostId,
+    fingerprint: &str,
+    expires_at: DateTime<Utc>,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE hosts SET previous_cert_fingerprint = cert_fingerprint, cert_fingerprint = $2,
+                cert_expires_at = $3, updated_at = now() WHERE id = $1",
+    )
+    .bind(id)
+    .bind(fingerprint)
+    .bind(expires_at)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Whether `fingerprint` is the host's certificate (or the one it replaced).
+pub async fn accepts_cert(db: impl PgExecutor<'_>, id: HostId, fingerprint: &str) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM hosts WHERE id = $1 AND $2 IN (cert_fingerprint, previous_cert_fingerprint))",
+    )
+    .bind(id)
+    .bind(fingerprint)
+    .fetch_one(db)
+    .await?)
 }

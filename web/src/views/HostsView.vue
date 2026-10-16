@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api, ApiError, errorText, ok, type Cluster, type Host, type Vm } from '../api/client'
+import FencingForm from '../components/FencingForm.vue'
 import HostFaceplate from '../components/HostFaceplate.vue'
 import InfraTabs from '../components/InfraTabs.vue'
 import ModalDialog from '../components/ModalDialog.vue'
@@ -153,6 +154,10 @@ async function createToken() {
           Maintenance: place no new VMs here
         </label>
         <p class="muted hint">VMs already on the host keep running.</p>
+        <p v-if="managing.state === 'fenced'" class="error-text hint">
+          It failed and was powered off; its VMs moved. Once it is repaired and its agent is back, saving puts it back
+          in service.
+        </p>
         <div class="evacuate">
           <div>
             <strong>Evacuate</strong>
@@ -177,6 +182,7 @@ async function createToken() {
           <button class="btn primary">Save</button>
         </footer>
       </form>
+      <div class="fence-wrap"><FencingForm :host="managing" /></div>
     </ModalDialog>
   </section>
 </template>
@@ -245,6 +251,9 @@ footer {
 .hint {
   margin: 0;
   font-size: 12px;
+}
+.fence-wrap {
+  padding: 0 18px 18px;
 }
 .evacuate {
   display: flex;

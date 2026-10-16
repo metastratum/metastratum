@@ -129,6 +129,23 @@ pub fn install(id: &HostIdentity) -> Result<bool> {
     Ok(changed)
 }
 
+/// Makes libvirt pick up renewed certificates for new TLS connections,
+/// without restarting it.
+pub async fn reload_libvirt() {
+    for server in ["libvirtd", "virtproxyd"] {
+        let out = tokio::process::Command::new("virt-admin")
+            .args(["server-update-tls", server])
+            .output()
+            .await;
+        if matches!(&out, Ok(o) if o.status.success()) {
+            return;
+        }
+    }
+    tracing::warn!(
+        "could not reload libvirt's TLS certificates; they apply after its next restart"
+    );
+}
+
 /// Whether libvirt listens for TLS connections (the installer enables the
 /// listener; see deploy/).
 pub async fn listening() -> bool {

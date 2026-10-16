@@ -30,6 +30,9 @@ pub struct ClusterView {
     cpu_overcommit: f32,
     /// Memory the scheduler may allocate per MiB of host memory.
     memory_overcommit: f32,
+    /// When a host fails, it is fenced (powered off) and its VMs on shared
+    /// storage restart on the cluster's other hosts.
+    ha_enabled: bool,
     created_at: DateTime<Utc>,
 }
 
@@ -40,6 +43,7 @@ impl From<hm_db::clusters::Cluster> for ClusterView {
             name: c.name,
             cpu_overcommit: c.cpu_overcommit,
             memory_overcommit: c.memory_overcommit,
+            ha_enabled: c.ha_enabled,
             created_at: c.created_at,
         }
     }
@@ -67,6 +71,10 @@ pub struct ClusterSpec {
     cpu_overcommit: Option<f32>,
     /// Default 1 (no memory overcommit).
     memory_overcommit: Option<f32>,
+    /// Restart a failed host's VMs elsewhere (default off). Hosts need
+    /// fencing configured.
+    #[serde(default)]
+    ha_enabled: bool,
 }
 
 fn validate(req: &ClusterSpec) -> ApiResult<(String, f32, f32)> {
@@ -93,7 +101,7 @@ async fn create_cluster(
 ) -> ApiResult<(StatusCode, Json<ClusterView>)> {
     authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
     let (name, cpu, mem) = validate(&req)?;
-    let c = hm_db::clusters::create(&state.db, &name, cpu, mem).await?;
+    let c = hm_db::clusters::create(&state.db, &name, cpu, mem, req.ha_enabled).await?;
     audit(
         &state.db,
         Some(&p),
@@ -117,7 +125,7 @@ async fn update_cluster(
     authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
     hm_db::clusters::get(&state.db, id).await?;
     let (name, cpu, mem) = validate(&req)?;
-    hm_db::clusters::update(&state.db, id, &name, cpu, mem).await?;
+    hm_db::clusters::update(&state.db, id, &name, cpu, mem, req.ha_enabled).await?;
     audit(
         &state.db,
         Some(&p),

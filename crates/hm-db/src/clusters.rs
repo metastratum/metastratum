@@ -12,25 +12,34 @@ pub struct Cluster {
     pub name: String,
     pub cpu_overcommit: f32,
     pub memory_overcommit: f32,
+    /// Restart failed hosts' VMs elsewhere (after fencing the host).
+    pub ha_enabled: bool,
     pub created_at: DateTime<Utc>,
 }
 
-pub async fn create(db: impl PgExecutor<'_>, name: &str, cpu: f32, memory: f32) -> Result<Cluster> {
+pub async fn create(
+    db: impl PgExecutor<'_>,
+    name: &str,
+    cpu: f32,
+    memory: f32,
+    ha: bool,
+) -> Result<Cluster> {
     sqlx::query_as(
-        "INSERT INTO clusters (id, name, cpu_overcommit, memory_overcommit) VALUES ($1, $2, $3, $4)
-         RETURNING id, name, cpu_overcommit, memory_overcommit, created_at",
+        "INSERT INTO clusters (id, name, cpu_overcommit, memory_overcommit, ha_enabled) VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, name, cpu_overcommit, memory_overcommit, ha_enabled, created_at",
     )
     .bind(ClusterId::new())
     .bind(name)
     .bind(cpu)
     .bind(memory)
+    .bind(ha)
     .fetch_one(db)
     .await
     .map_err(|e| conflict_on_unique(e, "a cluster with this name"))
 }
 
 pub async fn get(db: impl PgExecutor<'_>, id: ClusterId) -> Result<Cluster> {
-    sqlx::query_as("SELECT id, name, cpu_overcommit, memory_overcommit, created_at FROM clusters WHERE id = $1")
+    sqlx::query_as("SELECT id, name, cpu_overcommit, memory_overcommit, ha_enabled, created_at FROM clusters WHERE id = $1")
         .bind(id)
         .fetch_optional(db)
         .await?
@@ -38,7 +47,7 @@ pub async fn get(db: impl PgExecutor<'_>, id: ClusterId) -> Result<Cluster> {
 }
 
 pub async fn list(db: impl PgExecutor<'_>) -> Result<Vec<Cluster>> {
-    Ok(sqlx::query_as("SELECT id, name, cpu_overcommit, memory_overcommit, created_at FROM clusters ORDER BY name")
+    Ok(sqlx::query_as("SELECT id, name, cpu_overcommit, memory_overcommit, ha_enabled, created_at FROM clusters ORDER BY name")
         .fetch_all(db)
         .await?)
 }
@@ -49,14 +58,16 @@ pub async fn update(
     name: &str,
     cpu: f32,
     memory: f32,
+    ha: bool,
 ) -> Result<()> {
     sqlx::query(
-        "UPDATE clusters SET name = $2, cpu_overcommit = $3, memory_overcommit = $4 WHERE id = $1",
+        "UPDATE clusters SET name = $2, cpu_overcommit = $3, memory_overcommit = $4, ha_enabled = $5 WHERE id = $1",
     )
     .bind(id)
     .bind(name)
     .bind(cpu)
     .bind(memory)
+    .bind(ha)
     .execute(db)
     .await
     .map_err(|e| conflict_on_unique(e, "a cluster with this name"))?;

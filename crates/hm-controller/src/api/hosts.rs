@@ -20,6 +20,9 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(list_hosts))
         .routes(routes!(create_join_token))
         .routes(routes!(evacuate_host))
+        .routes(routes!(get_fencing, set_fencing))
+        .routes(routes!(test_fencing))
+        .routes(routes!(renew_certificate))
 }
 
 #[derive(Serialize, ToSchema)]
@@ -35,8 +38,12 @@ pub struct HostView {
     connected: bool,
     /// Accepts live migrations (libvirt TLS is set up).
     migration_ready: bool,
-    /// The controller replica holding the agent's session.
+    /// The controller replica holding the agent's session, and since when.
     controller: Option<String>,
+    connected_since: Option<DateTime<Utc>>,
+    /// `redfish` or `libvirt` when the host can be fenced (powered off when
+    /// it fails, so its VMs can restart elsewhere).
+    fence_kind: Option<String>,
     cpu_count: i32,
     memory_mib: i64,
     cpu_model: String,
@@ -70,6 +77,8 @@ async fn list_hosts(State(state): State<AppState>, p: Principal) -> ApiResult<Js
             connected: h.is_live(),
             migration_ready: h.migration_ready,
             controller: h.connected_to.clone(),
+            connected_since: h.connected_since,
+            fence_kind: h.fence_kind.clone(),
             vm_count: vms.len(),
             allocated_memory_mib: vms.iter().map(|v| v.spec.0.memory_mib).sum(),
             id: h.id,
@@ -263,4 +272,151 @@ async fn evacuate_host(
     )
     .await;
     Ok((StatusCode::ACCEPTED, Json(EvacuateRef { task_id: task.id })))
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct Fencing {
+    /// `redfish` or `libvirt`; null removes fencing.
+    kind: Option<String>,
+    /// Redfish: `url`, `username`, `password`, optional `system` and
+    /// `insecure`. libvirt: `domain`, optional `socket`. The password is
+    /// write-only; omit it to keep the stored one.
+    #[serde(default)]
+    config: serde_json::Value,
+}
+
+#[utoipa::path(get, path = "/hosts/{id}/fencing", tag = "hosts", params(("id" = HostId, Path)),
+    responses((status = 200, body = Fencing), (status = 403), (status = 404)))]
+async fn get_fencing(
+    State(state): State<AppState>,
+    p: Principal,
+    axum::extract::Path(id): axum::extract::Path<HostId>,
+) -> ApiResult<Json<Fencing>> {
+    authorize(&state.db, &p, Perm::InfraRead, p.tenant_id).await?;
+    hm_db::hosts::get(&state.db, id).await?;
+    Ok(Json(match hm_db::hosts::fencing(&state.db, id).await? {
+        Some((kind, mut config)) => {
+            for f in crate::fence::SECRET_FIELDS {
+                if config.get(*f).is_some() {
+                    config[*f] = "(set)".into();
+                }
+            }
+            Fencing {
+                kind: Some(kind),
+                config,
+            }
+        }
+        None => Fencing {
+            kind: None,
+            config: serde_json::json!({}),
+        },
+    }))
+}
+
+#[utoipa::path(put, path = "/hosts/{id}/fencing", tag = "hosts", params(("id" = HostId, Path)), request_body = Fencing,
+    responses((status = 200, body = Fencing), (status = 400), (status = 403), (status = 404)))]
+async fn set_fencing(
+    State(state): State<AppState>,
+    p: Principal,
+    axum::extract::Path(id): axum::extract::Path<HostId>,
+    Json(req): Json<Fencing>,
+) -> ApiResult<Json<Fencing>> {
+    authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
+    let host = hm_db::hosts::get(&state.db, id).await?;
+    match &req.kind {
+        None => hm_db::hosts::set_fencing(&state.db, id, None).await?,
+        Some(kind) => {
+            let mut config = req.config.clone();
+            // Write-only secrets: keep the stored ones unless replaced.
+            if let Some((old_kind, old)) = hm_db::hosts::fencing(&state.db, id).await?
+                && &old_kind == kind
+            {
+                for f in crate::fence::SECRET_FIELDS {
+                    if config.get(*f).is_none_or(|v| v.as_str() == Some("(set)"))
+                        && let Some(v) = old.get(*f)
+                    {
+                        config[*f] = v.clone();
+                    }
+                }
+            }
+            let opened = crate::ha::open_config(id, &config).map_err(ApiError::internal)?;
+            crate::fence::validate(kind, &opened).map_err(ApiError::bad_request)?;
+            for f in crate::fence::SECRET_FIELDS {
+                if let Some(v) = config.get(*f).and_then(|v| v.as_str())
+                    && !hm_pki::is_sealed(v)
+                {
+                    config[*f] = crate::secrets::seal(&crate::fence::secret_context(id), v).into();
+                }
+            }
+            hm_db::hosts::set_fencing(&state.db, id, Some((kind, &config))).await?;
+        }
+    }
+    audit(
+        &state.db,
+        Some(&p),
+        Some(p.tenant_id),
+        "host.fencing",
+        Some(("host", id.0)),
+        serde_json::json!({"name": host.name, "kind": req.kind}),
+    )
+    .await;
+    get_fencing(State(state), p, axum::extract::Path(id)).await
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct FencingTest {
+    /// The host's power state through the fencing channel: `on` or `off`.
+    power: String,
+}
+
+/// Checks the fencing channel works, by reading the host's power state. It
+/// does not power anything off.
+#[utoipa::path(post, path = "/hosts/{id}/fencing/test", tag = "hosts", params(("id" = HostId, Path)),
+    responses((status = 200, body = FencingTest), (status = 403), (status = 404), (status = 409), (status = 503)))]
+async fn test_fencing(
+    State(state): State<AppState>,
+    p: Principal,
+    axum::extract::Path(id): axum::extract::Path<HostId>,
+) -> ApiResult<Json<FencingTest>> {
+    authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
+    let (kind, config) = hm_db::hosts::fencing(&state.db, id)
+        .await?
+        .ok_or_else(|| ApiError::conflict("the host has no fencing configured"))?;
+    let config = crate::ha::open_config(id, &config).map_err(ApiError::internal)?;
+    let power = crate::fence::power_state(&kind, &config)
+        .await
+        .map_err(|e| ApiError::unavailable(format!("{e:#}")))?;
+    Ok(Json(FencingTest { power }))
+}
+
+/// Has the host's agent renew its certificate now (it also does so on its
+/// own before it expires). The agent reconnects with the new one.
+#[utoipa::path(post, path = "/hosts/{id}/renew-certificate", tag = "hosts", params(("id" = HostId, Path)),
+    responses((status = 204), (status = 403), (status = 404), (status = 503)))]
+async fn renew_certificate(
+    State(state): State<AppState>,
+    p: Principal,
+    axum::extract::Path(id): axum::extract::Path<HostId>,
+) -> ApiResult<StatusCode> {
+    authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
+    let host = hm_db::hosts::get(&state.db, id).await?;
+    state
+        .agents
+        .call(
+            id,
+            hm_proto::command::Cmd::RenewCertificate(hm_proto::RenewCertificate {}),
+            Duration::from_secs(60),
+        )
+        .await
+        .map_err(|e| ApiError::unavailable(format!("renewing {}'s certificate: {e}", host.name)))?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(p.tenant_id),
+        "host.renew_certificate",
+        Some(("host", id.0)),
+        serde_json::json!({"name": host.name}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
 }

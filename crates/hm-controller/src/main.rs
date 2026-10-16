@@ -7,6 +7,8 @@ mod ca;
 mod engine;
 mod error;
 mod events;
+mod fence;
+mod ha;
 mod migration;
 mod net;
 mod secrets;
@@ -274,6 +276,11 @@ async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
     tokio::spawn(state.events.clone().listen(db.clone()));
     tokio::spawn(state.events.clone().watch_hosts(db.clone()));
     tokio::spawn(state.net.clone().run());
+    // Host failure handling runs on one replica at a time.
+    tokio::spawn({
+        let state = state.clone();
+        ha::lead(db.clone(), move || ha::monitor(state.clone()))
+    });
 
     let tls = ServerTlsConfig::new()
         .identity(Identity::from_pem(cert_chain, key))

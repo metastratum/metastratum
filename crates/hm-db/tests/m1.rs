@@ -179,7 +179,7 @@ async fn concurrent_ip_allocation_never_duplicates(pool: PgPool) {
 #[sqlx::test(migrator = "hm_db::MIGRATOR")]
 async fn join_tokens_are_single_use_and_expire(pool: PgPool) {
     root(&pool).await;
-    let cluster = hm_db::clusters::create(&pool, "c1", 4.0, 1.0)
+    let cluster = hm_db::clusters::create(&pool, "c1", 4.0, 1.0, false)
         .await
         .unwrap();
     let hour = Utc::now() + chrono::Duration::hours(1);
@@ -348,7 +348,7 @@ async fn vm_listing_by_subtree_and_power_observation(pool: PgPool) {
 async fn scheduling_snapshot_reports_allocations_and_liveness(pool: PgPool) {
     let t = root(&pool).await;
     let h = host(&pool).await;
-    let cluster = hm_db::clusters::create(&pool, "c1", 2.0, 1.5)
+    let cluster = hm_db::clusters::create(&pool, "c1", 2.0, 1.5, false)
         .await
         .unwrap();
     hosts::set_cluster(&pool, h.id, Some(cluster.id))

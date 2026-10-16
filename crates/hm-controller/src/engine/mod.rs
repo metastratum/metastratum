@@ -6,6 +6,7 @@
 //! written as sequences of idempotent steps.
 
 mod migrate;
+mod recover;
 mod vm;
 
 use std::sync::Arc;
@@ -110,6 +111,7 @@ async fn execute(state: AppState, task: Task) {
         "vm.delete" => vm::delete(&ctx).await,
         "vm.migrate" => migrate::migrate(&ctx).await,
         "host.evacuate" => migrate::evacuate(&ctx).await,
+        "host.recover" => recover::recover(&ctx).await,
         other => Err(anyhow::anyhow!("unknown task kind {other}")),
     };
     renew.abort();

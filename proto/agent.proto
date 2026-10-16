@@ -20,6 +20,14 @@ service ReplicaControl {
   rpc Console(stream TunnelChunk) returns (stream TunnelChunk);
 }
 
+message RenewRequest {
+  string csr_pem = 1;
+}
+
+message RenewResponse {
+  string cert_pem = 1;
+}
+
 message ForwardedCommand {
   string host_id = 1;
   Command command = 2;
@@ -32,6 +40,9 @@ service AgentControl {
   // Reverse tunnel for a console session, dialled by the agent after it
   // receives `OpenConsole`. The first chunk carries the session ID.
   rpc ConsoleTunnel(stream TunnelChunk) returns (stream TunnelChunk);
+  // Swaps the host's certificate for a new one (new key), before the old
+  // expires. Authenticated by the current certificate.
+  rpc Renew(RenewRequest) returns (RenewResponse);
 }
 
 message EnrollRequest {
@@ -134,6 +145,7 @@ message Command {
     MigrationStats migration_stats = 22;
     AbortMigration abort_migration = 23;
     DomainInfo domain_info = 24;
+    RenewCertificate renew_certificate = 25;
   }
 }
 
@@ -248,6 +260,10 @@ message AbortMigration {
 message DomainInfo {
   string vm_id = 1;
 }
+
+// Renew the host certificate now (normally the agent does so on its own
+// before it expires).
+message RenewCertificate {}
 
 enum ConsoleKind {
   CONSOLE_KIND_UNSPECIFIED = 0;

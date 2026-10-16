@@ -29,7 +29,14 @@ pub struct Agent {
     pub controllers: Vec<String>,
     /// The one currently in use.
     pub current: std::sync::atomic::AtomicUsize,
-    pub identity: HostIdentity,
+    /// Replaced when the certificate is renewed.
+    pub identity: std::sync::RwLock<HostIdentity>,
+    /// Where the identity is stored.
+    pub state_dir: std::path::PathBuf,
+    /// Ends the session, to reconnect (with a renewed identity).
+    pub reconnect: std::sync::Arc<tokio::sync::Notify>,
+    /// Commands being handled (and not yet answered).
+    pub in_flight: std::sync::atomic::AtomicIsize,
     pub facts: HostFacts,
     pub lv: Libvirt,
     pub pools: Arc<Pools>,
@@ -81,8 +88,9 @@ impl Agent {
     }
 
     async fn channel(&self) -> Result<Channel> {
+        let tls = self.identity.read().unwrap().tls();
         Endpoint::from_shared(self.controller())?
-            .tls_config(self.identity.tls())?
+            .tls_config(tls)?
             .connect_timeout(Duration::from_secs(10))
             .http2_keep_alive_interval(Duration::from_secs(15))
             .keep_alive_while_idle(true)
@@ -127,7 +135,8 @@ impl Agent {
         })
         .await?;
         let mut inbound = client.session(ReceiverStream::new(rx)).await?.into_inner();
-        tracing::info!(host = %self.identity.host_id, controller = %self.controller(), "session established");
+        let host_id = self.identity.read().unwrap().host_id.clone();
+        tracing::info!(host = %host_id, controller = %self.controller(), "session established");
 
         let heartbeat = {
             let (this, tx) = (self.clone(), tx.clone());
@@ -176,7 +185,22 @@ impl Agent {
         };
 
         let result = async {
-            while let Some(msg) = inbound.message().await? {
+            loop {
+                let msg = tokio::select! {
+                    m = inbound.message() => m?,
+                    () = self.reconnect.notified() => {
+                        // Let commands in flight answer on this session first.
+                        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+                        while self.in_flight.load(std::sync::atomic::Ordering::Relaxed) > 0
+                            && tokio::time::Instant::now() < deadline
+                        {
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                        }
+                        tracing::info!("reconnecting with the renewed certificate");
+                        return Ok(());
+                    }
+                };
+                let Some(msg) = msg else { break };
                 let Some(controller_message::Msg::Command(cmd)) = msg.msg else {
                     continue;
                 };
@@ -185,6 +209,7 @@ impl Agent {
                     tx.clone(),
                     AgentControlClient::new(channel.clone()),
                 );
+                this_in_flight(&self.in_flight, 1);
                 tokio::spawn(async move {
                     let request_id = cmd.request_id.clone();
                     let (error, payload) = match cmd.cmd {
@@ -205,6 +230,7 @@ impl Agent {
                         })),
                     };
                     let _ = tx.send(msg).await;
+                    this_in_flight(&this.in_flight, -1);
                 });
             }
             Ok(())
@@ -367,6 +393,10 @@ impl Agent {
                 };
                 return Ok(info.to_string());
             }
+            Cmd::RenewCertificate(_) => {
+                self.renew().await?;
+                self.reconnect_soon();
+            }
             Cmd::BaselineCpu(c) => {
                 let cpus = c
                     .cpus_json
@@ -418,6 +448,73 @@ impl Agent {
         Ok(String::new())
     }
 
+    /// Renews the host certificate: a new key, signed by the controller
+    /// over the current session's identity. The new identity is stored, set
+    /// up for libvirt and QEMU, and used from the next session on.
+    pub async fn renew(&self) -> Result<()> {
+        let current = self.identity.read().unwrap().clone();
+        let (key_pem, csr_pem) =
+            hm_pki::new_key_and_csr(&current.host_id).context("making a key")?;
+        let mut client = AgentControlClient::new(self.channel().await?);
+        let cert_pem = client
+            .renew(hm_proto::RenewRequest { csr_pem })
+            .await
+            .context("renewing the certificate")?
+            .into_inner()
+            .cert_pem;
+        let renewed = HostIdentity {
+            key_pem,
+            cert_pem,
+            ..current
+        };
+        renewed
+            .save(&self.state_dir)
+            .context("storing the renewed certificate")?;
+        crate::tls::install(&renewed)?;
+        crate::tls::reload_libvirt().await;
+        *self.identity.write().unwrap() = renewed;
+        tracing::info!("host certificate renewed");
+        Ok(())
+    }
+
+    /// Renews the certificate once two thirds of its lifetime have passed.
+    pub async fn keep_certificate_fresh(self: std::sync::Arc<Self>) {
+        loop {
+            let due = {
+                let id = self.identity.read().unwrap();
+                hm_pki::pem_to_der(&id.cert_pem)
+                    .and_then(|der| hm_pki::validity_of(&der))
+                    .map(|(from, until)| {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0);
+                        until - now < (until - from) / 3
+                    })
+                    .unwrap_or(false)
+            };
+            if due {
+                match self.renew().await {
+                    Ok(()) => self.reconnect_soon(),
+                    Err(e) => {
+                        tracing::warn!(error = %format!("{e:#}"), "renewing the host certificate; will retry")
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        }
+    }
+
+    /// Ends the current session shortly (letting answers in flight go out),
+    /// so the next one uses the current identity.
+    pub fn reconnect_soon(&self) {
+        let reconnect = self.reconnect.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            reconnect.notify_one();
+        });
+    }
+
     /// The domain for a VM, with what it needs on this host set up.
     async fn domain_def(&self, c: &hm_proto::DefineVm) -> Result<hm_libvirt::DomainDef> {
         let spec: hm_core::vm::VmSpec =
@@ -448,4 +545,8 @@ fn session_power_name(p: Power) -> &'static str {
         Power::ShuttingDown => "shutting_down",
         Power::Unknown => "unknown",
     }
+}
+
+fn this_in_flight(n: &std::sync::atomic::AtomicIsize, d: isize) {
+    n.fetch_add(d, std::sync::atomic::Ordering::Relaxed);
 }

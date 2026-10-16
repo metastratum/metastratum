@@ -164,7 +164,12 @@ impl AgentControlService {
             }
             Err(e) => return Err(internal(e)),
         };
-        if host.cert_fingerprint != hm_pki::fingerprint(leaf) {
+        // The current certificate, or the one it renewed (in case the agent
+        // never stored the new one).
+        let accepted = hm_db::hosts::accepts_cert(&self.0.db, host_id, &hm_pki::fingerprint(leaf))
+            .await
+            .map_err(internal)?;
+        if !accepted {
             return Err(Status::unauthenticated("certificate has been superseded"));
         }
         if host.state == "decommissioned" {
@@ -193,6 +198,38 @@ async fn observe_domains(state: &AppState, host: HostId, domains: &[DomainState]
     if !complete {
         return;
     }
+    // Domains of VMs that now live elsewhere (the host was fenced and they
+    // restarted on another): remove the stale, stopped definitions.
+    let stopped: Vec<VmId> = domains
+        .iter()
+        .filter(|d| d.power == PowerState::Stopped as i32)
+        .filter_map(|d| d.vm_id.parse().ok())
+        .collect();
+    if !stopped.is_empty() {
+        match hm_db::sqlx::query_scalar::<_, VmId>(
+            "SELECT v.id FROM vms v WHERE v.id = ANY($1) AND v.host_id IS DISTINCT FROM $2 AND v.status = 'ready'
+               AND NOT EXISTS (SELECT 1 FROM migrations m WHERE m.vm_id = v.id)",
+        )
+        .bind(&stopped)
+        .bind(host)
+        .fetch_all(&state.db)
+        .await
+        {
+            Ok(stale) => {
+                for vm in stale {
+                    let agents = state.agents.clone();
+                    tokio::spawn(async move {
+                        tracing::info!(%host, %vm, "removing a stale definition of a VM that lives elsewhere");
+                        let cmd = hm_proto::command::Cmd::UndefineVm(hm_proto::UndefineVm { vm_id: vm.to_string() });
+                        if let Err(e) = agents.call(host, cmd, Duration::from_secs(60)).await {
+                            tracing::warn!(%host, %vm, error = %e, "removing a stale definition");
+                        }
+                    });
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "looking for stale domains"),
+        }
+    }
     match hm_db::vms::list_on_host(&state.db, host).await {
         Ok(vms) => {
             for vm in vms
@@ -210,6 +247,47 @@ async fn observe_domains(state: &AppState, host: HostId, domains: &[DomainState]
 impl AgentControl for AgentControlService {
     type SessionStream = BoxStream<ControllerMessage>;
     type ConsoleTunnelStream = BoxStream<TunnelChunk>;
+
+    async fn renew(
+        &self,
+        req: Request<hm_proto::RenewRequest>,
+    ) -> Result<Response<hm_proto::RenewResponse>, Status> {
+        let host_id = self.authenticate(&req).await?;
+        let state = &self.0;
+        let host = hm_db::hosts::get(&state.db, host_id)
+            .await
+            .map_err(internal)?;
+        // Same identity as before: the host's ID, name and address.
+        let cert_pem = state
+            .ca
+            .sign_host_csr(
+                &req.get_ref().csr_pem,
+                &host_id.to_string(),
+                &[host.name.clone(), host.address.clone()],
+                HOST_CERT_LIFETIME,
+            )
+            .map_err(|e| Status::invalid_argument(format!("invalid CSR: {e}")))?;
+        let der = hm_pki::pem_to_der(&cert_pem).map_err(internal)?;
+        let not_after = hm_pki::not_after(&der).map_err(internal)?;
+        let expires = Utc
+            .timestamp_opt(not_after, 0)
+            .single()
+            .ok_or_else(|| Status::internal("bad expiry"))?;
+        hm_db::hosts::renew_cert(&state.db, host_id, &hm_pki::fingerprint(&der), expires)
+            .await
+            .map_err(internal)?;
+        tracing::info!(host = %host_id, %expires, "host certificate renewed");
+        crate::authz::audit(
+            &state.db,
+            None,
+            None,
+            "host.cert_renew",
+            Some(("host", host_id.0)),
+            serde_json::json!({"expires_at": expires}),
+        )
+        .await;
+        Ok(Response::new(hm_proto::RenewResponse { cert_pem }))
+    }
 
     async fn session(
         &self,
@@ -271,6 +349,9 @@ impl AgentControl for AgentControlService {
                     Some(agent_message::Msg::Hello(_)) | None => {}
                 }
             }
+            // Answers can no longer arrive on this session: fail what waits
+            // for one now rather than at its timeout.
+            conn.fail_pending();
             if state.agents.unregister(host, conn.session) {
                 let _ = hm_db::hosts::set_connected(&state.db, host, None).await;
                 tracing::info!(%host, "agent session closed");

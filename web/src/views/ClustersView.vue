@@ -30,12 +30,12 @@ const capacity = (hs: Host[]) => ({
 // Create, edit, delete.
 type Dialog = { kind: 'edit'; cluster?: Cluster } | { kind: 'delete'; cluster: Cluster }
 const dialog = ref<Dialog | null>(null)
-const form = ref({ name: '', cpu_overcommit: 4, memory_overcommit: 1 })
+const form = ref({ name: '', cpu_overcommit: 4, memory_overcommit: 1, ha_enabled: false })
 const busy = ref(false)
 function edit(c?: Cluster) {
   form.value = c
-    ? { name: c.name, cpu_overcommit: c.cpu_overcommit, memory_overcommit: c.memory_overcommit }
-    : { name: '', cpu_overcommit: 4, memory_overcommit: 1 }
+    ? { name: c.name, cpu_overcommit: c.cpu_overcommit, memory_overcommit: c.memory_overcommit, ha_enabled: c.ha_enabled }
+    : { name: '', cpu_overcommit: 4, memory_overcommit: 1, ha_enabled: false }
   error.value = ''
   dialog.value = { kind: 'edit', cluster: c }
 }
@@ -88,6 +88,7 @@ async function submit() {
           </span>
           <span class="tag">cpu ×{{ c.cpu_overcommit }}</span>
           <span class="tag">mem ×{{ c.memory_overcommit }}</span>
+          <span v-if="c.ha_enabled" class="tag ha" title="Failed hosts are fenced and their VMs restarted elsewhere">HA</span>
           <div class="buttons">
             <button class="btn small" @click="edit(c)">Edit</button>
             <button class="btn small danger" @click="(error = ''), (dialog = { kind: 'delete', cluster: c })">Delete</button>
@@ -135,6 +136,13 @@ async function submit() {
               <span class="hint">1 means never more than the host has.</span>
             </label>
           </div>
+          <label class="check">
+            <input v-model="form.ha_enabled" type="checkbox" />
+            High availability: when a host fails, power it off and restart its VMs on other hosts
+          </label>
+          <p class="hint muted">
+            Needs fencing on every host (Hosts → Manage). Only VMs on shared storage can restart elsewhere.
+          </p>
         </template>
         <p v-if="error" class="error-text" role="alert">{{ error }}</p>
         <footer>
@@ -200,6 +208,10 @@ async function submit() {
 }
 .dot.off {
   background: var(--led-fault);
+}
+.tag.ha {
+  border-color: var(--led-on);
+  color: var(--led-on);
 }
 .unassigned {
   margin-top: 16px;

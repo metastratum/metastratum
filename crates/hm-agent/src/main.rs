@@ -109,7 +109,10 @@ async fn main() -> anyhow::Result<()> {
     let agent = Arc::new(session::Agent {
         controllers: args.controller,
         current: std::sync::atomic::AtomicUsize::new(0),
-        identity,
+        identity: std::sync::RwLock::new(identity),
+        state_dir: args.state_dir.clone(),
+        reconnect: std::sync::Arc::default(),
+        in_flight: Default::default(),
         facts,
         lv: lv.clone(),
         pools,
@@ -119,6 +122,7 @@ async fn main() -> anyhow::Result<()> {
         },
         changes: tokio::sync::Mutex::new(lv.watch()),
     });
+    tokio::spawn(agent.clone().keep_certificate_fresh());
     tokio::select! {
         () = agent.run() => {},
         _ = tokio::signal::ctrl_c() => tracing::info!("shutting down"),

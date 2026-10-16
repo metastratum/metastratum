@@ -86,6 +86,7 @@ impl ServerCertVerifier for PinnedCa {
 }
 
 /// The host's credentials, persisted in the agent's state directory.
+#[derive(Clone)]
 pub struct HostIdentity {
     pub host_id: String,
     pub key_pem: String,
@@ -114,7 +115,7 @@ impl HostIdentity {
         }))
     }
 
-    fn save(&self, dir: &Path) -> Result<()> {
+    pub fn save(&self, dir: &Path) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::create_dir_all(dir)?;
         let [id, key, cert, ca] = paths(dir);

@@ -44,6 +44,11 @@ pub struct AgentConn {
 }
 
 impl AgentConn {
+    /// Fails every command waiting for an answer (the session ended).
+    fn fail_pending(&self) {
+        self.pending.lock().unwrap().clear();
+    }
+
     /// Completes a pending command with the agent's result.
     fn complete(&self, request_id: &str, error: String, payload: String) {
         if let Some(waiter) = self.pending.lock().unwrap().remove(request_id) {

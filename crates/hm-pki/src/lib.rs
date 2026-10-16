@@ -228,6 +228,17 @@ pub fn not_after(cert_der: &[u8]) -> Result<i64> {
     Ok(cert.validity().not_after.timestamp())
 }
 
+/// Validity of a DER certificate: `(not_before, not_after)` as Unix
+/// timestamps.
+pub fn validity_of(cert_der: &[u8]) -> Result<(i64, i64)> {
+    let (_, cert) = x509_parser::parse_x509_certificate(cert_der)
+        .map_err(|e| Error::InvalidCertificate(e.to_string()))?;
+    Ok((
+        cert.validity().not_before.timestamp(),
+        cert.validity().not_after.timestamp(),
+    ))
+}
+
 /// A host join token: `hmjoin.<id>.<secret>.<ca-sha256>`.
 ///
 /// The controller stores only the ID and a hash of the secret. The CA

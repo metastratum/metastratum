@@ -150,3 +150,253 @@ async fn every_replica_reaches_every_host() -> anyhow::Result<()> {
     }
     result
 }
+
+fn virsh(args: &[&str]) -> anyhow::Result<String> {
+    let out = std::process::Command::new("virsh")
+        .arg("-c")
+        .arg("qemu:///system")
+        .args(args)
+        .output()?;
+    anyhow::ensure!(
+        out.status.success(),
+        "virsh {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// A host that stops responding is fenced and its VMs on shared storage
+/// restart elsewhere. Destructive: freezes a lab host. Runs with
+/// `HM_E2E_FENCE=1`, on the machine running the lab (hosts are fenced with
+/// libvirt there).
+#[tokio::test]
+async fn failed_hosts_are_fenced_and_their_vms_restart_elsewhere() -> anyhow::Result<()> {
+    let Some(api) = hm_e2e::connect().await? else {
+        return Ok(());
+    };
+    if std::env::var_os("HM_E2E_FENCE").is_none() {
+        eprintln!("HM_E2E_FENCE not set; skipping");
+        return Ok(());
+    }
+    let hosts = api.get("/hosts").await?.as_array().unwrap().clone();
+    let cluster = hosts[0]["cluster_id"].as_str().unwrap().to_owned();
+    let c = api
+        .get("/clusters")
+        .await?
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == cluster.as_str())
+        .unwrap()
+        .clone();
+    let cluster_body = |ha: bool| json!({"name": c["name"], "cpu_overcommit": c["cpu_overcommit"], "memory_overcommit": c["memory_overcommit"], "ha_enabled": ha});
+    for h in &hosts {
+        let id = h["id"].as_str().unwrap();
+        api.send(
+            Method::PUT,
+            &format!("/hosts/{id}/fencing"),
+            Some(json!({"kind": "libvirt", "config": {"domain": h["name"]}})),
+        )
+        .await?;
+        let t = api
+            .post(&format!("/hosts/{id}/fencing/test"), json!({}))
+            .await?;
+        assert_eq!(t["power"], "on", "{t}");
+    }
+    api.send(
+        Method::PUT,
+        &format!("/clusters/{cluster}"),
+        Some(cluster_body(true)),
+    )
+    .await?;
+
+    let image = api.image().await?;
+    let pools = api.get("/storage-pools").await?;
+    let nfs = pools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["kind"] == "nfs" && !p["cluster_ids"].as_array().unwrap().is_empty());
+    let name = format!(
+        "e2e-{:x}-ha",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs()
+    );
+    let vm = api
+        .post(
+            "/vms",
+            json!({"name": name, "vcpus": 1, "memory_mib": 512, "disk_gib": 3, "image_id": image,
+                   "storage_pool_id": nfs.map(|p| p["id"].clone()), "migratable": true}),
+        )
+        .await?;
+    let id = vm["id"].as_str().unwrap().to_owned();
+    let result = async {
+        anyhow::ensure!(
+            nfs.is_some(),
+            "needs an NFS pool (run the storage tests first)"
+        );
+        api.wait_vm(&id, Duration::from_secs(120), |v| {
+            v["status"] == "ready" && v["power"] == "running"
+        })
+        .await?;
+        // Onto the least busy host, to disturb the lab least.
+        let quiet = hosts
+            .iter()
+            .min_by_key(|h| h["vm_count"].as_u64().unwrap_or(0))
+            .unwrap();
+        let victim = quiet["id"].as_str().unwrap().to_owned();
+        let at = api.get(&format!("/vms/{id}")).await?;
+        if at["host_id"] != victim.as_str() {
+            let t = api
+                .post(&format!("/vms/{id}/migrate"), json!({"host_id": victim}))
+                .await?;
+            api.wait_task(t["task_id"].as_str().unwrap(), Duration::from_secs(300))
+                .await?;
+        }
+        let domain = quiet["name"].as_str().unwrap().to_owned();
+        eprintln!("freezing {domain}");
+        virsh(&["suspend", &domain])?;
+        let moved = api
+            .wait_vm(&id, Duration::from_secs(600), |v| {
+                v["host_id"] != victim.as_str() && v["power"] == "running"
+            })
+            .await;
+        let host = api.get("/hosts").await?;
+        let state = host
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["id"] == victim.as_str())
+            .unwrap()["state"]
+            .clone();
+        // Bring the host back whatever happened.
+        let _ = virsh(&["start", &domain]);
+        let _ = virsh(&["resume", &domain]);
+        let moved = moved?;
+        eprintln!("restarted on {}", moved["host_name"]);
+        assert_eq!(state, "fenced");
+        // Once its agent is back, it can return to service.
+        for _ in 0..120 {
+            let h = api.get("/hosts").await?;
+            if h.as_array()
+                .unwrap()
+                .iter()
+                .any(|h| h["id"] == victim.as_str() && h["connected"] == true)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        api.send(
+            Method::PATCH,
+            &format!("/hosts/{victim}"),
+            Some(json!({"state": "ready"})),
+        )
+        .await?;
+        anyhow::Ok(())
+    }
+    .await;
+    api.send(
+        Method::PUT,
+        &format!("/clusters/{cluster}"),
+        Some(cluster_body(false)),
+    )
+    .await?;
+    for h in &hosts {
+        let hid = h["id"].as_str().unwrap();
+        let _ = api
+            .send(
+                Method::PUT,
+                &format!("/hosts/{hid}/fencing"),
+                Some(json!({"kind": null})),
+            )
+            .await;
+    }
+    let (_, t) = api
+        .try_send(Method::DELETE, &format!("/vms/{id}"), None)
+        .await?;
+    if let Some(t) = t["task_id"].as_str() {
+        let _ = api.wait_task(t, Duration::from_secs(120)).await;
+    }
+    result
+}
+
+/// Hosts renew their certificates (here on request) and carry on: they
+/// reconnect with the new one, and libvirt's TLS between hosts (live
+/// migration) uses it.
+#[tokio::test]
+async fn hosts_renew_their_certificates() -> anyhow::Result<()> {
+    let Some(api) = hm_e2e::connect().await? else {
+        return Ok(());
+    };
+    let before = api.get("/hosts").await?.as_array().unwrap().clone();
+    let asked = chrono::Utc::now();
+    for h in &before {
+        let id = h["id"].as_str().unwrap();
+        api.send(
+            Method::POST,
+            &format!("/hosts/{id}/renew-certificate"),
+            None,
+        )
+        .await?;
+    }
+    // Each comes back with a later expiry.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let now = api.get("/hosts").await?;
+        let done = before.iter().all(|b| {
+            now.as_array().unwrap().iter().any(|h| {
+                h["id"] == b["id"]
+                    && h["connected"] == true
+                    && h["cert_expires_at"].as_str() > b["cert_expires_at"].as_str()
+                    // On a session begun with the new certificate.
+                    && h["connected_since"]
+                        .as_str()
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                        .is_some_and(|t| t > asked)
+            })
+        });
+        if done {
+            break;
+        }
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "hosts did not come back renewed: {now}"
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    // Migration uses the hosts' TLS certificates.
+    let image = api.image().await?;
+    let name = format!(
+        "e2e-{:x}-renew",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs()
+    );
+    let vm = api
+        .post(
+            "/vms",
+            json!({"name": name, "vcpus": 1, "memory_mib": 512, "disk_gib": 3, "image_id": image, "migratable": true}),
+        )
+        .await?;
+    let id = vm["id"].as_str().unwrap().to_owned();
+    let result = async {
+        api.wait_vm(&id, Duration::from_secs(120), |v| {
+            v["status"] == "ready" && v["power"] == "running"
+        })
+        .await?;
+        let t = api.post(&format!("/vms/{id}/migrate"), json!({})).await?;
+        api.wait_task(t["task_id"].as_str().unwrap(), Duration::from_secs(300))
+            .await?;
+        anyhow::Ok(())
+    }
+    .await;
+    let (_, t) = api
+        .try_send(Method::DELETE, &format!("/vms/{id}"), None)
+        .await?;
+    if let Some(t) = t["task_id"].as_str() {
+        let _ = api.wait_task(t, Duration::from_secs(120)).await;
+    }
+    result
+}
