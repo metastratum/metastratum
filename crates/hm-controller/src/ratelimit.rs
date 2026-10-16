@@ -1,9 +1,11 @@
 //! Rate limiting and response hardening for the HTTP API.
 //!
-//! Limits are token buckets kept in memory, per replica: behind a load
-//! balancer spreading clients over N replicas a client gets up to N times
-//! the budget. That bounds password guessing and floods well enough without
-//! a round trip to Postgres on every request.
+//! Limits are token buckets. With `--redis-url` they are kept in Redis and
+//! shared by all controller replicas, so a client's budget is the same
+//! whichever replica it reaches, and survives restarts. Without it, or
+//! while Redis cannot be reached, each replica keeps its own in memory:
+//! behind a load balancer spreading clients over N replicas a client then
+//! gets up to N times the budget.
 //!
 //! - Every request: per client address.
 //! - Password logins: per client address, and failures per account, so
@@ -12,10 +14,11 @@
 //!   can slow a user's logins down but not lock them out for good.
 
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::hash::Hash;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, Request, State};
@@ -27,34 +30,57 @@ use crate::state::AppState;
 
 /// A token bucket per key.
 pub struct Limiter<K> {
+    /// Names the limit in shared storage.
+    name: &'static str,
     /// Tokens added per second.
     rate: f64,
     burst: f64,
     buckets: Mutex<HashMap<K, (f64, Instant)>>,
+    shared: Option<Arc<Shared>>,
 }
 
-impl<K: Hash + Eq + Clone> Limiter<K> {
-    pub fn new(rate: f64, burst: u32) -> Self {
+impl<K: Hash + Eq + Clone + Display> Limiter<K> {
+    pub fn new(name: &'static str, rate: f64, burst: u32, shared: Option<Arc<Shared>>) -> Self {
         Self {
+            name,
             rate,
             burst: burst as f64,
             buckets: Mutex::default(),
+            shared,
         }
     }
 
     /// Takes a token for `key`, or says how long until one is available.
-    pub fn take(&self, key: &K) -> Result<(), Duration> {
+    pub async fn take(&self, key: &K) -> Result<(), Duration> {
+        if let Some(r) = self.shared_bucket(key, true).await {
+            return r;
+        }
         self.take_at(key, Instant::now())
     }
 
     /// Whether `key` has a token left, without taking it.
-    pub fn check(&self, key: &K) -> Result<(), Duration> {
+    pub async fn check(&self, key: &K) -> Result<(), Duration> {
+        if let Some(r) = self.shared_bucket(key, false).await {
+            return r;
+        }
         let now = Instant::now();
         let buckets = self.buckets.lock().unwrap();
         match buckets.get(key) {
             Some(&(tokens, at)) => self.wait(self.refill(tokens, at, now)),
             None => Ok(()),
         }
+    }
+
+    /// The answer from shared storage, if there is one and it answers.
+    async fn shared_bucket(&self, key: &K, take: bool) -> Option<Result<(), Duration>> {
+        let shared = self.shared.as_ref()?;
+        // Keys may name accounts; keep those out of Redis.
+        let key = format!(
+            "hm:ratelimit:{}:{}",
+            self.name,
+            hm_pki::hash_secret(&key.to_string())
+        );
+        shared.bucket(&key, self.rate, self.burst, take).await
     }
 
     fn refill(&self, tokens: f64, at: Instant, now: Instant) -> f64 {
@@ -84,6 +110,111 @@ impl<K: Hash + Eq + Clone> Limiter<K> {
     }
 }
 
+/// Token buckets in Redis, shared by the replicas. Each is a hash updated
+/// atomically by a script, on Redis's clock (replicas' clocks may differ),
+/// and expires once it would have refilled.
+pub struct Shared {
+    client: redis::Client,
+    conn: tokio::sync::Mutex<Option<redis::aio::ConnectionManager>>,
+    /// After a failed connection attempt, when to try again.
+    retry_at: Mutex<Option<Instant>>,
+    script: redis::Script,
+}
+
+const BUCKET: &str = r"
+local rate = tonumber(ARGV[1])
+local burst = tonumber(ARGV[2])
+local t = redis.call('TIME')
+local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
+local b = redis.call('HMGET', KEYS[1], 'tokens', 'at')
+local tokens = tonumber(b[1]) or burst
+local at = tonumber(b[2]) or now
+tokens = math.min(burst, tokens + math.max(0, now - at) * rate)
+if tokens < 1 then
+  return {0, math.ceil((1 - tokens) / rate * 1000)}
+end
+if ARGV[3] == '1' then
+  redis.call('HSET', KEYS[1], 'tokens', tostring(tokens - 1), 'at', tostring(now))
+  redis.call('PEXPIRE', KEYS[1], math.ceil(burst / rate * 1000))
+end
+return {1, 0}
+";
+
+impl Shared {
+    /// For `redis://` or `rediss://` (TLS) URLs. Connects on first use.
+    pub fn new(url: &str) -> anyhow::Result<Arc<Self>> {
+        Ok(Arc::new(Self {
+            client: redis::Client::open(url)?,
+            conn: tokio::sync::Mutex::default(),
+            retry_at: Mutex::default(),
+            script: redis::Script::new(BUCKET),
+        }))
+    }
+
+    async fn conn(&self) -> Option<redis::aio::ConnectionManager> {
+        let mut slot = self.conn.lock().await;
+        if let Some(c) = slot.as_ref() {
+            return Some(c.clone());
+        }
+        if self
+            .retry_at
+            .lock()
+            .unwrap()
+            .is_some_and(|t| Instant::now() < t)
+        {
+            return None;
+        }
+        let attempt =
+            tokio::time::timeout(Duration::from_secs(2), self.client.get_connection_manager())
+                .await;
+        match attempt {
+            Ok(Ok(c)) => {
+                tracing::info!("rate limits shared through Redis");
+                *slot = Some(c.clone());
+                Some(c)
+            }
+            failed => {
+                let error = match failed {
+                    Ok(Err(e)) => e.to_string(),
+                    _ => "timed out".into(),
+                };
+                tracing::warn!(%error, "cannot reach Redis; rate limits are per replica meanwhile");
+                *self.retry_at.lock().unwrap() = Some(Instant::now() + Duration::from_secs(10));
+                None
+            }
+        }
+    }
+
+    async fn bucket(
+        &self,
+        key: &str,
+        rate: f64,
+        burst: f64,
+        take: bool,
+    ) -> Option<Result<(), Duration>> {
+        let mut conn = self.conn().await?;
+        let mut invocation = self.script.key(key);
+        invocation
+            .arg(rate)
+            .arg(burst)
+            .arg(if take { "1" } else { "0" });
+        let call = invocation.invoke_async::<(i64, i64)>(&mut conn);
+        match tokio::time::timeout(Duration::from_secs(1), call).await {
+            Ok(Ok((1, _))) => Some(Ok(())),
+            Ok(Ok((_, wait_ms))) => Some(Err(Duration::from_millis(wait_ms.max(1) as u64))),
+            failed => {
+                let error = match failed {
+                    Ok(Err(e)) => e.to_string(),
+                    _ => "timed out".into(),
+                };
+                metrics::counter!("hm_rate_limit_store_errors_total").increment(1);
+                tracing::debug!(%error, "Redis rate limit; using this replica's");
+                None
+            }
+        }
+    }
+}
+
 /// The limits the API enforces.
 pub struct Limits {
     pub requests: Limiter<IpAddr>,
@@ -91,13 +222,14 @@ pub struct Limits {
     pub login_failures: Limiter<String>,
 }
 
-impl Default for Limits {
-    fn default() -> Self {
+impl Limits {
+    /// Kept in `shared` when given, else in this replica's memory.
+    pub fn new(shared: Option<Arc<Shared>>) -> Self {
         Self {
             // Generous: the UI fires a burst of requests per page.
-            requests: Limiter::new(50.0, 300),
-            logins: Limiter::new(0.5, 30),
-            login_failures: Limiter::new(1.0 / 60.0, 5),
+            requests: Limiter::new("requests", 50.0, 300, shared.clone()),
+            logins: Limiter::new("logins", 0.5, 30, shared.clone()),
+            login_failures: Limiter::new("login-failures", 1.0 / 60.0, 5, shared),
         }
     }
 }
@@ -200,7 +332,7 @@ pub async fn limit(
     next: Next,
 ) -> Response {
     let ip = client_ip(peer, req.headers(), &state.trusted_proxies);
-    if let Err(retry) = state.limits.requests.take(&ip) {
+    if let Err(retry) = state.limits.requests.take(&ip).await {
         return too_many(retry);
     }
     req.extensions_mut().insert(ClientIp(ip));
@@ -244,7 +376,7 @@ mod tests {
 
     #[test]
     fn buckets_drain_and_refill() {
-        let l = Limiter::new(1.0, 2);
+        let l = Limiter::new("test", 1.0, 2, None);
         let t0 = Instant::now();
         assert!(l.take_at(&"a", t0).is_ok());
         assert!(l.take_at(&"a", t0).is_ok());
@@ -258,6 +390,39 @@ mod tests {
         assert!(l.take_at(&"a", t0 + Duration::from_secs(100)).is_ok());
         assert!(l.take_at(&"a", t0 + Duration::from_secs(100)).is_ok());
         assert!(l.take_at(&"a", t0 + Duration::from_secs(100)).is_err());
+    }
+
+    /// Needs a Redis server: `HM_TEST_REDIS_URL=redis://127.0.0.1:56379`
+    /// (deploy/dev/compose.yaml).
+    #[tokio::test]
+    async fn replicas_share_limits_through_redis() {
+        let Ok(url) = std::env::var("HM_TEST_REDIS_URL") else {
+            eprintln!("HM_TEST_REDIS_URL not set; skipping");
+            return;
+        };
+        // Two replicas, one budget.
+        let a = Limiter::new("test", 1.0, 3, Some(Shared::new(&url).unwrap()));
+        let b = Limiter::new("test", 1.0, 3, Some(Shared::new(&url).unwrap()));
+        let key = uuid::Uuid::now_v7().to_string();
+        assert!(a.take(&key).await.is_ok());
+        assert!(b.take(&key).await.is_ok());
+        assert!(a.check(&key).await.is_ok());
+        assert!(a.take(&key).await.is_ok());
+        let wait = b.take(&key).await.unwrap_err();
+        assert!(wait <= Duration::from_secs(1), "{wait:?}");
+        assert!(a.check(&key).await.is_err());
+        // Nothing was kept in memory meanwhile.
+        assert!(a.buckets.lock().unwrap().is_empty());
+
+        // Without Redis, each replica limits on its own.
+        let down = Limiter::new(
+            "test",
+            1.0,
+            1,
+            Some(Shared::new("redis://127.0.0.1:1").unwrap()),
+        );
+        assert!(down.take(&key).await.is_ok());
+        assert!(down.take(&key).await.is_err());
     }
 
     #[test]

@@ -10,6 +10,7 @@ and the lab; [SECURITY.md](../SECURITY.md) covers the security model.
 | Piece | Runs on | State | If it is down |
 |---|---|---|---|
 | `hm-controller` | 1 or more machines | none (all in Postgres) | another replica takes over |
+| Redis (optional) | anywhere the controllers reach | rate limit budgets | each replica limits on its own |
 | PostgreSQL | its own HA setup | everything hypermon knows | API and tasks stop; VMs keep running |
 | OVN central (NB/SB, `ovn-northd`) | 3 machines, Raft | the virtual networks | no network changes; traffic keeps flowing |
 | `hm-agent`, libvirt, OVS, `ovn-controller` | every host | none of its own | that host's VMs are unmanaged (and, with HA, restarted elsewhere) |
@@ -38,6 +39,7 @@ HM_OVN_CA_CERT=/etc/hypermon/ovn/ca.pem
 HM_OVN_CERTIFICATE=/etc/hypermon/ovn/controller.pem
 HM_OVN_PRIVATE_KEY=/run/credentials/hm-controller.service/ovn-key.pem
 HM_METRICS_LISTEN=10.0.0.21:9180
+HM_REDIS_URL=rediss://:...@redis.example.net:6380
 ```
 
 **The master key** seals the secrets kept in Postgres: the internal CA's
@@ -230,7 +232,7 @@ replica reports the same values: use `max`.
 | `hm_host_cert_expiry_timestamp_seconds{host}`, `hm_host_last_seen_timestamp_seconds{host}` | |
 | `hm_vms{status,power}`, `hm_migrations_running` | |
 | `hm_network_passes_total{outcome}`, `hm_network_changes_total{op}`, `hm_network_pass_duration_seconds` | OVN reconciliation |
-| `hm_logins_total{method,outcome}`, `hm_rate_limited_total` | |
+| `hm_logins_total{method,outcome}`, `hm_rate_limited_total`, `hm_rate_limit_store_errors_total` | |
 | `hm_fencings_total{outcome}`, `hm_leader`, `hm_replicas` | HA |
 
 Alerts worth having:
@@ -264,10 +266,18 @@ Logs go to stderr (journald under systemd); `RUST_LOG` sets the level, e.g.
 
 ## Rate limits
 
-Each replica limits, in memory: requests per client address (50 per
-second, bursts of 300), password logins per address (one per 2 seconds,
-bursts of 30), and failed logins per account (5, then one a minute). An
-account under attack therefore cannot be guessed at quickly, but its user
-is slowed down, not locked out: the budget refills. Behind a load balancer
-spreading clients over N replicas, a client gets up to N times these.
-Refusals are HTTP 429 with `Retry-After`, counted in `hm_rate_limited_total`.
+The API limits requests per client address (50 per second, bursts of 300),
+password logins per address (one per 2 seconds, bursts of 30), and failed
+logins per account (5, then one a minute). An account under attack
+therefore cannot be guessed at quickly, but its user is slowed down, not
+locked out: the budget refills. Refusals are HTTP 429 with `Retry-After`,
+counted in `hm_rate_limited_total`.
+
+Give the controllers a Redis (`--redis-url`, `rediss://` for TLS) and they
+share these budgets, whichever replica a client reaches, and keep them
+across restarts. Redis holds nothing else: losing it loses nothing but the
+budgets, and while it cannot be reached each replica limits on its own
+(`hm_rate_limit_store_errors_total` counts the misses). Without Redis,
+limits are per replica, so behind a load balancer spreading clients over N
+replicas a client gets up to N times the budget. Account names are hashed
+before they are used as keys.

@@ -90,7 +90,7 @@ A review of the whole system before calling it hardened. Fixed:
 | A sub-tenant admin could point their identity provider at an internal address and read the controller's errors, probing the management network | sub-tenants' providers, and the endpoints their discovery documents name, must be public; the provider tenant's, and issuers listed in `--trusted-oidc-issuers`, may be internal |
 | The OVN northbound database was reachable over plain TCP only: anyone on the management network could rewrite all tenant networks | TLS with client certificates, and clustered databases |
 | Replica certificates were accepted for their whole year, also after the replica was gone | only live replicas' certificates are accepted |
-| No limit on sign-in attempts | rate limits per client and per account |
+| No limit on sign-in attempts | rate limits per client and per account, shared by replicas through Redis |
 | No browser security headers | CSP and the headers above |
 | An agent from another version could be sent commands it does not know | protocol versions and capabilities |
 | Hosts' certificates were valid for a year | 30 days, renewed automatically; longer ones are renewed at once |
@@ -111,8 +111,9 @@ Not fixed, and worth knowing:
 - **OVN southbound access** is not configured by hypermon. With plain TCP,
   anyone who reaches it controls every host's flows. Use TLS with OVN's
   RBAC ([operations](docs/operations.md#ovn)).
-- **Rate limits are per replica**, in memory: N replicas allow N times the
-  budget, and a restart resets it.
+- **Rate limits are per replica** unless the controllers share a Redis
+  (`--redis-url`): then N replicas allow N times the budget, and a restart
+  resets it.
 - **No limits on guests' disk or network bandwidth**: a VM can slow down
   others on the same host or storage.
 - **Networking is IPv4 only.** Port security, security groups and

@@ -113,9 +113,11 @@ async fn login(
         req.tenant.as_deref().unwrap_or("").trim_matches('/'),
         req.username.to_lowercase()
     );
-    if let Err(retry) =
-        (state.limits.logins.take(&ip)).and_then(|()| state.limits.login_failures.check(&account))
-    {
+    let allowed = match state.limits.logins.take(&ip).await {
+        Ok(()) => state.limits.login_failures.check(&account).await,
+        refused => refused,
+    };
+    if let Err(retry) = allowed {
         return Ok(crate::ratelimit::too_many(retry));
     }
     let user = match resolve_tenant(&state, req.tenant.as_deref()).await? {
@@ -136,7 +138,7 @@ async fn login(
     let user = match user {
         Some(u) if ok && !u.disabled => u,
         other => {
-            let _ = state.limits.login_failures.take(&account);
+            let _ = state.limits.login_failures.take(&account).await;
             metrics::counter!("hm_logins_total", "method" => "password", "outcome" => "failed")
                 .increment(1);
             let entry = hm_db::audit::Entry {

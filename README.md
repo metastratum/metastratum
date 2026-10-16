@@ -54,6 +54,8 @@ Some tests need extra tools or services and skip themselves without them:
 - a libvirt daemon: `HM_TEST_LIBVIRT_SOCKET=/run/libvirt/virtqemud-sock`
   (your user needs `qemu:///system` access; the tests create and remove
   small throwaway domains)
+- a Redis server, for shared rate limits: `HM_TEST_REDIS_URL=redis://127.0.0.1:56379`
+  (in the dev compose file)
 - empty OVN northbound databases that nothing else uses (plain, over TLS,
   and a three-server cluster): `deploy/lab/lab.sh testdb` starts them on the
   lab and prints the `HM_TEST_OVN_NB_*` variables to export

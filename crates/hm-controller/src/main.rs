@@ -119,6 +119,11 @@ struct ServeArgs {
     /// count resources across tenants.
     #[arg(long, env = "HM_METRICS_LISTEN")]
     metrics_listen: Option<SocketAddr>,
+    /// Redis to keep rate limits in, shared by all replicas, e.g.
+    /// rediss://:password@redis.example.net:6380. Without it each replica
+    /// limits on its own.
+    #[arg(long, env = "HM_REDIS_URL", hide_env_values = true)]
+    redis_url: Option<String>,
     /// Load balancers in front of the API (addresses or CIDRs), whose
     /// X-Forwarded-For header gives the client's address for rate limits.
     #[arg(long, env = "HM_TRUSTED_PROXIES", value_delimiter = ',')]
@@ -278,7 +283,13 @@ async fn serve(db: hm_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
             .clone()
             .unwrap_or_else(|| format!("http://{}", args.listen)),
         events: events::Hub::default(),
-        limits: ratelimit::Limits::default(),
+        limits: ratelimit::Limits::new(
+            args.redis_url
+                .as_deref()
+                .map(ratelimit::Shared::new)
+                .transpose()
+                .context("--redis-url")?,
+        ),
         trusted_proxies: args.trusted_proxies.clone(),
         trusted_oidc_issuers: args.trusted_oidc_issuers.clone(),
     });
