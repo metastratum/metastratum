@@ -124,9 +124,15 @@ impl Agent {
         let mut client = AgentControlClient::new(channel.clone());
         let (tx, rx) = mpsc::channel::<AgentMessage>(64);
         let mut facts = self.facts.clone();
-        // The TLS listener may have been enabled since the agent started.
+        // What may have changed on the host since the agent started: the TLS
+        // listener, and OVS's identity and bridges (OVS resets its system-id
+        // at start on some distributions).
         facts.migration_ready = crate::tls::listening().await;
+        facts.ovn_chassis = crate::facts::ovn_chassis().await;
+        facts.physical_networks = crate::facts::physical_networks().await;
         let hello = Hello {
+            protocol_version: hm_proto::PROTOCOL_VERSION,
+            capabilities: hm_proto::CAPABILITIES.iter().map(|c| (*c).to_owned()).collect(),
             facts: Some(facts),
             domains: self.domains().await?,
         };
@@ -201,8 +207,13 @@ impl Agent {
                     }
                 };
                 let Some(msg) = msg else { break };
-                let Some(controller_message::Msg::Command(cmd)) = msg.msg else {
-                    continue;
+                let cmd = match msg.msg {
+                    Some(controller_message::Msg::Command(cmd)) => cmd,
+                    Some(controller_message::Msg::Welcome(w)) => {
+                        tracing::info!(protocol = w.protocol_version, version = %w.controller_version, "controller says hello");
+                        continue;
+                    }
+                    None => continue,
                 };
                 let (this, tx, client) = (
                     self.clone(),

@@ -39,13 +39,13 @@ fn hostname() -> String {
 }
 
 /// The OVN chassis name (`external_ids:system-id`), if OVS is configured.
-async fn ovn_chassis() -> String {
+pub async fn ovn_chassis() -> String {
     ovs_external_id("system-id").await
 }
 
 /// Physical networks from `external_ids:ovn-bridge-mappings`
 /// (`physnet:bridge,...`).
-async fn physical_networks() -> Vec<String> {
+pub async fn physical_networks() -> Vec<String> {
     ovs_external_id("ovn-bridge-mappings")
         .await
         .split(',')

@@ -312,8 +312,24 @@ impl AgentControl for AgentControlService {
                 })?;
         }
 
+        // 0: an agent from before versioning, which speaks revision 1.
+        let version = hello.protocol_version.max(1);
+        if version < hm_proto::MIN_AGENT_PROTOCOL {
+            return Err(Status::failed_precondition(format!(
+                "agent protocol {version} is too old; this controller needs {} or later",
+                hm_proto::MIN_AGENT_PROTOCOL
+            )));
+        }
         let (tx, rx) = mpsc::channel(64);
-        let conn = state.agents.register(host, tx);
+        let welcome = ControllerMessage {
+            msg: Some(hm_proto::controller_message::Msg::Welcome(hm_proto::Welcome {
+                protocol_version: hm_proto::PROTOCOL_VERSION,
+                controller_version: env!("CARGO_PKG_VERSION").to_owned(),
+            })),
+        };
+        let _ = tx.send(Ok(welcome)).await;
+        let conn = state.agents.register(host, tx, &hello.capabilities);
+        tracing::info!(%host, protocol = version, "agent protocol");
         hm_db::hosts::set_connected(&state.db, host, Some(&state.replica))
             .await
             .map_err(internal)?;

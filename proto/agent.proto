@@ -91,6 +91,10 @@ message AgentMessage {
 message Hello {
   HostFacts facts = 1;
   repeated DomainState domains = 2;
+  // The protocol revision the agent speaks (0: from before versioning).
+  uint32 protocol_version = 3;
+  // Commands it handles, by name (see hm_proto::capability).
+  repeated string capabilities = 4;
 }
 
 message Heartbeat {
@@ -124,7 +128,14 @@ enum PowerState {
 message ControllerMessage {
   oneof msg {
     Command command = 1;
+    Welcome welcome = 2;
   }
+}
+
+// The controller's first message on a session.
+message Welcome {
+  uint32 protocol_version = 1;
+  string controller_version = 2;
 }
 
 message Command {

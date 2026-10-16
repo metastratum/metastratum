@@ -152,6 +152,9 @@ EOF
 packages: [qemu-system-x86, qemu-utils, libvirt-daemon-system, openvswitch-switch, ovn-host, nfs-common, genisoimage, ovmf]
 runcmd:
   - [usermod, -aG, libvirt, hm]
+  # OVS resets system-id from this file at every start; keep the chassis name
+  # stable across reboots.
+  - [sh, -c, "echo $name > /etc/openvswitch/system-id.conf"]
   - [ovs-vsctl, set, open_vswitch, ., "external_ids:system-id=$name", "external_ids:ovn-remote=tcp:10.77.0.10:6642", "external_ids:ovn-encap-type=geneve", "external_ids:ovn-encap-ip=$ip", "external_ids:ovn-bridge-mappings=external:br-ext"]
   - [ovs-vsctl, --may-exist, add-br, br-ext]
   - [sh, -c, "nic=\$(ip -o link | awk -F': ' '/$ext_mac/ {print \$2}'); ip link set \$nic up && ovs-vsctl --may-exist add-port br-ext \$nic"]

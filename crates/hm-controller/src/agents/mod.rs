@@ -40,6 +40,9 @@ type Outbound = mpsc::Sender<Result<ControllerMessage, Status>>;
 pub struct AgentConn {
     session: u64,
     tx: Outbound,
+    /// Commands the agent handles; empty for agents from before
+    /// capabilities, which get everything they always got.
+    capabilities: std::collections::HashSet<String>,
     pending: Mutex<HashMap<String, oneshot::Sender<Result<String, String>>>>,
 }
 
@@ -92,10 +95,11 @@ impl Agents {
     }
 
     /// Registers a new session for `host`, replacing any older one.
-    fn register(&self, host: HostId, tx: Outbound) -> Arc<AgentConn> {
+    fn register(&self, host: HostId, tx: Outbound, capabilities: &[String]) -> Arc<AgentConn> {
         let conn = Arc::new(AgentConn {
             session: self.next_session.fetch_add(1, Ordering::Relaxed),
             tx,
+            capabilities: capabilities.iter().cloned().collect(),
             pending: Mutex::default(),
         });
         self.conns.lock().unwrap().insert(host, conn.clone());
@@ -164,6 +168,12 @@ impl Agents {
             .get(&host)
             .cloned()
             .ok_or(AgentError::NotConnected)?;
+        let want = hm_proto::capability(&cmd);
+        if !conn.capabilities.is_empty() && !conn.capabilities.contains(want) {
+            return Err(AgentError::Failed(format!(
+                "the host's agent does not support {want}; upgrade it"
+            )));
+        }
         let request_id = uuid::Uuid::now_v7().to_string();
         let (done, wait) = oneshot::channel();
         conn.pending
@@ -250,5 +260,29 @@ impl Agents {
             }
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn commands_an_agent_lacks_are_refused_without_sending() {
+        let agents = Agents::default();
+        let host = HostId::new();
+        let (tx, mut rx) = mpsc::channel(4);
+        agents.register(host, tx, &["start_vm".to_owned()]);
+        let cmd = command::Cmd::MigrateVm(hm_proto::MigrateVm::default());
+        let err = agents.send_local(host, cmd, Duration::from_secs(1)).await.unwrap_err();
+        assert!(err.to_string().contains("upgrade"), "{err}");
+        assert!(rx.try_recv().is_err(), "nothing was sent");
+        // An agent from before capabilities gets everything.
+        let old = HostId::new();
+        let (tx, mut rx) = mpsc::channel(4);
+        agents.register(old, tx, &[]);
+        let cmd = command::Cmd::MigrateVm(hm_proto::MigrateVm::default());
+        let _ = agents.send_local(old, cmd, Duration::from_millis(50)).await;
+        assert!(rx.try_recv().is_ok(), "sent");
     }
 }
