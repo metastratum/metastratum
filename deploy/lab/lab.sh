@@ -177,6 +177,7 @@ create_vm() { # create_vm <line>
   virt-install --noautoconsole --import \
     --name "$name" --vcpus "$vcpus" --memory "$mem" \
     --cpu host-passthrough --osinfo debian13 \
+    --boot uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no \
     --disk "vol=$POOL/$vol,bus=virtio" \
     --disk "vol=$POOL/$seed,device=cdrom" \
     --network "network=hm-lab,mac=$mac,model=virtio" \
@@ -191,15 +192,30 @@ ssh_vm() { # ssh_vm <name> [cmd...]
 }
 
 wait_ready() {
-  local line name
+  local line name role
   for line in "${VMS[@]}"; do
-    read -r name _ <<<"$line"
-    log "waiting for cloud-init on $name"
-    for _ in $(seq 120); do
-      ssh_vm "$name" cloud-init status --wait >/dev/null 2>&1 && continue 2
+    read -r name _ _ _ _ _ role <<<"$line"
+    log "waiting for $name to boot"
+    for _ in $(seq 60); do
+      ssh_vm "$name" true >/dev/null 2>&1 && break
       sleep 5
     done
-    die "$name did not become ready"
+    ssh_vm "$name" true >/dev/null 2>&1 || die "$name is unreachable over ssh; check its console: virsh -c $LIBVIRT_DEFAULT_URI console $name"
+    # Package installs need the internet. On hosts running Docker, its
+    # iptables FORWARD policy (DROP) silently blocks libvirt's NAT.
+    ssh_vm "$name" curl -fsS -m 10 -o /dev/null http://deb.debian.org/debian/ ||
+      die "$name has no internet access through NAT. If Docker runs on this host, allow libvirt bridges:
+  sudo iptables -I DOCKER-USER -i virbr+ -j ACCEPT
+  sudo iptables -I DOCKER-USER -o virbr+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+then re-create the lab: $0 down && $0 up"
+    log "waiting for cloud-init on $name"
+    ssh_vm "$name" cloud-init status --wait >/dev/null 2>&1 ||
+      die "cloud-init failed on $name: $0 ssh $name sudo cloud-init status --long"
+    if [[ $role == host ]]; then
+      ssh_vm "$name" test -c /dev/kvm || die "$name has no /dev/kvm (nested virtualisation not working)"
+      ssh_vm "$name" virsh -c qemu:///system domcapabilities --virttype kvm >/dev/null 2>&1 ||
+        die "libvirt on $name cannot use KVM"
+    fi
   done
 }
 
