@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import BrandMark from './components/BrandMark.vue'
 import TaskTray from './components/TaskTray.vue'
 import TwoFactorPanel from './components/TwoFactorPanel.vue'
 import TenantPicker from './components/TenantPicker.vue'
@@ -46,7 +47,7 @@ async function signOut() {
 <template>
   <template v-if="session.me && enrolling">
     <header class="bar">
-      <span class="mark"><span class="tape">metastratum</span></span>
+      <span class="mark"><BrandMark bar /></span>
       <div class="right">
         <span class="me">{{ session.me.display_name || session.me.username }}</span>
         <button type="button" class="signout" @click="signOut">Sign out</button>
@@ -59,7 +60,7 @@ async function signOut() {
   <template v-else-if="session.me">
     <header class="bar">
       <RouterLink to="/vms" class="mark" aria-label="metastratum home">
-        <span class="tape">metastratum</span>
+        <BrandMark bar />
       </RouterLink>
       <nav aria-label="Main">
         <RouterLink to="/vms" :class="{ 'router-link-active': $route.meta.machines }">Machines</RouterLink>
@@ -102,17 +103,6 @@ async function signOut() {
 }
 .mark {
   text-decoration: none;
-}
-.tape {
-  display: inline-block;
-  padding: 3px 9px 2px;
-  background: var(--tape);
-  color: var(--tape-ink);
-  font: 600 14px var(--font-label);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  /* Cut ends, like a strip from a label printer. */
-  clip-path: polygon(4px 0, 100% 0, calc(100% - 4px) 100%, 0 100%);
 }
 nav {
   display: flex;

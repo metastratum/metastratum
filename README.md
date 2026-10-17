@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/logo/metastratum-mark-dark.svg">
+  <img src="docs/logo/metastratum-mark.svg" width="64" height="64" alt="">
+</picture>
+
 # metastratum
 
 metastratum turns a group of Linux servers into a private cloud for virtual

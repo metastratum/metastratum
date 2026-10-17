@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, ApiError, type Schemas, type SecondFactorChallenge } from '../api/client'
+import BrandMark from '../components/BrandMark.vue'
 import { useSession } from '../stores/session'
 import { getAssertion, keyErrorText, securityKeysWorkHere } from '../webauthn'
 
@@ -183,7 +184,7 @@ function restart() {
 <template>
   <div class="page">
     <form v-if="challenge" class="card" @submit.prevent="verify">
-      <span class="tape">metastratum</span>
+      <BrandMark class="brand" />
       <h1>Confirm it’s you</h1>
       <p class="muted lead">{{ username }} signs in with a second factor too.</p>
       <button
@@ -220,7 +221,7 @@ function restart() {
       <button type="button" class="link" @click="restart">Start over</button>
     </form>
     <form v-else-if="ready" class="card" @submit.prevent="submit">
-      <span class="tape">metastratum</span>
+      <BrandMark class="brand" />
       <h1>{{ bound ? `Sign in to ${bound}` : 'Sign in' }}</h1>
       <label v-if="askTenant" class="field">
         <span class="label">{{ bound ? 'Sub-tenant' : 'Tenant' }}</span>
@@ -264,15 +265,8 @@ function restart() {
   background: var(--panel);
   box-shadow: var(--shadow);
 }
-.tape {
+.brand {
   justify-self: start;
-  padding: 3px 10px 2px;
-  background: var(--tape);
-  color: var(--tape-ink);
-  font: 600 13px var(--font-label);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  clip-path: polygon(4px 0, 100% 0, calc(100% - 4px) 100%, 0 100%);
 }
 h1 {
   font-size: 24px;
