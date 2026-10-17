@@ -28,6 +28,7 @@ pub mod stats;
 pub mod storage_pools;
 pub mod tasks;
 pub mod tenants;
+pub mod two_factor;
 pub mod users;
 pub mod vms;
 

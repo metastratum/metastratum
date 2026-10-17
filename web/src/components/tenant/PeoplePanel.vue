@@ -63,6 +63,7 @@ type Dialog =
   | { kind: 'grant' }
   | { kind: 'add' }
   | { kind: 'password'; user: User }
+  | { kind: 'reset'; user: User }
   | { kind: 'delete'; user: User }
 const dialog = ref<Dialog | null>(null)
 const busy = ref(false)
@@ -106,6 +107,8 @@ async function submit() {
       add.value = { username: '', display_name: '', email: '', password: '', role: 'operator' }
     } else if (d.kind === 'password') {
       await ok(api.PATCH('/api/v1/users/{id}', { params: { path: { id: d.user.id } }, body: { password: password.value } }))
+    } else if (d.kind === 'reset') {
+      await ok(api.DELETE('/api/v1/users/{id}/two-factor', { params: { path: { id: d.user.id } } }))
     } else {
       await ok(api.DELETE('/api/v1/users/{id}', { params: { path: { id: d.user.id } } }))
     }
@@ -191,7 +194,7 @@ async function submit() {
                 <div class="muted small-text">{{ u.username }}<template v-if="u.email"> · {{ u.email }}</template></div>
               </td>
               <td>
-                {{ u.local ? 'Password' : 'Identity provider' }}
+                {{ u.local ? (u.two_factor ? 'Password and second factor' : 'Password') : 'Identity provider' }}
                 <span v-if="u.disabled" class="tag">Disabled</span>
               </td>
               <td>
@@ -202,6 +205,9 @@ async function submit() {
                 <span v-if="rowError[u.id]" class="error-text">{{ rowError[u.id] }}</span>
                 <template v-if="canManage && u.id !== session.me?.user_id">
                   <button v-if="u.local" class="btn small" @click="open({ kind: 'password', user: u })">Set password</button>
+                  <button v-if="u.two_factor" class="btn small" @click="open({ kind: 'reset', user: u })">
+                    Reset second factor
+                  </button>
                   <button class="btn small" @click="setDisabled(u, !u.disabled)">{{ u.disabled ? 'Enable' : 'Disable' }}</button>
                   <button class="btn small danger" @click="open({ kind: 'delete', user: u })">Delete</button>
                 </template>
@@ -222,7 +228,9 @@ async function submit() {
             ? `Add user to ${tenant.name}`
             : dialog.kind === 'password'
               ? `Set password for ${dialog.user.username}`
-              : 'Delete user'
+              : dialog.kind === 'reset'
+                ? `Reset ${dialog.user.username}’s second factor`
+                : 'Delete user'
       "
       @close="dialog = null"
     >
@@ -280,6 +288,11 @@ async function submit() {
             <span class="hint">At least 10 characters. This signs them out everywhere.</span>
           </label>
         </template>
+        <p v-else-if="dialog.kind === 'reset'">
+          For someone who lost their phone or key: this removes all of
+          <strong>{{ dialog.user.username }}</strong>’s second factors and backup codes and signs them out. They then sign
+          in with their password alone, and can add new ones.
+        </p>
         <p v-else>
           Delete <strong>{{ dialog.user.username }}</strong>? Their roles and API tokens go with the account. Their VMs
           stay.
@@ -287,7 +300,7 @@ async function submit() {
         <p v-if="formError" class="error-text" role="alert">{{ formError }}</p>
         <footer>
           <button type="button" class="btn" @click="dialog = null">Cancel</button>
-          <button class="btn" :class="dialog.kind === 'delete' ? 'danger' : 'primary'" :disabled="busy">
+          <button class="btn" :class="dialog.kind === 'delete' || dialog.kind === 'reset' ? 'danger' : 'primary'" :disabled="busy">
             {{
               dialog.kind === 'grant'
                 ? 'Give access'
@@ -295,7 +308,9 @@ async function submit() {
                   ? 'Add user'
                   : dialog.kind === 'password'
                     ? 'Set password'
-                    : 'Delete user'
+                    : dialog.kind === 'reset'
+                      ? 'Reset'
+                      : 'Delete user'
             }}
           </button>
         </footer>

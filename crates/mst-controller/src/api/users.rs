@@ -39,6 +39,8 @@ pub struct UserView {
     disabled: bool,
     /// Signs in with a password (rather than through an identity provider).
     local: bool,
+    /// Signs in with a second factor too.
+    two_factor: bool,
     created_at: DateTime<Utc>,
 }
 
@@ -48,6 +50,7 @@ impl From<mst_db::users::User> for UserView {
             id: u.id,
             tenant_id: u.tenant_id,
             local: u.password_hash.is_some(),
+            two_factor: false,
             username: u.username,
             display_name: u.display_name,
             email: u.email,
@@ -105,11 +108,19 @@ async fn list_users(
 ) -> ApiResult<Json<Vec<UserView>>> {
     let tenant = q.tenant_id.unwrap_or(p.tenant_id);
     authorize(&state.db, &p, Perm::UserRead, tenant).await?;
+    let users = mst_db::users::list(&state.db, tenant, q.descendants).await?;
+    let ids: Vec<UserId> = users.iter().map(|u| u.id).collect();
+    let with = mst_db::two_factor::with_factor(&state.db, &ids).await?;
     Ok(Json(
-        mst_db::users::list(&state.db, tenant, q.descendants)
-            .await?
+        users
             .into_iter()
-            .map(Into::into)
+            .map(|u| {
+                let two_factor = with.contains(&u.id);
+                UserView {
+                    two_factor,
+                    ..u.into()
+                }
+            })
             .collect(),
     ))
 }
@@ -209,6 +220,8 @@ pub struct UpdateUser {
     #[schema(value_type = Option<String>)]
     email: Option<Option<String>>,
     password: Option<String>,
+    /// The password being replaced: needed to change one's own.
+    current_password: Option<String>,
     disabled: Option<bool>,
 }
 
@@ -259,6 +272,13 @@ async fn update_user(
     let password_hash = match req.password {
         Some(pw) => {
             check_password(&pw)?;
+            if is_self && user.password_hash.is_some() {
+                let current = req
+                    .current_password
+                    .as_deref()
+                    .ok_or_else(|| ApiError::bad_request("give your current password too"))?;
+                super::two_factor::confirm_password(&state, &user, current).await?;
+            }
             Some(hash(pw).await?)
         }
         None => None,
@@ -302,7 +322,10 @@ async fn update_user(
         json!({"changed": changed, "disabled": req.disabled}),
     )
     .await;
-    Ok(Json(mst_db::users::get(&state.db, id).await?.into()))
+    Ok(Json(UserView {
+        two_factor: mst_db::two_factor::has_factor(&state.db, id).await?,
+        ..mst_db::users::get(&state.db, id).await?.into()
+    }))
 }
 
 #[utoipa::path(delete, path = "/users/{id}", tag = "users", params(("id" = UserId, Path)),

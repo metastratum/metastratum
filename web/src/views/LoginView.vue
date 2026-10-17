@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api, ApiError, type Schemas } from '../api/client'
+import { api, ApiError, type Schemas, type SecondFactorChallenge } from '../api/client'
 import { useSession } from '../stores/session'
+import { getAssertion, keyErrorText, securityKeysWorkHere } from '../webauthn'
 
 const session = useSession()
 const router = useRouter()
@@ -57,11 +58,37 @@ const ssoHref = computed(
   () => `/api/v1/auth/oidc/start?${new URLSearchParams({ tenant: chosen.value, return_to: next.value })}`,
 )
 
+// The second step, when the account has a second factor.
+const challenge = ref<SecondFactorChallenge | null>(null)
+const code = ref('')
+const codeInput = ref<HTMLInputElement | null>(null)
+const methods = computed(() => new Set(challenge.value?.methods ?? []))
+const keyOffered = computed(() => !!challenge.value?.webauthn && securityKeysWorkHere())
+const codeOffered = computed(() => ['totp', 'yubico_otp', 'backup_code'].some((m) => methods.value.has(m)))
+const codeHint = computed(() => {
+  const ways = [
+    methods.value.has('totp') && 'enter the code from your authenticator app',
+    methods.value.has('yubico_otp') && 'touch your YubiKey',
+    methods.value.has('backup_code') && 'use a backup code',
+  ].filter(Boolean) as string[]
+  const text = ways.length > 1 ? `${ways.slice(0, -1).join(', ')} or ${ways[ways.length - 1]}` : (ways[0] ?? '')
+  return text.charAt(0).toUpperCase() + text.slice(1) + '.'
+})
+
 async function submit() {
   error.value = ''
   busy.value = true
   try {
-    await session.login(username.value, password.value, chosen.value)
+    const c = await session.login(username.value, password.value, chosen.value)
+    if (c) {
+      challenge.value = c
+      code.value = ''
+      busy.value = false
+      await nextTick()
+      codeInput.value?.focus()
+      if (keyOffered.value) await useKey()
+      return
+    }
     await router.replace(next.value)
   } catch (e) {
     error.value =
@@ -74,11 +101,108 @@ async function submit() {
     busy.value = false
   }
 }
+
+function secondStepFailed(e: unknown) {
+  if (e instanceof ApiError && e.code === 'sign_in_expired') {
+    restart()
+    error.value = 'That sign-in timed out or had too many wrong answers. Sign in again.'
+  } else if (e instanceof ApiError && e.status === 401) {
+    error.value = keyOffered.value && !code.value ? 'That key isn’t one of yours.' : 'That code isn’t right.'
+  } else if (e instanceof ApiError && (e.status === 429 || e.status === 503)) {
+    error.value = e.message
+  } else {
+    error.value = 'The controller isn’t responding. Check that it is running and try again.'
+  }
+}
+
+async function verify() {
+  // A code instead of the key: stop asking for the key.
+  keyAbort?.abort()
+  error.value = ''
+  busy.value = true
+  try {
+    await session.secondFactor(challenge.value!.token, { code: code.value.trim() })
+    await router.replace(next.value)
+  } catch (e) {
+    secondStepFailed(e)
+    code.value = ''
+  } finally {
+    busy.value = false
+  }
+}
+
+// Asking the browser for the key; a code typed meanwhile cancels it.
+const waitingForKey = ref(false)
+let keyAbort: AbortController | null = null
+async function useKey() {
+  error.value = ''
+  waitingForKey.value = true
+  keyAbort = new AbortController()
+  const signal = keyAbort.signal
+  try {
+    const answer = await getAssertion(challenge.value!.webauthn as Record<string, unknown>, signal)
+    busy.value = true
+    await session.secondFactor(challenge.value!.token, { webauthn: answer })
+    await router.replace(next.value)
+  } catch (e) {
+    if (signal.aborted) return
+    if (e instanceof ApiError) secondStepFailed(e)
+    else error.value = keyErrorText(e)
+  } finally {
+    waitingForKey.value = false
+    busy.value = false
+  }
+}
+
+function restart() {
+  keyAbort?.abort()
+  challenge.value = null
+  password.value = ''
+  code.value = ''
+  error.value = ''
+}
 </script>
 
 <template>
   <div class="page">
-    <form v-if="ready" class="card" @submit.prevent="submit">
+    <form v-if="challenge" class="card" @submit.prevent="verify">
+      <span class="tape">metastratum</span>
+      <h1>Confirm it’s you</h1>
+      <p class="muted lead">{{ username }} signs in with a second factor too.</p>
+      <button
+        v-if="keyOffered"
+        type="button"
+        class="btn submit"
+        :class="{ primary: !codeOffered }"
+        :disabled="busy || waitingForKey"
+        @click="useKey"
+      >
+        {{ waitingForKey ? 'Touch your security key…' : 'Use your security key' }}
+      </button>
+      <div v-if="keyOffered && codeOffered" class="or label" aria-hidden="true">or with a code</div>
+      <label v-if="codeOffered" class="field">
+        <span class="label">Code</span>
+        <input
+          ref="codeInput"
+          v-model="code"
+          autocomplete="one-time-code"
+          autocapitalize="off"
+          spellcheck="false"
+          class="mono"
+        />
+        <span class="hint">{{ codeHint }}</span>
+      </label>
+      <p v-if="!codeOffered && !keyOffered" class="error-text">
+        None of your second factors works at this address. Use the address you set them up at, or ask an
+        administrator to reset them.
+      </p>
+      <p v-if="error" class="error-text" role="alert">{{ error }}</p>
+      <button v-if="codeOffered" class="btn primary submit" :disabled="busy || !code.trim()">
+        {{ busy ? 'Checking…' : 'Verify' }}
+      </button>
+      <button type="button" class="link" @click="restart">Start over</button>
+    </form>
+    <form v-else-if="ready" class="card" @submit.prevent="submit">
       <span class="tape">metastratum</span>
       <h1>{{ bound ? `Sign in to ${bound}` : 'Sign in' }}</h1>
       <label v-if="askTenant" class="field">
@@ -136,8 +260,20 @@ async function submit() {
 h1 {
   font-size: 24px;
 }
-.error-text {
+.error-text,
+.lead {
   margin: 0;
+}
+.link {
+  justify-self: center;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
 }
 .submit,
 .sso {

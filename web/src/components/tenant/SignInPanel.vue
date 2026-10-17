@@ -38,14 +38,29 @@ const redirectUri = computed(() => signIn.value?.redirect_uri ?? `${location.ori
 
 const params = () => ({ params: { path: { id: props.tenant.id } } })
 
+// Whether password accounts here and below need a second factor.
+const policy = ref<Schemas['TwoFactorPolicy'] | null>(null)
+async function setRequired(required: boolean) {
+  error.value = ''
+  busy.value = true
+  try {
+    policy.value = await ok(api.PUT('/api/v1/tenants/{id}/two-factor-policy', { ...params(), body: { required } }))
+  } catch (e) {
+    error.value = errorText(e)
+  } finally {
+    busy.value = false
+  }
+}
+
 onMounted(async () => {
   try {
-    ;[existing.value, signIn.value] = await Promise.all([
+    ;[existing.value, signIn.value, policy.value] = await Promise.all([
       ok(api.GET('/api/v1/tenants/{id}/identity-provider', params())).catch((e) => {
         if (e instanceof ApiError && e.status === 404) return null
         throw e
       }),
       ok(api.GET('/api/v1/tenants/{id}/sign-in', params())),
+      ok(api.GET('/api/v1/tenants/{id}/two-factor-policy', params())),
     ])
   } catch (e) {
     error.value = errorText(e)
@@ -127,6 +142,24 @@ async function remove() {
         </button>
         <button v-if="existing" class="btn danger" :disabled="busy" @click="remove">Remove</button>
       </div>
+
+      <section v-if="policy" class="two-factor">
+        <h3 class="label">Two-factor sign-in</h3>
+        <label class="check">
+          <input
+            type="checkbox"
+            :checked="policy.required || !!policy.required_by"
+            :disabled="!canManage || !!policy.required_by || busy"
+            @change="setRequired(($event.target as HTMLInputElement).checked)"
+          />
+          <span>Require a second factor of password accounts{{ scope.solo ? '' : ` in ${tenant.name} and below` }}</span>
+        </label>
+        <p v-if="policy.required_by" class="muted">Required by {{ policy.required_by.name }}.</p>
+        <p class="muted">
+          An authenticator app, a security key or a YubiKey. People without one can only add one when they next sign
+          in. Accounts that sign in through an identity provider use its own second factors.
+        </p>
+      </section>
     </template>
 
     <form v-else class="edit" @submit.prevent="save">
@@ -241,6 +274,25 @@ async function remove() {
 }
 .buttons {
   display: flex;
+  gap: 8px;
+}
+.two-factor {
+  display: grid;
+  gap: 10px;
+  max-width: 72ch;
+  padding-top: 18px;
+  border-top: 1px solid var(--rule);
+}
+.two-factor h3 {
+  margin: 0;
+  font-size: 13px;
+}
+.two-factor p {
+  margin: 0;
+}
+.check {
+  display: flex;
+  align-items: center;
   gap: 8px;
 }
 .edit {

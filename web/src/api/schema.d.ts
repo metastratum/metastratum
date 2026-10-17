@@ -36,6 +36,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/login/second-factor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** The second step of a password sign-in. */
+        post: operations["second_step"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/logout": {
         parameters: {
             query?: never;
@@ -1127,6 +1144,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tenants/{id}/two-factor-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_policy"];
+        /**
+         * Requires (or stops requiring) a second factor of the tenant's password
+         *     accounts and its sub-tenants'. Those without one can then only add one,
+         *     until they do.
+         */
+        put: operations["set_policy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tokens": {
         parameters: {
             query?: never;
@@ -1202,6 +1240,148 @@ export interface paths {
         get: operations["user_bindings"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/two-factor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["status"];
+        put?: never;
+        post?: never;
+        /**
+         * Removes all of a user's second factors and backup codes, for someone
+         *     who lost them, and signs them out everywhere. For administrators.
+         */
+        delete: operations["reset"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/two-factor/backup-codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Replaces the backup codes with new ones. */
+        post: operations["new_backup_codes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/two-factor/factors/{factor_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Removes a second factor: one's own (with one's password), or, for an
+         *     administrator, someone else's. With the last one go the backup codes.
+         */
+        delete: operations["remove_factor"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/two-factor/totp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Finishes adding an authenticator app with a code it shows. */
+        post: operations["add_totp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/two-factor/totp/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Starts adding an authenticator app: the secret to give it. */
+        post: operations["start_totp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/two-factor/webauthn": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Finishes adding a security key with its answer. */
+        post: operations["add_webauthn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/two-factor/webauthn/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Starts adding a security key: what to ask the browser for. */
+        post: operations["start_webauthn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/two-factor/yubico-otp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Adds a YubiKey by an OTP it typed. */
+        post: operations["add_yubico_otp"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1570,10 +1750,41 @@ export interface components {
         } & {
             task_id: components["schemas"]["TaskId"];
         };
+        AddTotp: {
+            /** @description The code the app shows now. */
+            code: string;
+            /** @description What to call it (`Phone`). */
+            name: string;
+            token: string;
+        };
+        AddWebauthn: {
+            /** @description What `navigator.credentials.create()` gave, as its `toJSON()`. */
+            credential: components["schemas"]["RegistrationResponse"];
+            /** @description What to call it (`Blue key`). */
+            name: string;
+            token: string;
+        };
+        AddYubicoOtp: {
+            /** @description What to call it (`Keyring YubiKey`). */
+            name: string;
+            /** @description An OTP the YubiKey typed. */
+            otp: string;
+            password: string;
+        };
         AllocateFloatingIp: {
             external_network_id: components["schemas"]["ExternalNetworkId"];
             nic_id?: components["schemas"]["NicId"] | null;
             tenant_id?: components["schemas"]["TenantId"] | null;
+        };
+        AssertionResponse: {
+            authenticatorData: string;
+            clientDataJSON: string;
+            signature: string;
+        };
+        AttestationResponse: {
+            attestationObject: string;
+            clientDataJSON: string;
+            transports?: string[];
         };
         AuditEntry: {
             /** @description E.g. `vm.create`, `role.bind`, `auth.login`. */
@@ -1596,8 +1807,18 @@ export interface components {
             /** @description Name of the tenant's identity provider, if it has one. */
             oidc?: string | null;
         };
+        /** @description What `get()` resolves to, as `PublicKeyCredential.toJSON()` gives it. */
+        AuthenticationResponse: {
+            /** @description base64url */
+            rawId: string;
+            response: components["schemas"]["AssertionResponse"];
+        };
         BackupAccepted: components["schemas"]["BackupView"] & {
             task_id: components["schemas"]["TaskId"];
+        };
+        BackupCodes: {
+            /** @description Each works once. Shown this once. */
+            codes: string[];
         };
         /** Format: uuid */
         BackupId: string;
@@ -1719,6 +1940,9 @@ export interface components {
              */
             memory_overcommit: number;
             name: string;
+        };
+        ConfirmPassword: {
+            password: string;
         };
         ConsoleRequest: {
             kind: components["schemas"]["Kind"];
@@ -1938,6 +2162,27 @@ export interface components {
              */
             used: number;
         };
+        /**
+         * @description A factor just added. With the first one come the backup codes, shown
+         *     this once.
+         */
+        FactorAdded: {
+            backup_codes?: string[] | null;
+            factor: components["schemas"]["FactorView"];
+        };
+        FactorView: {
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            id: string;
+            /** @description `totp`, `webauthn` or `yubico_otp`. */
+            kind: string;
+            /** Format: date-time */
+            last_used_at?: string | null;
+            name: string;
+            /** @description For a security key: the address it works at. */
+            site?: string | null;
+        };
         Fencing: {
             /**
              * @description Redfish: `url`, `username`, `password`, optional `system` and
@@ -2090,6 +2335,10 @@ export interface components {
             vpc_id: components["schemas"]["VpcId"];
             vpc_name: string;
         };
+        /** @description Answered when the password was right and a second factor is to come. */
+        LoginNextStep: {
+            second_factor: components["schemas"]["SecondFactorChallenge"];
+        };
         LoginRequest: {
             password: string;
             /**
@@ -2116,6 +2365,13 @@ export interface components {
             tenant: string;
             tenant_id: components["schemas"]["TenantId"];
             tenant_name: string;
+            /** @description Signs in with a second factor too. */
+            two_factor: boolean;
+            /**
+             * @description The tenant, or one above it, requires a second factor, and the user
+             *     has none yet: adding one is all they can do until they have.
+             */
+            two_factor_needed: boolean;
             user_id: components["schemas"]["UserId"];
             username: string;
         };
@@ -2261,6 +2517,16 @@ export interface components {
                 [key: string]: number;
             };
         };
+        /** @description What `create()` resolves to, as `PublicKeyCredential.toJSON()` gives it. */
+        RegistrationResponse: {
+            /** @description base64url */
+            rawId: string;
+            response: components["schemas"]["AttestationResponse"];
+        };
+        RemoveFactor: {
+            /** @description The caller's password, when removing their own. */
+            password?: string | null;
+        };
         RepositoryView: {
             /** Format: date-time */
             created_at: string;
@@ -2354,6 +2620,28 @@ export interface components {
             keep: number;
             repository_id: components["schemas"]["BackupRepositoryId"];
         };
+        /** @description The password was right; a second factor is to come. */
+        SecondFactorChallenge: {
+            /**
+             * @description What the user can answer with: `totp`, `webauthn`, `yubico_otp`,
+             *     `backup_code`.
+             */
+            methods: string[];
+            /** @description Send it back with the second factor, within five minutes. */
+            token: string;
+            /**
+             * @description Options for `navigator.credentials.get()`, when the user has
+             *     security keys registered for this address.
+             */
+            webauthn?: Record<string, never> | null;
+        };
+        SecondStep: {
+            /** @description A code from an authenticator app, a YubiKey's OTP, or a backup code. */
+            code?: string | null;
+            /** @description From the password step. */
+            token: string;
+            webauthn?: components["schemas"]["AuthenticationResponse"] | null;
+        };
         /** Format: uuid */
         SecurityGroupId: string;
         SecurityGroupView: {
@@ -2385,6 +2673,9 @@ export interface components {
              */
             keep?: number | null;
             repository_id?: components["schemas"]["BackupRepositoryId"] | null;
+        };
+        SetTwoFactorPolicy: {
+            required: boolean;
         };
         SignInView: {
             /** @description The domain both are at, if one is bound to the tenant or above it. */
@@ -2471,6 +2762,10 @@ export interface components {
         };
         /** Format: uuid */
         TenantId: string;
+        TenantRef: {
+            id: components["schemas"]["TenantId"];
+            name: string;
+        };
         TenantView: {
             /** Format: date-time */
             created_at: string;
@@ -2509,6 +2804,34 @@ export interface components {
              */
             scopes?: components["schemas"]["TokenScope"][] | null;
         };
+        TotpEnrollment: {
+            /** @description The secret, base32, for typing into the app. */
+            secret: string;
+            /** @description Send it back with the first code. */
+            token: string;
+            /** @description The `otpauth://` URI, for a QR code. */
+            uri: string;
+        };
+        TwoFactorPolicy: {
+            /**
+             * @description The tenant requires a second factor of its password accounts, and of
+             *     those of its sub-tenants.
+             */
+            required: boolean;
+            required_by?: components["schemas"]["TenantRef"] | null;
+        };
+        TwoFactorStatus: {
+            /**
+             * Format: int64
+             * @description Unused backup codes.
+             */
+            backup_codes_left: number;
+            factors: components["schemas"]["FactorView"][];
+            /** @description The user's tenant, or one above it, requires a second factor. */
+            required: boolean;
+            /** @description Whether this installation can check Yubico OTPs. */
+            yubico_otp: boolean;
+        };
         UpdateExternalNetwork: {
             name: string;
             pool_end: string;
@@ -2546,6 +2869,8 @@ export interface components {
          *     change anyone's and disable accounts.
          */
         UpdateUser: {
+            /** @description The password being replaced: needed to change one's own. */
+            current_password?: string | null;
             disabled?: boolean | null;
             display_name?: string | null;
             /** @description `null` clears it. */
@@ -2615,6 +2940,8 @@ export interface components {
             /** @description Signs in with a password (rather than through an identity provider). */
             local: boolean;
             tenant_id: components["schemas"]["TenantId"];
+            /** @description Signs in with a second factor too. */
+            two_factor: boolean;
             username: string;
         };
         VmBackups: {
@@ -2711,6 +3038,12 @@ export interface components {
             networks: components["schemas"]["NetworkView"][];
             tenant_id: components["schemas"]["TenantId"];
         };
+        WebauthnEnrollment: {
+            /** @description Options for `navigator.credentials.create()`. */
+            options: Record<string, never>;
+            /** @description Send it back with the key's answer. */
+            token: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -2765,6 +3098,15 @@ export interface operations {
             };
         };
         responses: {
+            /** @description The password was right; send a second factor to /auth/login/second-factor */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginNextStep"];
+                };
+            };
             /** @description Logged in; session cookie set */
             204: {
                 headers: {
@@ -2780,6 +3122,48 @@ export interface operations {
             };
             /** @description Too many attempts; see Retry-After */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    second_step: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecondStep"];
+            };
+        };
+        responses: {
+            /** @description Signed in; session cookie set */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Wrong, or the sign-in expired (`sign_in_expired`): start again */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The Yubico OTP service did not answer */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5728,6 +6112,76 @@ export interface operations {
             };
         };
     };
+    get_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TwoFactorPolicy"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetTwoFactorPolicy"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TwoFactorPolicy"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_tokens: {
         parameters: {
             query?: never;
@@ -5966,6 +6420,335 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TwoFactorStatus"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    new_backup_codes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfirmPassword"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupCodes"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remove_factor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["UserId"];
+                factor_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RemoveFactor"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    add_totp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddTotp"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactorAdded"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    start_totp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfirmPassword"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TotpEnrollment"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    add_webauthn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddWebauthn"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactorAdded"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    start_webauthn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfirmPassword"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebauthnEnrollment"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    add_yubico_otp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddYubicoOtp"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactorAdded"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The Yubico OTP service did not answer */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

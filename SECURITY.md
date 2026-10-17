@@ -54,6 +54,17 @@ The boundaries metastratum enforces:
   proxy says the client came over HTTPS. Sessions end after 12
   hours, at sign-out, or when the user's password changes or the account is
   disabled.
+- **Second factors** for password accounts: authenticator apps (TOTP,
+  each code accepted once), security keys and passkeys over WebAuthn (FIDO2
+  and U2F keys, bound to the address they were added at, with signature
+  counters checked), YubiKey OTPs checked by a Yubico validation service
+  over signed requests, and single-use backup codes. TOTP secrets are
+  sealed with the master key; backup codes are kept hashed. The second step
+  of a sign-in expires after five minutes or five wrong answers, and wrong
+  answers count against the account's sign-in budget. Adding or removing a
+  factor, or changing one's password, takes the current password. A tenant
+  can require a second factor of its password accounts and those below it;
+  a session without one can then only add one.
 - **Tenant domains** are bound by provider administrators only: they
   decide which names lead to the controllers, and a tenant must not take
   over another's sign-in page, or the provider's. A tenant with a domain,
@@ -154,12 +165,15 @@ A review of the whole system before calling it hardened. Fixed:
   passed as systemd credentials readable by the service only, the master
   key kept out of the database's backups (backed up separately), and the
   database reachable by the controllers only, over TLS.
-- **Local accounts have no second factor or idle timeout.** A session lasts
-  12 hours unless its user signs out.
-  *Mitigation:* sign people in through an identity provider that enforces
-  multi-factor authentication (per tenant, and for the provider tenant
-  too), and keep local accounts for break-glass use with long passwords.
-  Give automation scoped API tokens that expire.
+- **Sessions have no idle timeout.** A session lasts 12 hours unless its
+  user signs out.
+  *Mitigation:* require a second factor (Tenants → Sign-in), or sign
+  people in through an identity provider with its own; give automation
+  scoped API tokens that expire.
+- **API tokens skip the second factor.** A token is made in a session that
+  had one, but signs in alone, also once a tenant starts requiring second
+  factors.
+  *Mitigation:* scoped tokens that expire, revoked when their owner leaves.
 - **Rate limits are per controller without Redis.** N controllers allow N
   times the sign-in attempts, and a restart resets them.
   *Mitigation:* share them through Redis (`api.redis_url`, `rediss://` for
@@ -225,6 +239,7 @@ says what to fix:
 - Backup repositories exported to the hosts only.
 - Fencing on every host of clusters with high availability.
 - Per-VM limits on clusters.
-- Sign-in through identity providers with multi-factor authentication;
+- A second factor required at the provider tenant (Tenants → Sign-in), or
+  sign-in through identity providers with multi-factor authentication;
   scoped, expiring API tokens for automation.
 - `cargo audit` and `npm audit` with every update.

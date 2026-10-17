@@ -454,6 +454,41 @@ original was made from.
 Deleting a repository needs it empty: delete its backups first. Hosts then
 unmount it; its files stay on the export.
 
+## Two-factor sign-in
+
+People with a password can add second factors on their account page, and
+signing in then takes one of them as well:
+
+- **Authenticator apps** (TOTP: Google Authenticator, 1Password, Aegis…),
+  from a QR code.
+- **Security keys and passkeys** over WebAuthn: FIDO2 keys, older FIDO U2F
+  keys, and platform passkeys. A key works at the address it was added at
+  (`mst.example.com`), since browsers bind it there; browsers use keys only
+  at a host name over HTTPS, or at `localhost`.
+- **YubiKey OTPs**: the one-time passwords a YubiKey types when touched,
+  where the controllers can reach a Yubico validation service. Give them
+  its client ID and API key (the `[yubico]` section; YubiCloud by
+  default, or `servers` for your own). A YubiKey also works as a security
+  key, which needs no service.
+- **Backup codes**: ten single-use codes, shown once when the first factor
+  is added and replaceable from the account page.
+
+A tenant's administrators can require a second factor of its password
+accounts and those of its sub-tenants (Tenants → Sign-in); a sub-tenant
+cannot turn off what a tenant above it requires. Someone without one can,
+once signed in, only add one. People who sign in through an identity
+provider use its second factors instead, and API tokens sign in alone.
+
+Someone who lost theirs is reset by an administrator of their tenant
+(Tenants → People → Reset second factor), which signs them out; they then
+sign in with their password and add new ones. For the last provider
+administrator, on a controller:
+
+```sh
+mst-controller reset-two-factor admin
+mst-controller reset-two-factor --tenant acme/dev alice
+```
+
 ## Upgrades
 
 Controllers and agents say which protocol revision they speak and which
@@ -541,7 +576,8 @@ Logs go to stderr (journald under systemd); `RUST_LOG` sets the level, e.g.
 
 The API limits requests per client address (50 per second, bursts of 300),
 password logins per address (one per 2 seconds, bursts of 30), and failed
-logins per account (5, then one a minute). An account under attack
+logins per account (5, then one a minute; wrong second factors and wrong
+passwords when changing a second factor count too). An account under attack
 therefore cannot be guessed at quickly, but its user is slowed down, not
 locked out: the budget refills. Refusals are HTTP 429 with `Retry-After`,
 counted in `mst_rate_limited_total`.

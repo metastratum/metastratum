@@ -38,6 +38,38 @@ pub struct Config {
     #[serde(default)]
     pub agents: Agents,
     pub ovn: Ovn,
+    /// A Yubico OTP validation service, for YubiKeys typing one-time
+    /// passwords as a second factor. Without it they can still sign in as
+    /// security keys.
+    #[serde(default)]
+    pub yubico: Option<Yubico>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Yubico {
+    /// The client ID and API key from https://upgrade.yubico.com/getapikey/
+    /// (or from your own validation server).
+    pub client_id: String,
+    /// base64
+    pub secret_key: String,
+    /// Validation servers (protocol 2.0), tried in turn; YubiCloud by
+    /// default.
+    #[serde(default = "default_yubico_servers")]
+    pub servers: Vec<String>,
+}
+
+impl std::fmt::Debug for Yubico {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Yubico")
+            .field("client_id", &self.client_id)
+            .field("servers", &self.servers)
+            .finish_non_exhaustive()
+    }
+}
+
+fn default_yubico_servers() -> Vec<String> {
+    vec!["https://api.yubico.com/wsapi/2.0/verify".into()]
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,6 +169,19 @@ impl Config {
         if c.ovn.northbound.is_empty() {
             anyhow::bail!("ovn.northbound needs at least one server");
         }
+        if let Some(y) = &c.yubico {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD
+                .decode(y.secret_key.trim())
+                .map_err(|_| anyhow::anyhow!("yubico.secret_key is not base64"))?;
+            if y.servers.is_empty()
+                || y.servers
+                    .iter()
+                    .any(|s| !s.starts_with("https://") && !s.starts_with("http://"))
+            {
+                anyhow::bail!("yubico.servers takes http(s) URLs, at least one");
+            }
+        }
         if let Some(r) = c.ovn.southbound.iter().find(|r| !r.starts_with("ssl:")) {
             anyhow::bail!(
                 "ovn.southbound takes ssl: servers only (OVN's RBAC works over TLS), not {r}"
@@ -214,6 +259,19 @@ northbound = ["ssl:10.0.0.31:6641"]
         assert_eq!(c.northbound(), "ssl:10.0.0.31:6641");
         assert_eq!(c.southbound(), None);
         assert!(c.metrics_listen.is_none() && c.api.redis_url.is_none());
+        assert!(c.yubico.is_none());
+    }
+
+    #[test]
+    fn yubico_defaults_to_yubicloud() {
+        let dir = Path::new("/etc/metastratum");
+        let text = format!("{MINIMAL}\n[yubico]\nclient_id = \"1\"\nsecret_key = \"c2VjcmV0\"\n");
+        let c = Config::parse(&text, dir).unwrap();
+        let y = c.yubico.as_ref().unwrap();
+        assert_eq!(y.servers, ["https://api.yubico.com/wsapi/2.0/verify"]);
+        assert!(!format!("{y:?}").contains("c2VjcmV0"));
+        let bad = text.replace("c2VjcmV0", "not base64!");
+        assert!(Config::parse(&bad, dir).is_err());
     }
 
     #[test]
@@ -275,5 +333,16 @@ northbound = ["ssl:10.0.0.31:6641"]
         let example = include_str!("../../../deploy/config/controller.toml");
         let c = Config::parse(example, Path::new("/etc/metastratum")).unwrap();
         assert!(!c.ovn.northbound.is_empty());
+        // Every setting it shows commented out is a real one, as shown.
+        let all: String = example
+            .lines()
+            .map(|l| match l.strip_prefix('#') {
+                Some(rest) if rest.starts_with('[') || rest.contains(" = ") => rest,
+                _ => l,
+            })
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let c = Config::parse(&all, Path::new("/etc/metastratum")).unwrap();
+        assert!(c.yubico.is_some() && c.api.redis_url.is_some());
     }
 }

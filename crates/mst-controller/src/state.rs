@@ -33,6 +33,8 @@ pub struct Inner {
     pub trusted_proxies: Vec<crate::ratelimit::Cidr>,
     /// Identity provider issuers sub-tenants may use on internal addresses.
     pub trusted_oidc_issuers: Vec<String>,
+    /// Checks Yubico OTPs, when a validation service is configured.
+    pub yubico: Option<crate::two_factor::yubico::Validator>,
 }
 
 impl AppState {

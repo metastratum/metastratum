@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { api, errorText, ok, type Token } from '../api/client'
 import IdChip from '../components/IdChip.vue'
 import ModalDialog from '../components/ModalDialog.vue'
+import TwoFactorPanel from '../components/TwoFactorPanel.vue'
 import { ago } from '../state'
 import { useScope, type Role } from '../stores/scope'
 import { useSession } from '../stores/session'
@@ -54,7 +55,7 @@ async function revoke(t: Token) {
 }
 
 // Changing one's own password.
-const pw = ref({ next: '', again: '' })
+const pw = ref({ current: '', next: '', again: '' })
 const pwMessage = ref('')
 const pwError = ref('')
 async function changePassword() {
@@ -66,9 +67,12 @@ async function changePassword() {
   }
   try {
     await ok(
-      api.PATCH('/api/v1/users/{id}', { params: { path: { id: session.me!.user_id } }, body: { password: pw.value.next } }),
+      api.PATCH('/api/v1/users/{id}', {
+        params: { path: { id: session.me!.user_id } },
+        body: { password: pw.value.next, current_password: pw.value.current },
+      }),
     )
-    pw.value = { next: '', again: '' }
+    pw.value = { current: '', next: '', again: '' }
     pwMessage.value = 'Password changed. Your other sessions were signed out.'
   } catch (e) {
     pwError.value = errorText(e)
@@ -104,6 +108,10 @@ const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDate
         <h2>Password</h2>
         <form class="pw" @submit.prevent="changePassword">
           <label class="field">
+            <span class="label">Current password</span>
+            <input v-model="pw.current" type="password" required autocomplete="current-password" />
+          </label>
+          <label class="field">
             <span class="label">New password</span>
             <input v-model="pw.next" type="password" minlength="10" required autocomplete="new-password" />
           </label>
@@ -116,6 +124,8 @@ const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDate
           <button class="btn">Change password</button>
         </form>
       </article>
+
+      <TwoFactorPanel v-if="session.me.local" @changed="session.load()" />
     </div>
 
     <header class="page-head tokens-head">

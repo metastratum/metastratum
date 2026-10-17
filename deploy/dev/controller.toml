@@ -18,3 +18,10 @@ listen = "10.77.0.1:8443"
 # With TLS (README): ["ssl:10.77.0.10:6641"], and southbound below.
 northbound = ["tcp:10.77.0.10:6641"]
 #southbound = ["ssl:10.77.0.10:6642"]
+
+# The stand-in Yubico OTP validation service tests/e2e/tests/two_factor.rs
+# runs (MST_E2E_YUBICO=127.0.0.1:5557).
+[yubico]
+client_id = "e2e"
+secret_key = "bWV0YXN0cmF0dW0tZTJlLXl1YmljbyE="
+servers = ["http://127.0.0.1:5557/wsapi/2.0/verify"]

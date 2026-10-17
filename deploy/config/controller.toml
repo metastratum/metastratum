@@ -57,3 +57,14 @@ northbound = ["ssl:10.0.0.31:6641", "ssl:10.0.0.32:6641", "ssl:10.0.0.33:6641"]
 # Hosts then get certificates naming their chassis, for OVN's RBAC. Without
 # it, hosts keep the remote they were set up with.
 #southbound = ["ssl:10.0.0.31:6642", "ssl:10.0.0.32:6642", "ssl:10.0.0.33:6642"]
+
+# Yubico OTP: YubiKeys typing one-time passwords as a second factor at
+# sign-in, checked by a validation service. Without this section YubiKeys
+# still work as security keys (WebAuthn), which needs no service.
+#[yubico]
+# The client ID and API key from https://upgrade.yubico.com/getapikey/, or
+# from your own validation server.
+#client_id = "12345"
+#secret_key = "c2VjcmV0IGZyb20gWXViaWNv"
+# Validation servers (protocol 2.0), tried in turn. Default: YubiCloud.
+#servers = ["https://api.yubico.com/wsapi/2.0/verify"]

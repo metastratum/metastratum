@@ -25,6 +25,8 @@ export type ExternalNetwork = Schemas['ExternalNetworkView']
 export type Backup = Schemas['BackupView']
 export type BackupRepository = Schemas['RepositoryView']
 export type Snapshot = Schemas['SnapshotView']
+export type SecondFactor = Schemas['FactorView']
+export type SecondFactorChallenge = Schemas['SecondFactorChallenge']
 
 /** Raised for any non-2xx API response, carrying the server's message. */
 export class ApiError extends Error {
@@ -44,7 +46,7 @@ export function setUnauthenticatedHandler(fn: () => void) {
 
 const authRedirect: Middleware = {
   onResponse({ response, request }) {
-    if (response.status === 401 && !request.url.endsWith('/auth/login') && !request.url.endsWith('/auth/me')) {
+    if (response.status === 401 && !request.url.includes('/auth/login') && !request.url.endsWith('/auth/me')) {
       onUnauthenticated()
     }
   },

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { watch } from 'vue'
+import { computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import TaskTray from './components/TaskTray.vue'
+import TwoFactorPanel from './components/TwoFactorPanel.vue'
 import TenantPicker from './components/TenantPicker.vue'
 import { onLive, useLive } from './stores/live'
 import { useScope } from './stores/scope'
@@ -17,8 +18,12 @@ const router = useRouter()
 // The tenant tree changes when tenants are added, renamed or removed.
 onLive(['tenant'], () => session.me && void scope.load())
 
+// Signed in where a second factor is required, without one: adding one is
+// all the controller allows until then.
+const enrolling = computed(() => !!session.me?.two_factor_needed)
+
 watch(
-  () => session.me,
+  () => session.me && !session.me.two_factor_needed,
   (me) => {
     if (me) {
       live.start()
@@ -39,7 +44,19 @@ async function signOut() {
 </script>
 
 <template>
-  <template v-if="session.me">
+  <template v-if="session.me && enrolling">
+    <header class="bar">
+      <span class="mark"><span class="tape">metastratum</span></span>
+      <div class="right">
+        <span class="me">{{ session.me.display_name || session.me.username }}</span>
+        <button type="button" class="signout" @click="signOut">Sign out</button>
+      </div>
+    </header>
+    <main class="enroll">
+      <TwoFactorPanel required @changed="session.load()" />
+    </main>
+  </template>
+  <template v-else-if="session.me">
     <header class="bar">
       <RouterLink to="/vms" class="mark" aria-label="metastratum home">
         <span class="tape">metastratum</span>
@@ -149,6 +166,9 @@ nav a.router-link-active {
 }
 .signout:hover {
   color: var(--bar-ink);
+}
+main.enroll {
+  max-width: 560px;
 }
 main {
   max-width: 1280px;

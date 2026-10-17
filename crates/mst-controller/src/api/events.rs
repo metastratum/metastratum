@@ -54,14 +54,15 @@ async fn events(
             let event = tokio::select! {
                 _ = tx.closed() => return,
                 _ = recheck.tick() => {
-                    // Signed out, disabled, or roles changed since connecting.
+                    // Signed out, disabled, roles changed since connecting,
+                    // or a second factor became required.
                     match super::principal_for_secret(&state, &secret).await {
-                        Ok(fresh) => {
+                        Ok(fresh) if !fresh.enroll_only => {
                             p = fresh;
                             root = root_path(&state, &p).await;
                             continue;
                         }
-                        Err(_) => return,
+                        _ => return,
                     }
                 }
                 e = sub.recv() => e,
@@ -172,6 +173,7 @@ mod tests {
                 role: Role::Operator,
             }],
             limited: false,
+            enroll_only: false,
         };
         assert!(visible(&p, None, &change("vm", Some(&dev))));
         assert!(!visible(&p, None, &change("vm", Some(&other))));

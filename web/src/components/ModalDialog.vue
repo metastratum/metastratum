@@ -1,18 +1,19 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, useId } from 'vue'
 
 defineProps<{ title: string }>()
 const emit = defineEmits<{ close: [] }>()
 const el = ref<HTMLDialogElement>()
+const titleId = useId()
 
 // Native <dialog>: focus trapping, Escape and inertness come for free.
 onMounted(() => el.value?.showModal())
 </script>
 
 <template>
-  <dialog ref="el" class="modal" @close="emit('close')" @cancel.prevent="emit('close')">
+  <dialog ref="el" class="modal" :aria-labelledby="titleId" @close="emit('close')" @cancel.prevent="emit('close')">
     <header>
-      <h2>{{ title }}</h2>
+      <h2 :id="titleId">{{ title }}</h2>
       <button type="button" class="close" aria-label="Close" @click="emit('close')">×</button>
     </header>
     <slot />

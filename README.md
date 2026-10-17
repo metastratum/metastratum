@@ -22,7 +22,8 @@ controllers with PostgreSQL behind them, and an agent on each host.
 - **High availability**: controllers run as several replicas, and when a
   host fails, its VMs on shared storage restart on other hosts once it is
   fenced.
-- **Security** built in: mutual TLS between controllers and hosts,
+- **Security** built in: two-factor sign-in (authenticator apps, security
+  keys and YubiKeys), mutual TLS between controllers and hosts,
   short-lived host certificates with revocation, secrets sealed in the
   database.
 
@@ -32,8 +33,9 @@ metastratum is young: expect things to change between
 - [Getting started](docs/getting-started.md): packages, the first
   controller and the first host
 - [Running metastratum](docs/operations.md): controllers in several places,
-  PostgreSQL and OVN underneath, host failure, load balancers, resizing,
-  templates, snapshots and backups, upgrades, monitoring
+  PostgreSQL and OVN underneath, host failure, two-factor sign-in, load
+  balancers, resizing, templates, snapshots and backups, upgrades,
+  monitoring
 - [Security](SECURITY.md): the security model, and what the last review
   found
 - [Terraform provider](terraform/README.md): VMs, networks and load

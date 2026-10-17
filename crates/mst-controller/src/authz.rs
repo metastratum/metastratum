@@ -24,6 +24,9 @@ pub struct Principal {
     /// Signed in with a scoped token: it may not act as its user beyond
     /// those scopes, so not change the account or make tokens either.
     pub limited: bool,
+    /// Signed in with a password where a second factor is required, and
+    /// has none yet: adding one is all it may do.
+    pub enroll_only: bool,
 }
 
 impl Principal {
@@ -47,6 +50,7 @@ impl Principal {
             tenant_path: tenant.path,
             bindings,
             limited: false,
+            enroll_only: false,
         })
     }
 

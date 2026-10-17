@@ -23,14 +23,28 @@ pub async fn create(
     Ok(())
 }
 
+/// A live session's user.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, sqlx::FromRow)]
+pub struct Resolved {
+    pub user_id: UserId,
+    /// The user signs in with a password, a tenant at or above theirs
+    /// requires a second factor, and they have none yet: until they add one,
+    /// that is all they may do.
+    pub enroll_only: bool,
+}
+
 /// Resolves a live session to its user and marks it used. Disabled users'
 /// sessions do not resolve.
-pub async fn resolve(db: impl PgExecutor<'_>, id_hash: &str) -> Result<Option<UserId>> {
-    Ok(sqlx::query_scalar(
+pub async fn resolve(db: impl PgExecutor<'_>, id_hash: &str) -> Result<Option<Resolved>> {
+    Ok(sqlx::query_as(
         "UPDATE sessions s SET last_seen_at = now()
-         FROM users u
+         FROM users u JOIN tenants t ON t.id = u.tenant_id
          WHERE s.id_hash = $1 AND s.expires_at > now() AND u.id = s.user_id AND NOT u.disabled
-         RETURNING s.user_id",
+         RETURNING s.user_id,
+             u.password_hash IS NOT NULL
+             AND EXISTS (SELECT 1 FROM tenants a WHERE a.require_two_factor AND a.path @> t.path)
+             AND NOT EXISTS (SELECT 1 FROM second_factors f WHERE f.user_id = u.id)
+             AS enroll_only",
     )
     .bind(id_hash)
     .fetch_optional(db)

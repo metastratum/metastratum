@@ -21,6 +21,7 @@ mod ovn_tls;
 mod ratelimit;
 mod secrets;
 mod state;
+mod two_factor;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -63,6 +64,15 @@ enum Cmd {
         admin_user: String,
         #[arg(long, env = "MST_ADMIN_PASSWORD")]
         admin_password: String,
+    },
+    /// Remove a user's second factors and backup codes, for someone locked
+    /// out with no administrator to reset them (signing them out too).
+    ResetTwoFactor {
+        username: String,
+        /// The user's tenant as a slug path from the provider (`acme/dev`);
+        /// the provider by default.
+        #[arg(long, default_value = "")]
+        tenant: String,
     },
     /// Print a single-use host join token.
     JoinToken {
@@ -151,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
             admin_user,
             admin_password,
         } => bootstrap(db, &admin_user, &admin_password).await,
+        Cmd::ResetTwoFactor { username, tenant } => reset_two_factor(&db, &tenant, &username).await,
         Cmd::JoinToken {
             ttl_minutes,
             cluster,
@@ -240,6 +251,40 @@ async fn bootstrap(db: mst_db::sqlx::PgPool, user: &str, password: &str) -> anyh
     Ok(())
 }
 
+async fn reset_two_factor(
+    db: &mst_db::sqlx::PgPool,
+    tenant: &str,
+    username: &str,
+) -> anyhow::Result<()> {
+    let mut t = mst_db::tenants::root(db)
+        .await?
+        .context("not bootstrapped yet")?;
+    for slug in tenant.split('/').filter(|s| !s.is_empty()) {
+        t = mst_db::tenants::child_by_slug(db, Some(t.id), slug)
+            .await?
+            .with_context(|| format!("no tenant {tenant}"))?;
+    }
+    let user = mst_db::users::find_by_username(db, t.id, username)
+        .await?
+        .with_context(|| format!("no user {username} in {}", t.name))?;
+    let mut tx = db.begin().await?;
+    let n = mst_db::two_factor::reset(&mut tx, user.id).await?;
+    mst_db::sessions::delete_for_user(&mut *tx, user.id, None).await?;
+    let entry = mst_db::audit::Entry {
+        user_id: None,
+        username: None,
+        tenant_id: Some(user.tenant_id),
+        action: "user.two_factor.reset",
+        target: Some(("user", user.id.0)),
+        success: true,
+        details: serde_json::json!({"username": user.username, "factors": n, "via": "command line"}),
+    };
+    mst_db::audit::record(&mut *tx, entry).await?;
+    tx.commit().await?;
+    println!("removed {n} second factor(s) and the backup codes of {username}");
+    Ok(())
+}
+
 async fn serve(db: mst_db::sqlx::PgPool, cfg: &config::Config) -> anyhow::Result<()> {
     let recorder = metrics::install()?;
     secrets::seal_existing(&db)
@@ -290,6 +335,11 @@ async fn serve(db: mst_db::sqlx::PgPool, cfg: &config::Config) -> anyhow::Result
         ),
         trusted_proxies: cfg.api.trusted_proxies.clone(),
         trusted_oidc_issuers: cfg.api.trusted_oidc_issuers.clone(),
+        yubico: cfg
+            .yubico
+            .as_ref()
+            .map(two_factor::yubico::Validator::new)
+            .transpose()?,
     });
     tracing::info!(%replica, fingerprint = %state.ca.fingerprint(), "controller starting");
 
@@ -413,6 +463,9 @@ async fn housekeeping(state: AppState) {
         }
         if let Err(e) = mst_db::oidc::purge_expired(&state.db).await {
             tracing::warn!(error = %e, "purging OIDC logins");
+        }
+        if let Err(e) = mst_db::two_factor::purge_expired_challenges(&state.db).await {
+            tracing::warn!(error = %e, "purging two-factor challenges");
         }
         if let Err(e) = mst_db::replicas::purge_stale(&state.db).await {
             tracing::warn!(error = %e, "purging gone replicas");

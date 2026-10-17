@@ -5,7 +5,9 @@ use std::time::Duration;
 use chrono::Utc;
 use mst_core::ids::{HostId, NetworkId, NicId, VmId};
 use mst_core::vm::VmSpec;
-use mst_db::{console, hosts, images, join_tokens, networks, sessions, tenants, users, vms};
+use mst_db::{
+    console, hosts, images, join_tokens, networks, sessions, tenants, two_factor, users, vms,
+};
 use sqlx::PgPool;
 
 async fn root(pool: &PgPool) -> tenants::Tenant {
@@ -253,7 +255,11 @@ async fn sessions_resolve_until_expiry_or_disable(pool: PgPool) {
     sessions::create(&pool, "s2", u.id, Duration::from_secs(0))
         .await
         .unwrap();
-    assert_eq!(sessions::resolve(&pool, "s1").await.unwrap(), Some(u.id));
+    let live = sessions::Resolved {
+        user_id: u.id,
+        enroll_only: false,
+    };
+    assert_eq!(sessions::resolve(&pool, "s1").await.unwrap(), Some(live));
     assert_eq!(sessions::resolve(&pool, "s2").await.unwrap(), None);
 
     sqlx::query("UPDATE users SET disabled = true WHERE id = $1")
@@ -264,6 +270,106 @@ async fn sessions_resolve_until_expiry_or_disable(pool: PgPool) {
     assert_eq!(sessions::resolve(&pool, "s1").await.unwrap(), None);
 
     assert_eq!(sessions::purge_expired(&pool).await.unwrap(), 1);
+}
+
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn two_factor_requirement_backup_codes_and_challenges(pool: PgPool) {
+    let t = root(&pool).await;
+    let acme = tenants::create(&pool, Some(t.id), "acme", "Acme")
+        .await
+        .unwrap();
+    let dev = tenants::create(&pool, Some(acme.id), "dev", "Dev")
+        .await
+        .unwrap();
+    let u = user(&pool, &dev, "alice").await;
+    sessions::create(&pool, "s1", u.id, Duration::from_secs(60))
+        .await
+        .unwrap();
+    let enroll_only = |r: Option<sessions::Resolved>| r.unwrap().enroll_only;
+
+    // Required above: a session without a factor can only add one.
+    assert!(!enroll_only(sessions::resolve(&pool, "s1").await.unwrap()));
+    two_factor::set_required(&pool, acme.id, true)
+        .await
+        .unwrap();
+    assert!(two_factor::required(&pool, dev.id).await.unwrap());
+    assert!(!two_factor::required(&pool, t.id).await.unwrap());
+    assert_eq!(
+        two_factor::policy(&pool, dev.id).await.unwrap(),
+        (false, Some((acme.id, "Acme".to_owned())))
+    );
+    assert_eq!(
+        two_factor::policy(&pool, acme.id).await.unwrap(),
+        (true, None)
+    );
+    assert!(enroll_only(sessions::resolve(&pool, "s1").await.unwrap()));
+    let f = two_factor::add(&pool, u.id, "totp", "Phone", &serde_json::json!({}))
+        .await
+        .unwrap();
+    assert!(!enroll_only(sessions::resolve(&pool, "s1").await.unwrap()));
+    assert!(two_factor::has_factor(&pool, u.id).await.unwrap());
+    assert_eq!(
+        two_factor::with_factor(&pool, &[u.id]).await.unwrap().len(),
+        1
+    );
+
+    // Backup codes work once.
+    let mut conn = pool.acquire().await.unwrap();
+    two_factor::set_backup_codes(&mut conn, u.id, &["a".into(), "b".into()])
+        .await
+        .unwrap();
+    assert_eq!(two_factor::backup_codes_left(&pool, u.id).await.unwrap(), 2);
+    assert!(two_factor::use_backup_code(&pool, u.id, "a").await.unwrap());
+    assert!(!two_factor::use_backup_code(&pool, u.id, "a").await.unwrap());
+    assert!(!two_factor::use_backup_code(&pool, u.id, "c").await.unwrap());
+    assert_eq!(two_factor::backup_codes_left(&pool, u.id).await.unwrap(), 1);
+
+    // A challenge takes so many attempts, then is gone.
+    let data = serde_json::json!({"x": 1});
+    two_factor::create_challenge(&pool, "c1", u.id, "login", &data, Duration::from_secs(60))
+        .await
+        .unwrap();
+    for n in 1..=3 {
+        let c = two_factor::attempt_challenge(&pool, "c1", "login", 3)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((c.attempts, c.user_id), (n, u.id));
+    }
+    assert!(
+        two_factor::attempt_challenge(&pool, "c1", "login", 3)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    two_factor::create_challenge(&pool, "c2", u.id, "totp", &data, Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert!(
+        two_factor::attempt_challenge(&pool, "c2", "login", 3)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    two_factor::create_challenge(&pool, "c3", u.id, "login", &data, Duration::from_secs(0))
+        .await
+        .unwrap();
+    assert!(
+        two_factor::attempt_challenge(&pool, "c3", "login", 3)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        two_factor::purge_expired_challenges(&pool).await.unwrap(),
+        0
+    );
+
+    // Removing the factor; a reset takes the codes too.
+    assert!(two_factor::remove(&pool, u.id, f.id).await.unwrap());
+    assert!(!two_factor::remove(&pool, u.id, f.id).await.unwrap());
+    assert_eq!(two_factor::reset(&mut conn, u.id).await.unwrap(), 0);
+    assert_eq!(two_factor::backup_codes_left(&pool, u.id).await.unwrap(), 0);
 }
 
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]

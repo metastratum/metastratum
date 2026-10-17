@@ -131,11 +131,55 @@ type AcceptedVmView struct {
 	Vcpus     int32     `json:"vcpus"`
 }
 
+// AddTotp defines model for AddTotp.
+type AddTotp struct {
+	// Code The code the app shows now.
+	Code string `json:"code"`
+
+	// Name What to call it (`Phone`).
+	Name  string `json:"name"`
+	Token string `json:"token"`
+}
+
+// AddWebauthn defines model for AddWebauthn.
+type AddWebauthn struct {
+	// Credential What `navigator.credentials.create()` gave, as its `toJSON()`.
+	Credential RegistrationResponse `json:"credential"`
+
+	// Name What to call it (`Blue key`).
+	Name  string `json:"name"`
+	Token string `json:"token"`
+}
+
+// AddYubicoOtp defines model for AddYubicoOtp.
+type AddYubicoOtp struct {
+	// Name What to call it (`Keyring YubiKey`).
+	Name string `json:"name"`
+
+	// Otp An OTP the YubiKey typed.
+	Otp      string `json:"otp"`
+	Password string `json:"password"`
+}
+
 // AllocateFloatingIp defines model for AllocateFloatingIp.
 type AllocateFloatingIp struct {
 	ExternalNetworkId ExternalNetworkId `json:"external_network_id"`
 	NicId             *NicId            `json:"nic_id,omitempty"`
 	TenantId          *TenantId         `json:"tenant_id,omitempty"`
+}
+
+// AssertionResponse defines model for AssertionResponse.
+type AssertionResponse struct {
+	AuthenticatorData string `json:"authenticatorData"`
+	ClientDataJSON    string `json:"clientDataJSON"`
+	Signature         string `json:"signature"`
+}
+
+// AttestationResponse defines model for AttestationResponse.
+type AttestationResponse struct {
+	AttestationObject string    `json:"attestationObject"`
+	ClientDataJSON    string    `json:"clientDataJSON"`
+	Transports        *[]string `json:"transports,omitempty"`
 }
 
 // AuditEntry defines model for AuditEntry.
@@ -159,6 +203,13 @@ type AuditEntry struct {
 type AuthMethods struct {
 	// Oidc Name of the tenant's identity provider, if it has one.
 	Oidc *string `json:"oidc,omitempty"`
+}
+
+// AuthenticationResponse What `get()` resolves to, as `PublicKeyCredential.toJSON()` gives it.
+type AuthenticationResponse struct {
+	// RawId base64url
+	RawId    string            `json:"rawId"`
+	Response AssertionResponse `json:"response"`
 }
 
 // BackupAccepted defines model for BackupAccepted.
@@ -194,6 +245,12 @@ type BackupAccepted struct {
 	Vcpus       int32    `json:"vcpus"`
 	VmId        *VmId    `json:"vm_id,omitempty"`
 	VmName      string   `json:"vm_name"`
+}
+
+// BackupCodes defines model for BackupCodes.
+type BackupCodes struct {
+	// Codes Each works once. Shown this once.
+	Codes []string `json:"codes"`
 }
 
 // BackupId defines model for BackupId.
@@ -329,6 +386,11 @@ type ClusterView struct {
 
 	// VmNetMbps Network traffic per NIC, each way, in Mbit/s.
 	VmNetMbps *int32 `json:"vm_net_mbps,omitempty"`
+}
+
+// ConfirmPassword defines model for ConfirmPassword.
+type ConfirmPassword struct {
+	Password string `json:"password"`
 }
 
 // ConsoleRequest defines model for ConsoleRequest.
@@ -589,6 +651,27 @@ type ExternalNetworkView struct {
 	Used int64 `json:"used"`
 }
 
+// FactorAdded A factor just added. With the first one come the backup codes, shown
+// this once.
+type FactorAdded struct {
+	BackupCodes *[]string  `json:"backup_codes,omitempty"`
+	Factor      FactorView `json:"factor"`
+}
+
+// FactorView defines model for FactorView.
+type FactorView struct {
+	CreatedAt time.Time          `json:"created_at"`
+	Id        openapi_types.UUID `json:"id"`
+
+	// Kind `totp`, `webauthn` or `yubico_otp`.
+	Kind       string     `json:"kind"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	Name       string     `json:"name"`
+
+	// Site For a security key: the address it works at.
+	Site *string `json:"site,omitempty"`
+}
+
 // Fencing defines model for Fencing.
 type Fencing struct {
 	// Config Redfish: `url`, `username`, `password`, optional `system` and
@@ -756,6 +839,12 @@ type LoadBalancerView struct {
 	VpcName   string         `json:"vpc_name"`
 }
 
+// LoginNextStep Answered when the password was right and a second factor is to come.
+type LoginNextStep struct {
+	// SecondFactor The password was right; a second factor is to come.
+	SecondFactor SecondFactorChallenge `json:"second_factor"`
+}
+
 // LoginRequest defines model for LoginRequest.
 type LoginRequest struct {
 	Password string `json:"password"`
@@ -790,8 +879,15 @@ type Me struct {
 	Tenant     string   `json:"tenant"`
 	TenantId   TenantId `json:"tenant_id"`
 	TenantName string   `json:"tenant_name"`
-	UserId     UserId   `json:"user_id"`
-	Username   string   `json:"username"`
+
+	// TwoFactor Signs in with a second factor too.
+	TwoFactor bool `json:"two_factor"`
+
+	// TwoFactorNeeded The tenant, or one above it, requires a second factor, and the user
+	// has none yet: adding one is all they can do until they have.
+	TwoFactorNeeded bool   `json:"two_factor_needed"`
+	UserId          UserId `json:"user_id"`
+	Username        string `json:"username"`
 }
 
 // MemberView defines model for MemberView.
@@ -967,6 +1063,19 @@ type Quotas struct {
 	Usage map[string]int64 `json:"usage"`
 }
 
+// RegistrationResponse What `create()` resolves to, as `PublicKeyCredential.toJSON()` gives it.
+type RegistrationResponse struct {
+	// RawId base64url
+	RawId    string              `json:"rawId"`
+	Response AttestationResponse `json:"response"`
+}
+
+// RemoveFactor defines model for RemoveFactor.
+type RemoveFactor struct {
+	// Password The caller's password, when removing their own.
+	Password *string `json:"password,omitempty"`
+}
+
 // RepositoryView defines model for RepositoryView.
 type RepositoryView struct {
 	CreatedAt time.Time          `json:"created_at"`
@@ -1069,6 +1178,30 @@ type ScheduleView struct {
 	RepositoryId BackupRepositoryId `json:"repository_id"`
 }
 
+// SecondFactorChallenge The password was right; a second factor is to come.
+type SecondFactorChallenge struct {
+	// Methods What the user can answer with: `totp`, `webauthn`, `yubico_otp`,
+	// `backup_code`.
+	Methods []string `json:"methods"`
+
+	// Token Send it back with the second factor, within five minutes.
+	Token string `json:"token"`
+
+	// Webauthn Options for `navigator.credentials.get()`, when the user has
+	// security keys registered for this address.
+	Webauthn *map[string]interface{} `json:"webauthn,omitempty"`
+}
+
+// SecondStep defines model for SecondStep.
+type SecondStep struct {
+	// Code A code from an authenticator app, a YubiKey's OTP, or a backup code.
+	Code *string `json:"code,omitempty"`
+
+	// Token From the password step.
+	Token    string                  `json:"token"`
+	Webauthn *AuthenticationResponse `json:"webauthn,omitempty"`
+}
+
 // SecurityGroupId defines model for SecurityGroupId.
 type SecurityGroupId = openapi_types.UUID
 
@@ -1099,6 +1232,11 @@ type SetSchedule struct {
 	// Keep How many scheduled backups to keep (default 7).
 	Keep         *int32              `json:"keep,omitempty"`
 	RepositoryId *BackupRepositoryId `json:"repository_id,omitempty"`
+}
+
+// SetTwoFactorPolicy defines model for SetTwoFactorPolicy.
+type SetTwoFactorPolicy struct {
+	Required bool `json:"required"`
 }
 
 // SignInView defines model for SignInView.
@@ -1210,6 +1348,12 @@ type TaskView struct {
 // TenantId defines model for TenantId.
 type TenantId = openapi_types.UUID
 
+// TenantRef defines model for TenantRef.
+type TenantRef struct {
+	Id   TenantId `json:"id"`
+	Name string   `json:"name"`
+}
+
 // TenantView defines model for TenantView.
 type TenantView struct {
 	CreatedAt time.Time `json:"created_at"`
@@ -1246,6 +1390,39 @@ type TokenView struct {
 	// Scopes What the token is limited to; absent when it may do all its user
 	// may. It never allows more than its user's roles.
 	Scopes *[]TokenScope `json:"scopes,omitempty"`
+}
+
+// TotpEnrollment defines model for TotpEnrollment.
+type TotpEnrollment struct {
+	// Secret The secret, base32, for typing into the app.
+	Secret string `json:"secret"`
+
+	// Token Send it back with the first code.
+	Token string `json:"token"`
+
+	// Uri The `otpauth://` URI, for a QR code.
+	Uri string `json:"uri"`
+}
+
+// TwoFactorPolicy defines model for TwoFactorPolicy.
+type TwoFactorPolicy struct {
+	// Required The tenant requires a second factor of its password accounts, and of
+	// those of its sub-tenants.
+	Required   bool       `json:"required"`
+	RequiredBy *TenantRef `json:"required_by,omitempty"`
+}
+
+// TwoFactorStatus defines model for TwoFactorStatus.
+type TwoFactorStatus struct {
+	// BackupCodesLeft Unused backup codes.
+	BackupCodesLeft int64        `json:"backup_codes_left"`
+	Factors         []FactorView `json:"factors"`
+
+	// Required The user's tenant, or one above it, requires a second factor.
+	Required bool `json:"required"`
+
+	// YubicoOtp Whether this installation can check Yubico OTPs.
+	YubicoOtp bool `json:"yubico_otp"`
 }
 
 // UpdateExternalNetwork defines model for UpdateExternalNetwork.
@@ -1295,8 +1472,10 @@ type UpdateTenant struct {
 // UpdateUser Users may change their own name, email and password; administrators may
 // change anyone's and disable accounts.
 type UpdateUser struct {
-	Disabled    *bool   `json:"disabled,omitempty"`
-	DisplayName *string `json:"display_name,omitempty"`
+	// CurrentPassword The password being replaced: needed to change one's own.
+	CurrentPassword *string `json:"current_password,omitempty"`
+	Disabled        *bool   `json:"disabled,omitempty"`
+	DisplayName     *string `json:"display_name,omitempty"`
 
 	// Email `null` clears it.
 	Email    *string `json:"email,omitempty"`
@@ -1370,7 +1549,10 @@ type UserView struct {
 	// Local Signs in with a password (rather than through an identity provider).
 	Local    bool     `json:"local"`
 	TenantId TenantId `json:"tenant_id"`
-	Username string   `json:"username"`
+
+	// TwoFactor Signs in with a second factor too.
+	TwoFactor bool   `json:"two_factor"`
+	Username  string `json:"username"`
 }
 
 // VmBackups defines model for VmBackups.
@@ -1462,6 +1644,15 @@ type VpcView struct {
 	Name      string        `json:"name"`
 	Networks  []NetworkView `json:"networks"`
 	TenantId  TenantId      `json:"tenant_id"`
+}
+
+// WebauthnEnrollment defines model for WebauthnEnrollment.
+type WebauthnEnrollment struct {
+	// Options Options for `navigator.credentials.create()`.
+	Options map[string]interface{} `json:"options"`
+
+	// Token Send it back with the key's answer.
+	Token string `json:"token"`
 }
 
 // ListAuditParams defines parameters for ListAudit.
@@ -1610,6 +1801,9 @@ type ListVpcsParams struct {
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
+// SecondStepJSONRequestBody defines body for SecondStep for application/json ContentType.
+type SecondStepJSONRequestBody = SecondStep
+
 // CreateRepositoryJSONRequestBody defines body for CreateRepository for application/json ContentType.
 type CreateRepositoryJSONRequestBody = CreateRepository
 
@@ -1694,6 +1888,9 @@ type CreatePolicyJSONRequestBody = RuleSpec
 // SetQuotasJSONRequestBody defines body for SetQuotas for application/json ContentType.
 type SetQuotasJSONRequestBody SetQuotasJSONBody
 
+// SetPolicyJSONRequestBody defines body for SetPolicy for application/json ContentType.
+type SetPolicyJSONRequestBody = SetTwoFactorPolicy
+
 // CreateTokenJSONRequestBody defines body for CreateToken for application/json ContentType.
 type CreateTokenJSONRequestBody = CreateToken
 
@@ -1702,6 +1899,27 @@ type CreateUserJSONRequestBody = CreateUser
 
 // UpdateUserJSONRequestBody defines body for UpdateUser for application/json ContentType.
 type UpdateUserJSONRequestBody = UpdateUser
+
+// NewBackupCodesJSONRequestBody defines body for NewBackupCodes for application/json ContentType.
+type NewBackupCodesJSONRequestBody = ConfirmPassword
+
+// RemoveFactorJSONRequestBody defines body for RemoveFactor for application/json ContentType.
+type RemoveFactorJSONRequestBody = RemoveFactor
+
+// AddTotpJSONRequestBody defines body for AddTotp for application/json ContentType.
+type AddTotpJSONRequestBody = AddTotp
+
+// StartTotpJSONRequestBody defines body for StartTotp for application/json ContentType.
+type StartTotpJSONRequestBody = ConfirmPassword
+
+// AddWebauthnJSONRequestBody defines body for AddWebauthn for application/json ContentType.
+type AddWebauthnJSONRequestBody = AddWebauthn
+
+// StartWebauthnJSONRequestBody defines body for StartWebauthn for application/json ContentType.
+type StartWebauthnJSONRequestBody = ConfirmPassword
+
+// AddYubicoOtpJSONRequestBody defines body for AddYubicoOtp for application/json ContentType.
+type AddYubicoOtpJSONRequestBody = AddYubicoOtp
 
 // CreateVmJSONRequestBody defines body for CreateVm for application/json ContentType.
 type CreateVmJSONRequestBody = CreateVm
@@ -1823,6 +2041,20 @@ type ClientInterface interface {
 	// Login performs a POST /api/v1/auth/login (the `Login` operationId) request.
 	// Takes a body of the `application/json` content type.
 	Login(ctx context.Context, body LoginJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SecondStepWithBody The second step of a password sign-in.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/auth/login/second-factor (the `SecondStep` operationId).
+	SecondStepWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SecondStep The second step of a password sign-in.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/auth/login/second-factor (the `SecondStep` operationId).
+	SecondStep(ctx context.Context, body SecondStepJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// Logout performs a POST /api/v1/auth/logout (the `Logout` operationId) request.
 	Logout(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2410,6 +2642,27 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/tenants/{id}/storage-pools (the `UsablePools` operationId).
 	UsablePools(ctx context.Context, id TenantId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetPolicy performs a GET /api/v1/tenants/{id}/two-factor-policy (the `GetPolicy` operationId) request.
+	GetPolicy(ctx context.Context, id TenantId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SetPolicyWithBody Requires (or stops requiring) a second factor of the tenant's password
+	// accounts and its sub-tenants'. Those without one can then only add one,
+	// until they do.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /api/v1/tenants/{id}/two-factor-policy (the `SetPolicy` operationId).
+	SetPolicyWithBody(ctx context.Context, id TenantId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SetPolicy Requires (or stops requiring) a second factor of the tenant's password
+	// accounts and its sub-tenants'. Those without one can then only add one,
+	// until they do.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PUT /api/v1/tenants/{id}/two-factor-policy (the `SetPolicy` operationId).
+	SetPolicy(ctx context.Context, id TenantId, body SetPolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListTokens The caller's own tokens.
 	//
 	// Corresponds with GET /api/v1/tokens (the `ListTokens` operationId).
@@ -2450,6 +2703,115 @@ type ClientInterface interface {
 
 	// UserBindings performs a GET /api/v1/users/{id}/role-bindings (the `UserBindings` operationId) request.
 	UserBindings(ctx context.Context, id UserId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// Reset Removes all of a user's second factors and backup codes, for someone
+	// who lost them, and signs them out everywhere. For administrators.
+	//
+	// Corresponds with DELETE /api/v1/users/{id}/two-factor (the `Reset` operationId).
+	Reset(ctx context.Context, id UserId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// Status performs a GET /api/v1/users/{id}/two-factor (the `Status` operationId) request.
+	Status(ctx context.Context, id UserId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// NewBackupCodesWithBody Replaces the backup codes with new ones.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/backup-codes (the `NewBackupCodes` operationId).
+	NewBackupCodesWithBody(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// NewBackupCodes Replaces the backup codes with new ones.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/backup-codes (the `NewBackupCodes` operationId).
+	NewBackupCodes(ctx context.Context, id UserId, body NewBackupCodesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RemoveFactorWithBody Removes a second factor: one's own (with one's password), or, for an
+	// administrator, someone else's. With the last one go the backup codes.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with DELETE /api/v1/users/{id}/two-factor/factors/{factor_id} (the `RemoveFactor` operationId).
+	RemoveFactorWithBody(ctx context.Context, id UserId, factorId openapi_types.UUID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RemoveFactor Removes a second factor: one's own (with one's password), or, for an
+	// administrator, someone else's. With the last one go the backup codes.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with DELETE /api/v1/users/{id}/two-factor/factors/{factor_id} (the `RemoveFactor` operationId).
+	RemoveFactor(ctx context.Context, id UserId, factorId openapi_types.UUID, body RemoveFactorJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AddTotpWithBody Finishes adding an authenticator app with a code it shows.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/totp (the `AddTotp` operationId).
+	AddTotpWithBody(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AddTotp Finishes adding an authenticator app with a code it shows.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/totp (the `AddTotp` operationId).
+	AddTotp(ctx context.Context, id UserId, body AddTotpJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// StartTotpWithBody Starts adding an authenticator app: the secret to give it.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/totp/start (the `StartTotp` operationId).
+	StartTotpWithBody(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// StartTotp Starts adding an authenticator app: the secret to give it.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/totp/start (the `StartTotp` operationId).
+	StartTotp(ctx context.Context, id UserId, body StartTotpJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AddWebauthnWithBody Finishes adding a security key with its answer.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/webauthn (the `AddWebauthn` operationId).
+	AddWebauthnWithBody(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AddWebauthn Finishes adding a security key with its answer.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/webauthn (the `AddWebauthn` operationId).
+	AddWebauthn(ctx context.Context, id UserId, body AddWebauthnJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// StartWebauthnWithBody Starts adding a security key: what to ask the browser for.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/webauthn/start (the `StartWebauthn` operationId).
+	StartWebauthnWithBody(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// StartWebauthn Starts adding a security key: what to ask the browser for.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/webauthn/start (the `StartWebauthn` operationId).
+	StartWebauthn(ctx context.Context, id UserId, body StartWebauthnJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AddYubicoOtpWithBody Adds a YubiKey by an OTP it typed.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/yubico-otp (the `AddYubicoOtp` operationId).
+	AddYubicoOtpWithBody(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AddYubicoOtp Adds a YubiKey by an OTP it typed.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/yubico-otp (the `AddYubicoOtp` operationId).
+	AddYubicoOtp(ctx context.Context, id UserId, body AddYubicoOtpJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListVms performs a GET /api/v1/vms (the `ListVms` operationId) request.
 	ListVms(ctx context.Context, params *ListVmsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2707,6 +3069,40 @@ func (c *Client) LoginWithBody(ctx context.Context, contentType string, body io.
 // Takes a body of the `application/json` content type.
 func (c *Client) Login(ctx context.Context, body LoginJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewLoginRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// SecondStepWithBody The second step of a password sign-in.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/auth/login/second-factor (the `SecondStep` operationId).
+func (c *Client) SecondStepWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSecondStepRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// SecondStep The second step of a password sign-in.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/auth/login/second-factor (the `SecondStep` operationId).
+func (c *Client) SecondStep(ctx context.Context, body SecondStepJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSecondStepRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -4473,6 +4869,57 @@ func (c *Client) UsablePools(ctx context.Context, id TenantId, reqEditors ...Req
 	return c.Client.Do(req)
 }
 
+// GetPolicy performs a GET /api/v1/tenants/{id}/two-factor-policy (the `GetPolicy` operationId) request.
+func (c *Client) GetPolicy(ctx context.Context, id TenantId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetPolicyRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// SetPolicyWithBody Requires (or stops requiring) a second factor of the tenant's password
+// accounts and its sub-tenants'. Those without one can then only add one,
+// until they do.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /api/v1/tenants/{id}/two-factor-policy (the `SetPolicy` operationId).
+func (c *Client) SetPolicyWithBody(ctx context.Context, id TenantId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetPolicyRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// SetPolicy Requires (or stops requiring) a second factor of the tenant's password
+// accounts and its sub-tenants'. Those without one can then only add one,
+// until they do.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PUT /api/v1/tenants/{id}/two-factor-policy (the `SetPolicy` operationId).
+func (c *Client) SetPolicy(ctx context.Context, id TenantId, body SetPolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetPolicyRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // ListTokens The caller's own tokens.
 //
 // Corresponds with GET /api/v1/tokens (the `ListTokens` operationId).
@@ -4614,6 +5061,275 @@ func (c *Client) UpdateUser(ctx context.Context, id UserId, body UpdateUserJSONR
 // UserBindings performs a GET /api/v1/users/{id}/role-bindings (the `UserBindings` operationId) request.
 func (c *Client) UserBindings(ctx context.Context, id UserId, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUserBindingsRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// Reset Removes all of a user's second factors and backup codes, for someone
+// who lost them, and signs them out everywhere. For administrators.
+//
+// Corresponds with DELETE /api/v1/users/{id}/two-factor (the `Reset` operationId).
+func (c *Client) Reset(ctx context.Context, id UserId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewResetRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// Status performs a GET /api/v1/users/{id}/two-factor (the `Status` operationId) request.
+func (c *Client) Status(ctx context.Context, id UserId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStatusRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// NewBackupCodesWithBody Replaces the backup codes with new ones.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/backup-codes (the `NewBackupCodes` operationId).
+func (c *Client) NewBackupCodesWithBody(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewNewBackupCodesRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// NewBackupCodes Replaces the backup codes with new ones.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/backup-codes (the `NewBackupCodes` operationId).
+func (c *Client) NewBackupCodes(ctx context.Context, id UserId, body NewBackupCodesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewNewBackupCodesRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RemoveFactorWithBody Removes a second factor: one's own (with one's password), or, for an
+// administrator, someone else's. With the last one go the backup codes.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with DELETE /api/v1/users/{id}/two-factor/factors/{factor_id} (the `RemoveFactor` operationId).
+func (c *Client) RemoveFactorWithBody(ctx context.Context, id UserId, factorId openapi_types.UUID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRemoveFactorRequestWithBody(c.Server, id, factorId, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RemoveFactor Removes a second factor: one's own (with one's password), or, for an
+// administrator, someone else's. With the last one go the backup codes.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with DELETE /api/v1/users/{id}/two-factor/factors/{factor_id} (the `RemoveFactor` operationId).
+func (c *Client) RemoveFactor(ctx context.Context, id UserId, factorId openapi_types.UUID, body RemoveFactorJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRemoveFactorRequest(c.Server, id, factorId, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AddTotpWithBody Finishes adding an authenticator app with a code it shows.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/totp (the `AddTotp` operationId).
+func (c *Client) AddTotpWithBody(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAddTotpRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AddTotp Finishes adding an authenticator app with a code it shows.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/totp (the `AddTotp` operationId).
+func (c *Client) AddTotp(ctx context.Context, id UserId, body AddTotpJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAddTotpRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// StartTotpWithBody Starts adding an authenticator app: the secret to give it.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/totp/start (the `StartTotp` operationId).
+func (c *Client) StartTotpWithBody(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStartTotpRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// StartTotp Starts adding an authenticator app: the secret to give it.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/totp/start (the `StartTotp` operationId).
+func (c *Client) StartTotp(ctx context.Context, id UserId, body StartTotpJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStartTotpRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AddWebauthnWithBody Finishes adding a security key with its answer.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/webauthn (the `AddWebauthn` operationId).
+func (c *Client) AddWebauthnWithBody(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAddWebauthnRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AddWebauthn Finishes adding a security key with its answer.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/webauthn (the `AddWebauthn` operationId).
+func (c *Client) AddWebauthn(ctx context.Context, id UserId, body AddWebauthnJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAddWebauthnRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// StartWebauthnWithBody Starts adding a security key: what to ask the browser for.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/webauthn/start (the `StartWebauthn` operationId).
+func (c *Client) StartWebauthnWithBody(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStartWebauthnRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// StartWebauthn Starts adding a security key: what to ask the browser for.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/webauthn/start (the `StartWebauthn` operationId).
+func (c *Client) StartWebauthn(ctx context.Context, id UserId, body StartWebauthnJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStartWebauthnRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AddYubicoOtpWithBody Adds a YubiKey by an OTP it typed.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/yubico-otp (the `AddYubicoOtp` operationId).
+func (c *Client) AddYubicoOtpWithBody(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAddYubicoOtpRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AddYubicoOtp Adds a YubiKey by an OTP it typed.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/yubico-otp (the `AddYubicoOtp` operationId).
+func (c *Client) AddYubicoOtp(ctx context.Context, id UserId, body AddYubicoOtpJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAddYubicoOtpRequest(c.Server, id, body)
 	if err != nil {
 		return nil, err
 	}
@@ -5307,6 +6023,46 @@ func NewLoginRequestWithBody(server string, contentType string, body io.Reader) 
 	}
 
 	operationPath := fmt.Sprintf("/api/v1/auth/login")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewSecondStepRequest calls the generic SecondStep builder with application/json body
+func NewSecondStepRequest(server string, body SecondStepJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSecondStepRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewSecondStepRequestWithBody constructs an http.Request for the SecondStep method, with any body, and a specified content type
+func NewSecondStepRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/auth/login/second-factor")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -8943,6 +9699,87 @@ func NewUsablePoolsRequest(server string, id TenantId) (*http.Request, error) {
 	return req, nil
 }
 
+// NewGetPolicyRequest constructs an http.Request for the GetPolicy method
+func NewGetPolicyRequest(server string, id TenantId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/tenants/%s/two-factor-policy", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewSetPolicyRequest calls the generic SetPolicy builder with application/json body
+func NewSetPolicyRequest(server string, id TenantId, body SetPolicyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSetPolicyRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewSetPolicyRequestWithBody constructs an http.Request for the SetPolicy method, with any body, and a specified content type
+func NewSetPolicyRequestWithBody(server string, id TenantId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/tenants/%s/two-factor-policy", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewListTokensRequest constructs an http.Request for the ListTokens method
 func NewListTokensRequest(server string) (*http.Request, error) {
 	var err error
@@ -9261,6 +10098,410 @@ func NewUserBindingsRequest(server string, id UserId) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewResetRequest constructs an http.Request for the Reset method
+func NewResetRequest(server string, id UserId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/users/%s/two-factor", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewStatusRequest constructs an http.Request for the Status method
+func NewStatusRequest(server string, id UserId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/users/%s/two-factor", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewNewBackupCodesRequest calls the generic NewBackupCodes builder with application/json body
+func NewNewBackupCodesRequest(server string, id UserId, body NewBackupCodesJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewNewBackupCodesRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewNewBackupCodesRequestWithBody constructs an http.Request for the NewBackupCodes method, with any body, and a specified content type
+func NewNewBackupCodesRequestWithBody(server string, id UserId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/users/%s/two-factor/backup-codes", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewRemoveFactorRequest calls the generic RemoveFactor builder with application/json body
+func NewRemoveFactorRequest(server string, id UserId, factorId openapi_types.UUID, body RemoveFactorJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRemoveFactorRequestWithBody(server, id, factorId, "application/json", bodyReader)
+}
+
+// NewRemoveFactorRequestWithBody constructs an http.Request for the RemoveFactor method, with any body, and a specified content type
+func NewRemoveFactorRequestWithBody(server string, id UserId, factorId openapi_types.UUID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "factor_id", factorId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/users/%s/two-factor/factors/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewAddTotpRequest calls the generic AddTotp builder with application/json body
+func NewAddTotpRequest(server string, id UserId, body AddTotpJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewAddTotpRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewAddTotpRequestWithBody constructs an http.Request for the AddTotp method, with any body, and a specified content type
+func NewAddTotpRequestWithBody(server string, id UserId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/users/%s/two-factor/totp", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewStartTotpRequest calls the generic StartTotp builder with application/json body
+func NewStartTotpRequest(server string, id UserId, body StartTotpJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewStartTotpRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewStartTotpRequestWithBody constructs an http.Request for the StartTotp method, with any body, and a specified content type
+func NewStartTotpRequestWithBody(server string, id UserId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/users/%s/two-factor/totp/start", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewAddWebauthnRequest calls the generic AddWebauthn builder with application/json body
+func NewAddWebauthnRequest(server string, id UserId, body AddWebauthnJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewAddWebauthnRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewAddWebauthnRequestWithBody constructs an http.Request for the AddWebauthn method, with any body, and a specified content type
+func NewAddWebauthnRequestWithBody(server string, id UserId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/users/%s/two-factor/webauthn", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewStartWebauthnRequest calls the generic StartWebauthn builder with application/json body
+func NewStartWebauthnRequest(server string, id UserId, body StartWebauthnJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewStartWebauthnRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewStartWebauthnRequestWithBody constructs an http.Request for the StartWebauthn method, with any body, and a specified content type
+func NewStartWebauthnRequestWithBody(server string, id UserId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/users/%s/two-factor/webauthn/start", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewAddYubicoOtpRequest calls the generic AddYubicoOtp builder with application/json body
+func NewAddYubicoOtpRequest(server string, id UserId, body AddYubicoOtpJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewAddYubicoOtpRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewAddYubicoOtpRequestWithBody constructs an http.Request for the AddYubicoOtp method, with any body, and a specified content type
+func NewAddYubicoOtpRequestWithBody(server string, id UserId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/users/%s/two-factor/yubico-otp", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -10387,6 +11628,20 @@ type ClientWithResponsesInterface interface {
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	LoginWithResponse(ctx context.Context, body LoginJSONRequestBody, reqEditors ...RequestEditorFn) (*LoginResponse, error)
 
+	// SecondStepWithBodyWithResponse The second step of a password sign-in.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/auth/login/second-factor (the `SecondStep` operationId).
+	SecondStepWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SecondStepResponse, error)
+
+	// SecondStepWithResponse The second step of a password sign-in.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/auth/login/second-factor (the `SecondStep` operationId).
+	SecondStepWithResponse(ctx context.Context, body SecondStepJSONRequestBody, reqEditors ...RequestEditorFn) (*SecondStepResponse, error)
+
 	// LogoutWithResponse performs a POST /api/v1/auth/logout (the `Logout` operationId) request.
 	//
 	// Returns a wrapper object for the known response body format(s).
@@ -11129,6 +12384,29 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/tenants/{id}/storage-pools (the `UsablePools` operationId).
 	UsablePoolsWithResponse(ctx context.Context, id TenantId, reqEditors ...RequestEditorFn) (*UsablePoolsResponse, error)
 
+	// GetPolicyWithResponse performs a GET /api/v1/tenants/{id}/two-factor-policy (the `GetPolicy` operationId) request.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	GetPolicyWithResponse(ctx context.Context, id TenantId, reqEditors ...RequestEditorFn) (*GetPolicyResponse, error)
+
+	// SetPolicyWithBodyWithResponse Requires (or stops requiring) a second factor of the tenant's password
+	// accounts and its sub-tenants'. Those without one can then only add one,
+	// until they do.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /api/v1/tenants/{id}/two-factor-policy (the `SetPolicy` operationId).
+	SetPolicyWithBodyWithResponse(ctx context.Context, id TenantId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetPolicyResponse, error)
+
+	// SetPolicyWithResponse Requires (or stops requiring) a second factor of the tenant's password
+	// accounts and its sub-tenants'. Those without one can then only add one,
+	// until they do.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /api/v1/tenants/{id}/two-factor-policy (the `SetPolicy` operationId).
+	SetPolicyWithResponse(ctx context.Context, id TenantId, body SetPolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*SetPolicyResponse, error)
+
 	// ListTokensWithResponse The caller's own tokens.
 	//
 	// Returns a wrapper object for the known response body format(s).
@@ -11185,6 +12463,119 @@ type ClientWithResponsesInterface interface {
 	//
 	// Returns a wrapper object for the known response body format(s).
 	UserBindingsWithResponse(ctx context.Context, id UserId, reqEditors ...RequestEditorFn) (*UserBindingsResponse, error)
+
+	// ResetWithResponse Removes all of a user's second factors and backup codes, for someone
+	// who lost them, and signs them out everywhere. For administrators.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /api/v1/users/{id}/two-factor (the `Reset` operationId).
+	ResetWithResponse(ctx context.Context, id UserId, reqEditors ...RequestEditorFn) (*ResetResponse, error)
+
+	// StatusWithResponse performs a GET /api/v1/users/{id}/two-factor (the `Status` operationId) request.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	StatusWithResponse(ctx context.Context, id UserId, reqEditors ...RequestEditorFn) (*StatusResponse, error)
+
+	// NewBackupCodesWithBodyWithResponse Replaces the backup codes with new ones.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/backup-codes (the `NewBackupCodes` operationId).
+	NewBackupCodesWithBodyWithResponse(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*NewBackupCodesResponse, error)
+
+	// NewBackupCodesWithResponse Replaces the backup codes with new ones.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/backup-codes (the `NewBackupCodes` operationId).
+	NewBackupCodesWithResponse(ctx context.Context, id UserId, body NewBackupCodesJSONRequestBody, reqEditors ...RequestEditorFn) (*NewBackupCodesResponse, error)
+
+	// RemoveFactorWithBodyWithResponse Removes a second factor: one's own (with one's password), or, for an
+	// administrator, someone else's. With the last one go the backup codes.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /api/v1/users/{id}/two-factor/factors/{factor_id} (the `RemoveFactor` operationId).
+	RemoveFactorWithBodyWithResponse(ctx context.Context, id UserId, factorId openapi_types.UUID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RemoveFactorResponse, error)
+
+	// RemoveFactorWithResponse Removes a second factor: one's own (with one's password), or, for an
+	// administrator, someone else's. With the last one go the backup codes.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /api/v1/users/{id}/two-factor/factors/{factor_id} (the `RemoveFactor` operationId).
+	RemoveFactorWithResponse(ctx context.Context, id UserId, factorId openapi_types.UUID, body RemoveFactorJSONRequestBody, reqEditors ...RequestEditorFn) (*RemoveFactorResponse, error)
+
+	// AddTotpWithBodyWithResponse Finishes adding an authenticator app with a code it shows.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/totp (the `AddTotp` operationId).
+	AddTotpWithBodyWithResponse(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AddTotpResponse, error)
+
+	// AddTotpWithResponse Finishes adding an authenticator app with a code it shows.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/totp (the `AddTotp` operationId).
+	AddTotpWithResponse(ctx context.Context, id UserId, body AddTotpJSONRequestBody, reqEditors ...RequestEditorFn) (*AddTotpResponse, error)
+
+	// StartTotpWithBodyWithResponse Starts adding an authenticator app: the secret to give it.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/totp/start (the `StartTotp` operationId).
+	StartTotpWithBodyWithResponse(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*StartTotpResponse, error)
+
+	// StartTotpWithResponse Starts adding an authenticator app: the secret to give it.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/totp/start (the `StartTotp` operationId).
+	StartTotpWithResponse(ctx context.Context, id UserId, body StartTotpJSONRequestBody, reqEditors ...RequestEditorFn) (*StartTotpResponse, error)
+
+	// AddWebauthnWithBodyWithResponse Finishes adding a security key with its answer.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/webauthn (the `AddWebauthn` operationId).
+	AddWebauthnWithBodyWithResponse(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AddWebauthnResponse, error)
+
+	// AddWebauthnWithResponse Finishes adding a security key with its answer.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/webauthn (the `AddWebauthn` operationId).
+	AddWebauthnWithResponse(ctx context.Context, id UserId, body AddWebauthnJSONRequestBody, reqEditors ...RequestEditorFn) (*AddWebauthnResponse, error)
+
+	// StartWebauthnWithBodyWithResponse Starts adding a security key: what to ask the browser for.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/webauthn/start (the `StartWebauthn` operationId).
+	StartWebauthnWithBodyWithResponse(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*StartWebauthnResponse, error)
+
+	// StartWebauthnWithResponse Starts adding a security key: what to ask the browser for.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/webauthn/start (the `StartWebauthn` operationId).
+	StartWebauthnWithResponse(ctx context.Context, id UserId, body StartWebauthnJSONRequestBody, reqEditors ...RequestEditorFn) (*StartWebauthnResponse, error)
+
+	// AddYubicoOtpWithBodyWithResponse Adds a YubiKey by an OTP it typed.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/yubico-otp (the `AddYubicoOtp` operationId).
+	AddYubicoOtpWithBodyWithResponse(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AddYubicoOtpResponse, error)
+
+	// AddYubicoOtpWithResponse Adds a YubiKey by an OTP it typed.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/users/{id}/two-factor/yubico-otp (the `AddYubicoOtp` operationId).
+	AddYubicoOtpWithResponse(ctx context.Context, id UserId, body AddYubicoOtpJSONRequestBody, reqEditors ...RequestEditorFn) (*AddYubicoOtpResponse, error)
 
 	// ListVmsWithResponse performs a GET /api/v1/vms (the `ListVms` operationId) request.
 	//
@@ -11487,6 +12878,13 @@ func (r ListAuditResponse) ContentType() string {
 type LoginResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *LoginNextStep
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r LoginResponse) GetJSON200() *LoginNextStep {
+	return r.JSON200
 }
 
 // GetBody returns the raw response body bytes
@@ -11512,6 +12910,40 @@ func (r LoginResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r LoginResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type SecondStepResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+}
+
+// GetBody returns the raw response body bytes
+func (r SecondStepResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r SecondStepResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SecondStepResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r SecondStepResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -15013,6 +16445,88 @@ func (r UsablePoolsResponse) ContentType() string {
 	return ""
 }
 
+type GetPolicyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *TwoFactorPolicy
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetPolicyResponse) GetJSON200() *TwoFactorPolicy {
+	return r.JSON200
+}
+
+// GetBody returns the raw response body bytes
+func (r GetPolicyResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetPolicyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetPolicyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetPolicyResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type SetPolicyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *TwoFactorPolicy
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r SetPolicyResponse) GetJSON200() *TwoFactorPolicy {
+	return r.JSON200
+}
+
+// GetBody returns the raw response body bytes
+func (r SetPolicyResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r SetPolicyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SetPolicyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r SetPolicyResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type ListTokensResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -15321,6 +16835,361 @@ func (r UserBindingsResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r UserBindingsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ResetResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+}
+
+// GetBody returns the raw response body bytes
+func (r ResetResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r ResetResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ResetResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ResetResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type StatusResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *TwoFactorStatus
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r StatusResponse) GetJSON200() *TwoFactorStatus {
+	return r.JSON200
+}
+
+// GetBody returns the raw response body bytes
+func (r StatusResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r StatusResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r StatusResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r StatusResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type NewBackupCodesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *BackupCodes
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r NewBackupCodesResponse) GetJSON200() *BackupCodes {
+	return r.JSON200
+}
+
+// GetBody returns the raw response body bytes
+func (r NewBackupCodesResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r NewBackupCodesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r NewBackupCodesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r NewBackupCodesResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type RemoveFactorResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+}
+
+// GetBody returns the raw response body bytes
+func (r RemoveFactorResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r RemoveFactorResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RemoveFactorResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r RemoveFactorResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type AddTotpResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON201 the response for an HTTP 201 `application/json` response
+	JSON201 *FactorAdded
+}
+
+// GetJSON201 returns the response for an HTTP 201 `application/json` response
+func (r AddTotpResponse) GetJSON201() *FactorAdded {
+	return r.JSON201
+}
+
+// GetBody returns the raw response body bytes
+func (r AddTotpResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r AddTotpResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AddTotpResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r AddTotpResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type StartTotpResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *TotpEnrollment
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r StartTotpResponse) GetJSON200() *TotpEnrollment {
+	return r.JSON200
+}
+
+// GetBody returns the raw response body bytes
+func (r StartTotpResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r StartTotpResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r StartTotpResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r StartTotpResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type AddWebauthnResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON201 the response for an HTTP 201 `application/json` response
+	JSON201 *FactorAdded
+}
+
+// GetJSON201 returns the response for an HTTP 201 `application/json` response
+func (r AddWebauthnResponse) GetJSON201() *FactorAdded {
+	return r.JSON201
+}
+
+// GetBody returns the raw response body bytes
+func (r AddWebauthnResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r AddWebauthnResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AddWebauthnResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r AddWebauthnResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type StartWebauthnResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *WebauthnEnrollment
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r StartWebauthnResponse) GetJSON200() *WebauthnEnrollment {
+	return r.JSON200
+}
+
+// GetBody returns the raw response body bytes
+func (r StartWebauthnResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r StartWebauthnResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r StartWebauthnResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r StartWebauthnResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type AddYubicoOtpResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON201 the response for an HTTP 201 `application/json` response
+	JSON201 *FactorAdded
+}
+
+// GetJSON201 returns the response for an HTTP 201 `application/json` response
+func (r AddYubicoOtpResponse) GetJSON201() *FactorAdded {
+	return r.JSON201
+}
+
+// GetBody returns the raw response body bytes
+func (r AddYubicoOtpResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r AddYubicoOtpResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AddYubicoOtpResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r AddYubicoOtpResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -16328,6 +18197,32 @@ func (c *ClientWithResponses) LoginWithResponse(ctx context.Context, body LoginJ
 		return nil, err
 	}
 	return ParseLoginResponse(rsp)
+}
+
+// SecondStepWithBodyWithResponse The second step of a password sign-in.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/auth/login/second-factor (the `SecondStep` operationId).
+func (c *ClientWithResponses) SecondStepWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SecondStepResponse, error) {
+	rsp, err := c.SecondStepWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSecondStepResponse(rsp)
+}
+
+// SecondStepWithResponse The second step of a password sign-in.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/auth/login/second-factor (the `SecondStep` operationId).
+func (c *ClientWithResponses) SecondStepWithResponse(ctx context.Context, body SecondStepJSONRequestBody, reqEditors ...RequestEditorFn) (*SecondStepResponse, error) {
+	rsp, err := c.SecondStep(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSecondStepResponse(rsp)
 }
 
 // LogoutWithResponse performs a POST /api/v1/auth/logout (the `Logout` operationId) request.
@@ -17774,6 +19669,47 @@ func (c *ClientWithResponses) UsablePoolsWithResponse(ctx context.Context, id Te
 	return ParseUsablePoolsResponse(rsp)
 }
 
+// GetPolicyWithResponse performs a GET /api/v1/tenants/{id}/two-factor-policy (the `GetPolicy` operationId) request.
+//
+// Returns a wrapper object for the known response body format(s).
+func (c *ClientWithResponses) GetPolicyWithResponse(ctx context.Context, id TenantId, reqEditors ...RequestEditorFn) (*GetPolicyResponse, error) {
+	rsp, err := c.GetPolicy(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetPolicyResponse(rsp)
+}
+
+// SetPolicyWithBodyWithResponse Requires (or stops requiring) a second factor of the tenant's password
+// accounts and its sub-tenants'. Those without one can then only add one,
+// until they do.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/tenants/{id}/two-factor-policy (the `SetPolicy` operationId).
+func (c *ClientWithResponses) SetPolicyWithBodyWithResponse(ctx context.Context, id TenantId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetPolicyResponse, error) {
+	rsp, err := c.SetPolicyWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetPolicyResponse(rsp)
+}
+
+// SetPolicyWithResponse Requires (or stops requiring) a second factor of the tenant's password
+// accounts and its sub-tenants'. Those without one can then only add one,
+// until they do.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/tenants/{id}/two-factor-policy (the `SetPolicy` operationId).
+func (c *ClientWithResponses) SetPolicyWithResponse(ctx context.Context, id TenantId, body SetPolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*SetPolicyResponse, error) {
+	rsp, err := c.SetPolicy(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetPolicyResponse(rsp)
+}
+
 // ListTokensWithResponse The caller's own tokens.
 //
 // Returns a wrapper object for the known response body format(s).
@@ -17895,6 +19831,215 @@ func (c *ClientWithResponses) UserBindingsWithResponse(ctx context.Context, id U
 		return nil, err
 	}
 	return ParseUserBindingsResponse(rsp)
+}
+
+// ResetWithResponse Removes all of a user's second factors and backup codes, for someone
+// who lost them, and signs them out everywhere. For administrators.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /api/v1/users/{id}/two-factor (the `Reset` operationId).
+func (c *ClientWithResponses) ResetWithResponse(ctx context.Context, id UserId, reqEditors ...RequestEditorFn) (*ResetResponse, error) {
+	rsp, err := c.Reset(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseResetResponse(rsp)
+}
+
+// StatusWithResponse performs a GET /api/v1/users/{id}/two-factor (the `Status` operationId) request.
+//
+// Returns a wrapper object for the known response body format(s).
+func (c *ClientWithResponses) StatusWithResponse(ctx context.Context, id UserId, reqEditors ...RequestEditorFn) (*StatusResponse, error) {
+	rsp, err := c.Status(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseStatusResponse(rsp)
+}
+
+// NewBackupCodesWithBodyWithResponse Replaces the backup codes with new ones.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/backup-codes (the `NewBackupCodes` operationId).
+func (c *ClientWithResponses) NewBackupCodesWithBodyWithResponse(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*NewBackupCodesResponse, error) {
+	rsp, err := c.NewBackupCodesWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseNewBackupCodesResponse(rsp)
+}
+
+// NewBackupCodesWithResponse Replaces the backup codes with new ones.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/backup-codes (the `NewBackupCodes` operationId).
+func (c *ClientWithResponses) NewBackupCodesWithResponse(ctx context.Context, id UserId, body NewBackupCodesJSONRequestBody, reqEditors ...RequestEditorFn) (*NewBackupCodesResponse, error) {
+	rsp, err := c.NewBackupCodes(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseNewBackupCodesResponse(rsp)
+}
+
+// RemoveFactorWithBodyWithResponse Removes a second factor: one's own (with one's password), or, for an
+// administrator, someone else's. With the last one go the backup codes.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /api/v1/users/{id}/two-factor/factors/{factor_id} (the `RemoveFactor` operationId).
+func (c *ClientWithResponses) RemoveFactorWithBodyWithResponse(ctx context.Context, id UserId, factorId openapi_types.UUID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RemoveFactorResponse, error) {
+	rsp, err := c.RemoveFactorWithBody(ctx, id, factorId, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRemoveFactorResponse(rsp)
+}
+
+// RemoveFactorWithResponse Removes a second factor: one's own (with one's password), or, for an
+// administrator, someone else's. With the last one go the backup codes.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /api/v1/users/{id}/two-factor/factors/{factor_id} (the `RemoveFactor` operationId).
+func (c *ClientWithResponses) RemoveFactorWithResponse(ctx context.Context, id UserId, factorId openapi_types.UUID, body RemoveFactorJSONRequestBody, reqEditors ...RequestEditorFn) (*RemoveFactorResponse, error) {
+	rsp, err := c.RemoveFactor(ctx, id, factorId, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRemoveFactorResponse(rsp)
+}
+
+// AddTotpWithBodyWithResponse Finishes adding an authenticator app with a code it shows.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/totp (the `AddTotp` operationId).
+func (c *ClientWithResponses) AddTotpWithBodyWithResponse(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AddTotpResponse, error) {
+	rsp, err := c.AddTotpWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAddTotpResponse(rsp)
+}
+
+// AddTotpWithResponse Finishes adding an authenticator app with a code it shows.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/totp (the `AddTotp` operationId).
+func (c *ClientWithResponses) AddTotpWithResponse(ctx context.Context, id UserId, body AddTotpJSONRequestBody, reqEditors ...RequestEditorFn) (*AddTotpResponse, error) {
+	rsp, err := c.AddTotp(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAddTotpResponse(rsp)
+}
+
+// StartTotpWithBodyWithResponse Starts adding an authenticator app: the secret to give it.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/totp/start (the `StartTotp` operationId).
+func (c *ClientWithResponses) StartTotpWithBodyWithResponse(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*StartTotpResponse, error) {
+	rsp, err := c.StartTotpWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseStartTotpResponse(rsp)
+}
+
+// StartTotpWithResponse Starts adding an authenticator app: the secret to give it.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/totp/start (the `StartTotp` operationId).
+func (c *ClientWithResponses) StartTotpWithResponse(ctx context.Context, id UserId, body StartTotpJSONRequestBody, reqEditors ...RequestEditorFn) (*StartTotpResponse, error) {
+	rsp, err := c.StartTotp(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseStartTotpResponse(rsp)
+}
+
+// AddWebauthnWithBodyWithResponse Finishes adding a security key with its answer.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/webauthn (the `AddWebauthn` operationId).
+func (c *ClientWithResponses) AddWebauthnWithBodyWithResponse(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AddWebauthnResponse, error) {
+	rsp, err := c.AddWebauthnWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAddWebauthnResponse(rsp)
+}
+
+// AddWebauthnWithResponse Finishes adding a security key with its answer.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/webauthn (the `AddWebauthn` operationId).
+func (c *ClientWithResponses) AddWebauthnWithResponse(ctx context.Context, id UserId, body AddWebauthnJSONRequestBody, reqEditors ...RequestEditorFn) (*AddWebauthnResponse, error) {
+	rsp, err := c.AddWebauthn(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAddWebauthnResponse(rsp)
+}
+
+// StartWebauthnWithBodyWithResponse Starts adding a security key: what to ask the browser for.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/webauthn/start (the `StartWebauthn` operationId).
+func (c *ClientWithResponses) StartWebauthnWithBodyWithResponse(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*StartWebauthnResponse, error) {
+	rsp, err := c.StartWebauthnWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseStartWebauthnResponse(rsp)
+}
+
+// StartWebauthnWithResponse Starts adding a security key: what to ask the browser for.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/webauthn/start (the `StartWebauthn` operationId).
+func (c *ClientWithResponses) StartWebauthnWithResponse(ctx context.Context, id UserId, body StartWebauthnJSONRequestBody, reqEditors ...RequestEditorFn) (*StartWebauthnResponse, error) {
+	rsp, err := c.StartWebauthn(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseStartWebauthnResponse(rsp)
+}
+
+// AddYubicoOtpWithBodyWithResponse Adds a YubiKey by an OTP it typed.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/yubico-otp (the `AddYubicoOtp` operationId).
+func (c *ClientWithResponses) AddYubicoOtpWithBodyWithResponse(ctx context.Context, id UserId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AddYubicoOtpResponse, error) {
+	rsp, err := c.AddYubicoOtpWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAddYubicoOtpResponse(rsp)
+}
+
+// AddYubicoOtpWithResponse Adds a YubiKey by an OTP it typed.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/users/{id}/two-factor/yubico-otp (the `AddYubicoOtp` operationId).
+func (c *ClientWithResponses) AddYubicoOtpWithResponse(ctx context.Context, id UserId, body AddYubicoOtpJSONRequestBody, reqEditors ...RequestEditorFn) (*AddYubicoOtpResponse, error) {
+	rsp, err := c.AddYubicoOtp(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAddYubicoOtpResponse(rsp)
 }
 
 // ListVmsWithResponse performs a GET /api/v1/vms (the `ListVms` operationId) request.
@@ -18407,6 +20552,41 @@ func ParseLoginResponse(rsp *http.Response) (*LoginResponse, error) {
 	}
 
 	response := &LoginResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest LoginNextStep
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case rsp.StatusCode == 204:
+		break // No content-type
+
+	case rsp.StatusCode == 401:
+		break // No content-type
+
+	case rsp.StatusCode == 429:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseSecondStepResponse parses an HTTP response from a SecondStepWithResponse call
+func ParseSecondStepResponse(rsp *http.Response) (*SecondStepResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SecondStepResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
 	}
@@ -20859,6 +23039,70 @@ func ParseUsablePoolsResponse(rsp *http.Response) (*UsablePoolsResponse, error) 
 	return response, nil
 }
 
+// ParseGetPolicyResponse parses an HTTP response from a GetPolicyWithResponse call
+func ParseGetPolicyResponse(rsp *http.Response) (*GetPolicyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetPolicyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest TwoFactorPolicy
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case rsp.StatusCode == 403:
+		break // No content-type
+
+	case rsp.StatusCode == 404:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseSetPolicyResponse parses an HTTP response from a SetPolicyWithResponse call
+func ParseSetPolicyResponse(rsp *http.Response) (*SetPolicyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SetPolicyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest TwoFactorPolicy
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case rsp.StatusCode == 403:
+		break // No content-type
+
+	case rsp.StatusCode == 404:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
 // ParseListTokensResponse parses an HTTP response from a ListTokensWithResponse call
 func ParseListTokensResponse(rsp *http.Response) (*ListTokensResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -21064,6 +23308,262 @@ func ParseUserBindingsResponse(rsp *http.Response) (*UserBindingsResponse, error
 		response.JSON200 = &dest
 
 	case rsp.StatusCode == 404:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseResetResponse parses an HTTP response from a ResetWithResponse call
+func ParseResetResponse(rsp *http.Response) (*ResetResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ResetResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseStatusResponse parses an HTTP response from a StatusWithResponse call
+func ParseStatusResponse(rsp *http.Response) (*StatusResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &StatusResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest TwoFactorStatus
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case rsp.StatusCode == 403:
+		break // No content-type
+
+	case rsp.StatusCode == 404:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseNewBackupCodesResponse parses an HTTP response from a NewBackupCodesWithResponse call
+func ParseNewBackupCodesResponse(rsp *http.Response) (*NewBackupCodesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &NewBackupCodesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest BackupCodes
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case rsp.StatusCode == 400:
+		break // No content-type
+
+	case rsp.StatusCode == 403:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseRemoveFactorResponse parses an HTTP response from a RemoveFactorWithResponse call
+func ParseRemoveFactorResponse(rsp *http.Response) (*RemoveFactorResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RemoveFactorResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseAddTotpResponse parses an HTTP response from a AddTotpWithResponse call
+func ParseAddTotpResponse(rsp *http.Response) (*AddTotpResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AddTotpResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest FactorAdded
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case rsp.StatusCode == 400:
+		break // No content-type
+
+	case rsp.StatusCode == 403:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseStartTotpResponse parses an HTTP response from a StartTotpWithResponse call
+func ParseStartTotpResponse(rsp *http.Response) (*StartTotpResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &StartTotpResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest TotpEnrollment
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case rsp.StatusCode == 403:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseAddWebauthnResponse parses an HTTP response from a AddWebauthnWithResponse call
+func ParseAddWebauthnResponse(rsp *http.Response) (*AddWebauthnResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AddWebauthnResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest FactorAdded
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case rsp.StatusCode == 400:
+		break // No content-type
+
+	case rsp.StatusCode == 403:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseStartWebauthnResponse parses an HTTP response from a StartWebauthnWithResponse call
+func ParseStartWebauthnResponse(rsp *http.Response) (*StartWebauthnResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &StartWebauthnResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest WebauthnEnrollment
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case rsp.StatusCode == 400:
+		break // No content-type
+
+	case rsp.StatusCode == 403:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseAddYubicoOtpResponse parses an HTTP response from a AddYubicoOtpWithResponse call
+func ParseAddYubicoOtpResponse(rsp *http.Response) (*AddYubicoOtpResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AddYubicoOtpResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest FactorAdded
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case rsp.StatusCode == 400:
+		break // No content-type
+
+	case rsp.StatusCode == 403:
+		break // No content-type
+
+	case rsp.StatusCode == 503:
 		break // No content-type
 
 	}

@@ -33,10 +33,16 @@ pub fn hash_password(password: &str) -> anyhow::Result<String> {
         .to_string())
 }
 
-fn verify_password(password: &str, hash: &str) -> bool {
+pub(super) fn verify_password(password: &str, hash: &str) -> bool {
     Argon2::default()
         .verify_password(password.as_bytes(), hash)
         .is_ok()
+}
+
+/// What failed sign-ins count against: the account, wherever they come
+/// from, under whichever domain.
+pub(super) fn account_key(tenant: TenantId, username: &str) -> String {
+    format!("{tenant}/{}", username.to_lowercase())
 }
 
 pub fn routes() -> OpenApiRouter<AppState> {
@@ -83,6 +89,11 @@ pub struct Me {
     provider_admin: bool,
     /// Signs in with a password (rather than through an identity provider).
     local: bool,
+    /// Signs in with a second factor too.
+    two_factor: bool,
+    /// The tenant, or one above it, requires a second factor, and the user
+    /// has none yet: adding one is all they can do until they have.
+    two_factor_needed: bool,
 }
 
 /// The tenant this site is bound to by its domain name, if any.
@@ -154,8 +165,17 @@ async fn site_info(
     }))
 }
 
+/// Answered when the password was right and a second factor is to come.
+#[derive(Serialize, ToSchema)]
+pub struct LoginNextStep {
+    second_factor: super::two_factor::SecondFactorChallenge,
+}
+
 #[utoipa::path(post, path = "/auth/login", tag = "auth", request_body = LoginRequest,
-    responses((status = 204, description = "Logged in; session cookie set"), (status = 401),
+    responses((status = 204, description = "Logged in; session cookie set"),
+        (status = 200, body = LoginNextStep,
+            description = "The password was right; send a second factor to /auth/login/second-factor"),
+        (status = 401),
         (status = 429, description = "Too many attempts; see Retry-After")))]
 async fn login(
     State(state): State<AppState>,
@@ -172,7 +192,7 @@ async fn login(
     // whichever domain.
     let username = req.username.to_lowercase();
     let account = match &tenant {
-        Some(t) => format!("{}/{username}", t.id),
+        Some(t) => account_key(t.id, &username),
         None => format!(
             "{}/{}/{username}",
             site.host().unwrap_or_default(),
@@ -223,6 +243,12 @@ async fn login(
         }
     };
 
+    let factors = mst_db::two_factor::factors(&state.db, user.id).await?;
+    if !factors.is_empty() {
+        let second_factor =
+            super::two_factor::begin_login(&state, &user, &factors, &site, https).await?;
+        return Ok(Json(LoginNextStep { second_factor }).into_response());
+    }
     let headers = open_session(&state, &user, "password", https).await?;
     Ok((StatusCode::NO_CONTENT, headers).into_response())
 }
@@ -304,6 +330,7 @@ async fn logout(
 #[utoipa::path(get, path = "/auth/me", tag = "auth", responses((status = 200, body = Me), (status = 401)))]
 async fn me(State(state): State<AppState>, p: Principal) -> ApiResult<Json<Me>> {
     let user = mst_db::users::get(&state.db, p.user_id).await?;
+    let two_factor = mst_db::two_factor::has_factor(&state.db, p.user_id).await?;
     let lineage = mst_db::tenants::lineage(&state.db, p.tenant_id).await?;
     let slugs: Vec<_> = lineage.iter().skip(1).map(|t| t.slug.as_str()).collect();
     let bindings = mst_db::rbac::bindings_of(&state.db, p.user_id).await?;
@@ -320,6 +347,8 @@ async fn me(State(state): State<AppState>, p: Principal) -> ApiResult<Json<Me>> 
         .collect();
     Ok(Json(Me {
         local: user.password_hash.is_some(),
+        two_factor,
+        two_factor_needed: p.enroll_only,
         roles,
         user_id: user.id,
         username: user.username,

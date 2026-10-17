@@ -18,6 +18,7 @@ mod storage_pools;
 mod tasks;
 mod tenants;
 mod tokens;
+mod two_factor;
 mod users;
 mod vms;
 mod vpcs;
@@ -67,6 +68,7 @@ fn api() -> OpenApiRouter<AppState> {
         .merge(tenants::routes())
         .merge(users::routes())
         .merge(tokens::routes())
+        .merge(two_factor::routes())
         .merge(audit::routes())
         .merge(events::routes())
         .merge(external_networks::routes())
@@ -81,7 +83,7 @@ pub fn router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
     let (router, mut doc) = OpenApiRouter::new()
         .nest("/api/v1", api())
         .split_for_parts();
-    doc.info.description = Some("Management API for metastratum. Authenticate with POST /api/v1/auth/login; the session cookie authenticates later calls.".into());
+    doc.info.description = Some("Management API for metastratum. Authenticate with POST /api/v1/auth/login (and, for accounts with a second factor, POST /api/v1/auth/login/second-factor); the session cookie authenticates later calls. Or send an API token as a bearer token.".into());
     let spec = doc.clone();
     let router = router.route(
         "/api/v1/openapi.json",
@@ -117,7 +119,21 @@ impl FromRequestParts<AppState> for Principal {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let secret = session_secret(&parts.headers).ok_or_else(ApiError::unauthorized)?;
-        principal_for_secret(state, &secret).await
+        let p = principal_for_secret(state, &secret).await?;
+        if p.enroll_only {
+            let path = parts
+                .extensions
+                .get::<axum::extract::OriginalUri>()
+                .map_or(parts.uri.path(), |u| u.0.path());
+            if !two_factor::enrollment_path(path, p.user_id) {
+                return Err(ApiError::new(
+                    axum::http::StatusCode::FORBIDDEN,
+                    "two_factor_required",
+                    "your tenant requires a second factor; add one to continue",
+                ));
+            }
+        }
+        Ok(p)
     }
 }
 
@@ -134,10 +150,12 @@ async fn principal_for_secret(state: &AppState, secret: &str) -> Result<Principa
             None => Ok(p),
         };
     }
-    let user_id = mst_db::sessions::resolve(&state.db, &hash)
+    let session = mst_db::sessions::resolve(&state.db, &hash)
         .await?
         .ok_or_else(ApiError::unauthorized)?;
-    Principal::load(&state.db, user_id).await
+    let mut p = Principal::load(&state.db, session.user_id).await?;
+    p.enroll_only = session.enroll_only;
+    Ok(p)
 }
 
 #[cfg(test)]
