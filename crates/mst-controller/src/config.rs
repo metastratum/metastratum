@@ -264,7 +264,10 @@ northbound = ["ssl:10.0.0.31:6641"]
     fn the_dev_file_is_valid() {
         let dev = include_str!("../../../deploy/dev/controller.toml");
         let c = Config::parse(dev, Path::new("deploy/dev")).unwrap();
-        assert_eq!(c.web_dir.as_deref(), Some(Path::new("deploy/dev/../../web/dist")));
+        assert_eq!(
+            c.web_dir.as_deref(),
+            Some(Path::new("deploy/dev/../../web/dist"))
+        );
     }
 
     #[test]
