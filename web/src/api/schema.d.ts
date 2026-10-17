@@ -1637,6 +1637,12 @@ export interface components {
             tenant_name: string;
         };
         JoinTokenView: {
+            /**
+             * @description The controllers' agent endpoints, for the agent's controllers
+             *     setting: where the controllers reach each other, which hosts on the
+             *     management network can reach too.
+             */
+            controllers: string[];
             /** Format: date-time */
             expires_at: string;
             /** @description For the agent's join_token setting. Shown only once. */

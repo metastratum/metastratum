@@ -115,6 +115,10 @@ pub struct JoinTokenView {
     /// For the agent's join_token setting. Shown only once.
     token: String,
     expires_at: DateTime<Utc>,
+    /// The controllers' agent endpoints, for the agent's controllers
+    /// setting: where the controllers reach each other, which hosts on the
+    /// management network can reach too.
+    controllers: Vec<String>,
 }
 
 pub async fn issue_join_token(
@@ -137,9 +141,15 @@ pub async fn issue_join_token(
         cluster,
     )
     .await?;
+    let controllers = mst_db::replicas::live(&state.db)
+        .await?
+        .into_iter()
+        .map(|(_, address)| format!("https://{address}"))
+        .collect();
     Ok(JoinTokenView {
         token: token.to_string(),
         expires_at,
+        controllers,
     })
 }
 

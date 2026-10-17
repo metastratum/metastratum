@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Builds mst-agent as a static (musl) binary and installs it on the lab hosts
-# as a systemd service. Hosts that are not enrolled yet get a fresh join token.
+# Builds the agent's package (deploy/packaging/build.sh) and installs it on
+# the lab hosts, with their configuration. Hosts that are not enrolled yet
+# get a fresh join token.
 #
 # Usage: deploy/lab/agent.sh [host...]          (default: all three hosts)
 #
@@ -8,29 +9,28 @@
 #   MST_CONTROLLER  agent endpoints the hosts dial, comma-separated
 #                   (default https://10.77.0.1:8443)
 #   MST_CONFIG      the controller's configuration, used to issue join tokens
+#   NFPM            nfpm, to build the package (default: nfpm on PATH)
 set -euo pipefail
 
 LAB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$LAB_DIR/../.." && pwd)"
 LAB="$LAB_DIR/lab.sh"
 CONTROLLER=${MST_CONTROLLER:-https://10.77.0.1:8443}
-TARGET=x86_64-unknown-linux-musl
 HOSTS=("$@")
 [[ ${#HOSTS[@]} -gt 0 ]] || HOSTS=(mst-host1 mst-host2 mst-host3)
 
 log() { printf '\e[1;34m==>\e[0m %s\n' "$*"; }
 
 main() {
-  log "building a static mst-agent"
-  # A static binary runs on any x86-64 Linux host, whatever its libc.
-  (cd "$ROOT" && cargo build --release --locked -p mst-agent --target "$TARGET")
-  local bin="$ROOT/target/$TARGET/release/mst-agent"
+  log "building the agent's package"
+  "$ROOT/deploy/packaging/build.sh" agent deb
+  local deb
+  deb=$(ls -t "$ROOT"/target/packages/metastratum-agent_*.deb | head -1)
 
   local host token
   for host in "${HOSTS[@]}"; do
     log "installing on $host"
-    "$LAB" ssh "$host" 'cat > /tmp/mst-agent' <"$bin"
-    "$LAB" ssh "$host" 'cat > /tmp/mst-agent.service' <"$ROOT/deploy/systemd/mst-agent.service"
+    "$LAB" ssh "$host" 'cat > /tmp/metastratum-agent.deb' <"$deb"
     token=""
     if ! "$LAB" ssh "$host" test -e /var/lib/metastratum-agent/host_id; then
       : "${MST_CONFIG:?MST_CONFIG must name the controller configuration to issue a join token for $host}"
@@ -38,8 +38,8 @@ main() {
     fi
     "$LAB" ssh "$host" sudo bash -s -- "$CONTROLLER" "$token" <<'REMOTE'
 set -euo pipefail
-install -m 0755 /tmp/mst-agent /usr/local/bin/mst-agent
-install -m 0644 /tmp/mst-agent.service /etc/systemd/system/mst-agent.service
+# Hosts set up before the package: drop the hand-installed agent.
+rm -f /usr/local/bin/mst-agent /etc/systemd/system/mst-agent.service /etc/metastratum/agent.env
 install -d -m 0755 /etc/metastratum
 {
   printf 'controllers = ["%s"]\n' "${1//,/\", \"}"
@@ -48,7 +48,8 @@ install -d -m 0755 /etc/metastratum
   [[ -n ${2:-} ]] && printf 'join_token = "%s"\n' "$2"
 } > /etc/metastratum/agent.toml
 chmod 0600 /etc/metastratum/agent.toml
-rm -f /etc/metastratum/agent.env
+DEBIAN_FRONTEND=noninteractive apt-get install -q -y --reinstall --allow-downgrades /tmp/metastratum-agent.deb >/dev/null
+rm -f /tmp/metastratum-agent.deb
 systemctl daemon-reload
 systemctl enable -q mst-agent
 systemctl restart mst-agent

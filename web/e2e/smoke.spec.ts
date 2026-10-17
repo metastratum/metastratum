@@ -342,3 +342,17 @@ test('a domain name signs in to its tenant', async ({ page, browser, baseURL }) 
     await api.delete(`/api/v1/tenants/${tenant.id}`)
   }
 })
+
+test('adding a host shows the agent configuration to write', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/hosts')
+  await page.getByRole('button', { name: 'Add host' }).first().click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByRole('button', { name: 'Create join token' }).click()
+  // The controllers' own agent endpoints, and the token, ready to paste.
+  const config = dialog.locator('pre')
+  await expect(config).toContainText('controllers = ["https://')
+  await expect(config).toContainText('join_token = "mstjoin.')
+  await expect(config).not.toContainText('CONTROLLER')
+  await dialog.getByRole('button', { name: 'Done' }).click()
+})

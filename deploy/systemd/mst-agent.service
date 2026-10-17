@@ -1,12 +1,12 @@
 [Unit]
 Description=metastratum host agent
-Documentation=https://github.com/iksteen/metastratum
+Documentation=https://github.com/metastratum/metastratum/blob/main/docs/getting-started.md
 After=network-online.target libvirtd.service virtqemud.service ovn-controller.service
 Wants=network-online.target
 
 [Service]
 # Settings: /etc/metastratum/agent.toml (see deploy/config/agent.toml).
-ExecStart=/usr/local/bin/mst-agent
+ExecStart=/usr/bin/mst-agent
 Restart=always
 RestartSec=5
 

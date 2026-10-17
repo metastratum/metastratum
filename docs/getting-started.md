@@ -1,0 +1,156 @@
+# Getting started
+
+The smallest metastratum: one controller and one hypervisor host. Adding
+controllers, more hosts, high availability and the rest is in
+[Running metastratum](operations.md).
+
+You need:
+
+- **A controller machine**: Linux with systemd. It runs the controller,
+  PostgreSQL and OVN's central databases (they can move elsewhere later).
+- **A host** for the VMs: Debian 13, Ubuntu 24.04 or Fedora (or newer), on
+  a machine with hardware virtualisation (VT-x or AMD-V) switched on.
+- A network between them that guests and tenants cannot reach. The
+  examples use `10.0.0.10` for the controller and `10.0.0.11` for the host.
+
+## Packages
+
+Download `metastratum-controller` and `metastratum-agent`, as `.deb` or
+`.rpm`, from the [releases](https://github.com/metastratum/metastratum/releases),
+or build them from a checkout with `deploy/packaging/build.sh`. Both are
+static binaries, so the same package works on any recent distribution.
+
+## The controller
+
+Install it with PostgreSQL and OVN's central databases (Debian and Ubuntu;
+on Fedora: `dnf install ./metastratum-controller-*.rpm postgresql-server ovn-central`):
+
+```sh
+apt install ./metastratum-controller_*.deb postgresql ovn-central
+```
+
+Create the database. `createuser` asks for the password. (On Fedora, first
+`postgresql-setup --initdb`, allow passwords for local connections in
+`pg_hba.conf` (`scram-sha-256` instead of `ident`) and
+`systemctl enable --now postgresql`.)
+
+```sh
+sudo -u postgres createuser --pwprompt metastratum
+sudo -u postgres createdb --owner metastratum metastratum
+```
+
+Write the configuration and the master key, which seals the secrets kept in
+the database. Both stay readable by root only; the service gets them as
+systemd credentials.
+
+```sh
+install -m 600 /usr/share/doc/metastratum-controller/examples/controller.toml /etc/metastratum/controller.toml
+(umask 077; mst-controller gen-master-key > /etc/metastratum/master.key)
+```
+
+In `/etc/metastratum/controller.toml`, set the database (with the password
+you chose) and OVN's databases on this machine:
+
+```toml
+database_url = "postgres://metastratum:PASSWORD@localhost/metastratum"
+
+[ovn]
+northbound = ["ssl:10.0.0.10:6641"]
+southbound = ["ssl:10.0.0.10:6642"]
+```
+
+Everything else has a default; the example file explains each setting.
+Then switch OVN's databases to TLS with certificates from the controller,
+create the first administrator, and start the controller:
+
+```sh
+mst-controller ovn-certificate --name ctl1 --address 10.0.0.10 --out-dir /root/ovn-ctl1
+sh /root/ovn-ctl1/setup.sh
+read -rs -p 'Administrator password: ' MST_ADMIN_PASSWORD && export MST_ADMIN_PASSWORD
+mst-controller bootstrap && unset MST_ADMIN_PASSWORD
+systemctl enable --now mst-controller
+```
+
+The web UI and API listen on `127.0.0.1:8080`, for an HTTPS proxy in front
+([Web traffic](operations.md#controllers) says what it needs). To look
+around before setting one up, forward the port over SSH and open
+http://localhost:8080:
+
+```sh
+ssh -L 8080:127.0.0.1:8080 root@10.0.0.10
+```
+
+Sign in as `admin` with the password you chose.
+
+## The host
+
+Install the agent; it brings libvirt, QEMU and Open vSwitch with OVN's host
+part (`dnf install ./metastratum-agent-*.rpm` on Fedora):
+
+```sh
+apt install ./metastratum-agent_*.deb
+```
+
+Tell OVN who this host is and which address carries the tunnels between
+hosts. The agent connects it to the southbound database itself, with a
+certificate of its own.
+
+```sh
+ovs-vsctl set open . external_ids:system-id=host1 \
+  external_ids:ovn-encap-type=geneve external_ids:ovn-encap-ip=10.0.0.11
+```
+
+For floating IPs and outbound traffic, give OVN a bridge on the network
+that leads outside (here the second NIC), named after the physical network
+you will declare in metastratum (Infrastructure → External networks):
+
+```sh
+ovs-vsctl add-br br-ext -- add-port br-ext eth1
+ovs-vsctl set open . external_ids:ovn-bridge-mappings=external:br-ext
+```
+
+Then enroll the host. In the web UI, choose Infrastructure → Hosts → Add
+host, pick the `default` cluster and create a join token; it shows the
+configuration to write. Or on the controller:
+
+```sh
+mst-controller join-token --cluster default
+```
+
+Put it in `/etc/metastratum/agent.toml` on the host, and start the agent:
+
+```toml
+controllers = ["https://10.0.0.10:8443"]
+join_token = "mstjoin...."
+```
+
+```sh
+chmod 600 /etc/metastratum/agent.toml
+systemctl enable --now mst-agent
+```
+
+The host appears under Infrastructure → Hosts as soon as it connects. The
+token works once; the agent keeps its own identity from then on.
+
+## A first VM
+
+1. Infrastructure → Storage: add a storage pool (a local directory on the
+   hosts is enough to start).
+2. Images: add a cloud image, for example
+   `https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2`.
+3. Machines → Create VM, with an SSH key or a password for the console. It
+   goes on a default private network; to let it reach outside, attach that
+   network's VPC to an external network (Networks).
+
+## Check it
+
+```sh
+mst-controller doctor
+```
+
+compares the installation with the deployment checklist in
+[SECURITY.md](../SECURITY.md#deployment-checklist) and says what to fix: the
+HTTPS proxy, per-VM limits, fencing and so on. Ports to open: 8443 on the
+controller for hosts, 6642 on the OVN node for hosts (6641 for controllers
+only), UDP 6081 between hosts for OVN's tunnels, and 49152-49215 between
+hosts for live migration.

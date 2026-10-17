@@ -24,6 +24,8 @@ controllers with PostgreSQL behind them, and an agent on each host.
 
 metastratum is in development and has no release yet.
 
+- [Getting started](docs/getting-started.md): packages, the first
+  controller and the first host
 - [Running metastratum](docs/operations.md): controllers in several places,
   PostgreSQL and OVN underneath, host failure, upgrades, monitoring
 - [Security](SECURITY.md): the security model, and what the last review
@@ -52,6 +54,8 @@ metastratum is in development and has no release yet.
 | `migrations/` | SQL migrations (sqlx) |
 | `deploy/dev` | Local dev dependencies (Postgres, Redis, Dex as a test identity provider) |
 | `deploy/systemd` | Units for the controller and the agent |
+| `deploy/config` | Every setting of the controller and the agent, as examples |
+| `deploy/packaging` | `.deb` and `.rpm` packages (`build.sh`) |
 | `docs/` | Operating metastratum |
 | `deploy/lab` | Nested-KVM lab: 1 control VM + 3 hypervisor VMs |
 
@@ -206,9 +210,10 @@ target/debug/mst-controller ovn-certificate --name mst-ctl --address 10.77.0.10 
 deploy/lab/lab.sh ovn-tls
 ```
 
-Then build and install the agent on the three hosts. It is a static binary, so
-it runs on any distribution; hosts that are not enrolled yet get a fresh join
-token:
+Then build the agent's package and install it on the three hosts; hosts that
+are not enrolled yet get a fresh join token. Building packages takes
+[nfpm](https://nfpm.goreleaser.com) (`deploy/packaging/install-nfpm.sh`
+installs it):
 
 ```sh
 deploy/lab/agent.sh   # with MST_CONFIG set, as above

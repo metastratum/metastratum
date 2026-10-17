@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { api, ApiError, errorText, ok, type Cluster, type Host, type Vm } from '../api/client'
+import { api, ApiError, errorText, ok, type Cluster, type Host, type Schemas, type Vm } from '../api/client'
 import FencingForm from '../components/FencingForm.vue'
 import HostFaceplate from '../components/HostFaceplate.vue'
 import InfraTabs from '../components/InfraTabs.vue'
@@ -13,11 +13,16 @@ const hosts = ref<Host[] | null>(null)
 const inService = computed(() => (hosts.value ?? []).filter((h) => h.state !== 'decommissioned'))
 const retired = computed(() => (hosts.value ?? []).filter((h) => h.state === 'decommissioned'))
 const vms = ref<Vm[]>([])
-const token = ref<{ token: string; expires_at: string } | null>(null)
+const token = ref<Schemas['JoinTokenView'] | null>(null)
 const tokenError = ref('')
 const adding = ref(false)
 const clusters = ref<Cluster[]>([])
 const joinCluster = ref<string | null>(null)
+const agentConfig = computed(() => {
+  if (!token.value) return ''
+  const controllers = token.value.controllers.length ? token.value.controllers : ['https://CONTROLLER:8443']
+  return `controllers = [${controllers.map((c) => JSON.stringify(c)).join(', ')}]\njoin_token = ${JSON.stringify(token.value.token)}`
+})
 
 async function load() {
   ;[hosts.value, vms.value, clusters.value] = await Promise.all([
@@ -168,9 +173,12 @@ async function createToken() {
       <div class="body">
         <p v-if="tokenError" class="error-text">{{ tokenError }}</p>
         <template v-else-if="token">
-          <p>On the new hypervisor, install <span class="mono">mst-agent</span> and start it once with this token:</p>
-          <pre class="cmd mono">mst-agent --controller https://CONTROLLER:8443 \
-  --join-token {{ token.token }}</pre>
+          <p>
+            On the new hypervisor, install the <span class="mono">metastratum-agent</span> package, put this in
+            <span class="mono">/etc/metastratum/agent.toml</span>, and start it with
+            <span class="mono">systemctl enable --now mst-agent</span>:
+          </p>
+          <pre class="cmd mono">{{ agentConfig }}</pre>
           <p class="muted">
             The token works for one host and expires {{ new Date(token.expires_at).toLocaleTimeString() }}. The host
             appears here as soon as it connects.

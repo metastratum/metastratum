@@ -1,6 +1,6 @@
 [Unit]
 Description=metastratum controller
-Documentation=https://github.com/iksteen/metastratum/blob/main/docs/operations.md
+Documentation=https://github.com/metastratum/metastratum/blob/main/docs/operations.md
 After=network-online.target
 Wants=network-online.target
 
@@ -10,7 +10,7 @@ Wants=network-online.target
 # both readable by root only on disk.
 LoadCredential=controller.toml:/etc/metastratum/controller.toml
 LoadCredential=master.key:/etc/metastratum/master.key
-ExecStart=/usr/local/bin/mst-controller --config %d/controller.toml serve
+ExecStart=/usr/bin/mst-controller --config %d/controller.toml serve
 Restart=always
 RestartSec=5
 DynamicUser=yes

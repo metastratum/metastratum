@@ -1,0 +1,55 @@
+# nfpm description of the host agent package; deploy/packaging/build.sh
+# builds it. The binary is static; the dependencies are what a hypervisor
+# host needs (named for Debian and Ubuntu, and for Fedora and RHEL).
+name: metastratum-agent
+arch: amd64
+platform: linux
+version: ${VERSION}
+maintainer: metastratum <noreply@github.com>
+description: |-
+  metastratum host agent: runs a hypervisor host's VMs, storage and network
+  for the metastratum controllers.
+vendor: metastratum
+homepage: https://github.com/metastratum/metastratum
+license: MIT
+section: admin
+depends:
+  - qemu-system-x86
+  - qemu-utils
+  - libvirt-daemon-system
+  - libvirt-clients
+  - openvswitch-switch
+  - ovn-host
+  - genisoimage
+  - ovmf
+recommends:
+  - nfs-common
+  - qemu-block-extra
+overrides:
+  rpm:
+    depends:
+      - qemu-kvm
+      - qemu-img
+      - libvirt-daemon-kvm
+      - libvirt-client
+      - openvswitch
+      - ovn-host
+      - genisoimage
+      - edk2-ovmf
+    recommends:
+      - nfs-utils
+      - qemu-block-rbd
+contents:
+  - src: target/x86_64-unknown-linux-musl/release/mst-agent
+    dst: /usr/bin/mst-agent
+    file_info: {mode: 0755}
+  - src: deploy/systemd/mst-agent.service
+    dst: /usr/lib/systemd/system/mst-agent.service
+  - src: deploy/config/agent.toml
+    dst: /usr/share/doc/metastratum-agent/examples/agent.toml
+  - dst: /etc/metastratum
+    type: dir
+    file_info: {mode: 0755}
+scripts:
+  postinstall: deploy/packaging/scripts/postinstall-agent.sh
+  preremove: deploy/packaging/scripts/preremove-agent.sh

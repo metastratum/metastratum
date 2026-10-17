@@ -1,0 +1,32 @@
+# nfpm description of the controller package; deploy/packaging/build.sh
+# builds it. The binary is static, so one package suits every distribution.
+name: metastratum-controller
+arch: amd64
+platform: linux
+version: ${VERSION}
+maintainer: metastratum <noreply@github.com>
+description: |-
+  metastratum controller: the control plane of a private cloud for virtual
+  machines on KVM, libvirt and OVN, with its web UI.
+vendor: metastratum
+homepage: https://github.com/metastratum/metastratum
+license: MIT
+section: admin
+contents:
+  - src: target/x86_64-unknown-linux-musl/release/mst-controller
+    dst: /usr/bin/mst-controller
+    file_info: {mode: 0755}
+  - src: web/dist/
+    dst: /usr/share/metastratum/web
+  - src: deploy/systemd/mst-controller.service
+    dst: /usr/lib/systemd/system/mst-controller.service
+  - src: deploy/config/controller.toml
+    dst: /usr/share/doc/metastratum-controller/examples/controller.toml
+  - src: docs/getting-started.md
+    dst: /usr/share/doc/metastratum-controller/getting-started.md
+  - dst: /etc/metastratum
+    type: dir
+    file_info: {mode: 0755}
+scripts:
+  postinstall: deploy/packaging/scripts/postinstall-controller.sh
+  preremove: deploy/packaging/scripts/preremove-controller.sh

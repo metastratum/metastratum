@@ -6,6 +6,7 @@ members = ["crates/*", "tests/e2e"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/metastratum/metastratum"
 rust-version = "1.97"
 
 [workspace.dependencies]
@@ -62,3 +63,7 @@ unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+[profile.release]
+# Symbols stay, for readable backtraces; debug info goes.
+strip = "debuginfo"

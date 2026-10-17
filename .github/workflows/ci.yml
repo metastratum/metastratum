@@ -54,3 +54,30 @@ jobs:
         working-directory: web
       - run: npm run typecheck && npm test && npx vite build
         working-directory: web
+
+  packages:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install nfpm
+        run: deploy/packaging/install-nfpm.sh
+      - run: deploy/packaging/build.sh
+      # The controller package installs and its binary runs.
+      - run: |
+          sudo apt-get install -y ./target/packages/metastratum-controller_*.deb
+          mst-controller --version
+          test -f /usr/share/metastratum/web/index.html
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages
+          path: target/packages/
