@@ -565,6 +565,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/load-balancers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_load_balancers"];
+        put?: never;
+        /**
+         * Creates a load balancer. Connections to a listener's port on its virtual
+         *     IP go to one of the members, at the listener's target port. Members'
+         *     security groups must let the clients in; OVN keeps the clients' address.
+         */
+        post: operations["create_load_balancer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/load-balancers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_load_balancer"];
+        /**
+         * Changes a load balancer's name, health checks, listeners and members.
+         *     Its virtual IP stays.
+         */
+        put: operations["update_load_balancer"];
+        post?: never;
+        /** Deletes a load balancer and gives back its virtual IP. */
+        delete: operations["delete_load_balancer"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/network-policies/{id}": {
         parameters: {
             query?: never;
@@ -1727,6 +1769,17 @@ export interface components {
              */
             ttl_minutes?: number | null;
         };
+        CreateLoadBalancer: {
+            /** @description Check members and leave out those that do not answer (default true). */
+            health_check?: boolean | null;
+            listeners?: components["schemas"]["ListenerSpec"][];
+            /** @description VMs to spread connections over, each with a NIC in the VPC. */
+            member_vm_ids?: components["schemas"]["VmId"][];
+            name: string;
+            network_id?: components["schemas"]["NetworkId"] | null;
+            tenant_id?: components["schemas"]["TenantId"] | null;
+            vpc_id: components["schemas"]["VpcId"];
+        };
         CreateNetwork: {
             /** @description e.g. `10.1.0.0/24`; /16 to /29, not overlapping the VPC's others. */
             cidr: string;
@@ -2000,6 +2053,43 @@ export interface components {
         };
         /** @enum {string} */
         Kind: "vnc" | "serial";
+        ListenerSpec: {
+            /**
+             * Format: int32
+             * @description The port on the virtual IP.
+             */
+            port: number;
+            /** @description `tcp` or `udp`. */
+            protocol: string;
+            /**
+             * Format: int32
+             * @description The members' port; the same as `port` by default.
+             */
+            target_port?: number | null;
+        };
+        /** Format: uuid */
+        LoadBalancerId: string;
+        LoadBalancerView: {
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * @description The virtual IP is on the VPC's external network, reachable from
+             *     outside it; otherwise it is in `network_id`, for the VPC's VMs.
+             */
+            external: boolean;
+            /** @description OVN checks members and leaves out those that do not answer. */
+            health_check: boolean;
+            id: components["schemas"]["LoadBalancerId"];
+            /** @description The virtual IP clients connect to. */
+            ip: string;
+            listeners: components["schemas"]["ListenerSpec"][];
+            members: components["schemas"]["MemberView"][];
+            name: string;
+            network_id?: components["schemas"]["NetworkId"] | null;
+            tenant_id: components["schemas"]["TenantId"];
+            vpc_id: components["schemas"]["VpcId"];
+            vpc_name: string;
+        };
         LoginRequest: {
             password: string;
             /**
@@ -2028,6 +2118,12 @@ export interface components {
             tenant_name: string;
             user_id: components["schemas"]["UserId"];
             username: string;
+        };
+        MemberView: {
+            ip: string;
+            nic_id: components["schemas"]["NicId"];
+            vm_id: components["schemas"]["VmId"];
+            vm_name: string;
         };
         MigrateVm: {
             host_id?: components["schemas"]["HostId"] | null;
@@ -2433,6 +2529,14 @@ export interface components {
             cluster_id?: string | null;
             /** @description `ready`, or `maintenance` to stop placing new VMs on the host. */
             state?: string | null;
+        };
+        UpdateLoadBalancer: {
+            health_check: boolean;
+            /** @description Replaces the listeners. */
+            listeners: components["schemas"]["ListenerSpec"][];
+            /** @description Replaces the members. */
+            member_vm_ids: components["schemas"]["VmId"][];
+            name: string;
         };
         UpdateTenant: {
             name: string;
@@ -3962,6 +4066,185 @@ export interface operations {
             };
             /** @description In use by volumes */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_load_balancers: {
+        parameters: {
+            query?: {
+                /** @description Defaults to the caller's tenant. */
+                tenant_id?: components["schemas"]["TenantId"];
+                /** @description Include sub-tenants' load balancers. */
+                descendants?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoadBalancerView"][];
+                };
+            };
+        };
+    };
+    create_load_balancer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateLoadBalancer"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoadBalancerView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Over quota, or no address left */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_load_balancer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["LoadBalancerId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoadBalancerView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_load_balancer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["LoadBalancerId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateLoadBalancer"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoadBalancerView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_load_balancer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["LoadBalancerId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -168,6 +168,11 @@ async fn set_external(
                 "{fips} floating IP(s) point at VMs in this VPC; detach them first"
             )));
         }
+        if mst_db::load_balancers::any_external_in_vpc(&mut *tx, vpc.id).await? {
+            return Err(ApiError::conflict(
+                "load balancers in this VPC have addresses on its external network; delete them first",
+            ));
+        }
         mst_db::sqlx::query("DELETE FROM external_ips WHERE vpc_id = $1")
             .bind(vpc.id)
             .execute(&mut *tx)
@@ -273,6 +278,11 @@ async fn delete_vpc(
 ) -> ApiResult<StatusCode> {
     let vpc = mst_db::networks::get_vpc(&state.db, id).await?;
     authorize_resource(&state.db, &p, Perm::NetworkWrite, vpc.tenant_id, "VPC").await?;
+    if mst_db::load_balancers::any_in_vpc(&state.db, id).await? {
+        return Err(ApiError::conflict(
+            "the VPC has load balancers; delete them first",
+        ));
+    }
     // Its gateway address goes with it.
     mst_db::networks::delete_vpc(&state.db, id).await?;
     audit(
@@ -368,6 +378,11 @@ async fn delete_network(
 ) -> ApiResult<StatusCode> {
     let n = mst_db::networks::get(&state.db, id).await?;
     authorize_resource(&state.db, &p, Perm::NetworkWrite, n.tenant_id, "network").await?;
+    if mst_db::load_balancers::any_in_network(&state.db, id).await? {
+        return Err(ApiError::conflict(
+            "load balancers have their address in this network; delete them first",
+        ));
+    }
     mst_db::networks::delete(&state.db, id).await?;
     audit(
         &state.db,

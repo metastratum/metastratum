@@ -247,6 +247,7 @@ mod tests {
                 cidr: Cidr::parse("10.0.0.0/24").unwrap(),
                 gateway: "10.0.0.1".parse().unwrap(),
                 mtu: 1442,
+                monitor_ip: None,
             }],
             ports: vec![Port {
                 id: Uuid::from_u128(4),

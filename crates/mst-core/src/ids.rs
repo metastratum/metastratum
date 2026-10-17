@@ -74,6 +74,7 @@ id_type!(
     BackupId,
     BackupRepositoryId,
     SnapshotId,
+    LoadBalancerId,
 );
 
 /// The built-in pool of host-local storage.

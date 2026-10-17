@@ -76,19 +76,22 @@ pub async fn load(db: &mut PgConnection, mtu: u32) -> Result<np::Model> {
     })
     .collect();
 
-    let networks = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, String)>(
-        "SELECT id, tenant_id, vpc_id, cidr::text, host(gateway) FROM networks",
+    let networks = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, String, Option<String>)>(
+        "SELECT n.id, n.tenant_id, n.vpc_id, n.cidr::text, host(n.gateway), host(a.ip)
+         FROM networks n
+         LEFT JOIN network_addresses a ON a.network_id = n.id AND a.purpose = 'lb-monitor'",
     )
     .fetch_all(&mut *db)
     .await?
     .into_iter()
-    .map(|(id, tenant_id, vpc_id, c, g)| np::Network {
+    .map(|(id, tenant_id, vpc_id, c, g, monitor)| np::Network {
         id,
         tenant_id,
         vpc_id,
         cidr: cidr(&c),
         gateway: ip(&g),
         mtu,
+        monitor_ip: monitor.as_deref().map(ip),
     })
     .collect();
 
@@ -214,6 +217,58 @@ pub async fn load(db: &mut PgConnection, mtu: u32) -> Result<np::Model> {
     .map(|(id, external_network_id, addr, port)| np::FloatingIp { id, external_network_id, ip: ip(&addr), port })
     .collect();
 
+    let mut load_balancers: Vec<np::LoadBalancer> =
+        sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, bool)>(
+            "SELECT id, tenant_id, vpc_id, host(ip), health_check FROM load_balancers",
+        )
+        .fetch_all(&mut *db)
+        .await?
+        .into_iter()
+        .map(
+            |(id, tenant_id, vpc_id, vip, health_check)| np::LoadBalancer {
+                id,
+                tenant_id,
+                vpc_id,
+                vip: ip(&vip),
+                listeners: vec![],
+                members: vec![],
+                health_check,
+            },
+        )
+        .collect();
+    let index: HashMap<Uuid, usize> = load_balancers
+        .iter()
+        .enumerate()
+        .map(|(i, lb)| (lb.id, i))
+        .collect();
+    for (lb, proto, port, target) in sqlx::query_as::<_, (Uuid, String, i32, i32)>(
+        "SELECT load_balancer_id, protocol, port, target_port FROM load_balancer_listeners
+         ORDER BY load_balancer_id, protocol, port",
+    )
+    .fetch_all(&mut *db)
+    .await?
+    {
+        if let (Some(&i), Ok(port), Ok(target_port)) =
+            (index.get(&lb), u16::try_from(port), u16::try_from(target))
+        {
+            load_balancers[i].listeners.push(np::Listener {
+                protocol: protocol(&proto),
+                port,
+                target_port,
+            });
+        }
+    }
+    for (lb, nic) in sqlx::query_as::<_, (Uuid, Uuid)>(
+        "SELECT load_balancer_id, nic_id FROM load_balancer_members ORDER BY load_balancer_id, nic_id",
+    )
+    .fetch_all(&mut *db)
+    .await?
+    {
+        if let Some(&i) = index.get(&lb) {
+            load_balancers[i].members.push(nic);
+        }
+    }
+
     let chassis = sqlx::query_as::<_, (String, Vec<String>)>(
         "SELECT ovn_chassis, physical_networks FROM hosts WHERE ovn_chassis <> '' AND state <> 'decommissioned'",
     )
@@ -231,6 +286,7 @@ pub async fn load(db: &mut PgConnection, mtu: u32) -> Result<np::Model> {
         security_groups: groups,
         policies,
         floating_ips,
+        load_balancers,
         chassis,
     })
 }

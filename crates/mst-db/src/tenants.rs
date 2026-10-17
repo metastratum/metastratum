@@ -176,11 +176,13 @@ pub async fn contents(db: impl PgExecutor<'_>, id: TenantId) -> Result<Vec<(Stri
 }
 
 /// Deletes a tenant with its users, role bindings, quotas, grants and network
-/// configuration (VPCs, networks, security groups, floating IPs, policies).
+/// configuration (load balancers, VPCs, networks, security groups, floating
+/// IPs, policies).
 /// Callers check it holds nothing else first (see [`contents`]); with no VMs
 /// left, nothing is connected to its networks.
 pub async fn delete(db: &mut PgConnection, id: TenantId) -> Result<()> {
     for sql in [
+        "DELETE FROM load_balancers WHERE tenant_id = $1",
         "DELETE FROM external_ips WHERE tenant_id = $1",
         "DELETE FROM networks WHERE tenant_id = $1",
         "DELETE FROM vpcs WHERE tenant_id = $1",

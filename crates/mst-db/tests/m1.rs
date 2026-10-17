@@ -102,6 +102,32 @@ async fn ip_allocation_is_ordered_skips_gateway_and_exhausts(pool: PgPool) {
         .unwrap();
     assert_eq!((a.ip.as_str(), b.ip.as_str()), ("10.0.0.2", "10.0.0.3"));
 
+    // Reserved addresses: a load balancer's (lowest free) and the health
+    // check address (highest), which NICs then skip.
+    let vip = networks::reserve_address(&mut conn, net.id, "lb-vip")
+        .await
+        .unwrap();
+    let monitor = networks::monitor_address(&mut conn, net.id).await.unwrap();
+    assert_eq!(
+        networks::monitor_address(&mut conn, net.id).await.unwrap(),
+        monitor
+    );
+    assert_eq!(
+        (vip.to_string(), monitor.to_string()),
+        ("10.0.0.4".into(), "10.0.0.254".into())
+    );
+    let c = networks::create_nic(&mut conn, NicId::new(), v.id, net.id, "02:00:00:00:00:03")
+        .await
+        .unwrap();
+    assert_eq!(c.ip, "10.0.0.5");
+    networks::release_address(&mut *conn, net.id, vip)
+        .await
+        .unwrap();
+    let d = networks::create_nic(&mut conn, NicId::new(), v.id, net.id, "02:00:00:00:00:04")
+        .await
+        .unwrap();
+    assert_eq!(d.ip, "10.0.0.4", "released, so it is free again");
+
     // A /29 has 6 usable addresses; minus the gateway leaves 5.
     let small = NetworkId::new();
     let vpc = networks::get_vpc(&pool, net.vpc_id).await.unwrap();

@@ -14,6 +14,7 @@ export const router = createRouter({
     { path: '/networks', name: 'networks', component: () => import('./views/VpcsView.vue'), meta: { net: true } },
     { path: '/security-groups', name: 'security-groups', component: () => import('./views/SecurityGroupsView.vue'), meta: { net: true } },
     { path: '/floating-ips', name: 'floating-ips', component: () => import('./views/FloatingIpsView.vue'), meta: { net: true } },
+    { path: '/load-balancers', name: 'load-balancers', component: () => import('./views/LoadBalancersView.vue'), meta: { net: true } },
     { path: '/guardrails', name: 'guardrails', component: () => import('./views/GuardrailsView.vue'), meta: { net: true } },
     { path: '/external-networks', name: 'external-networks', component: () => import('./views/ExternalNetworksView.vue'), meta: { provider: true, infra: true } },
     { path: '/audit', name: 'audit', component: () => import('./views/AuditView.vue') },

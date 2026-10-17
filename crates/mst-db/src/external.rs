@@ -175,6 +175,25 @@ pub async fn allocate(
     vpc: Option<VpcId>,
 ) -> Result<ExternalIp> {
     let kind = if vpc.is_some() { "gateway" } else { "floating" };
+    allocate_as(db, network, tenant, vpc, kind).await
+}
+
+/// An address for a load balancer's virtual IP.
+pub async fn allocate_for_load_balancer(
+    db: &mut PgConnection,
+    network: ExternalNetworkId,
+    tenant: TenantId,
+) -> Result<ExternalIp> {
+    allocate_as(db, network, tenant, None, "load_balancer").await
+}
+
+async fn allocate_as(
+    db: &mut PgConnection,
+    network: ExternalNetworkId,
+    tenant: TenantId,
+    vpc: Option<VpcId>,
+    kind: &str,
+) -> Result<ExternalIp> {
     for _ in 0..8 {
         let res = sqlx::query_as(concat!(
             "INSERT INTO external_ips (id, external_network_id, ip, kind, tenant_id, vpc_id)

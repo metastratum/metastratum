@@ -218,10 +218,27 @@ test('networks: a VPC with a network, a security group with a rule', async ({ pa
   await group.locator('form').getByRole('button', { name: 'Add rule' }).click()
   await expect(group.locator('.rule-row', { hasText: 'TCP 443 from anywhere' })).toBeVisible()
 
-  // Clean up.
   await group.getByRole('button', { name: 'Delete' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Delete group' }).click()
   await expect(group).toHaveCount(0)
+
+  // A load balancer with its address inside the VPC.
+  await page.getByRole('navigation', { name: 'Networking' }).getByRole('link', { name: 'Load balancers' }).click()
+  await expect(page.getByRole('heading', { name: 'Load balancers', level: 1 })).toBeVisible()
+  await page.getByRole('button', { name: 'Create load balancer' }).click()
+  dialog = page.getByRole('dialog')
+  await dialog.getByLabel('Name').fill(`lb-${id}`)
+  await dialog.getByRole('combobox', { name: 'VPC', exact: true }).selectOption({ label: `vpc-${id}` })
+  await expect(dialog.getByRole('combobox', { name: 'Address', exact: true })).toHaveValue(/.+/)
+  await dialog.getByRole('button', { name: 'Create' }).click()
+  const lb = page.getByRole('row', { name: new RegExp(`lb-${id}`) })
+  await expect(lb).toContainText('TCP 80')
+  await expect(lb).toContainText('10.42.0.')
+  await lb.getByRole('button', { name: 'Delete…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete load balancer' }).click()
+  await expect(lb).toHaveCount(0)
+
+  // Clean up.
   await page.getByRole('navigation', { name: 'Networking' }).getByRole('link', { name: 'VPCs' }).click()
   await vpc.locator('li.net', { hasText: 'app' }).getByRole('button', { name: 'Delete' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Delete' }).click()

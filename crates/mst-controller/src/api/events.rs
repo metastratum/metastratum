@@ -114,7 +114,7 @@ fn visible(p: &Principal, root: Option<&TenantPath>, c: &Change) -> bool {
         ("cluster" | "storage_pool" | "external_network" | "backup_repository", _) => {
             root.is_some_and(|r| p.can(Perm::InfraRead, r))
         }
-        ("vpc" | "network" | "security_group" | "external_ip", Some(t)) => {
+        ("vpc" | "network" | "security_group" | "external_ip" | "load_balancer", Some(t)) => {
             p.can(Perm::NetworkRead, t)
         }
         // Guardrails apply to (and are shown in) the subtree below them.

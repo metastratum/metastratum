@@ -11,13 +11,14 @@ use sqlx::{PgConnection, PgExecutor};
 
 use crate::Result;
 
-pub const RESOURCES: [&str; 6] = [
+pub const RESOURCES: [&str; 7] = [
     "vms",
     "vcpus",
     "memory_mib",
     "disk_gib",
     "floating_ips",
     "backup_gib",
+    "load_balancers",
 ];
 const GIB: i64 = 1 << 30;
 
@@ -27,7 +28,7 @@ pub type Amounts = BTreeMap<String, i64>;
 
 /// What a tenant's subtree currently uses.
 pub async fn usage(db: impl PgExecutor<'_>, tenant_id: TenantId) -> Result<Amounts> {
-    let (vms, vcpus, memory, disk, fips, backups): (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+    let (vms, vcpus, memory, disk, fips, backups, lbs): (i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(
         "WITH sub AS (SELECT id FROM tenants WHERE path <@ (SELECT path FROM tenants WHERE id = $1))
          SELECT
            (SELECT count(*) FROM vms WHERE tenant_id IN (SELECT id FROM sub)),
@@ -35,7 +36,8 @@ pub async fn usage(db: impl PgExecutor<'_>, tenant_id: TenantId) -> Result<Amoun
            (SELECT coalesce(sum((spec->>'memory_mib')::bigint), 0)::bigint FROM vms WHERE tenant_id IN (SELECT id FROM sub)),
            (SELECT coalesce(sum(size_bytes), 0)::bigint FROM volumes WHERE tenant_id IN (SELECT id FROM sub)),
            (SELECT count(*) FROM external_ips WHERE kind = 'floating' AND tenant_id IN (SELECT id FROM sub)),
-           (SELECT coalesce(sum(size_bytes), 0)::bigint FROM backups WHERE state <> 'failed' AND tenant_id IN (SELECT id FROM sub))",
+           (SELECT coalesce(sum(size_bytes), 0)::bigint FROM backups WHERE state <> 'failed' AND tenant_id IN (SELECT id FROM sub)),
+           (SELECT count(*) FROM load_balancers WHERE tenant_id IN (SELECT id FROM sub))",
     )
     .bind(tenant_id)
     .fetch_one(db)
@@ -47,6 +49,7 @@ pub async fn usage(db: impl PgExecutor<'_>, tenant_id: TenantId) -> Result<Amoun
         ("disk_gib", (disk + GIB - 1) / GIB),
         ("floating_ips", fips),
         ("backup_gib", (backups + GIB - 1) / GIB),
+        ("load_balancers", lbs),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))

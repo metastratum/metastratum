@@ -8,6 +8,7 @@
 //! | external network    | Logical_Switch `mst-ext-<id>` with a localnet port          |
 //! | VPC gateway         | router port `mst-gw-<vpc>` on gateway chassis, SNAT, route  |
 //! | floating IP         | NAT dnat_and_snat                                          |
+//! | load balancer       | Load_Balancer `mst-lb-<id>-<proto>` on the VPC's router and switches |
 //! | security group      | Port_Group `mst_sg_<id>` with allow-related ACLs            |
 //! | guardrail policies  | Port_Group `mst_gr_<tenant>` with drop ACLs                 |
 //!
@@ -30,6 +31,9 @@ pub const PRIO_DEFAULT_DROP: i64 = 1000;
 pub const PRIO_ALLOW: i64 = 1001;
 pub const PRIO_GUARDRAIL: i64 = 2000;
 pub const PRIO_DHCP: i64 = 3000;
+/// Load balancers' health checks reach members whatever their security
+/// groups and guardrails say, so members are judged by whether they answer.
+pub const PRIO_HEALTH_CHECK: i64 = 3000;
 /// QoS rules (a table of their own; one rule per port and direction).
 pub const PRIO_QOS: i64 = 100;
 
@@ -189,6 +193,108 @@ pub fn compile(m: &Model) -> Desired {
                 "floating IP {} cannot reach its NIC: the NIC's VPC does not use that external network",
                 f.ip
             )),
+        }
+    }
+
+    // Load balancers: a row per protocol, on the VPC's router (traffic from
+    // outside) and every one of its switches (traffic from its VMs).
+    let mut lbs_by_vpc: BTreeMap<Uuid, Vec<String>> = BTreeMap::new();
+    let mut monitors: BTreeSet<Ipv4Addr> = BTreeSet::new();
+    for lb in &m.load_balancers {
+        if !vpcs.contains_key(&lb.vpc_id) {
+            warnings.push(format!("load balancer {} is in an unknown VPC", lb.id));
+            continue;
+        }
+        let members: Vec<&Port> = lb
+            .members
+            .iter()
+            .filter_map(|id| match ports.get(id) {
+                Some(p)
+                    if networks
+                        .get(&p.network_id)
+                        .is_some_and(|n| n.vpc_id == lb.vpc_id) =>
+                {
+                    Some(*p)
+                }
+                _ => {
+                    warnings.push(format!(
+                        "load balancer {}: member {id} is not a NIC in its VPC",
+                        lb.id
+                    ));
+                    None
+                }
+            })
+            .collect();
+        for (proto, name) in [(Protocol::Tcp, "tcp"), (Protocol::Udp, "udp")] {
+            let listeners: Vec<&Listener> = lb
+                .listeners
+                .iter()
+                .filter(|l| l.protocol == proto)
+                .collect();
+            if listeners.is_empty() {
+                continue;
+            }
+            let mut vips = BTreeMap::new();
+            let mut checks = vec![];
+            for l in &listeners {
+                let backends: Vec<String> = members
+                    .iter()
+                    .map(|p| format!("{}:{}", p.ip, l.target_port))
+                    .collect();
+                let vip = format!("{}:{}", lb.vip, l.port);
+                vips.insert(vip.clone(), backends.join(","));
+                if lb.health_check && !members.is_empty() {
+                    let key = format!("lbhc/{}/{name}/{}", lb.id, l.port);
+                    b.add(
+                        Table::LoadBalancerHealthCheck,
+                        key.clone(),
+                        Some(lb.tenant_id),
+                        vec![
+                            ("vip", s(vip)),
+                            (
+                                "options",
+                                map([
+                                    ("interval", "5".to_owned()),
+                                    ("timeout", "3".to_owned()),
+                                    ("success_count", "2".to_owned()),
+                                    ("failure_count", "3".to_owned()),
+                                ]),
+                            ),
+                        ],
+                    );
+                    checks.push(key);
+                }
+            }
+            // Health checks come from an address of each member's network.
+            let mut mappings = BTreeMap::new();
+            if !checks.is_empty() {
+                for p in &members {
+                    match networks.get(&p.network_id).and_then(|n| n.monitor_ip) {
+                        Some(src) => {
+                            mappings.insert(p.ip.to_string(), format!("{}:{src}", p.id));
+                            monitors.insert(src);
+                        }
+                        None => warnings.push(format!(
+                            "load balancer {}: network {} has no health check address",
+                            lb.id, p.network_id
+                        )),
+                    }
+                }
+            }
+            let key = format!("lb/{}/{name}", lb.id);
+            b.add(
+                Table::LoadBalancer,
+                key.clone(),
+                Some(lb.tenant_id),
+                vec![
+                    ("name", s(format!("mst-lb-{}-{name}", lb.id))),
+                    ("protocol", strs([name])),
+                    ("vips", Datum::Map(vips)),
+                    ("health_check", refs(checks)),
+                    ("ip_port_mappings", Datum::Map(mappings)),
+                ],
+            );
+            lbs_by_vpc.entry(lb.vpc_id).or_default().push(key);
         }
     }
 
@@ -355,6 +461,10 @@ pub fn compile(m: &Model) -> Desired {
                 ("ports", refs(router_ports)),
                 ("nat", refs(nat)),
                 ("static_routes", refs(routes)),
+                (
+                    "load_balancer",
+                    refs(lbs_by_vpc.get(&v.id).cloned().unwrap_or_default()),
+                ),
             ],
         );
     }
@@ -450,6 +560,10 @@ pub fn compile(m: &Model) -> Desired {
                 ("name", s(switch_name(n.id))),
                 ("ports", refs(sw_ports)),
                 ("qos_rules", refs(qos)),
+                (
+                    "load_balancer",
+                    refs(lbs_by_vpc.get(&n.vpc_id).cloned().unwrap_or_default()),
+                ),
             ],
         );
         if !vpcs.contains_key(&n.vpc_id) {
@@ -523,6 +637,7 @@ pub fn compile(m: &Model) -> Desired {
         ),
     ] {
         let key = format!("acl/vms/{name}");
+        acls.push(key.clone());
         b.add(
             Table::Acl,
             key.clone(),
@@ -532,6 +647,27 @@ pub fn compile(m: &Model) -> Desired {
                 ("priority", Datum::Int(prio)),
                 ("match", s(matcher)),
                 ("action", s(action)),
+            ],
+        );
+    }
+    if !monitors.is_empty() {
+        let key = "acl/vms/health-checks".to_owned();
+        let sources: Vec<String> = monitors.iter().map(Ipv4Addr::to_string).collect();
+        b.add(
+            Table::Acl,
+            key.clone(),
+            None,
+            vec![
+                ("direction", s("to-lport")),
+                ("priority", Datum::Int(PRIO_HEALTH_CHECK)),
+                (
+                    "match",
+                    s(format!(
+                        "outport == @{pg_vms} && ip4.src == {{{}}}",
+                        sources.join(", ")
+                    )),
+                ),
+                ("action", s("allow-related")),
             ],
         );
         acls.push(key);
@@ -697,6 +833,7 @@ mod tests {
                 cidr: cidr("10.0.0.0/24"),
                 gateway: "10.0.0.1".parse().unwrap(),
                 mtu: 1442,
+                monitor_ip: None,
             }],
             ports: vec![port(20, [10, 0, 0, 2]), port(21, [10, 0, 0, 3])],
             security_groups: vec![SecurityGroup {
@@ -728,6 +865,7 @@ mod tests {
                 ip: "10.78.0.201".parse().unwrap(),
                 port: Some(id(20)),
             }],
+            load_balancers: vec![],
             chassis: ["mst-host1", "mst-host2", "mst-host3", "mst-host4"]
                 .map(|n| Chassis {
                     name: n.into(),
@@ -735,6 +873,107 @@ mod tests {
                 })
                 .into(),
         }
+    }
+
+    #[test]
+    fn load_balancers_spread_over_members_and_check_them() {
+        let mut m = model();
+        m.networks[0].monitor_ip = Some("10.0.0.254".parse().unwrap());
+        let (lb, vpc, net) = (id(60), m.vpcs[0].id, m.networks[0].id);
+        let (a, b) = (m.ports[0].id, m.ports[1].id);
+        m.load_balancers.push(LoadBalancer {
+            id: lb,
+            tenant_id: m.vpcs[0].tenant_id,
+            vpc_id: vpc,
+            vip: "10.78.0.210".parse().unwrap(),
+            listeners: vec![
+                Listener {
+                    protocol: Protocol::Tcp,
+                    port: 80,
+                    target_port: 8080,
+                },
+                Listener {
+                    protocol: Protocol::Tcp,
+                    port: 443,
+                    target_port: 443,
+                },
+            ],
+            members: vec![a, b, id(99)],
+            health_check: true,
+        });
+        let d = compile(&m);
+        let row = d.find(&format!("lb/{lb}/tcp")).expect("TCP load balancer");
+        assert!(
+            d.find(&format!("lb/{lb}/udp")).is_none(),
+            "no UDP listeners"
+        );
+        assert_eq!(row.get("protocol"), Some(&Datum::Strs(vec!["tcp".into()])));
+        let vips = BTreeMap::from([
+            (
+                "10.78.0.210:80".to_owned(),
+                "10.0.0.2:8080,10.0.0.3:8080".to_owned(),
+            ),
+            (
+                "10.78.0.210:443".to_owned(),
+                "10.0.0.2:443,10.0.0.3:443".to_owned(),
+            ),
+        ]);
+        assert_eq!(row.get("vips"), Some(&Datum::Map(vips)));
+        assert_eq!(
+            row.get("ip_port_mappings"),
+            Some(&Datum::Map(BTreeMap::from([
+                ("10.0.0.2".to_owned(), format!("{a}:10.0.0.254")),
+                ("10.0.0.3".to_owned(), format!("{b}:10.0.0.254")),
+            ])))
+        );
+        let checks = row.refs("health_check");
+        assert_eq!(checks.len(), 2);
+        assert_eq!(
+            d.find(checks[1]).unwrap().str("vip"),
+            Some("10.78.0.210:443")
+        );
+        // On the router and every switch of the VPC.
+        let key = format!("lb/{lb}/tcp");
+        assert!(
+            d.find(&format!("lr/{vpc}"))
+                .unwrap()
+                .refs("load_balancer")
+                .contains(&key.as_str())
+        );
+        assert!(
+            d.find(&format!("ls/{net}"))
+                .unwrap()
+                .refs("load_balancer")
+                .contains(&key.as_str())
+        );
+        // Health checks get through, whatever else is in the way.
+        let acl = d.find("acl/vms/health-checks").expect("health check ACL");
+        assert_eq!(
+            acl.str("match"),
+            Some("outport == @mst_vms && ip4.src == {10.0.0.254}")
+        );
+        assert!(
+            d.find("pg/vms")
+                .unwrap()
+                .refs("acls")
+                .contains(&"acl/vms/health-checks")
+        );
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.contains("not a NIC in its VPC"))
+        );
+
+        // Without health checks: no checks, no mappings, no ACL.
+        m.load_balancers[0].health_check = false;
+        let d = compile(&m);
+        let row = d.find(&format!("lb/{lb}/tcp")).unwrap();
+        assert!(row.refs("health_check").is_empty());
+        assert_eq!(
+            row.get("ip_port_mappings"),
+            Some(&Datum::Map(BTreeMap::new()))
+        );
+        assert!(d.find("acl/vms/health-checks").is_none());
     }
 
     #[test]

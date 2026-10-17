@@ -10,6 +10,7 @@ mod external_networks;
 mod floating_ips;
 mod hosts;
 mod images;
+mod load_balancers;
 mod oidc;
 mod security;
 mod snapshots;
@@ -72,6 +73,7 @@ fn api() -> OpenApiRouter<AppState> {
         .merge(vpcs::routes())
         .merge(security::routes())
         .merge(floating_ips::routes())
+        .merge(load_balancers::routes())
 }
 
 /// The API router (mounted under `/api/v1`) and its OpenAPI document.

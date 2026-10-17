@@ -18,10 +18,12 @@ pub enum Table {
     PortGroup,
     Acl,
     Qos,
+    LoadBalancer,
+    LoadBalancerHealthCheck,
 }
 
 impl Table {
-    pub const ALL: [Table; 11] = [
+    pub const ALL: [Table; 13] = [
         Table::LogicalSwitch,
         Table::LogicalSwitchPort,
         Table::LogicalRouter,
@@ -33,6 +35,8 @@ impl Table {
         Table::PortGroup,
         Table::Acl,
         Table::Qos,
+        Table::LoadBalancer,
+        Table::LoadBalancerHealthCheck,
     ];
 
     pub fn name(self) -> &'static str {
@@ -48,6 +52,8 @@ impl Table {
             Table::PortGroup => "Port_Group",
             Table::Acl => "ACL",
             Table::Qos => "QoS",
+            Table::LoadBalancer => "Load_Balancer",
+            Table::LoadBalancerHealthCheck => "Load_Balancer_Health_Check",
         }
     }
 
@@ -55,7 +61,11 @@ impl Table {
     pub fn is_root(self) -> bool {
         matches!(
             self,
-            Table::LogicalSwitch | Table::LogicalRouter | Table::DhcpOptions | Table::PortGroup
+            Table::LogicalSwitch
+                | Table::LogicalRouter
+                | Table::DhcpOptions
+                | Table::PortGroup
+                | Table::LoadBalancer
         )
     }
 
@@ -76,7 +86,13 @@ impl Table {
     /// Columns metastratum sets; everything a comparison needs.
     pub fn columns(self) -> &'static [&'static str] {
         match self {
-            Table::LogicalSwitch => &["name", "ports", "qos_rules", "external_ids"],
+            Table::LogicalSwitch => &[
+                "name",
+                "ports",
+                "qos_rules",
+                "load_balancer",
+                "external_ids",
+            ],
             Table::LogicalSwitchPort => &[
                 "name",
                 "type",
@@ -86,7 +102,14 @@ impl Table {
                 "dhcpv4_options",
                 "external_ids",
             ],
-            Table::LogicalRouter => &["name", "ports", "nat", "static_routes", "external_ids"],
+            Table::LogicalRouter => &[
+                "name",
+                "ports",
+                "nat",
+                "static_routes",
+                "load_balancer",
+                "external_ids",
+            ],
             Table::LogicalRouterPort => {
                 &["name", "mac", "networks", "gateway_chassis", "external_ids"]
             }
@@ -103,6 +126,15 @@ impl Table {
                 "bandwidth",
                 "external_ids",
             ],
+            Table::LoadBalancer => &[
+                "name",
+                "protocol",
+                "vips",
+                "health_check",
+                "ip_port_mappings",
+                "external_ids",
+            ],
+            Table::LoadBalancerHealthCheck => &["vip", "options", "external_ids"],
         }
     }
 }

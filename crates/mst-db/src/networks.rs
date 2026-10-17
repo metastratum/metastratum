@@ -303,6 +303,7 @@ pub async fn create_nic(
     network_id: NetworkId,
     mac: &str,
 ) -> Result<Nic> {
+    lock_addresses(&mut *db, network_id).await?;
     for _ in 0..8 {
         let res = sqlx::query_as(
             "INSERT INTO nics (id, vm_id, network_id, mac, ip)
@@ -312,6 +313,8 @@ pub async fn create_nic(
                AND set_masklen(n.cidr::inet + s, 32) <> set_masklen(n.gateway, 32)
                AND NOT EXISTS (SELECT 1 FROM nics x
                                WHERE x.network_id = n.id AND x.ip = set_masklen(n.cidr::inet + s, 32))
+               AND NOT EXISTS (SELECT 1 FROM network_addresses a
+                               WHERE a.network_id = n.id AND a.ip = set_masklen(n.cidr::inet + s, 32))
              ORDER BY s LIMIT 1
              RETURNING id, vm_id, network_id, mac, host(ip) AS ip",
         )
@@ -337,6 +340,72 @@ pub async fn create_nic(
         }
     }
     Err(mst_core::Error::Conflict("could not allocate an address; try again".into()).into())
+}
+
+/// Serialises address allocation in a network until the transaction ends:
+/// NICs and reserved addresses come from different tables.
+async fn lock_addresses(db: &mut PgConnection, network: NetworkId) -> Result<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('mst-addresses:' || $1::text, 0))")
+        .bind(network)
+        .execute(&mut *db)
+        .await?;
+    Ok(())
+}
+
+/// Reserves a free address in a network for `purpose` (`lb-vip`, the lowest
+/// free one, or `lb-monitor`, the highest).
+pub async fn reserve_address(
+    db: &mut PgConnection,
+    network: NetworkId,
+    purpose: &str,
+) -> Result<Ipv4Addr> {
+    lock_addresses(&mut *db, network).await?;
+    let ip: Option<String> = sqlx::query_scalar(
+        "INSERT INTO network_addresses (network_id, ip, purpose)
+         SELECT n.id, set_masklen(n.cidr::inet + s, 32), $2
+         FROM networks n, generate_series(1, (2 ^ (32 - masklen(n.cidr)))::bigint - 2) s
+         WHERE n.id = $1
+           AND set_masklen(n.cidr::inet + s, 32) <> set_masklen(n.gateway, 32)
+           AND NOT EXISTS (SELECT 1 FROM nics x
+                           WHERE x.network_id = n.id AND x.ip = set_masklen(n.cidr::inet + s, 32))
+           AND NOT EXISTS (SELECT 1 FROM network_addresses a
+                           WHERE a.network_id = n.id AND a.ip = set_masklen(n.cidr::inet + s, 32))
+         ORDER BY CASE WHEN $2 = 'lb-monitor' THEN -s ELSE s END LIMIT 1
+         RETURNING host(ip)",
+    )
+    .bind(network)
+    .bind(purpose)
+    .fetch_optional(&mut *db)
+    .await?;
+    ip.and_then(|ip| ip.parse().ok())
+        .ok_or_else(|| mst_core::Error::Conflict("network has no free addresses".into()).into())
+}
+
+/// The network's health check address, reserved on first use.
+pub async fn monitor_address(db: &mut PgConnection, network: NetworkId) -> Result<Ipv4Addr> {
+    let have: Option<String> = sqlx::query_scalar(
+        "SELECT host(ip) FROM network_addresses WHERE network_id = $1 AND purpose = 'lb-monitor'",
+    )
+    .bind(network)
+    .fetch_optional(&mut *db)
+    .await?;
+    match have.and_then(|ip| ip.parse().ok()) {
+        Some(ip) => Ok(ip),
+        None => reserve_address(db, network, "lb-monitor").await,
+    }
+}
+
+pub async fn release_address(
+    db: impl PgExecutor<'_>,
+    network: NetworkId,
+    ip: Ipv4Addr,
+) -> Result<()> {
+    sqlx::query("DELETE FROM network_addresses WHERE network_id = $1 AND ip = $2::inet")
+        .bind(network)
+        .bind(ip.to_string())
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 /// Puts a NIC in exactly these security groups.

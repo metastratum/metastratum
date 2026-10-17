@@ -9,6 +9,7 @@ const scope = useScope()
     <RouterLink to="/networks">VPCs</RouterLink>
     <RouterLink to="/security-groups">Security groups</RouterLink>
     <RouterLink to="/floating-ips">Floating IPs</RouterLink>
+    <RouterLink to="/load-balancers">Load balancers</RouterLink>
     <RouterLink v-if="!scope.solo" to="/guardrails">Guardrails</RouterLink>
   </nav>
 </template>

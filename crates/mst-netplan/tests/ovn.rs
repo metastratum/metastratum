@@ -93,12 +93,33 @@ fn model() -> Model {
             cidr: Cidr::parse("10.0.0.0/24").unwrap(),
             gateway: "10.0.0.1".parse().unwrap(),
             mtu: 1442,
+            monitor_ip: Some("10.0.0.254".parse().unwrap()),
         }],
         floating_ips: vec![FloatingIp {
             id: id(()),
             external_network_id: ext,
             ip: "10.78.0.231".parse().unwrap(),
             port: Some(ports[1].id),
+        }],
+        load_balancers: vec![LoadBalancer {
+            id: id(()),
+            tenant_id: dev,
+            vpc_id: vpc,
+            vip: "10.78.0.232".parse().unwrap(),
+            listeners: vec![
+                Listener {
+                    protocol: Protocol::Tcp,
+                    port: 80,
+                    target_port: 8080,
+                },
+                Listener {
+                    protocol: Protocol::Udp,
+                    port: 53,
+                    target_port: 53,
+                },
+            ],
+            members: ports.iter().map(|p| p.id).collect(),
+            health_check: true,
         }],
         ports,
         security_groups: vec![
@@ -163,6 +184,7 @@ async fn plans_converge_a_real_northbound_database() {
     m.ports[0].ip = Ipv4Addr::new(10, 0, 0, 9);
     m.security_groups[1].rules.clear();
     m.ports[1].bandwidth = Some(Bandwidth { kbps: 20_000 });
+    m.load_balancers[0].members.pop();
     let change = converge(&nb, &m).await;
     assert_eq!(change.inserts, 0, "{:#?}", change.ops);
     assert!(converge(&nb, &m).await.is_empty());

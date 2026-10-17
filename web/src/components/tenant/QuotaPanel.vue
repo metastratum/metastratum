@@ -18,6 +18,7 @@ const RESOURCES = [
   { key: 'disk_gib', label: 'Disk', unit: 'GiB', scale: 1 },
   { key: 'floating_ips', label: 'Floating IPs', unit: '', scale: 1 },
   { key: 'backup_gib', label: 'Backups', unit: 'GiB', scale: 1 },
+  { key: 'load_balancers', label: 'Load balancers', unit: '', scale: 1 },
 ] as const
 
 async function load() {

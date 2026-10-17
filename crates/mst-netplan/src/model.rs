@@ -13,6 +13,7 @@ pub struct Model {
     pub security_groups: Vec<SecurityGroup>,
     pub policies: Vec<Policy>,
     pub floating_ips: Vec<FloatingIp>,
+    pub load_balancers: Vec<LoadBalancer>,
     /// OVN chassis (hosts) and the physical networks they reach.
     pub chassis: Vec<Chassis>,
 }
@@ -76,6 +77,8 @@ pub struct Network {
     pub cidr: Cidr,
     pub gateway: Ipv4Addr,
     pub mtu: u32,
+    /// Where load balancers' health checks come from, once one needs it.
+    pub monitor_ip: Option<Ipv4Addr>,
 }
 
 /// A VM NIC.
@@ -170,6 +173,28 @@ pub struct FloatingIp {
     pub ip: Ipv4Addr,
     /// The NIC it forwards to.
     pub port: Option<Uuid>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LoadBalancer {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub vpc_id: Uuid,
+    pub vip: Ipv4Addr,
+    pub listeners: Vec<Listener>,
+    /// The member NICs (ports).
+    pub members: Vec<Uuid>,
+    /// Leave out members that do not answer.
+    pub health_check: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Listener {
+    /// [`Protocol::Tcp`] or [`Protocol::Udp`].
+    pub protocol: Protocol,
+    pub port: u16,
+    /// The members' port.
+    pub target_port: u16,
 }
 
 #[derive(Clone, Debug)]

@@ -3,9 +3,9 @@
 //! compiles.
 
 use chrono::Utc;
-use mst_core::ids::{ExternalNetworkId, HostId, NetworkId, NicId, PolicyId, VmId};
+use mst_core::ids::{ExternalNetworkId, HostId, LoadBalancerId, NetworkId, NicId, PolicyId, VmId};
 use mst_core::vm::{VmSpec, mac_for};
-use mst_db::{external, hosts, netmodel, netsec, networks, quotas, tenants, vms};
+use mst_db::{external, hosts, load_balancers, netmodel, netsec, networks, quotas, tenants, vms};
 use sqlx::PgPool;
 
 async fn tenant(pool: &PgPool) -> (tenants::Tenant, tenants::Tenant) {
@@ -223,6 +223,64 @@ async fn the_model_snapshot_has_everything_the_compiler_needs(pool: PgPool) {
     external::associate(&mut *tx, fip.id, Some(nic_id))
         .await
         .unwrap();
+    // Load balancers: one on the external network, one inside, with the
+    // NIC as member and health checks from the network's address.
+    let lb_ip = external::allocate_for_load_balancer(&mut tx, e.id, acme.id)
+        .await
+        .unwrap();
+    let outer = LoadBalancerId::new();
+    load_balancers::create(
+        &mut *tx,
+        &load_balancers::NewLoadBalancer {
+            id: outer,
+            tenant_id: acme.id,
+            vpc_id: net.vpc_id,
+            name: "outer",
+            external_ip_id: Some(lb_ip.id),
+            network_id: None,
+            ip: lb_ip.ip.parse().unwrap(),
+            health_check: true,
+        },
+    )
+    .await
+    .unwrap();
+    let listener = load_balancers::Listener {
+        protocol: "tcp".into(),
+        port: 80,
+        target_port: 8080,
+    };
+    load_balancers::update(&mut tx, outer, "outer", true, &[listener], &[nic_id])
+        .await
+        .unwrap();
+    let monitor = networks::monitor_address(&mut tx, net.id).await.unwrap();
+    let inner_ip = networks::reserve_address(&mut tx, net.id, "lb-vip")
+        .await
+        .unwrap();
+    load_balancers::create(
+        &mut *tx,
+        &load_balancers::NewLoadBalancer {
+            id: LoadBalancerId::new(),
+            tenant_id: acme.id,
+            vpc_id: net.vpc_id,
+            name: "inner",
+            external_ip_id: None,
+            network_id: Some(net.id),
+            ip: inner_ip,
+            health_check: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        load_balancers::any_in_network(&mut *tx, net.id)
+            .await
+            .unwrap()
+    );
+    assert!(
+        load_balancers::any_external_in_vpc(&mut *tx, net.vpc_id)
+            .await
+            .unwrap()
+    );
     tx.commit().await.unwrap();
 
     let mut conn = pool.acquire().await.unwrap();
@@ -244,6 +302,14 @@ async fn the_model_snapshot_has_everything_the_compiler_needs(pool: PgPool) {
     assert_eq!(g.rules.len(), 2);
     assert_eq!(m.floating_ips[0].port, Some(nic_id.0));
     assert_eq!(m.chassis[0].physical_networks, ["external"]);
+    assert_eq!(m.networks[0].monitor_ip, Some(monitor));
+    let lb = m.load_balancers.iter().find(|l| l.id == outer.0).unwrap();
+    assert_eq!(lb.vip.to_string(), lb_ip.ip);
+    assert_eq!(
+        (lb.listeners.len(), lb.members.as_slice()),
+        (1, &[nic_id.0][..])
+    );
+    assert_eq!(m.load_balancers.len(), 2);
     // And it compiles cleanly.
     let d = mst_netplan::compile(&m);
     assert!(d.warnings.is_empty(), "{:?}", d.warnings);
@@ -253,6 +319,7 @@ async fn the_model_snapshot_has_everything_the_compiler_needs(pool: PgPool) {
     tenants::delete(&mut conn, acme.id).await.unwrap();
     let m = netmodel::load(&mut conn, 1442).await.unwrap();
     assert!(m.vpcs.is_empty() && m.networks.is_empty() && m.floating_ips.is_empty());
+    assert!(m.load_balancers.is_empty());
 }
 
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]

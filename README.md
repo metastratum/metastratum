@@ -15,7 +15,7 @@ controllers with PostgreSQL behind them, and an agent on each host.
   and stopped VMs to NFS, taken by hand or on a schedule and restored as
   new VMs.
 - **Networks**: private networks with routers, floating IPs and outbound
-  NAT, and security groups, on OVN.
+  NAT, load balancers, and security groups, on OVN.
 - **Tenants** for teams or customers, each with quotas, roles, optionally
   its own identity provider (OpenID Connect) and its own sign-in address.
   Tenants can have sub-tenants.
@@ -31,8 +31,8 @@ metastratum is in development and has no release yet.
 - [Getting started](docs/getting-started.md): packages, the first
   controller and the first host
 - [Running metastratum](docs/operations.md): controllers in several places,
-  PostgreSQL and OVN underneath, host failure, resizing, templates,
-  snapshots and backups, upgrades, monitoring
+  PostgreSQL and OVN underneath, host failure, load balancers, resizing,
+  templates, snapshots and backups, upgrades, monitoring
 - [Security](SECURITY.md): the security model, and what the last review
   found
 
@@ -302,6 +302,9 @@ VM migrates with them. Resizing grows a running VM's disk (the guest sees
 it), and a stopped VM's CPUs, memory and disk (its file system grows at
 boot). A stopped VM made a template is never started, and its clones on
 local disk, NFS and Ceph boot with what its disk held under their own name.
+Load balancers spread connections from here over two VMs through an
+external address and leave out one that stops answering, serve the VPC's
+own VMs through an internal one, and follow changed members.
 `MST_E2E_DEBUG=1` prints
 console traffic. The browser suite does the VM lifecycle and tenant
 management through the UI with Playwright, using your installed Chrome.
