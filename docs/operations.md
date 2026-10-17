@@ -222,7 +222,16 @@ Hosts enroll with a single-use join token (Infrastructure → Hosts, or
 `mst-controller join-token`) and get a certificate from the controller's CA,
 valid for 30 days. Agents renew it when a third of that is left, or on
 demand (Renew certificate on the host), and libvirt picks up the new one
-without restarting.
+without restarting. A renewal revokes any other certificate the host held
+but did not use, so it never holds more than two.
+
+What a host reports about itself is taken as it is when it enrolls. Later
+changes that would give it more (another name, address or OVN chassis, a
+physical network it did not have, more CPUs or memory) wait until a
+provider administrator accepts them (Manage on the host, "Changes
+waiting"); until then the host keeps what it had. A host taken over cannot
+so make itself the gateway of other tenants' VPCs, or draw their VMs.
+Less of anything is taken at once.
 
 Hosts' libvirt does not listen on the network: the controller drives live
 migrations on each host's own libvirt, and QEMU sends the VM over TLS
@@ -278,6 +287,11 @@ A storage pool that holds no VM disks can be removed two ways:
   files named after metastratum IDs; on Ceph, `img-*` images). Other files
   there stay. If another pool uses the same storage (the same NFS export,
   or the same Ceph pool), the data stays: that pool needs it.
+
+An image is refused when it describes a disk larger than the one it is for
+(checked before it is unpacked: a small download can unpack into a huge
+disk). Copies of tenants' images are dropped from hosts once no VM disk is
+built on them any more; the provider's stay cached.
 
 Deleting an image (no VM disk may be built on it) removes its cached copy
 from every host and every shared pool. Hosts that are down at the time
@@ -404,6 +418,9 @@ directly, as libvirt has no call for these snapshots.)
 Reverting puts the disks back as they were in the snapshot, and needs the
 VM stopped: what was written since is lost, the VM's other snapshots stay.
 Its memory is not part of a snapshot; the VM boots afresh.
+
+Each snapshot counts against the `snapshot_gib` quota with the size of the
+VM's disks when it was taken: as much as it can grow to.
 
 VMs with snapshots on their host's local disk cannot be live-migrated (nor
 evacuated): a block migration copies the disks' data, not their snapshots.

@@ -33,11 +33,13 @@ const askTenant = computed(() => site.value?.sub_tenants ?? true)
 const bound = computed(() => site.value?.tenant_name ?? null)
 const chosen = computed(() => (askTenant.value ? tenant.value.trim() : ''))
 
-const next = computed(() =>
-  typeof route.query.next === 'string' && route.query.next.startsWith('/') && !route.query.next.startsWith('//')
-    ? route.query.next
-    : '/vms',
-)
+// Only paths on this site. Browsers drop tabs and newlines from URLs
+// (`/\t/evil.example` would become `//evil.example`): no control
+// characters, spaces or backslashes at all.
+const next = computed(() => {
+  const n = route.query.next
+  return typeof n === 'string' && /^\/(?![/\\])/.test(n) && !/[\u0000-\u0020\u007f\\]/.test(n) ? n : '/vms'
+})
 
 // Offer the tenant's identity provider once the tenant is known.
 let timer = 0

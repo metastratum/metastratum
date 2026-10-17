@@ -102,6 +102,35 @@ async fn default_networks_and_overlap_rules(pool: PgPool) {
         .is_err()
     );
 
+    // Never in an external network's range, whichever comes first.
+    ext(&pool).await;
+    let err = networks::create(
+        &pool,
+        NetworkId::new(),
+        &other,
+        "e",
+        "203.0.113.128/25",
+        "203.0.113.129",
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("external network"), "{err}");
+    let err = external::create(
+        &pool,
+        ExternalNetworkId::new(),
+        &external::ExternalSpec {
+            name: "overlapping",
+            physical_network: "external",
+            cidr: "10.9.0.0/16",
+            gateway: "10.9.0.1",
+            pool_start: "10.9.0.10",
+            pool_end: "10.9.0.20",
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("tenants' networks"), "{err}");
+
     // A VPC with networks cannot go.
     assert!(networks::delete_vpc(&pool, other.id).await.is_err());
 }

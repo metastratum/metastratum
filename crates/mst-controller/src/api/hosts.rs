@@ -23,6 +23,7 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(get_fencing, set_fencing))
         .routes(routes!(test_fencing))
         .routes(routes!(renew_certificate))
+        .routes(routes!(accept_facts))
         .routes(routes!(decommission_host))
 }
 
@@ -59,6 +60,12 @@ pub struct HostView {
     allocated_memory_mib: u64,
     cert_expires_at: DateTime<Utc>,
     last_seen_at: Option<DateTime<Utc>>,
+    /// What the host reports about itself that would give it more than it
+    /// was accepted with (`name`, `address`, `ovn_chassis`, `cpu_count`,
+    /// `memory_mib`, `physical_networks`), waiting for an administrator to
+    /// accept it. Until then the accepted values hold.
+    #[schema(value_type = Option<Object>)]
+    pending_facts: Option<serde_json::Value>,
 }
 
 #[utoipa::path(get, path = "/hosts", tag = "hosts", responses((status = 200, body = Vec<HostView>), (status = 403)))]
@@ -96,6 +103,7 @@ async fn list_hosts(State(state): State<AppState>, p: Principal) -> ApiResult<Js
             agent_version: h.agent_version,
             cert_expires_at: h.cert_expires_at,
             last_seen_at: h.last_seen_at,
+            pending_facts: h.pending_facts,
         });
     }
     Ok(Json(out))
@@ -522,6 +530,36 @@ async fn decommission_host(
 
 /// Has the host's agent renew its certificate now (it also does so on its
 /// own before it expires). The agent reconnects with the new one.
+/// Accepts what a host reported about itself that waited for an
+/// administrator (`pending_facts`): a new name, address or OVN chassis,
+/// physical networks, more CPUs or memory.
+#[utoipa::path(post, path = "/hosts/{id}/accept-facts", tag = "hosts", params(("id" = HostId, Path)),
+    responses((status = 204), (status = 403), (status = 404), (status = 409)))]
+async fn accept_facts(
+    State(state): State<AppState>,
+    p: Principal,
+    axum::extract::Path(id): axum::extract::Path<HostId>,
+) -> ApiResult<StatusCode> {
+    authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
+    let host = mst_db::hosts::get(&state.db, id).await?;
+    let Some(pending) = host.pending_facts else {
+        return Err(ApiError::conflict("the host has no changes waiting"));
+    };
+    mst_db::hosts::accept_pending_facts(&state.db, id).await?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(p.tenant_id),
+        "host.accept_facts",
+        Some(("host", id.0)),
+        serde_json::json!({"name": host.name, "accepted": pending}),
+    )
+    .await;
+    // Gateways may move, and ports follow a renamed chassis.
+    state.net.kick();
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[utoipa::path(post, path = "/hosts/{id}/renew-certificate", tag = "hosts", params(("id" = HostId, Path)),
     responses((status = 204), (status = 403), (status = 404), (status = 503)))]
 async fn renew_certificate(

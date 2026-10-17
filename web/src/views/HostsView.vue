@@ -7,6 +7,7 @@ import InfraTabs from '../components/InfraTabs.vue'
 import ModalDialog from '../components/ModalDialog.vue'
 import SplitButton from '../components/SplitButton.vue'
 import TypeToConfirm from '../components/TypeToConfirm.vue'
+import { mib } from '../state'
 import { useLiveRefresh } from '../stores/live'
 
 const hosts = ref<Host[] | null>(null)
@@ -41,6 +42,36 @@ function manage(h: Host) {
   manageError.value = ''
   managing.value = h
 }
+// What a host reported about itself that would give it more (a new name,
+// address or chassis, physical networks, CPUs, memory) waits for this.
+const FACT_LABELS: Record<string, string> = {
+  name: 'Name',
+  address: 'Address',
+  ovn_chassis: 'OVN chassis',
+  cpu_count: 'CPUs',
+  memory_mib: 'Memory',
+  physical_networks: 'Physical networks',
+}
+function pendingChanges(h: Host): { label: string; from: string; to: string }[] {
+  const p = (h.pending_facts ?? {}) as Record<string, unknown>
+  const show = (k: string, v: unknown) =>
+    k === 'memory_mib' ? mib(Number(v)) : Array.isArray(v) ? v.join(', ') || 'none' : String(v)
+  const current = h as unknown as Record<string, unknown>
+  return Object.keys(p).map((k) => ({ label: FACT_LABELS[k] ?? k, from: show(k, current[k]), to: show(k, p[k]) }))
+}
+async function acceptFacts() {
+  const h = managing.value
+  if (!h) return
+  manageError.value = ''
+  try {
+    await ok(api.POST('/api/v1/hosts/{id}/accept-facts', { params: { path: { id: h.id } } }))
+    managing.value = null
+    await load()
+  } catch (e) {
+    manageError.value = errorText(e)
+  }
+}
+
 async function evacuate() {
   const h = managing.value
   if (!h) return
@@ -302,6 +333,21 @@ async function createToken() {
           It failed and was powered off; its VMs moved. Once it is repaired and its agent is back, saving puts it back
           in service.
         </p>
+        <div v-if="managing.pending_facts" class="evacuate">
+          <div>
+            <strong>Changes waiting</strong>
+            <p class="muted hint">
+              The host reports these about itself. They would let it take more (VMs, or gateways for VPCs), so they
+              apply once you accept them; until then the host keeps what it has.
+            </p>
+            <ul class="changes">
+              <li v-for="c in pendingChanges(managing)" :key="c.label">
+                {{ c.label }}: <span class="mono">{{ c.from }}</span> → <span class="mono">{{ c.to }}</span>
+              </li>
+            </ul>
+          </div>
+          <button type="button" class="btn" @click="acceptFacts">Accept changes</button>
+        </div>
         <div class="evacuate">
           <div>
             <strong>Evacuate</strong>
@@ -441,5 +487,10 @@ footer {
 .evacuate > div {
   flex: 1;
   min-width: 220px;
+}
+.changes {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
 }
 </style>

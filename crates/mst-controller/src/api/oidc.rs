@@ -13,7 +13,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
 use mst_core::ids::TenantId;
@@ -232,12 +232,41 @@ async fn get_sign_in(
     Ok(Json(sign_in_for(&state, &site, id).await?))
 }
 
-/// Only paths on this site, to avoid an open redirect.
+/// Only paths on this site, to avoid an open redirect. Browsers drop tabs
+/// and newlines from a URL before reading it (`/\t/evil.example` becomes
+/// `//evil.example`), so no control characters or spaces at all.
 fn safe_return_to(r: Option<&str>) -> String {
     match r {
-        Some(p) if p.starts_with('/') && !p.starts_with("//") && !p.contains('\\') => p.to_owned(),
+        Some(p)
+            if p.starts_with('/')
+                && !p.starts_with("//")
+                && !p.contains('\\')
+                && !p.chars().any(|c| c.is_control() || c.is_whitespace()) =>
+        {
+            p.to_owned()
+        }
         _ => "/".into(),
     }
+}
+
+/// Binds a sign-in to the browser that started it: the pending sign-in is
+/// found by its state together with this cookie's value, which only that
+/// browser holds. Without it, someone could start a sign-in at their own
+/// identity provider and hand the callback link to someone else, signing
+/// them in as the sender. `Lax`, as the identity provider sends the browser
+/// back from another site.
+const BROWSER_COOKIE: &str = "mst_oidc";
+
+fn browser_cookie(value: &str, max_age: u64, https: bool) -> ApiResult<HeaderValue> {
+    let secure = if https { "; Secure" } else { "" };
+    HeaderValue::from_str(&format!(
+        "{BROWSER_COOKIE}={value}; Path=/api/v1/auth/oidc/callback; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}"
+    ))
+    .map_err(ApiError::internal)
+}
+
+fn pending_key(state: &str, browser: &str) -> String {
+    mst_pki::hash_secret(&format!("{state}:{browser}"))
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -298,6 +327,7 @@ fn url_encode(s: &str) -> String {
 async fn start(
     State(state): State<AppState>,
     Extension(site): Extension<Site>,
+    Extension(Https(https)): Extension<Https>,
     Query(q): Query<StartQuery>,
 ) -> ApiResult<Response> {
     let Some(redirect) = redirect_uri(&site) else {
@@ -351,9 +381,10 @@ async fn start(
         req = req.add_scope(Scope::new(scope.to_owned()));
     }
     let (url, csrf, nonce) = req.set_pkce_challenge(challenge).url();
+    let browser = mst_pki::random_hex(32);
     mst_db::oidc::start_login(
         &state.db,
-        &mst_pki::hash_secret(csrf.secret()),
+        &pending_key(csrf.secret(), &browser),
         &mst_db::oidc::PendingLogin {
             tenant_id: tenant.id,
             nonce: nonce.secret().clone(),
@@ -363,7 +394,12 @@ async fn start(
         LOGIN_TTL,
     )
     .await?;
-    Ok(Redirect::to(url.as_str()).into_response())
+    let mut resp = Redirect::to(url.as_str()).into_response();
+    resp.headers_mut().insert(
+        header::SET_COOKIE,
+        browser_cookie(&browser, LOGIN_TTL.as_secs(), https)?,
+    );
+    Ok(resp)
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -381,7 +417,22 @@ async fn callback(
     State(state): State<AppState>,
     Extension(Https(https)): Extension<Https>,
     Extension(site): Extension<Site>,
+    headers: HeaderMap,
     Query(q): Query<CallbackQuery>,
+) -> ApiResult<Response> {
+    let mut resp = callback_inner(&state, https, &site, &headers, q).await?;
+    // The cookie is single-use too.
+    resp.headers_mut()
+        .append(header::SET_COOKIE, browser_cookie("", 0, https)?);
+    Ok(resp)
+}
+
+async fn callback_inner(
+    state: &AppState,
+    https: bool,
+    site: &Site,
+    headers: &HeaderMap,
+    q: CallbackQuery,
 ) -> ApiResult<Response> {
     if let Some(e) = &q.error {
         let detail = q.error_description.as_deref().unwrap_or(e);
@@ -394,20 +445,30 @@ async fn callback(
             "The identity provider returned an incomplete response.",
         ));
     };
-    let Some(pending) = mst_db::oidc::finish_login(&state.db, &mst_pki::hash_secret(&csrf)).await?
+    let browser = headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|kv| kv.trim().split_once('='))
+        .find(|(k, _)| *k == BROWSER_COOKIE)
+        .map(|(_, v)| v.to_owned())
+        .unwrap_or_default();
+    let Some(pending) =
+        mst_db::oidc::finish_login(&state.db, &pending_key(&csrf, &browser)).await?
     else {
         return Ok(login_error(
-            "That sign-in expired or was already used. Start again.",
+            "That sign-in expired, was already used, or was started in another browser. Start again.",
         ));
     };
     // The browser came back to the redirect URI the sign-in started with.
-    let Some(redirect) = redirect_uri(&site) else {
+    let Some(redirect) = redirect_uri(site) else {
         return Ok(login_error(
             "The sign-in came back without a host. Start again.",
         ));
     };
     match finish(
-        &state,
+        state,
         &redirect,
         pending.tenant_id,
         code,
@@ -417,7 +478,7 @@ async fn callback(
     .await
     {
         Ok(user) => {
-            let headers = open_session(&state, &user, "oidc", https).await?;
+            let headers = open_session(state, &user, "oidc", https).await?;
             Ok((headers, Redirect::to(&pending.return_to)).into_response())
         }
         Err(message) => {
@@ -803,7 +864,16 @@ mod tests {
     #[test]
     fn return_paths_stay_on_site() {
         assert_eq!(safe_return_to(Some("/vms/1")), "/vms/1");
-        for bad in ["https://evil.example", "//evil.example", "/\\evil", "vms"] {
+        for bad in [
+            "https://evil.example",
+            "//evil.example",
+            "/\\evil",
+            "vms",
+            // Browsers drop these, leaving `//evil.example`.
+            "/\t/evil.example",
+            "/\n/evil.example",
+            "/ /evil.example",
+        ] {
             assert_eq!(safe_return_to(Some(bad)), "/", "{bad}");
         }
         assert_eq!(safe_return_to(None), "/");

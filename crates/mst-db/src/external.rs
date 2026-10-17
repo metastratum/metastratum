@@ -36,6 +36,9 @@ pub struct ExternalSpec<'a> {
 
 fn invalid(e: sqlx::Error) -> crate::Error {
     match &e {
+        sqlx::Error::Database(d) if d.constraint() == Some("networks_outside_external") => {
+            mst_core::Error::Conflict("the range overlaps tenants' networks".into()).into()
+        }
         sqlx::Error::Database(d) if d.is_check_violation() => mst_core::Error::InvalidArgument(
             "the gateway and address pool must lie within the network's range, the pool in order"
                 .into(),

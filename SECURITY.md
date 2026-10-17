@@ -31,7 +31,9 @@ The boundaries metastratum enforces:
 - **Between guests.** Each NIC's OVN port only sends from its own MAC and
   IP (port security). Ports drop everything their security groups do not
   allow, and guardrails set by ancestor tenants drop traffic no security
-  group can let through. Only DHCP, to the network's DHCP server alone,
+  group can let through. Tenants' networks never overlap external
+  networks' ranges, so no address a tenant hands out can be another's
+  public one. Only DHCP, to the network's DHCP server alone,
   and OVN's own load balancer health checks (by OVN's MAC address, which
   guests cannot send from) get past them. VPCs are separate routers; the same CIDR in two
   VPCs never meets. QEMU runs each VM in its own process, confined by
@@ -44,7 +46,10 @@ The boundaries metastratum enforces:
   add are fetched only from public internet addresses (checked when
   connecting, so redirects and DNS tricks do not get around it), capped in
   size, and refused if they refer to other files (backing files, external
-  data files); `qemu-img` runs under resource limits. Identity providers
+  data files) or describe a disk larger than the one they are for (checked
+  before unpacking); `qemu-img` runs under resource limits, its output
+  capped at that size. Tenants' images are dropped from hosts once no disk
+  is built on them. Identity providers
   configured by sub-tenants likewise must be on public addresses.
 
 ## How it is protected
@@ -82,8 +87,9 @@ The boundaries metastratum enforces:
   name and whether it has sub-tenants to sign in to there (never their
   names); elsewhere, only whether the provider has any.
 - **Sign-in through identity providers** uses the authorization code flow
-  with PKCE, a nonce and a state value, verifies the ID token's signature,
-  issuer and audience, and follows no redirects.
+  with PKCE, a nonce and a state value bound to the browser that started it
+  (a cookie of its own), verifies the ID token's signature, issuer and
+  audience, follows no redirects, and returns only to paths on the site.
 - **Secrets kept in the database** (the CAs' private keys, storage
   credentials, identity provider client secrets, BMC passwords) are sealed
   with XChaCha20-Poly1305 under a master key kept outside the database,
@@ -94,7 +100,11 @@ The boundaries metastratum enforces:
   database (a host's current or just-renewed certificate; a live replica).
   Hosts' certificates last 30 days and are renewed automatically; their
   subjects are chosen by the controller, not taken from the request, and
-  the host names they carry can never be the controllers' own.
+  the host names they carry can never be the controllers' own. A renewal
+  revokes any other certificate the host held but did not use. What hosts
+  report about themselves that would give them more (a new name, address
+  or chassis, physical networks, more CPUs or memory) waits for a provider
+  administrator to accept it.
   Replaced and decommissioned hosts' certificates are revoked: the
   controllers refuse them, and so do the other hosts' QEMU and libvirt,
   which install the CA's revocation list.
@@ -171,6 +181,13 @@ the code after two-factor sign-in was added. Fixed:
 | DHCP was let past guardrails to any address: UDP 68 to 67 as a way out | to the network's DHCP server only |
 | Parallel sign-in attempts all passed the per-account limit before any of them failed | the account's budget is taken first and given back on success |
 | Accounts signing in through an identity provider could give themselves a password, getting around its MFA and off-boarding | refused |
+| Tenants' networks could overlap external networks' ranges, putting addresses such as another tenant's floating IP or the external gateway on a tenant's router | refused, checked from both sides in the database |
+| A small qcow2 image could unpack into a huge one (compressed clusters), and cached images counted against nothing: a tenant could fill hosts' disks | images larger than their disk are refused before unpacking, the conversion's output is capped, and tenants' images are dropped from hosts once unused |
+| Snapshots, and VPCs (each taking an address from an external network's pool), counted against no quota | `snapshot_gib` (each at its VM's disk size) and `vpcs` quotas |
+| Hosts' own reports of their physical networks, capacity, name, address and chassis were taken as they came: a host taken over could make itself the gateway of other tenants' VPCs, or draw their VMs | taken at enrollment; later changes that would give the host more wait for an administrator |
+| A host could renew its certificate any number of times, and certificates replaced before use were never revoked | a renewal revokes any other certificate the host held but did not use |
+| An OIDC sign-in was not bound to the browser that started it: someone could hand another person the link back from their own identity provider and sign them in as themselves | a cookie of its own binds it |
+| `return_to=/%09/evil.example` passed the filter, as browsers drop tabs and newlines from URLs: an open redirect after sign-in | no control characters or spaces, on the sign-in page too |
 
 ## Known issues, and what to do about them
 

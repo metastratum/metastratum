@@ -751,6 +751,12 @@ type HostView struct {
 	Name           string `json:"name"`
 	OvnChassis     string `json:"ovn_chassis"`
 
+	// PendingFacts What the host reports about itself that would give it more than it
+	// was accepted with (`name`, `address`, `ovn_chassis`, `cpu_count`,
+	// `memory_mib`, `physical_networks`), waiting for an administrator to
+	// accept it. Until then the accepted values hold.
+	PendingFacts *map[string]interface{} `json:"pending_facts,omitempty"`
+
 	// PhysicalNetworks Physical networks the host reaches; external networks on them can
 	// have their gateways here.
 	PhysicalNetworks []string `json:"physical_networks"`
@@ -2262,6 +2268,15 @@ type ClientInterface interface {
 	// Takes a body of the `application/json` content type.
 	UpdateHost(ctx context.Context, id HostId, body UpdateHostJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// AcceptFacts Has the host's agent renew its certificate now (it also does so on its
+	// own before it expires). The agent reconnects with the new one.
+	// Accepts what a host reported about itself that waited for an
+	// administrator (`pending_facts`): a new name, address or OVN chassis,
+	// physical networks, more CPUs or memory.
+	//
+	// Corresponds with POST /api/v1/hosts/{id}/accept-facts (the `AcceptFacts` operationId).
+	AcceptFacts(ctx context.Context, id HostId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// DecommissionHost Takes a host out of service for good; it must have no VMs. It leaves its
 	// cluster and its certificates are revoked, so its agent cannot connect
 	// again. With `wipe`, its agent first removes metastratum from the machine:
@@ -2297,10 +2312,7 @@ type ClientInterface interface {
 	// Corresponds with POST /api/v1/hosts/{id}/fencing/test (the `TestFencing` operationId).
 	TestFencing(ctx context.Context, id HostId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// RenewCertificate Has the host's agent renew its certificate now (it also does so on its
-	// own before it expires). The agent reconnects with the new one.
-	//
-	// Corresponds with POST /api/v1/hosts/{id}/renew-certificate (the `RenewCertificate` operationId).
+	// RenewCertificate performs a POST /api/v1/hosts/{id}/renew-certificate (the `RenewCertificate` operationId) request.
 	RenewCertificate(ctx context.Context, id HostId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListImages Images usable by the tenant: its own and those shared by its ancestors.
@@ -3731,6 +3743,25 @@ func (c *Client) UpdateHost(ctx context.Context, id HostId, body UpdateHostJSONR
 	return c.Client.Do(req)
 }
 
+// AcceptFacts Has the host's agent renew its certificate now (it also does so on its
+// own before it expires). The agent reconnects with the new one.
+// Accepts what a host reported about itself that waited for an
+// administrator (`pending_facts`): a new name, address or OVN chassis,
+// physical networks, more CPUs or memory.
+//
+// Corresponds with POST /api/v1/hosts/{id}/accept-facts (the `AcceptFacts` operationId).
+func (c *Client) AcceptFacts(ctx context.Context, id HostId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAcceptFactsRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // DecommissionHost Takes a host out of service for good; it must have no VMs. It leaves its
 // cluster and its certificates are revoked, so its agent cannot connect
 // again. With `wipe`, its agent first removes metastratum from the machine:
@@ -3826,10 +3857,7 @@ func (c *Client) TestFencing(ctx context.Context, id HostId, reqEditors ...Reque
 	return c.Client.Do(req)
 }
 
-// RenewCertificate Has the host's agent renew its certificate now (it also does so on its
-// own before it expires). The agent reconnects with the new one.
-//
-// Corresponds with POST /api/v1/hosts/{id}/renew-certificate (the `RenewCertificate` operationId).
+// RenewCertificate performs a POST /api/v1/hosts/{id}/renew-certificate (the `RenewCertificate` operationId) request.
 func (c *Client) RenewCertificate(ctx context.Context, id HostId, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewRenewCertificateRequest(c.Server, id)
 	if err != nil {
@@ -7335,6 +7363,40 @@ func NewUpdateHostRequestWithBody(server string, id HostId, contentType string, 
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewAcceptFactsRequest constructs an http.Request for the AcceptFacts method
+func NewAcceptFactsRequest(server string, id HostId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/hosts/%s/accept-facts", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
 
 	return req, nil
 }
@@ -11906,6 +11968,17 @@ type ClientWithResponsesInterface interface {
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	UpdateHostWithResponse(ctx context.Context, id HostId, body UpdateHostJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateHostResponse, error)
 
+	// AcceptFactsWithResponse Has the host's agent renew its certificate now (it also does so on its
+	// own before it expires). The agent reconnects with the new one.
+	// Accepts what a host reported about itself that waited for an
+	// administrator (`pending_facts`): a new name, address or OVN chassis,
+	// physical networks, more CPUs or memory.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/hosts/{id}/accept-facts (the `AcceptFacts` operationId).
+	AcceptFactsWithResponse(ctx context.Context, id HostId, reqEditors ...RequestEditorFn) (*AcceptFactsResponse, error)
+
 	// DecommissionHostWithResponse Takes a host out of service for good; it must have no VMs. It leaves its
 	// cluster and its certificates are revoked, so its agent cannot connect
 	// again. With `wipe`, its agent first removes metastratum from the machine:
@@ -11951,12 +12024,9 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with POST /api/v1/hosts/{id}/fencing/test (the `TestFencing` operationId).
 	TestFencingWithResponse(ctx context.Context, id HostId, reqEditors ...RequestEditorFn) (*TestFencingResponse, error)
 
-	// RenewCertificateWithResponse Has the host's agent renew its certificate now (it also does so on its
-	// own before it expires). The agent reconnects with the new one.
+	// RenewCertificateWithResponse performs a POST /api/v1/hosts/{id}/renew-certificate (the `RenewCertificate` operationId) request.
 	//
 	// Returns a wrapper object for the known response body format(s).
-	//
-	// Corresponds with POST /api/v1/hosts/{id}/renew-certificate (the `RenewCertificate` operationId).
 	RenewCertificateWithResponse(ctx context.Context, id HostId, reqEditors ...RequestEditorFn) (*RenewCertificateResponse, error)
 
 	// ListImagesWithResponse Images usable by the tenant: its own and those shared by its ancestors.
@@ -14151,6 +14221,40 @@ func (r UpdateHostResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r UpdateHostResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type AcceptFactsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+}
+
+// GetBody returns the raw response body bytes
+func (r AcceptFactsResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r AcceptFactsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AcceptFactsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r AcceptFactsResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -18737,6 +18841,23 @@ func (c *ClientWithResponses) UpdateHostWithResponse(ctx context.Context, id Hos
 	return ParseUpdateHostResponse(rsp)
 }
 
+// AcceptFactsWithResponse Has the host's agent renew its certificate now (it also does so on its
+// own before it expires). The agent reconnects with the new one.
+// Accepts what a host reported about itself that waited for an
+// administrator (`pending_facts`): a new name, address or OVN chassis,
+// physical networks, more CPUs or memory.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/hosts/{id}/accept-facts (the `AcceptFacts` operationId).
+func (c *ClientWithResponses) AcceptFactsWithResponse(ctx context.Context, id HostId, reqEditors ...RequestEditorFn) (*AcceptFactsResponse, error) {
+	rsp, err := c.AcceptFacts(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAcceptFactsResponse(rsp)
+}
+
 // DecommissionHostWithResponse Takes a host out of service for good; it must have no VMs. It leaves its
 // cluster and its certificates are revoked, so its agent cannot connect
 // again. With `wipe`, its agent first removes metastratum from the machine:
@@ -18818,12 +18939,9 @@ func (c *ClientWithResponses) TestFencingWithResponse(ctx context.Context, id Ho
 	return ParseTestFencingResponse(rsp)
 }
 
-// RenewCertificateWithResponse Has the host's agent renew its certificate now (it also does so on its
-// own before it expires). The agent reconnects with the new one.
+// RenewCertificateWithResponse performs a POST /api/v1/hosts/{id}/renew-certificate (the `RenewCertificate` operationId) request.
 //
 // Returns a wrapper object for the known response body format(s).
-//
-// Corresponds with POST /api/v1/hosts/{id}/renew-certificate (the `RenewCertificate` operationId).
 func (c *ClientWithResponses) RenewCertificateWithResponse(ctx context.Context, id HostId, reqEditors ...RequestEditorFn) (*RenewCertificateResponse, error) {
 	rsp, err := c.RenewCertificate(ctx, id, reqEditors...)
 	if err != nil {
@@ -21406,6 +21524,22 @@ func ParseUpdateHostResponse(rsp *http.Response) (*UpdateHostResponse, error) {
 	}
 
 	response := &UpdateHostResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseAcceptFactsResponse parses an HTTP response from a AcceptFactsWithResponse call
+func ParseAcceptFactsResponse(rsp *http.Response) (*AcceptFactsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AcceptFactsResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
 	}

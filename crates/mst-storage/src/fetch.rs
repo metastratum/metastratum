@@ -32,6 +32,11 @@ pub struct FetchPolicy {
     pub allow_private: bool,
     /// Largest download, in bytes.
     pub max_bytes: u64,
+    /// Largest disk the image may describe (its virtual size), in bytes:
+    /// the disk it is for. A small download can unpack into a huge one
+    /// (compressed clusters), so this is checked before converting, and the
+    /// conversion may write no more.
+    pub max_virtual_bytes: u64,
 }
 
 impl Default for FetchPolicy {
@@ -39,6 +44,7 @@ impl Default for FetchPolicy {
         Self {
             allow_private: false,
             max_bytes: 64 << 30,
+            max_virtual_bytes: 1 << 40,
         }
     }
 }
@@ -195,11 +201,15 @@ pub(crate) async fn untrusted_qemu_img(
     args: &[&str],
     cpu_secs: u64,
     mem_bytes: u64,
+    file_bytes: Option<u64>,
 ) -> Result<Vec<u8>> {
     if which("prlimit") {
         let cpu = format!("--cpu={cpu_secs}");
         let mem = format!("--as={mem_bytes}");
-        let mut full = vec![cpu.as_str(), mem.as_str(), "--", "qemu-img"];
+        let fsize = file_bytes.map(|b| format!("--fsize={b}"));
+        let mut full = vec![cpu.as_str(), mem.as_str()];
+        full.extend(fsize.as_deref());
+        full.extend(["--", "qemu-img"]);
         full.extend_from_slice(args);
         crate::run("prlimit", &full).await
     } else {
@@ -215,6 +225,8 @@ fn which(tool: &str) -> bool {
 
 #[derive(Deserialize)]
 struct Info {
+    #[serde(rename = "virtual-size")]
+    virtual_size: u64,
     #[serde(rename = "backing-filename")]
     backing_filename: Option<String>,
     #[serde(rename = "format-specific")]
@@ -226,10 +238,17 @@ struct FormatSpecific {
     data: Option<serde_json::Value>,
 }
 
-/// Refuses images that refer to other files.
-pub(crate) async fn check_untrusted(path: &Path, format: &str) -> Result<()> {
+/// Refuses images that refer to other files. Returns the size of the disk
+/// the image describes.
+pub(crate) async fn check_untrusted(path: &Path, format: &str) -> Result<u64> {
     let p = path.to_string_lossy();
-    let out = untrusted_qemu_img(&["info", "--output=json", "-f", format, &p], 30, 1 << 30).await?;
+    let out = untrusted_qemu_img(
+        &["info", "--output=json", "-f", format, &p],
+        30,
+        1 << 30,
+        None,
+    )
+    .await?;
     let info: Info =
         serde_json::from_slice(&out).map_err(|e| Error::InvalidImage(e.to_string()))?;
     if info.backing_filename.is_some() {
@@ -246,7 +265,7 @@ pub(crate) async fn check_untrusted(path: &Path, format: &str) -> Result<()> {
             "image references an external data file".into(),
         ));
     }
-    Ok(())
+    Ok(info.virtual_size)
 }
 
 #[cfg(test)]

@@ -349,6 +349,10 @@ impl Agent {
                 let policy = mst_storage::FetchPolicy {
                     allow_private: c.trusted,
                     max_bytes: self.max_image_bytes,
+                    max_virtual_bytes: match c.max_virtual_bytes {
+                        0 => mst_storage::FetchPolicy::default().max_virtual_bytes,
+                        n => n,
+                    },
                 };
                 pool.ensure_image(&c.image_id, &c.source_url, &c.format, policy)
                     .await?;

@@ -97,6 +97,16 @@ pub async fn is_usable_by(
     .await?)
 }
 
+/// Whether any volume is built on the image.
+pub async fn in_use(db: impl PgExecutor<'_>, id: ImageId) -> Result<bool> {
+    Ok(
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM volumes WHERE image_id = $1)")
+            .bind(id)
+            .fetch_one(db)
+            .await?,
+    )
+}
+
 /// Deletes an image no volume is built on.
 pub async fn delete(db: &mut sqlx::PgConnection, id: ImageId) -> Result<()> {
     let users: i64 = sqlx::query_scalar("SELECT count(*) FROM volumes WHERE image_id = $1")

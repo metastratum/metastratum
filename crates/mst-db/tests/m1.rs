@@ -626,9 +626,22 @@ async fn host_certificates_are_retired_and_revoked(pool: PgPool) {
     let h = host(&pool).await;
     let first_expiry = h.cert_expires_at;
     let later = Utc::now() + chrono::Duration::days(30);
-    hosts::renew_cert(&pool, h.id, "fp2", later, "02")
+    let mut conn = pool.acquire().await.unwrap();
+    // A host that renews but never uses the new certificate, and renews
+    // again with the old one: the unused one is revoked, so no more than
+    // two stay valid.
+    let unused = hosts::renew_cert(&mut conn, h.id, "fp", "fpx", later, "0x")
         .await
         .unwrap();
+    assert!(unused.is_empty());
+    let unused = hosts::renew_cert(&mut conn, h.id, "fp", "fp2", later, "02")
+        .await
+        .unwrap();
+    assert_eq!(
+        unused.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(),
+        ["0x"]
+    );
+    assert!(!hosts::accepts_cert(&pool, h.id, "fpx").await.unwrap());
     // Still on the old certificate: nothing to retire yet.
     assert!(
         hosts::retire_previous_cert(&pool, h.id, "fp")
@@ -889,4 +902,38 @@ async fn a_source_is_being_cloned_while_its_clone_is_created(pool: PgPool) {
 
     vms::set_template(&pool, src.id, true).await.unwrap();
     assert!(vms::get(&pool, src.id).await.unwrap().template);
+}
+
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn hosts_changes_wait_until_accepted(pool: PgPool) {
+    let h = host(&pool).await;
+    let facts = hosts::Facts {
+        name: &h.name,
+        address: &h.address,
+        cpu_count: h.cpu_count,
+        memory_mib: h.memory_mib,
+        cpu_model: "",
+        kvm: true,
+        libvirt_version: "",
+        ovn_chassis: &h.ovn_chassis,
+        agent_version: "",
+        physical_networks: &h.physical_networks,
+        cpu_json: "",
+        migration_ready: true,
+    };
+    let pending =
+        serde_json::json!({"memory_mib": 1 << 20, "physical_networks": ["external", "other"]});
+    hosts::update_facts(&pool, h.id, &facts, Some(&pending))
+        .await
+        .unwrap();
+    let waiting = hosts::get(&pool, h.id).await.unwrap();
+    assert_eq!(waiting.memory_mib, h.memory_mib);
+    assert_eq!(waiting.pending_facts, Some(pending));
+    assert!(hosts::accept_pending_facts(&pool, h.id).await.unwrap());
+    let accepted = hosts::get(&pool, h.id).await.unwrap();
+    assert_eq!(accepted.memory_mib, 1 << 20);
+    assert_eq!(accepted.physical_networks, ["external", "other"]);
+    assert_eq!((accepted.name, accepted.cpu_count), (h.name, h.cpu_count));
+    assert!(accepted.pending_facts.is_none());
+    assert!(!hosts::accept_pending_facts(&pool, h.id).await.unwrap());
 }

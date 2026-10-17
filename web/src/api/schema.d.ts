@@ -447,6 +447,29 @@ export interface paths {
         patch: operations["update_host"];
         trace?: never;
     };
+    "/api/v1/hosts/{id}/accept-facts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Has the host's agent renew its certificate now (it also does so on its
+         *     own before it expires). The agent reconnects with the new one.
+         *     Accepts what a host reported about itself that waited for an
+         *     administrator (`pending_facts`): a new name, address or OVN chassis,
+         *     physical networks, more CPUs or memory.
+         */
+        post: operations["accept_facts"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/hosts/{id}/decommission": {
         parameters: {
             query?: never;
@@ -538,10 +561,6 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /**
-         * Has the host's agent renew its certificate now (it also does so on its
-         *     own before it expires). The agent reconnects with the new one.
-         */
         post: operations["renew_certificate"];
         delete?: never;
         options?: never;
@@ -2256,6 +2275,13 @@ export interface components {
             migration_ready: boolean;
             name: string;
             ovn_chassis: string;
+            /**
+             * @description What the host reports about itself that would give it more than it
+             *     was accepted with (`name`, `address`, `ovn_chassis`, `cpu_count`,
+             *     `memory_mib`, `physical_networks`), waiting for an administrator to
+             *     accept it. Until then the accepted values hold.
+             */
+            pending_facts?: Record<string, never> | null;
             /**
              * @description Physical networks the host reaches; external networks on them can
              *     have their gateways here.
@@ -4146,6 +4172,43 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    accept_facts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["HostId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

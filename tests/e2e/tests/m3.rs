@@ -245,6 +245,16 @@ async fn scenario(admin: &Api, run: &str, p: &str, c: &str) -> anyhow::Result<()
         )
         .await?;
     assert_eq!(st, 409);
+    // Never inside an external network: an address there (a VM's, an
+    // internal load balancer's) could be someone else's floating IP.
+    let (st, body) = cid
+        .try_send(
+            Method::POST,
+            "/networks",
+            Some(json!({"vpc_id": vpc_b["id"], "name": "ext", "cidr": "10.78.0.192/29"})),
+        )
+        .await?;
+    assert_eq!(st, 400, "{body}");
     let dup = cid
         .post(
             "/networks",

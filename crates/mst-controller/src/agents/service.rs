@@ -72,6 +72,56 @@ fn check_facts(f: &HostFacts) -> Result<(), Status> {
     Ok(())
 }
 
+/// Splits what a host reports about itself into what is taken as it is, and
+/// what would give it more than it has been accepted with: a new name,
+/// address or OVN chassis, physical networks it did not have (it could make
+/// itself a gateway for other tenants' VPCs), more CPUs or memory (to
+/// attract VMs). Those wait, with what it reported, for an administrator.
+/// Less of anything is taken at once.
+fn screen_facts<'a>(
+    host: &'a mst_db::hosts::Host,
+    f: &'a HostFacts,
+    networks: &'a mut Vec<String>,
+) -> (mst_db::hosts::Facts<'a>, Option<serde_json::Value>) {
+    let mut pending = serde_json::Map::new();
+    let mut accepted = facts_row(f);
+    if f.hostname != host.name {
+        pending.insert("name".into(), f.hostname.clone().into());
+        accepted.name = &host.name;
+    }
+    if f.address != host.address {
+        pending.insert("address".into(), f.address.clone().into());
+        accepted.address = &host.address;
+    }
+    if f.ovn_chassis != host.ovn_chassis && !host.ovn_chassis.is_empty() {
+        pending.insert("ovn_chassis".into(), f.ovn_chassis.clone().into());
+        accepted.ovn_chassis = &host.ovn_chassis;
+    }
+    if accepted.cpu_count > host.cpu_count {
+        pending.insert("cpu_count".into(), accepted.cpu_count.into());
+        accepted.cpu_count = host.cpu_count;
+    }
+    if accepted.memory_mib > host.memory_mib {
+        pending.insert("memory_mib".into(), accepted.memory_mib.into());
+        accepted.memory_mib = host.memory_mib;
+    }
+    *networks = f
+        .physical_networks
+        .iter()
+        .filter(|n| host.physical_networks.contains(n))
+        .cloned()
+        .collect();
+    if networks.len() < f.physical_networks.len() {
+        pending.insert(
+            "physical_networks".into(),
+            f.physical_networks.clone().into(),
+        );
+    }
+    accepted.physical_networks = networks;
+    let pending = (!pending.is_empty()).then_some(serde_json::Value::Object(pending));
+    (accepted, pending)
+}
+
 fn facts_row(f: &HostFacts) -> mst_db::hosts::Facts<'_> {
     mst_db::hosts::Facts {
         name: &f.hostname,
@@ -312,15 +362,23 @@ impl AgentControl for AgentControlService {
             .timestamp_opt(not_after, 0)
             .single()
             .ok_or_else(|| Status::internal("bad expiry"))?;
-        mst_db::hosts::renew_cert(
-            &state.db,
+        let presented = req
+            .peer_certs()
+            .and_then(|c| c.first().map(|leaf| mst_pki::fingerprint(leaf)))
+            .unwrap_or_default();
+        let mut conn = state.db.acquire().await.map_err(internal)?;
+        let unused = mst_db::hosts::renew_cert(
+            &mut conn,
             host_id,
+            &presented,
             &mst_pki::fingerprint(&der),
             expires,
             &mst_pki::serial_of(&der).map_err(internal)?,
         )
         .await
         .map_err(internal)?;
+        drop(conn);
+        crate::crl::revoke(state, host_id, &unused, "superseded").await;
         tracing::info!(host = %host_id, %expires, "host certificate renewed");
         crate::authz::audit(
             &state.db,
@@ -411,7 +469,15 @@ impl AgentControl for AgentControlService {
         // Only then what it says about itself.
         if let Some(f) = &hello.facts {
             check_facts(f)?;
-            mst_db::hosts::update_facts(&state.db, host, &facts_row(f))
+            let known = mst_db::hosts::get(&state.db, host)
+                .await
+                .map_err(internal)?;
+            let mut networks = vec![];
+            let (accepted, pending) = screen_facts(&known, f, &mut networks);
+            if pending.is_some() && pending != known.pending_facts {
+                tracing::warn!(%host, changes = ?pending, "host reports changes that wait for an administrator");
+            }
+            mst_db::hosts::update_facts(&state.db, host, &accepted, pending.as_ref())
                 .await
                 .map_err(|e| match e {
                     mst_db::Error::Domain(mst_core::Error::Conflict(m)) => {
@@ -725,5 +791,85 @@ mod tests {
             ["10.0.0.5".to_owned()]
         );
         assert_eq!(host_sans("h1", "10.0.0.5"), ["h1", "10.0.0.5"]);
+    }
+
+    fn known() -> mst_db::hosts::Host {
+        mst_db::hosts::Host {
+            id: HostId::new(),
+            name: "h1".into(),
+            address: "10.0.0.5".into(),
+            state: "ready".into(),
+            cpu_count: 8,
+            memory_mib: 16384,
+            cpu_model: String::new(),
+            kvm: true,
+            libvirt_version: String::new(),
+            ovn_chassis: "h1".into(),
+            physical_networks: vec!["external".into()],
+            cpu_json: String::new(),
+            migration_ready: true,
+            fence_kind: None,
+            connected_since: None,
+            agent_protocol: 4,
+            agent_version: String::new(),
+            cert_fingerprint: String::new(),
+            cert_expires_at: Utc::now(),
+            cluster_id: None,
+            connected_to: None,
+            last_seen_at: None,
+            created_at: Utc::now(),
+            pending_facts: None,
+        }
+    }
+
+    #[test]
+    fn hosts_get_more_only_once_accepted() {
+        let host = known();
+        let same = HostFacts {
+            hostname: "h1".into(),
+            address: "10.0.0.5".into(),
+            cpu_count: 8,
+            memory_mib: 16384,
+            ovn_chassis: "h1".into(),
+            physical_networks: vec!["external".into()],
+            ..HostFacts::default()
+        };
+        let mut nets = vec![];
+        let (f, pending) = screen_facts(&host, &same, &mut nets);
+        assert!(pending.is_none());
+        assert_eq!(f.physical_networks, ["external"]);
+
+        // More, and another identity: held back.
+        let more = HostFacts {
+            hostname: "h9".into(),
+            cpu_count: 64,
+            memory_mib: 1 << 20,
+            ovn_chassis: "other".into(),
+            physical_networks: vec!["external".into(), "tenant-b".into()],
+            ..same.clone()
+        };
+        let (f, pending) = screen_facts(&host, &more, &mut nets);
+        assert_eq!(
+            (f.name, f.cpu_count, f.memory_mib, f.ovn_chassis),
+            ("h1", 8, 16384, "h1")
+        );
+        assert_eq!(f.physical_networks, ["external"]);
+        let pending = pending.unwrap();
+        assert_eq!(pending["name"], "h9");
+        assert_eq!(pending["cpu_count"], 64);
+        assert_eq!(pending["ovn_chassis"], "other");
+        assert_eq!(pending["physical_networks"][1], "tenant-b");
+
+        // Less: taken at once.
+        let less = HostFacts {
+            cpu_count: 4,
+            memory_mib: 8192,
+            physical_networks: vec![],
+            ..same
+        };
+        let (f, pending) = screen_facts(&host, &less, &mut nets);
+        assert!(pending.is_none());
+        assert_eq!((f.cpu_count, f.memory_mib), (4, 8192));
+        assert!(f.physical_networks.is_empty());
     }
 }

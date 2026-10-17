@@ -230,6 +230,8 @@ async fn create_vpc(
     authorize(&state.db, &p, Perm::NetworkWrite, tenant).await?;
     let name = check_name(&req.name)?;
     let mut tx = state.db.begin().await?;
+    let delta = [("vpcs".to_owned(), 1)].into_iter().collect();
+    mst_db::quotas::reserve(&mut tx, tenant, &delta).await?;
     let vpc = mst_db::networks::create_vpc(&mut *tx, VpcId::new(), tenant, name).await?;
     set_external(&state, &mut tx, &vpc, req.external_network_id).await?;
     tx.commit().await?;

@@ -31,6 +31,9 @@ pub struct Host {
     pub connected_to: Option<String>,
     pub last_seen_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// Facts the host reported that wait for an administrator to accept
+    /// them (see [`update_facts`]): the reported values, by field.
+    pub pending_facts: Option<serde_json::Value>,
 }
 
 impl Host {
@@ -48,7 +51,7 @@ macro_rules! host_columns {
     () => {
         "id, name, host(address) AS address, state, cpu_count, memory_mib, cpu_model, kvm, \
          libvirt_version, ovn_chassis, agent_version, cert_fingerprint, cert_expires_at, \
-         cluster_id, connected_to, last_seen_at, created_at, physical_networks, cpu_json, migration_ready, fence_kind, connected_since, agent_protocol"
+         cluster_id, connected_to, last_seen_at, created_at, physical_networks, cpu_json, migration_ready, fence_kind, connected_since, agent_protocol, pending_facts"
     };
 }
 
@@ -106,11 +109,19 @@ pub async fn create(
     .map_err(|e| conflict_on_unique(e, "host"))
 }
 
-pub async fn update_facts(db: impl PgExecutor<'_>, id: HostId, f: &Facts<'_>) -> Result<()> {
+/// Records what a host reports about itself. `f` holds what is accepted of
+/// it; `pending`, what waits for an administrator (or none).
+pub async fn update_facts(
+    db: impl PgExecutor<'_>,
+    id: HostId,
+    f: &Facts<'_>,
+    pending: Option<&serde_json::Value>,
+) -> Result<()> {
     sqlx::query(
         "UPDATE hosts SET name = $2, address = $3::inet, cpu_count = $4, memory_mib = $5, cpu_model = $6,
                 kvm = $7, libvirt_version = $8, ovn_chassis = $9, agent_version = $10,
-                physical_networks = $11, cpu_json = $12, migration_ready = $13, updated_at = now()
+                physical_networks = $11, cpu_json = $12, migration_ready = $13,
+                pending_facts = $14, updated_at = now()
          WHERE id = $1",
     )
     .bind(id)
@@ -126,10 +137,34 @@ pub async fn update_facts(db: impl PgExecutor<'_>, id: HostId, f: &Facts<'_>) ->
     .bind(f.physical_networks)
     .bind(f.cpu_json)
     .bind(f.migration_ready)
+    .bind(pending)
     .execute(db)
     .await
     .map_err(|e| conflict_on_unique(e, "host"))?;
     Ok(())
+}
+
+/// Applies the facts a host reported that waited for an administrator.
+pub async fn accept_pending_facts(db: impl PgExecutor<'_>, id: HostId) -> Result<bool> {
+    Ok(sqlx::query(
+        "UPDATE hosts SET
+             name = coalesce(pending_facts->>'name', name),
+             address = coalesce((pending_facts->>'address')::inet, address),
+             ovn_chassis = coalesce(pending_facts->>'ovn_chassis', ovn_chassis),
+             cpu_count = coalesce((pending_facts->>'cpu_count')::int, cpu_count),
+             memory_mib = coalesce((pending_facts->>'memory_mib')::bigint, memory_mib),
+             physical_networks = CASE WHEN pending_facts ? 'physical_networks'
+                 THEN ARRAY(SELECT jsonb_array_elements_text(pending_facts->'physical_networks'))
+                 ELSE physical_networks END,
+             pending_facts = NULL, updated_at = now()
+         WHERE id = $1 AND pending_facts IS NOT NULL",
+    )
+    .bind(id)
+    .execute(db)
+    .await
+    .map_err(|e| conflict_on_unique(e, "host"))?
+    .rows_affected()
+        > 0)
 }
 
 pub async fn get(db: impl PgExecutor<'_>, id: HostId) -> Result<Host> {
@@ -259,18 +294,45 @@ pub async fn set_fencing(
     Ok(())
 }
 
-/// Records a renewed certificate; the previous one stays valid as well,
-/// until the host shows it has the new one ([`retire_previous_cert`]).
+/// Records a renewed certificate. The one the host renewed with stays
+/// valid as well, until the host shows it has the new one
+/// ([`retire_previous_cert`]); any other it held (a certificate renewed
+/// before but never used) is returned for revoking, so however often a
+/// host renews it holds two valid certificates at most.
 pub async fn renew_cert(
-    db: impl PgExecutor<'_>,
+    db: &mut sqlx::PgConnection,
     id: HostId,
+    presented_fingerprint: &str,
     fingerprint: &str,
     expires_at: DateTime<Utc>,
     serial: &str,
-) -> Result<()> {
+) -> Result<Vec<Revocable>> {
+    #[allow(clippy::type_complexity)]
+    let (cur_fp, cur_serial, cur_exp, prev_fp, prev_serial, prev_exp): (
+        String,
+        Option<String>,
+        DateTime<Utc>,
+        Option<String>,
+        Option<String>,
+        Option<DateTime<Utc>>,
+    ) = sqlx::query_as(
+        "SELECT cert_fingerprint, cert_serial, cert_expires_at,
+                previous_cert_fingerprint, previous_cert_serial, previous_cert_expires_at
+         FROM hosts WHERE id = $1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_one(&mut *db)
+    .await?;
+    let current = (Some(cur_fp), cur_serial, Some(cur_exp));
+    let previous = (prev_fp, prev_serial, prev_exp);
+    let (keep, drop) = if previous.0.as_deref() == Some(presented_fingerprint) {
+        (previous, current)
+    } else {
+        (current, previous)
+    };
     sqlx::query(
-        "UPDATE hosts SET previous_cert_fingerprint = cert_fingerprint,
-                previous_cert_serial = cert_serial, previous_cert_expires_at = cert_expires_at,
+        "UPDATE hosts SET previous_cert_fingerprint = $5, previous_cert_serial = $6,
+                previous_cert_expires_at = $7,
                 cert_fingerprint = $2, cert_expires_at = $3, cert_serial = $4, updated_at = now()
          WHERE id = $1",
     )
@@ -278,9 +340,15 @@ pub async fn renew_cert(
     .bind(fingerprint)
     .bind(expires_at)
     .bind(serial)
-    .execute(db)
+    .bind(keep.0)
+    .bind(keep.1)
+    .bind(keep.2)
+    .execute(&mut *db)
     .await?;
-    Ok(())
+    Ok(match drop {
+        (Some(_), Some(serial), Some(expires)) => vec![(serial, expires)],
+        _ => vec![],
+    })
 }
 
 /// Records the serial of a host's current certificate, for certificates

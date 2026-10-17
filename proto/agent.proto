@@ -231,6 +231,9 @@ message EnsureImage {
   // Published by the provider: may come from internal (non-public)
   // addresses. Tenants' images are only fetched from public ones.
   bool trusted = 5;
+  // The size of the disk the image is for: an image describing a larger
+  // disk is refused before it is unpacked. 0: no such limit.
+  uint64 max_virtual_bytes = 6;
 }
 
 // Create a volume, optionally as a copy-on-write clone of an image in the

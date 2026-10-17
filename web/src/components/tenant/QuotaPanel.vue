@@ -17,7 +17,9 @@ const RESOURCES = [
   { key: 'memory_mib', label: 'Memory', unit: 'GiB', scale: 1024 },
   { key: 'disk_gib', label: 'Disk', unit: 'GiB', scale: 1 },
   { key: 'floating_ips', label: 'Floating IPs', unit: '', scale: 1 },
+  { key: 'snapshot_gib', label: 'Snapshots', unit: 'GiB', scale: 1 },
   { key: 'backup_gib', label: 'Backups', unit: 'GiB', scale: 1 },
+  { key: 'vpcs', label: 'VPCs', unit: '', scale: 1 },
   { key: 'load_balancers', label: 'Load balancers', unit: '', scale: 1 },
 ] as const
 

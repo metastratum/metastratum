@@ -157,6 +157,12 @@ pub async fn create(
             mst_core::Error::Conflict("the range overlaps another network in this VPC".into())
                 .into()
         }
+        sqlx::Error::Database(d) if d.constraint() == Some("networks_outside_external") => {
+            mst_core::Error::InvalidArgument(
+                "the range overlaps an external network's; choose a private range".into(),
+            )
+            .into()
+        }
         sqlx::Error::Database(d) if d.is_check_violation() => mst_core::Error::InvalidArgument(
             "the gateway must lie within the network's range".into(),
         )
@@ -246,6 +252,16 @@ pub async fn list(db: impl PgExecutor<'_>, tenant_id: TenantId) -> Result<Vec<Ne
 /// The tenant's default network (in its default VPC), created on first use.
 /// Address ranges may overlap between VPCs: each is its own OVN router.
 pub async fn default_for(db: &mut PgConnection, tenant_id: TenantId) -> Result<Network> {
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM vpcs WHERE tenant_id = $1 AND name = $2)")
+            .bind(tenant_id)
+            .bind(DEFAULT_NAME)
+            .fetch_one(&mut *db)
+            .await?;
+    if !exists {
+        let delta = [("vpcs".to_owned(), 1)].into_iter().collect();
+        crate::quotas::reserve(db, tenant_id, &delta).await?;
+    }
     sqlx::query(
         "INSERT INTO vpcs (id, tenant_id, name) VALUES ($1, $2, $3) ON CONFLICT (tenant_id, name) DO NOTHING",
     )

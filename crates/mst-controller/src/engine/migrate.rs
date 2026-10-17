@@ -270,6 +270,7 @@ async fn prepare(ctx: &TaskCtx, m: &Migration) -> Result<()> {
                 source_url: image.source_url,
                 format: image.format,
                 pool: Some(p.clone()),
+                max_virtual_bytes: d.size_bytes,
             };
             agents
                 .call(dest, Cmd::EnsureImage(cmd), IMAGE)

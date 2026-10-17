@@ -11,7 +11,7 @@ use sqlx::{PgConnection, PgExecutor};
 
 use crate::Result;
 
-pub const RESOURCES: [&str; 7] = [
+pub const RESOURCES: [&str; 9] = [
     "vms",
     "vcpus",
     "memory_mib",
@@ -19,16 +19,28 @@ pub const RESOURCES: [&str; 7] = [
     "floating_ips",
     "backup_gib",
     "load_balancers",
+    "vpcs",
+    "snapshot_gib",
 ];
 const GIB: i64 = 1 << 30;
 
-/// Amounts per resource (`vms`, `vcpus`, `memory_mib`, `disk_gib`,
-/// `floating_ips`, `backup_gib`).
+/// Amounts per resource (see [`RESOURCES`]).
 pub type Amounts = BTreeMap<String, i64>;
 
 /// What a tenant's subtree currently uses.
 pub async fn usage(db: impl PgExecutor<'_>, tenant_id: TenantId) -> Result<Amounts> {
-    let (vms, vcpus, memory, disk, fips, backups, lbs): (i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+    #[allow(clippy::type_complexity)]
+    let (vms, vcpus, memory, disk, fips, backups, lbs, vpcs, snaps): (
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+    ) = sqlx::query_as(
         "WITH sub AS (SELECT id FROM tenants WHERE path <@ (SELECT path FROM tenants WHERE id = $1))
          SELECT
            (SELECT count(*) FROM vms WHERE tenant_id IN (SELECT id FROM sub)),
@@ -37,7 +49,9 @@ pub async fn usage(db: impl PgExecutor<'_>, tenant_id: TenantId) -> Result<Amoun
            (SELECT coalesce(sum(size_bytes), 0)::bigint FROM volumes WHERE tenant_id IN (SELECT id FROM sub)),
            (SELECT count(*) FROM external_ips WHERE kind = 'floating' AND tenant_id IN (SELECT id FROM sub)),
            (SELECT coalesce(sum(size_bytes), 0)::bigint FROM backups WHERE state <> 'failed' AND tenant_id IN (SELECT id FROM sub)),
-           (SELECT count(*) FROM load_balancers WHERE tenant_id IN (SELECT id FROM sub))",
+           (SELECT count(*) FROM load_balancers WHERE tenant_id IN (SELECT id FROM sub)),
+           (SELECT count(*) FROM vpcs WHERE tenant_id IN (SELECT id FROM sub)),
+           (SELECT coalesce(sum(size_bytes), 0)::bigint FROM snapshots WHERE state <> 'failed' AND tenant_id IN (SELECT id FROM sub))",
     )
     .bind(tenant_id)
     .fetch_one(db)
@@ -50,6 +64,8 @@ pub async fn usage(db: impl PgExecutor<'_>, tenant_id: TenantId) -> Result<Amoun
         ("floating_ips", fips),
         ("backup_gib", (backups + GIB - 1) / GIB),
         ("load_balancers", lbs),
+        ("vpcs", vpcs),
+        ("snapshot_gib", (snaps + GIB - 1) / GIB),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))

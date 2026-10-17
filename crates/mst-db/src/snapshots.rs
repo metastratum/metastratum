@@ -39,9 +39,11 @@ pub async fn create(
     spec: &mst_core::vm::VmSpec,
 ) -> Result<SnapshotId> {
     let id = SnapshotId::new();
+    // Charged (`snapshot_gib`) the size of the VM's disks now.
     sqlx::query(
-        "INSERT INTO snapshots (id, tenant_id, vm_id, name, state, spec)
-         VALUES ($1, $2, $3, $4, 'creating', $5)",
+        "INSERT INTO snapshots (id, tenant_id, vm_id, name, state, spec, size_bytes)
+         VALUES ($1, $2, $3, $4, 'creating', $5,
+                 (SELECT coalesce(sum(size_bytes), 0) FROM volumes WHERE vm_id = $3))",
     )
     .bind(id)
     .bind(tenant_id)

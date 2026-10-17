@@ -551,3 +551,29 @@ async fn storage_pools_attach_to_clusters(pool: PgPool) {
         "only local is left"
     );
 }
+
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn vpcs_and_snapshots_count_against_quotas(pool: PgPool) {
+    let t = tree(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    quotas::set_limit(&mut conn, t.acme.id, "vpcs", Some(1))
+        .await
+        .unwrap();
+    // The default VPC is the one allowed; another is not.
+    mst_db::networks::default_for(&mut conn, t.dev.id)
+        .await
+        .unwrap();
+    let one: Amounts = [("vpcs".to_owned(), 1)].into_iter().collect();
+    assert!(quotas::reserve(&mut conn, t.dev.id, &one).await.is_err());
+    assert!(quotas::reserve(&mut conn, t.globex.id, &one).await.is_ok());
+
+    // A snapshot is charged its VM's disks.
+    let host = host(&pool).await;
+    let vm = allocate(&pool, t.dev.id, host, 1, 512, 3).await.unwrap();
+    let spec = vms::get(&pool, vm).await.unwrap().spec.0;
+    mst_db::snapshots::create(&pool, t.dev.id, vm, "s1", &spec)
+        .await
+        .unwrap();
+    let used = quotas::usage(&pool, t.acme.id).await.unwrap();
+    assert_eq!((used["vpcs"], used["snapshot_gib"]), (1, 3));
+}

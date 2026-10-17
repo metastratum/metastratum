@@ -95,6 +95,9 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
                     source_url: image.source_url,
                     format: image.format,
                     pool: Some(pools[&disk.pool_id].clone()),
+                    // An image larger than the disk is refused before it
+                    // takes up any room.
+                    max_virtual_bytes: disk.size_bytes,
                 }),
                 SLOW,
             )
@@ -237,6 +240,38 @@ pub async fn reboot(ctx: &TaskCtx) -> Result<()> {
     .await
 }
 
+/// Drops the copies of tenants' images cached for a VM just deleted, if no
+/// volume is built on them any more: they count against nothing, so they
+/// must not pile up (an image can unpack to the size of the disk it was
+/// for). The provider's images stay cached for the next VM. Where a volume
+/// still is built on one after all (a VM being created meanwhile), the host
+/// keeps it.
+async fn drop_unused_images(
+    ctx: &TaskCtx,
+    host: HostId,
+    images: std::collections::BTreeMap<mst_core::ids::ImageId, Vec<mst_proto::Pool>>,
+) {
+    let db = &ctx.state.db;
+    for (id, pools) in images {
+        let Ok(image) = mst_db::images::get(db, id).await else {
+            continue;
+        };
+        if super::image_trusted(db, &image).await.unwrap_or(true)
+            || mst_db::images::in_use(db, id).await.unwrap_or(true)
+        {
+            continue;
+        }
+        let cmd = Cmd::DeleteImage(mst_proto::DeleteImage {
+            image_id: id.to_string(),
+            pools,
+        });
+        match ctx.state.agents.call(host, cmd, QUICK).await {
+            Ok(()) => tracing::info!(image = %id, "dropped an unused image's cached copies"),
+            Err(e) => tracing::info!(image = %id, error = %e, "kept an image's cached copies"),
+        }
+    }
+}
+
 pub async fn delete(ctx: &TaskCtx) -> Result<()> {
     let db = &ctx.state.db;
     let id = target(ctx)?;
@@ -260,8 +295,16 @@ pub async fn delete(ctx: &TaskCtx) -> Result<()> {
         .await
         .context("removing domain")?;
         ctx.step("volumes", 0.5).await;
+        let mut images: std::collections::BTreeMap<_, Vec<mst_proto::Pool>> = Default::default();
         for vol in mst_db::vms::volumes_for_vm(db, id).await? {
-            let pool = crate::api::agent_pool(&mst_db::storage_pools::get(db, vol.pool_id).await?)?;
+            let stored = mst_db::storage_pools::get(db, vol.pool_id).await?;
+            let pool = crate::api::agent_pool(&stored)?;
+            if let Some(image) = vol.image_id {
+                let shared = images.entry(image).or_default();
+                if stored.kind != "local" {
+                    shared.push(pool.clone());
+                }
+            }
             call(
                 ctx,
                 host,
@@ -275,6 +318,7 @@ pub async fn delete(ctx: &TaskCtx) -> Result<()> {
             .context("deleting volume")?;
             mst_db::vms::delete_volume(db, vol.id).await?;
         }
+        drop_unused_images(ctx, host, images).await;
     }
 
     ctx.step("network", 0.8).await;

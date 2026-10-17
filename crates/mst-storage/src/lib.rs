@@ -233,6 +233,13 @@ impl FilePool {
         }
         let tmp = dest.with_extension(format!("{}.tmp", random_suffix()));
         let (tmp_s, size_s) = (tmp.to_string_lossy().into_owned(), size.to_string());
+        // While a volume is put on an image, the image stays (see
+        // `delete_image`).
+        let lock = image.map(|i| self.image_lock(i));
+        let _held = match &lock {
+            Some(l) => Some(l.lock().await),
+            None => None,
+        };
         match image {
             Some(img) => {
                 let base = self.image_path(img)?;
@@ -275,14 +282,38 @@ impl FilePool {
         }
     }
 
-    /// Removes a cached image. Volumes built on it would break: the
-    /// controller only deletes images no volume uses.
+    /// Removes a cached image, unless a volume here is built on it (it
+    /// would break): the controller drops images no volume uses, but a VM
+    /// may be getting one at that very moment. Volumes are put on images
+    /// under the same lock.
     pub async fn delete_image(&self, id: &str) -> Result<()> {
         let _guard = self.image_lock(id).lock_owned().await;
-        match tokio::fs::remove_file(self.image_path(id)?).await {
+        let path = self.image_path(id)?;
+        if let Some(user) = self.volume_backed_by(&path).await? {
+            return Err(Error::Pool(format!("volume {user} is built on image {id}")));
+        }
+        match tokio::fs::remove_file(path).await {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),
         }
+    }
+
+    /// A volume (or one being made) whose backing file is `image`, if any.
+    async fn volume_backed_by(&self, image: &Path) -> Result<Option<String>> {
+        let name = image.file_name().map(|n| n.to_string_lossy().into_owned());
+        let mut dir = match tokio::fs::read_dir(self.root.join("volumes")).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(e) = dir.next_entry().await? {
+            let backing = qcow2_backing_file(&e.path()).await.unwrap_or_default();
+            let file = backing.as_deref().and_then(|b| Path::new(b).file_name());
+            if file.map(|f| f.to_string_lossy().into_owned()) == name {
+                return Ok(Some(e.file_name().to_string_lossy().into_owned()));
+            }
+        }
+        Ok(None)
     }
 
     /// IDs of the cached images, with when each was cached.
@@ -355,6 +386,11 @@ impl FilePool {
         let (s, t) = (src.to_string_lossy(), tmp.to_string_lossy());
         let base = image.map(|i| self.image_path(i)).transpose()?;
         let base_s = base.as_ref().map(|b| b.to_string_lossy());
+        let lock = image.map(|i| self.image_lock(i));
+        let _held = match &lock {
+            Some(l) => Some(l.lock().await),
+            None => None,
+        };
         let mut args = vec!["convert", "-q", "-f", "qcow2", "-O", "qcow2"];
         if let Some(b) = &base_s {
             args.extend(["-B", b, "-F", "qcow2"]);
@@ -408,6 +444,26 @@ pub(crate) fn random_suffix() -> String {
     format!("{:016x}", h.finish())
 }
 
+/// A qcow2 file's backing file name, read from its header (cheaper than
+/// `qemu-img info` for every volume). None for anything else.
+async fn qcow2_backing_file(path: &Path) -> std::io::Result<Option<String>> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let mut f = tokio::fs::File::open(path).await?;
+    let mut header = [0u8; 20];
+    if f.read_exact(&mut header).await.is_err() || header[..4] != *b"QFI\xfb" {
+        return Ok(None);
+    }
+    let offset = u64::from_be_bytes(header[8..16].try_into().unwrap_or_default());
+    let len = u32::from_be_bytes(header[16..20].try_into().unwrap_or_default());
+    if offset == 0 || len == 0 || len > 1023 {
+        return Ok(None);
+    }
+    f.seek(std::io::SeekFrom::Start(offset)).await?;
+    let mut name = vec![0u8; len as usize];
+    f.read_exact(&mut name).await?;
+    Ok(Some(String::from_utf8_lossy(&name).into_owned()))
+}
+
 async fn set_mode(path: &Path, mode: u32) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).await?;
@@ -429,12 +485,22 @@ pub(crate) async fn fetch(
         other => return Err(Error::InvalidImage(format!("unsupported format {other}"))),
     };
     fetch::download(url, part, policy).await?;
-    fetch::check_untrusted(part, declared).await?;
+    let size = fetch::check_untrusted(part, declared).await?;
+    if size > policy.max_virtual_bytes {
+        return Err(Error::InvalidImage(format!(
+            "the image is a {} GiB disk, larger than the {} GiB disk it is for",
+            size.div_ceil(1 << 30),
+            policy.max_virtual_bytes >> 30
+        )));
+    }
     let (src, dst) = (part.to_string_lossy(), out.to_string_lossy());
+    // What the conversion may write: the disk, and room for qcow2's tables.
+    let limit = size + (size / 50).max(64 << 20);
     fetch::untrusted_qemu_img(
         &["convert", "-f", declared, "-O", out_format, &src, &dst],
         600,
         2 << 30,
+        Some(limit),
     )
     .await?;
     Ok(())
@@ -458,6 +524,61 @@ mod tests {
 
     /// Exercises qemu-img when it is installed: overlays, size checks,
     /// idempotency and rejection of images with backing files.
+    #[tokio::test]
+    async fn images_larger_than_their_disk_are_refused_before_unpacking() {
+        if Command::new("qemu-img")
+            .arg("--version")
+            .output()
+            .await
+            .is_err()
+        {
+            return eprintln!("qemu-img not installed; skipping");
+        }
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = std::env::temp_dir().join(format!("mst-bomb-{}", std::process::id()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        // A small file describing a 1 GiB disk.
+        let img = dir.join("img.qcow2");
+        run(
+            "qemu-img",
+            &["create", "-q", "-f", "qcow2", img.to_str().unwrap(), "1G"],
+        )
+        .await
+        .unwrap();
+        let body = tokio::fs::read(&img).await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/img.qcow2", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut c, _)) = listener.accept().await {
+                let mut req = [0u8; 4096];
+                let _ = c.read(&mut req).await;
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = c.write_all(head.as_bytes()).await;
+                let _ = c.write_all(&body).await;
+            }
+        });
+        let policy = |max_virtual_bytes| FetchPolicy {
+            allow_private: true,
+            max_virtual_bytes,
+            ..FetchPolicy::default()
+        };
+        let (part, out) = (dir.join("x.part"), dir.join("x.qcow2"));
+        let err = fetch(&url, "qcow2", &part, &out, "qcow2", policy(512 << 20))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("larger than"), "{err}");
+        assert!(!out.exists(), "nothing unpacked");
+        fetch(&url, "qcow2", &part, &out, "qcow2", policy(1 << 30))
+            .await
+            .unwrap();
+        assert!(out.exists());
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
     #[tokio::test]
     async fn volumes_from_local_images() {
         if Command::new("qemu-img")
@@ -495,6 +616,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(info.backing_filename.as_deref(), img.to_str());
+        // A cached image stays while a volume is built on it.
+        assert_eq!(
+            qcow2_backing_file(&pool.volume_path("vol1").unwrap())
+                .await
+                .unwrap()
+                .as_deref(),
+            img.to_str()
+        );
+        assert!(pool.delete_image("img1").await.is_err());
+        assert!(img.exists());
 
         assert!(matches!(
             pool.ensure_volume("vol2", 1 << 20, Some("img1")).await,

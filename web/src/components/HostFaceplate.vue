@@ -34,6 +34,13 @@ const usedPct = computed(() => Math.min(100, (props.host.allocated_memory_mib / 
       <span v-if="host.connected && !host.migration_ready" class="tag stray" title="QEMU has no TLS certificates for migration">
         No migration
       </span>
+      <span
+        v-if="!retired && host.pending_facts"
+        class="tag stray"
+        title="It reports changes about itself that wait for you to accept them (Manage)"
+      >
+        Changes waiting
+      </span>
       <span v-if="!retired" class="tag" :class="{ stray: !host.cluster_name }">{{ host.cluster_name ?? 'No cluster' }}</span>
       <button v-if="!retired" type="button" class="btn small manage" @click="emit('manage')">Manage</button>
       <dl class="specs mono">

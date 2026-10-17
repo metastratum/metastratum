@@ -46,6 +46,29 @@ async fn sign_in(
     anyhow::bail!("too many redirects")
 }
 
+/// Starts a sign-in and goes through the identity provider, but stops at
+/// the link back to the controller: what someone would hand a victim to
+/// sign them in as themselves.
+async fn callback_link(base: &str, tenant: &str) -> anyhow::Result<String> {
+    let http = reqwest::Client::builder()
+        .cookie_store(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let mut url = format!("{base}/api/v1/auth/oidc/start?tenant={tenant}&return_to=/");
+    for _ in 0..10 {
+        let resp = http.get(&url).send().await?;
+        let next = resp.headers().get("location").ok_or_else(|| {
+            anyhow::anyhow!("{url} answered {} without a redirect", resp.status())
+        })?;
+        let next = reqwest::Url::parse(&url)?.join(next.to_str()?)?.to_string();
+        if next.starts_with(&format!("{base}/api/v1/auth/oidc/callback")) {
+            return Ok(next);
+        }
+        url = next;
+    }
+    anyhow::bail!("too many redirects")
+}
+
 fn roles(me: &Value) -> Vec<String> {
     let mut r: Vec<String> = me["roles"]
         .as_array()
@@ -171,8 +194,32 @@ async fn scenario(
     assert_eq!(me["display_name"], "Kilgore Trout");
     assert_eq!(roles(&me), ["viewer"]);
     let user = me["user_id"].as_str().unwrap().to_owned();
-    let (landed, _) = sign_in(base, slug, "https://evil.example/").await?;
-    assert_eq!(landed, "/");
+    for away in [
+        "https://evil.example/",
+        "/%09/evil.example",
+        "/%0a/evil.example",
+    ] {
+        let (landed, _) = sign_in(base, slug, away).await?;
+        assert_eq!(landed, "/", "{away}");
+    }
+
+    // A sign-in finishes only in the browser that started it: a link back
+    // from the identity provider, handed to someone else, signs nobody in.
+    let link = callback_link(base, slug).await?;
+    let other = reqwest::Client::builder()
+        .cookie_store(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let resp = other.get(&link).send().await?;
+    let landed = resp
+        .headers()
+        .get("location")
+        .and_then(|l| l.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(landed.starts_with("/login?error="), "{landed}");
+    let me = other.get(format!("{base}/api/v1/auth/me")).send().await?;
+    assert_eq!(me.status(), 401, "signed in by someone else's link");
 
     // Roles follow the mappings at each sign-in; the user stays the same.
     // An update without a secret keeps the stored one.

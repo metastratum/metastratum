@@ -162,6 +162,17 @@ async fn create_snapshot(
             mst_db::snapshots::MAX_PER_VM
         )));
     }
+    // A snapshot keeps every block written after it: charged the disks'
+    // size, which is as much as it can grow to.
+    let bytes: i64 = mst_db::vms::volumes_for_vm(&mut *tx, vm.id)
+        .await?
+        .iter()
+        .map(|v| v.size_bytes)
+        .sum();
+    let delta = [("snapshot_gib".to_owned(), (bytes + (1 << 30) - 1) >> 30)]
+        .into_iter()
+        .collect();
+    mst_db::quotas::reserve(&mut tx, vm.tenant_id, &delta).await?;
     let sid = mst_db::snapshots::create(&mut *tx, vm.tenant_id, vm.id, &name, &vm.spec.0).await?;
     let task = enqueue(&mut tx, &p, vm.tenant_id, "snapshot.create", sid).await?;
     tx.commit().await?;
