@@ -890,14 +890,25 @@ async fn remove_factor(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ResetQuery {
+    /// Also revoke the user's API tokens, for an account someone else may
+    /// have got into.
+    #[serde(default)]
+    revoke_tokens: bool,
+}
+
 /// Removes all of a user's second factors and backup codes, for someone
 /// who lost them, and signs them out everywhere. For administrators.
-#[utoipa::path(delete, path = "/users/{id}/two-factor", tag = "users", params(("id" = UserId, Path)),
+#[utoipa::path(delete, path = "/users/{id}/two-factor", tag = "users",
+    params(("id" = UserId, Path), ResetQuery),
     responses((status = 204), (status = 400), (status = 403), (status = 404)))]
 async fn reset(
     State(state): State<AppState>,
     p: Principal,
     Path(id): Path<UserId>,
+    axum::extract::Query(q): axum::extract::Query<ResetQuery>,
 ) -> ApiResult<StatusCode> {
     let user = mst_db::users::get(&state.db, id).await?;
     if id == p.user_id {
@@ -909,6 +920,11 @@ async fn reset(
     let mut tx = state.db.begin().await?;
     let n = mst_db::two_factor::reset(&mut tx, id).await?;
     mst_db::sessions::delete_for_user(&mut *tx, id, None).await?;
+    let revoked = if q.revoke_tokens {
+        mst_db::rbac::delete_tokens_of(&mut *tx, id).await?
+    } else {
+        0
+    };
     tx.commit().await?;
     audit(
         &state.db,
@@ -916,7 +932,7 @@ async fn reset(
         Some(user.tenant_id),
         "user.two_factor.reset",
         Some(("user", id.0)),
-        json!({"username": user.username, "factors": n}),
+        json!({"username": user.username, "factors": n, "tokens_revoked": revoked}),
     )
     .await;
     Ok(StatusCode::NO_CONTENT)

@@ -12,8 +12,23 @@ const route = useRoute()
 const username = ref('')
 const password = ref('')
 const tenant = ref(typeof route.query.tenant === 'string' ? route.query.tenant : '')
-// Set when an identity provider sent the browser back with a problem.
-const error = ref(typeof route.query.error === 'string' ? route.query.error : '')
+// Set when an identity provider sent the browser back with a problem: a
+// code, said in our own words (text from the address would let anyone put
+// words on this page).
+const SIGN_IN_ERRORS: Record<string, string> = {
+  no_host: 'The sign-in came back without the address it started at. Sign in again from this page.',
+  no_provider: 'That tenant doesn’t sign in with an identity provider.',
+  unreachable: 'The identity provider can’t be reached. Try again later.',
+  refused: 'The identity provider refused the sign-in.',
+  incomplete: 'The identity provider’s answer was incomplete. Try again.',
+  expired: 'That sign-in expired, was already used, or was started in another browser. Start again.',
+  failed: 'The identity provider’s answer didn’t check out. Try again, or ask an administrator.',
+  no_role: 'Your account has no role in this tenant. Ask an administrator for access.',
+  exists: 'A local account with your username already exists in this tenant. Ask an administrator.',
+  disabled: 'Your account is disabled.',
+}
+const errorCode = typeof route.query.error === 'string' ? route.query.error : ''
+const error = ref(errorCode ? (SIGN_IN_ERRORS[errorCode] ?? 'Signing in didn’t work. Try again.') : '')
 const busy = ref(false)
 const provider = ref<string | null>(null)
 

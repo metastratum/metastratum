@@ -45,7 +45,13 @@ pub(crate) fn write_if_changed(path: &Path, data: &str, access: Access) -> Resul
     {
         return Ok(false);
     }
-    std::fs::create_dir_all(path.parent().expect("absolute path"))?;
+    let dir = path.parent().expect("absolute path");
+    if !dir.exists() {
+        std::fs::create_dir_all(dir)?;
+        // The agent's umask keeps what it makes private; these are read by
+        // libvirt, QEMU and OVN too.
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))?;
+    }
     let tmp = path.with_extension("tmp");
     let _ = std::fs::remove_file(&tmp);
     {
@@ -56,6 +62,8 @@ pub(crate) fn write_if_changed(path: &Path, data: &str, access: Access) -> Resul
             .mode(mode)
             .open(&tmp)?;
         f.write_all(data.as_bytes())?;
+        // `mode` above is narrowed by the umask: set it as meant.
+        f.set_permissions(std::fs::Permissions::from_mode(mode))?;
         f.sync_all()?;
     }
     chown(&tmp, Some(0), Some(gid))?;

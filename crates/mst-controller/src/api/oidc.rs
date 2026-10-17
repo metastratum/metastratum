@@ -306,20 +306,11 @@ pub struct StartQuery {
     return_to: Option<String>,
 }
 
-fn login_error(message: &str) -> Response {
-    let q: String = url_encode(message);
-    Redirect::to(&format!("/login?error={q}")).into_response()
-}
-
-fn url_encode(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
+/// Back to the sign-in page with what went wrong, as a code the page has
+/// its own words for: never text from the request or the identity
+/// provider, which would let anyone put words on the real sign-in page.
+fn login_error(code: &'static str) -> Response {
+    Redirect::to(&format!("/login?error={code}")).into_response()
 }
 
 /// Sends the browser to the tenant's identity provider.
@@ -331,28 +322,20 @@ async fn start(
     Query(q): Query<StartQuery>,
 ) -> ApiResult<Response> {
     let Some(redirect) = redirect_uri(&site) else {
-        return Ok(login_error(
-            "The request did not say which host it was sent to. Sign in again from the login page.",
-        ));
+        return Ok(login_error("no_host"));
     };
     let Some(tenant) = tenant_by_path(&state, &site, q.tenant.as_deref()).await? else {
-        return Ok(login_error(
-            "That tenant does not sign in with an identity provider.",
-        ));
+        return Ok(login_error("no_provider"));
     };
     let Some(provider) = mst_db::oidc::get(&state.db, tenant.id).await? else {
-        return Ok(login_error(
-            "That tenant does not sign in with an identity provider.",
-        ));
+        return Ok(login_error("no_provider"));
     };
     let reach = reach(&state, tenant.id, &provider.issuer).await?;
     let meta = match discover(&provider.issuer, reach).await {
         Ok(m) => m,
         Err(e) => {
             tracing::warn!(tenant = %tenant.id, error = %e, "OIDC discovery failed");
-            return Ok(login_error(
-                "The identity provider cannot be reached. Try again later.",
-            ));
+            return Ok(login_error("unreachable"));
         }
     };
     let client = CoreClient::from_provider_metadata(
@@ -436,14 +419,11 @@ async fn callback_inner(
 ) -> ApiResult<Response> {
     if let Some(e) = &q.error {
         let detail = q.error_description.as_deref().unwrap_or(e);
-        return Ok(login_error(&format!(
-            "The identity provider refused the sign-in: {detail}"
-        )));
+        tracing::info!(error = %e, %detail, "the identity provider refused a sign-in");
+        return Ok(login_error("refused"));
     }
     let (Some(code), Some(csrf)) = (q.code, q.state) else {
-        return Ok(login_error(
-            "The identity provider returned an incomplete response.",
-        ));
+        return Ok(login_error("incomplete"));
     };
     let browser = headers
         .get_all(header::COOKIE)
@@ -457,15 +437,11 @@ async fn callback_inner(
     let Some(pending) =
         mst_db::oidc::finish_login(&state.db, &pending_key(&csrf, &browser)).await?
     else {
-        return Ok(login_error(
-            "That sign-in expired, was already used, or was started in another browser. Start again.",
-        ));
+        return Ok(login_error("expired"));
     };
     // The browser came back to the redirect URI the sign-in started with.
     let Some(redirect) = redirect_uri(site) else {
-        return Ok(login_error(
-            "The sign-in came back without a host. Start again.",
-        ));
+        return Ok(login_error("no_host"));
     };
     match finish(
         state,
@@ -481,8 +457,8 @@ async fn callback_inner(
             let headers = open_session(state, &user, "oidc", https).await?;
             Ok((headers, Redirect::to(&pending.return_to)).into_response())
         }
-        Err(message) => {
-            tracing::warn!(tenant = %pending.tenant_id, error = %message, "OIDC sign-in failed");
+        Err((code, message)) => {
+            tracing::warn!(tenant = %pending.tenant_id, code, error = %message, "OIDC sign-in failed");
             let entry = mst_db::audit::Entry {
                 user_id: None,
                 username: None,
@@ -490,16 +466,17 @@ async fn callback_inner(
                 action: "auth.login",
                 target: None,
                 success: false,
-                details: json!({"method": "oidc", "error": message}),
+                details: json!({"method": "oidc", "error": message, "code": code}),
             };
             let _ = mst_db::audit::record(&state.db, entry).await;
-            Ok(login_error(&message))
+            Ok(login_error(code))
         }
     }
 }
 
 /// Verifies the provider's response and resolves (or creates) the user.
-/// Errors are messages for the person signing in.
+/// Errors are a code for the sign-in page (see `login_error`) and what
+/// happened, for the log.
 async fn finish(
     state: &AppState,
     redirect: &str,
@@ -507,19 +484,22 @@ async fn finish(
     code: String,
     nonce: String,
     verifier: String,
-) -> Result<mst_db::users::User, String> {
-    let db_err = |e: mst_db::Error| {
-        tracing::error!(error = %e, "OIDC sign-in");
-        "Signing in failed on our side. Try again.".to_owned()
-    };
+) -> Result<mst_db::users::User, (&'static str, String)> {
+    let db_err = |e: mst_db::Error| ("internal", e.to_string());
+    let failed = |e: String| ("failed", e);
     let provider = mst_db::oidc::get(&state.db, tenant_id)
         .await
         .map_err(db_err)?
-        .ok_or("This tenant no longer signs in with an identity provider.")?;
+        .ok_or((
+            "no_provider",
+            "the tenant has no identity provider any more".to_owned(),
+        ))?;
     let reach = reach(state, tenant_id, &provider.issuer)
         .await
         .map_err(db_err)?;
-    let meta = discover(&provider.issuer, reach).await?;
+    let meta = discover(&provider.issuer, reach)
+        .await
+        .map_err(|e| ("unreachable", e))?;
     let client = CoreClient::from_provider_metadata(
         meta,
         ClientId::new(provider.client_id.clone()),
@@ -528,28 +508,31 @@ async fn finish(
                 &crate::secrets::idp_secret(provider.tenant_id),
                 &provider.client_secret,
             )
-            .map_err(|e| e.to_string())?,
+            .map_err(|e| ("internal", e.to_string()))?,
         )),
     )
-    .set_redirect_uri(RedirectUrl::new(redirect.to_owned()).map_err(|e| e.to_string())?);
+    .set_redirect_uri(
+        RedirectUrl::new(redirect.to_owned()).map_err(|e| ("internal", e.to_string()))?,
+    );
     let tokens = client
         .exchange_code(AuthorizationCode::new(code))
-        .map_err(|e| format!("The identity provider has no token endpoint: {e}"))?
+        .map_err(|e| failed(format!("the identity provider has no token endpoint: {e}")))?
         .set_pkce_verifier(PkceCodeVerifier::new(verifier))
         .request_async(&http_client(reach))
         .await
-        .map_err(|e| format!("Exchanging the sign-in code failed: {}", chain(&e)))?;
+        .map_err(|e| failed(format!("exchanging the sign-in code: {}", chain(&e))))?;
     let id_token = tokens
         .id_token()
-        .ok_or("The identity provider returned no ID token.")?;
+        .ok_or_else(|| failed("no ID token".into()))?;
     let claims = id_token
         .claims(&client.id_token_verifier(), &Nonce::new(nonce))
-        .map_err(|e| format!("The ID token did not verify: {e}"))?;
+        .map_err(|e| failed(format!("the ID token did not verify: {e}")))?;
     let subject = claims.subject().as_str().to_owned();
 
     // The token is verified; read the raw claims for configurable ones
     // (username, groups) that the typed claims do not model.
-    let raw = raw_claims(&id_token.to_string()).ok_or("The ID token could not be read.")?;
+    let raw = raw_claims(&id_token.to_string())
+        .ok_or_else(|| failed("the ID token could not be read".into()))?;
     let username = [
         provider.username_claim.as_str(),
         "preferred_username",
@@ -578,7 +561,7 @@ async fn finish(
     let denied = || {
         // For the administrator setting up group mappings.
         tracing::info!(%tenant_id, user = %username, ?groups, "no OIDC group maps to a role");
-        "Your account has no role in this tenant. Ask an administrator for access.".to_owned()
+        ("no_role", format!("{username} has no role in the tenant"))
     };
     // Someone unknown with no mapped role gets no account. A known user's
     // roles are re-synced either way: they may keep roles granted by hand.
@@ -601,7 +584,7 @@ async fn finish(
     .await
     .map_err(|e| match e {
         mst_db::Error::Domain(mst_core::Error::Conflict(_)) => {
-            format!("A local account named {username} already exists in this tenant.")
+            ("exists", format!("a local account named {username} exists"))
         }
         e => db_err(e),
     })?;
@@ -620,7 +603,7 @@ async fn finish(
         return Err(denied());
     }
     if user.disabled {
-        return Err("Your account is disabled.".into());
+        return Err(("disabled", format!("{username} is disabled")));
     }
     Ok(user)
 }

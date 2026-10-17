@@ -223,6 +223,10 @@ pub struct UpdateUser {
     /// The password being replaced: needed to change one's own.
     current_password: Option<String>,
     disabled: Option<bool>,
+    /// With a new password set by an administrator: also revoke the user's
+    /// API tokens, for an account someone else may have got into.
+    #[serde(default)]
+    revoke_tokens: bool,
 }
 
 fn double_option<'de, D: serde::Deserializer<'de>>(
@@ -305,6 +309,11 @@ async fn update_user(
         },
     )
     .await?;
+    let revoked = if req.revoke_tokens && password_hash.is_some() && !is_self {
+        mst_db::rbac::delete_tokens_of(&state.db, id).await?
+    } else {
+        0
+    };
     if password_hash.is_some() {
         // A new password signs the account out everywhere else.
         let current = super::session_secret(&headers)
@@ -327,7 +336,7 @@ async fn update_user(
         Some(user.tenant_id),
         "user.update",
         Some(("user", id.0)),
-        json!({"changed": changed, "disabled": req.disabled}),
+        json!({"changed": changed, "disabled": req.disabled, "tokens_revoked": revoked}),
     )
     .await;
     Ok(Json(UserView {

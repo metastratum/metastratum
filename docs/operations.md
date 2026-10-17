@@ -498,7 +498,10 @@ provider use its second factors instead, and API tokens sign in alone.
 
 Someone who lost theirs is reset by an administrator of their tenant
 (Tenants → People → Reset second factor), which signs them out; they then
-sign in with their password and add new ones. For the last provider
+sign in with their password and add new ones. Where someone else may have
+got into the account, revoke its API tokens with the reset (or with a new
+password); a plain reset leaves them, so the person's scripts keep
+working. For the last provider
 administrator, on a controller:
 
 ```sh
@@ -555,6 +558,7 @@ replica reports the same values: use `max`.
 | `mst_host_cert_expiry_timestamp_seconds{host}`, `mst_host_last_seen_timestamp_seconds{host}` | |
 | `mst_vms{status,power}`, `mst_migrations_running` | |
 | `mst_network_passes_total{outcome}`, `mst_network_changes_total{op}`, `mst_network_pass_duration_seconds` | OVN reconciliation |
+| `mst_port_binding_mismatches` | VMs' ports OVN has bound to a host other than theirs (leader only; with `ovn.southbound`) |
 | `mst_logins_total{method,outcome}`, `mst_rate_limited_total`, `mst_rate_limit_store_errors_total` | |
 | `mst_fencings_total{outcome}`, `mst_leader`, `mst_replicas` | HA |
 
@@ -582,6 +586,11 @@ groups:
       - alert: MetastratumLoginFailures
         expr: sum(rate(mst_logins_total{outcome="failed"}[5m])) > 1
         for: 10m
+      # A host claiming another's VM ports: it may have been taken over.
+      # The audit log (network.port_binding_mismatch) says which.
+      - alert: MetastratumPortBoundElsewhere
+        expr: max(mst_port_binding_mismatches) > 0
+        for: 3m
 ```
 
 Logs go to stderr (journald under systemd); `RUST_LOG` sets the level, e.g.

@@ -988,14 +988,21 @@ type PolicyView struct {
 	Direction   string    `json:"direction"`
 	Id          PolicyId  `json:"id"`
 
-	// Inherited Set by a tenant above this one: it cannot be changed from here.
-	Inherited  bool   `json:"inherited"`
-	PortMax    *int32 `json:"port_max,omitempty"`
-	PortMin    *int32 `json:"port_min,omitempty"`
-	Protocol   string `json:"protocol"`
-	RemoteCidr string `json:"remote_cidr"`
+	// Inherited Applies from a tenant above this one.
+	Inherited bool   `json:"inherited"`
+	OwnerName string `json:"owner_name"`
 
-	// TenantId The tenant that set it; it covers that tenant's whole subtree.
+	// OwnerTenantId The tenant whose administrators set it, and alone may remove it.
+	OwnerTenantId TenantId `json:"owner_tenant_id"`
+	PortMax       *int32   `json:"port_max,omitempty"`
+	PortMin       *int32   `json:"port_min,omitempty"`
+	Protocol      string   `json:"protocol"`
+	RemoteCidr    string   `json:"remote_cidr"`
+
+	// Removable Whether the caller may remove it.
+	Removable bool `json:"removable"`
+
+	// TenantId The tenant it applies to; it covers that tenant's whole subtree.
 	TenantId   TenantId `json:"tenant_id"`
 	TenantName string   `json:"tenant_name"`
 }
@@ -1486,6 +1493,10 @@ type UpdateUser struct {
 	// Email `null` clears it.
 	Email    *string `json:"email,omitempty"`
 	Password *string `json:"password,omitempty"`
+
+	// RevokeTokens With a new password set by an administrator: also revoke the user's
+	// API tokens, for an account someone else may have got into.
+	RevokeTokens *bool `json:"revoke_tokens,omitempty"`
 }
 
 // UpdateVm defines model for UpdateVm.
@@ -1778,6 +1789,13 @@ type ListUsersParams struct {
 
 	// Descendants Include users of all sub-tenants.
 	Descendants *bool `form:"descendants,omitempty" json:"descendants,omitempty"`
+}
+
+// ResetParams defines parameters for Reset.
+type ResetParams struct {
+	// RevokeTokens Also revoke the user's API tokens, for an account someone else may
+	// have got into.
+	RevokeTokens *bool `form:"revoke_tokens,omitempty" json:"revoke_tokens,omitempty"`
 }
 
 // ListVmsParams defines parameters for ListVms.
@@ -2722,7 +2740,7 @@ type ClientInterface interface {
 	// who lost them, and signs them out everywhere. For administrators.
 	//
 	// Corresponds with DELETE /api/v1/users/{id}/two-factor (the `Reset` operationId).
-	Reset(ctx context.Context, id UserId, reqEditors ...RequestEditorFn) (*http.Response, error)
+	Reset(ctx context.Context, id UserId, params *ResetParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// Status performs a GET /api/v1/users/{id}/two-factor (the `Status` operationId) request.
 	Status(ctx context.Context, id UserId, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5107,8 +5125,8 @@ func (c *Client) UserBindings(ctx context.Context, id UserId, reqEditors ...Requ
 // who lost them, and signs them out everywhere. For administrators.
 //
 // Corresponds with DELETE /api/v1/users/{id}/two-factor (the `Reset` operationId).
-func (c *Client) Reset(ctx context.Context, id UserId, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewResetRequest(c.Server, id)
+func (c *Client) Reset(ctx context.Context, id UserId, params *ResetParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewResetRequest(c.Server, id, params)
 	if err != nil {
 		return nil, err
 	}
@@ -10169,7 +10187,7 @@ func NewUserBindingsRequest(server string, id UserId) (*http.Request, error) {
 }
 
 // NewResetRequest constructs an http.Request for the Reset method
-func NewResetRequest(server string, id UserId) (*http.Request, error) {
+func NewResetRequest(server string, id UserId, params *ResetParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -10192,6 +10210,33 @@ func NewResetRequest(server string, id UserId) (*http.Request, error) {
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.RevokeTokens != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "revoke_tokens", *params.RevokeTokens, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
 	}
 
 	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
@@ -12546,7 +12591,7 @@ type ClientWithResponsesInterface interface {
 	// Returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with DELETE /api/v1/users/{id}/two-factor (the `Reset` operationId).
-	ResetWithResponse(ctx context.Context, id UserId, reqEditors ...RequestEditorFn) (*ResetResponse, error)
+	ResetWithResponse(ctx context.Context, id UserId, params *ResetParams, reqEditors ...RequestEditorFn) (*ResetResponse, error)
 
 	// StatusWithResponse performs a GET /api/v1/users/{id}/two-factor (the `Status` operationId) request.
 	//
@@ -19965,8 +20010,8 @@ func (c *ClientWithResponses) UserBindingsWithResponse(ctx context.Context, id U
 // Returns a wrapper object for the known response body format(s).
 //
 // Corresponds with DELETE /api/v1/users/{id}/two-factor (the `Reset` operationId).
-func (c *ClientWithResponses) ResetWithResponse(ctx context.Context, id UserId, reqEditors ...RequestEditorFn) (*ResetResponse, error) {
-	rsp, err := c.Reset(ctx, id, reqEditors...)
+func (c *ClientWithResponses) ResetWithResponse(ctx context.Context, id UserId, params *ResetParams, reqEditors ...RequestEditorFn) (*ResetResponse, error) {
+	rsp, err := c.Reset(ctx, id, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}

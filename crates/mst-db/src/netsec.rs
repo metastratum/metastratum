@@ -269,7 +269,11 @@ pub async fn rules_of(db: impl PgExecutor<'_>, groups: &[SecurityGroupId]) -> Re
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct Policy {
     pub id: PolicyId,
+    /// It applies to this tenant's VMs, and its sub-tenants'.
     pub tenant_id: TenantId,
+    /// Whose administrators set it, and alone may remove it: the tenant it
+    /// applies to, or one above.
+    pub owner_tenant_id: TenantId,
     pub direction: String,
     pub protocol: String,
     pub port_min: Option<i32>,
@@ -281,7 +285,7 @@ pub struct Policy {
 
 macro_rules! policy_columns {
     () => {
-        "id, tenant_id, direction, protocol, port_min, port_max, \
+        "id, tenant_id, owner_tenant_id, direction, protocol, port_min, port_max, \
     remote_cidr::text AS remote_cidr, description, created_at"
     };
 }
@@ -290,12 +294,14 @@ pub async fn create_policy(
     db: impl PgExecutor<'_>,
     id: PolicyId,
     tenant: TenantId,
+    owner: TenantId,
     r: &RuleSpec<'_>,
     by: UserId,
 ) -> Result<Policy> {
     sqlx::query_as(concat!("INSERT INTO network_policies
-             (id, tenant_id, direction, protocol, port_min, port_max, remote_cidr, description, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, network(coalesce($7, '0.0.0.0/0')::inet), $8, $9) RETURNING ", policy_columns!()))
+             (id, tenant_id, direction, protocol, port_min, port_max, remote_cidr, description, created_by,
+              owner_tenant_id)
+         VALUES ($1, $2, $3, $4, $5, $6, network(coalesce($7, '0.0.0.0/0')::inet), $8, $9, $10) RETURNING ", policy_columns!()))
     .bind(id)
     .bind(tenant)
     .bind(r.direction)
@@ -305,6 +311,7 @@ pub async fn create_policy(
     .bind(r.remote_cidr)
     .bind(r.description)
     .bind(by)
+    .bind(owner)
     .fetch_one(db)
     .await
     .map_err(rule_error)
@@ -332,7 +339,7 @@ pub async fn get_policy(db: impl PgExecutor<'_>, id: PolicyId) -> Result<Policy>
 /// first.
 pub async fn policies_for(db: impl PgExecutor<'_>, tenant: TenantId) -> Result<Vec<Policy>> {
     Ok(sqlx::query_as(
-        "SELECT p.id, p.tenant_id, p.direction, p.protocol, p.port_min, p.port_max,
+        "SELECT p.id, p.tenant_id, p.owner_tenant_id, p.direction, p.protocol, p.port_min, p.port_max,
                 p.remote_cidr::text AS remote_cidr, p.description, p.created_at
          FROM network_policies p JOIN tenants o ON o.id = p.tenant_id, tenants t
          WHERE t.id = $1 AND o.path @> t.path ORDER BY nlevel(o.path), p.created_at",

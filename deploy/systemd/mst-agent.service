@@ -9,6 +9,9 @@ Wants=network-online.target
 ExecStart=/usr/bin/mst-agent
 Restart=always
 RestartSec=5
+# Files it makes (VMs' disks, cached images, cloud-init seeds holding user
+# data) are root's alone; libvirt hands each VM's files to its QEMU.
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

@@ -206,6 +206,15 @@ pub async fn delete_token(db: impl PgExecutor<'_>, id: Uuid, user_id: UserId) ->
 }
 
 /// Resolves a live token of an enabled user, and records its use.
+/// Revokes all of a user's API tokens; returns how many there were.
+pub async fn delete_tokens_of(db: impl PgExecutor<'_>, user_id: UserId) -> Result<u64> {
+    Ok(sqlx::query("DELETE FROM api_tokens WHERE user_id = $1")
+        .bind(user_id)
+        .execute(db)
+        .await?
+        .rows_affected())
+}
+
 pub async fn resolve_token(db: impl PgExecutor<'_>, token_hash: &str) -> Result<Option<LiveToken>> {
     Ok(sqlx::query_as(
         "UPDATE api_tokens t SET last_used_at = now() FROM users u

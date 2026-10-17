@@ -2469,15 +2469,20 @@ export interface components {
             description: string;
             direction: string;
             id: components["schemas"]["PolicyId"];
-            /** @description Set by a tenant above this one: it cannot be changed from here. */
+            /** @description Applies from a tenant above this one. */
             inherited: boolean;
+            owner_name: string;
+            /** @description The tenant whose administrators set it, and alone may remove it. */
+            owner_tenant_id: components["schemas"]["TenantId"];
             /** Format: int32 */
             port_max?: number | null;
             /** Format: int32 */
             port_min?: number | null;
             protocol: string;
             remote_cidr: string;
-            /** @description The tenant that set it; it covers that tenant's whole subtree. */
+            /** @description Whether the caller may remove it. */
+            removable: boolean;
+            /** @description The tenant it applies to; it covers that tenant's whole subtree. */
             tenant_id: components["schemas"]["TenantId"];
             tenant_name: string;
         };
@@ -2903,6 +2908,11 @@ export interface components {
             /** @description `null` clears it. */
             email?: string | null;
             password?: string | null;
+            /**
+             * @description With a new password set by an administrator: also revoke the user's
+             *     API tokens, for an account someone else may have got into.
+             */
+            revoke_tokens?: boolean;
         };
         UpdateVm: {
             /**
@@ -6532,7 +6542,13 @@ export interface operations {
     };
     reset: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Also revoke the user's API tokens, for an account someone else may
+                 *     have got into.
+                 */
+                revoke_tokens?: boolean;
+            };
             header?: never;
             path: {
                 id: components["schemas"]["UserId"];

@@ -18,6 +18,7 @@ mod metrics;
 mod migration;
 mod net;
 mod ovn_tls;
+mod port_watch;
 mod ratelimit;
 mod secrets;
 mod state;
@@ -377,14 +378,19 @@ async fn serve(db: mst_db::sqlx::PgPool, cfg: &config::Config) -> anyhow::Result
     tokio::spawn(state.events.clone().listen(db.clone()));
     tokio::spawn(state.events.clone().watch_hosts(db.clone()));
     tokio::spawn(state.net.clone().run());
-    // Host failure handling and backup schedules run on one replica at a
-    // time.
+    // Host failure handling, backup schedules and the port binding watch
+    // run on one replica at a time.
     tokio::spawn({
         let state = state.clone();
+        let southbound = cfg.ovn.southbound.clone();
         ha::lead(db.clone(), move || {
-            let state = state.clone();
+            let (state, southbound) = (state.clone(), southbound.clone());
             async move {
-                tokio::join!(ha::monitor(state.clone()), engine::backup_schedule(state));
+                tokio::join!(
+                    ha::monitor(state.clone()),
+                    engine::backup_schedule(state.clone()),
+                    port_watch::watch(state, southbound),
+                );
             }
         })
     });

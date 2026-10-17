@@ -30,6 +30,10 @@ pub struct Change {
     /// The owning tenant's path; none for provider infrastructure.
     #[serde(default, deserialize_with = "tenant_path")]
     pub tenant: Option<TenantPath>,
+    /// For images: shared with the owner's sub-tenants (or was, until this
+    /// change).
+    #[serde(default)]
+    pub shared: Option<bool>,
 }
 
 fn tenant_path<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<TenantPath>, D::Error> {
@@ -122,6 +126,7 @@ impl Hub {
                                 id: h.id.0,
                                 op: "update".into(),
                                 tenant: None,
+                                shared: None,
                             }));
                         }
                     }

@@ -516,6 +516,25 @@ impl Libvirt {
         Ok(())
     }
 
+    /// The security drivers confining VMs (`apparmor`, `selinux`, `dac`);
+    /// `none` when they run unconfined.
+    pub async fn security_models(&self) -> Result<Vec<String>> {
+        let caps = self
+            .client()
+            .await?
+            .connect_get_capabilities()
+            .await?
+            .capabilities;
+        Ok(caps
+            .split("<secmodel>")
+            .skip(1)
+            .filter_map(|s| {
+                let s = s.split_once("<model>")?.1;
+                Some(s.split_once("</model>")?.0.trim().to_owned())
+            })
+            .collect())
+    }
+
     /// The host's host-model CPU, for cluster baselines.
     pub async fn host_cpu(&self) -> Result<Option<crate::cpu::CpuModel>> {
         let caps = self

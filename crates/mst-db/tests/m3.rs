@@ -374,12 +374,26 @@ async fn policies_apply_down_the_tree(pool: PgPool) {
         remote_group_id: None,
         description: "",
     };
-    netsec::create_policy(&pool, PolicyId::new(), root.id, &spec(22), admin.id)
-        .await
-        .unwrap();
-    netsec::create_policy(&pool, PolicyId::new(), acme.id, &spec(3389), admin.id)
-        .await
-        .unwrap();
+    netsec::create_policy(
+        &pool,
+        PolicyId::new(),
+        root.id,
+        root.id,
+        &spec(22),
+        admin.id,
+    )
+    .await
+    .unwrap();
+    netsec::create_policy(
+        &pool,
+        PolicyId::new(),
+        acme.id,
+        root.id,
+        &spec(3389),
+        admin.id,
+    )
+    .await
+    .unwrap();
     let mine = netsec::policies_for(&pool, acme.id).await.unwrap();
     // Outermost first.
     assert_eq!(
@@ -393,7 +407,7 @@ async fn policies_apply_down_the_tree(pool: PgPool) {
         ..spec(1)
     };
     assert!(
-        netsec::create_policy(&pool, PolicyId::new(), root.id, &bad, admin.id)
+        netsec::create_policy(&pool, PolicyId::new(), root.id, root.id, &bad, admin.id)
             .await
             .is_err()
     );

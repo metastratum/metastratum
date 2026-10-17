@@ -149,8 +149,10 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 				PlanModifiers: replace,
 			},
 			"user_data": schema.StringAttribute{
-				Description:   "Complete cloud-init user data, instead of `ssh_authorized_keys` and `password`.",
+				Description: "Complete cloud-init user data, instead of `ssh_authorized_keys` and `password`. " +
+					"Kept out of plans and logs, as it often holds secrets.",
 				Optional:      true,
+				Sensitive:     true,
 				PlanModifiers: replace,
 			},
 			"cluster_id": schema.StringAttribute{

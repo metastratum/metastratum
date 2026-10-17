@@ -71,7 +71,7 @@ async function remove(p: Policy) {
     </header>
     <p class="intro">
       Traffic blocked for every VM in {{ scope.tenant?.name ?? 'this tenant' }} and all tenants below it, whatever their
-      security groups allow. Only {{ scope.tenant?.name ?? 'this tenant' }}’s administrators can change these.
+      security groups allow. Only the administrators of the tenant that set one can remove it.
     </p>
     <p v-if="error" class="error-text" role="alert">{{ error }}</p>
 
@@ -84,8 +84,11 @@ async function remove(p: Policy) {
           <li v-for="p in own" :key="p.id" class="rail">
             <span class="stop" aria-hidden="true">✕</span>
             <span class="text">{{ ruleText(p) }}</span>
+            <span v-if="p.owner_tenant_id !== p.tenant_id" class="tag" title="Set by a tenant above; only it removes it">
+              Set by {{ p.owner_name }}
+            </span>
             <span v-if="p.description" class="muted">{{ p.description }}</span>
-            <button v-if="canWrite" class="btn small" @click="remove(p)">Remove</button>
+            <button v-if="p.removable" class="btn small" @click="remove(p)">Remove</button>
           </li>
           <li v-if="!own.length" class="muted rail">None.</li>
         </ul>

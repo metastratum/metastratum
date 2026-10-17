@@ -440,6 +440,22 @@ async fn scenario(admin: &Api, run: &str, p: &str, c: &str) -> anyhow::Result<()
         .await?;
     wait_ssh(&addr, true, "the guardrail is gone").await;
 
+    // Nor one P puts on C directly: it is P's, though it applies to C.
+    let on_c = pat
+        .post(
+            &format!("/tenants/{c}/network-policies"),
+            json!({"direction": "ingress", "protocol": "tcp", "port_min": 3389}),
+        )
+        .await?;
+    let on_c = on_c.as_array().unwrap()[0].clone();
+    assert_eq!(on_c["owner_tenant_id"].as_str(), Some(p), "{on_c}");
+    let seen = cid.get(&format!("/tenants/{c}/network-policies")).await?;
+    assert_eq!(seen[0]["removable"], false, "{seen}");
+    let path = format!("/network-policies/{}", on_c["id"].as_str().unwrap());
+    let (st, _) = cid.try_send(Method::DELETE, &path, None).await?;
+    assert_eq!(st, 403, "C's admin removed a guardrail P set on C");
+    pat.send(Method::DELETE, &path, None).await?;
+
     // Leaving the group closes it again.
     set_groups(vec![default.clone()]).await?;
     wait_ssh(&addr, false, "a2 left the ssh group").await;

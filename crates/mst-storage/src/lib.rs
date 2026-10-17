@@ -151,13 +151,21 @@ impl FilePool {
             let (t, sz) = (tmp.to_string_lossy().into_owned(), size.to_string());
             run("qemu-img", &["resize", "-q", "-f", "qcow2", &t, &sz]).await?;
         }
+        set_mode(&tmp, 0o600).await?;
         tokio::fs::rename(&tmp, &dest).await?;
         Ok(())
     }
 
     pub async fn init(&self) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        // QEMU passes through the pool's root to its VM's files.
+        tokio::fs::create_dir_all(&self.root).await?;
+        let mode = tokio::fs::metadata(&self.root).await?.permissions().mode();
+        if mode & 0o011 != 0o011 {
+            set_mode(&self.root, (mode | 0o711) & 0o7777).await?;
+        }
         for dir in ["images", "volumes"] {
-            tokio::fs::create_dir_all(self.root.join(dir)).await?;
+            private_dir(&self.root.join(dir)).await?;
         }
         Ok(())
     }
@@ -207,7 +215,7 @@ impl FilePool {
         let converted = dest.with_extension(format!("{unique}.tmp"));
         let result = async {
             fetch(url, format, &part, &converted, "qcow2", policy).await?;
-            set_mode(&converted, 0o644).await?;
+            set_mode(&converted, 0o600).await?;
             // Another host finished first: keep its copy, which running VMs
             // may already use as a backing file.
             if !tokio::fs::try_exists(&dest).await? {
@@ -271,6 +279,7 @@ impl FilePool {
                 .await?;
             }
         }
+        set_mode(&tmp, 0o600).await?;
         tokio::fs::rename(&tmp, &dest).await?;
         Ok(())
     }
@@ -409,6 +418,7 @@ impl FilePool {
             let _ = tokio::fs::remove_file(&tmp).await;
             return Err(e);
         }
+        set_mode(&tmp, 0o600).await?;
         tokio::fs::rename(&tmp, &dest).await?;
         Ok(())
     }
@@ -442,6 +452,24 @@ pub(crate) fn random_suffix() -> String {
             .as_nanos(),
     );
     format!("{:016x}", h.finish())
+}
+
+/// Makes a directory of VMs' files private: others on the host may pass
+/// through it (QEMU, which libvirt gives each VM's own files when it
+/// starts) but not list it, and its files are readable by their owner only.
+/// Files made before are tightened too.
+pub async fn private_dir(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    tokio::fs::create_dir_all(dir).await?;
+    set_mode(dir, 0o711).await?;
+    let mut entries = tokio::fs::read_dir(dir).await?;
+    while let Some(e) = entries.next_entry().await? {
+        let meta = e.metadata().await?;
+        if meta.is_file() && meta.permissions().mode() & 0o077 != 0 {
+            set_mode(&e.path(), 0o600).await?;
+        }
+    }
+    Ok(())
 }
 
 /// A qcow2 file's backing file name, read from its header (cheaper than

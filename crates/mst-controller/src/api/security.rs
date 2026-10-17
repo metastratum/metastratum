@@ -449,11 +449,16 @@ async fn delete_rule(
 #[derive(Serialize, ToSchema)]
 pub struct PolicyView {
     id: PolicyId,
-    /// The tenant that set it; it covers that tenant's whole subtree.
+    /// The tenant it applies to; it covers that tenant's whole subtree.
     tenant_id: TenantId,
     tenant_name: String,
-    /// Set by a tenant above this one: it cannot be changed from here.
+    /// Applies from a tenant above this one.
     inherited: bool,
+    /// The tenant whose administrators set it, and alone may remove it.
+    owner_tenant_id: TenantId,
+    owner_name: String,
+    /// Whether the caller may remove it.
+    removable: bool,
     direction: String,
     protocol: String,
     port_min: Option<i32>,
@@ -475,6 +480,7 @@ async fn list_policies(
     authorize_resource(&state.db, &p, Perm::NetworkRead, id, "tenant").await?;
     let lineage = mst_db::tenants::lineage(&state.db, id).await?;
     let names: HashMap<_, _> = lineage.iter().map(|t| (t.id, t.name.clone())).collect();
+    let paths: HashMap<_, _> = lineage.iter().map(|t| (t.id, t.path.clone())).collect();
     Ok(Json(
         mst_db::netsec::policies_for(&state.db, id)
             .await?
@@ -482,6 +488,11 @@ async fn list_policies(
             .map(|x| PolicyView {
                 tenant_name: names.get(&x.tenant_id).cloned().unwrap_or_default(),
                 inherited: x.tenant_id != id,
+                owner_name: names.get(&x.owner_tenant_id).cloned().unwrap_or_default(),
+                removable: paths
+                    .get(&x.owner_tenant_id)
+                    .is_some_and(|o| p.can(Perm::PolicyWrite, o)),
+                owner_tenant_id: x.owner_tenant_id,
                 id: x.id,
                 tenant_id: x.tenant_id,
                 direction: x.direction,
@@ -511,10 +522,21 @@ async fn create_policy(
         ));
     }
     let c = check_rule(&req)?;
+    // Owned by the highest tenant the caller sets it from: a guardrail an
+    // administrator above puts on a sub-tenant is not the sub-tenant's to
+    // remove.
+    let target = mst_db::tenants::get(&state.db, id).await?.path;
+    let owner = p
+        .bindings
+        .iter()
+        .filter(|b| b.tenant.is_ancestor_or_self_of(&target) && b.role.allows(Perm::PolicyWrite))
+        .min_by_key(|b| b.tenant.depth())
+        .map_or(id, |b| b.tenant.tenant());
     let policy = mst_db::netsec::create_policy(
         &state.db,
         PolicyId::new(),
         id,
+        owner,
         &mst_db::netsec::RuleSpec {
             direction: c.direction,
             protocol: c.protocol,
@@ -549,7 +571,15 @@ async fn delete_policy(
     Path(id): Path<PolicyId>,
 ) -> ApiResult<StatusCode> {
     let policy = mst_db::netsec::get_policy(&state.db, id).await?;
-    authorize_resource(&state.db, &p, Perm::PolicyWrite, policy.tenant_id, "policy").await?;
+    // Readable where it applies; removable only by whoever set it.
+    authorize_resource(&state.db, &p, Perm::NetworkRead, policy.tenant_id, "policy").await?;
+    authorize(&state.db, &p, Perm::PolicyWrite, policy.owner_tenant_id)
+        .await
+        .map_err(|_| {
+            ApiError::forbidden_msg(
+                "a tenant above set this guardrail; only its administrators remove it",
+            )
+        })?;
     mst_db::netsec::delete_policy(&state.db, id).await?;
     audit(
         &state.db,

@@ -71,7 +71,11 @@ pub async fn backup(agent: &Agent, c: &BackupVm) -> Result<String> {
     if let Ok(text) = tokio::fs::read_to_string(&done).await {
         return Ok(text);
     }
-    tokio::fs::create_dir_all(&dir).await?;
+    // QEMU writes a running VM's backup here: it must get through.
+    if let Some(parent) = dir.parent() {
+        mst_storage::private_dir(parent).await?;
+    }
+    mst_storage::private_dir(&dir).await?;
     let consistent = if matches!(
         agent.lv.power(&c.vm_id).await,
         Ok(Power::Running | Power::Paused)

@@ -1,5 +1,6 @@
 //! Turning a VM spec into a libvirt domain on this host.
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -49,6 +50,9 @@ async fn write_seed(path: &Path, vm_id: &str, hostname: &str, user_data: &str) -
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
+    // User data may hold secrets: for root, and the VM's QEMU (libvirt
+    // hands it over while the VM runs), only.
+    tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await?;
     tokio::fs::rename(&tmp, path).await?;
     Ok(())
 }
@@ -119,7 +123,7 @@ pub async fn domain(
         });
     }
     if let Some(ci) = &spec.cloud_init {
-        tokio::fs::create_dir_all(&files.cloud_init_dir).await?;
+        mst_storage::private_dir(&files.cloud_init_dir).await?;
         let seed = files.seed_path(vm_id);
         write_seed(&seed, vm_id, &ci.hostname, &ci.user_data).await?;
         disks.push(Disk {

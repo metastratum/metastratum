@@ -13,7 +13,7 @@ vulnerability reporting for this repository, rather than in a public issue.
 | Tenant administrators | their tenant and its sub-tenants, nothing above or beside it |
 | Tenant users | what their roles allow in their tenant's subtree |
 | Guests (the VMs) | nothing; they are assumed hostile |
-| Hosts | their own VMs; they can disturb, but not take over, migrations between other hosts (see below) |
+| Hosts | their own VMs; they can disturb, but not take over, migrations between other hosts, and can claim other hosts' VM ports in OVN, which the controller reports (see below) |
 | Controller replicas | everything; they hold the master key |
 
 The boundaries metastratum enforces:
@@ -117,7 +117,9 @@ The boundaries metastratum enforces:
   the source sends; agents from before this are refused. The controller reaches
   OVN's northbound database over TLS with a client certificate from a CA
   that issues to controllers only; hosts reach the southbound one with
-  certificates from another CA, naming their chassis, under OVN's RBAC.
+  certificates from another CA, naming their chassis, under OVN's RBAC
+  (which keeps a host's writes to its own chassis, but not to its own
+  ports: see the known issues).
   The controllers issue the OVN servers' certificates too, and warn before
   they expire.
 - **Abuse**: requests and password sign-ins are rate limited per client,
@@ -188,6 +190,13 @@ the code after two-factor sign-in was added. Fixed:
 | A host could renew its certificate any number of times, and certificates replaced before use were never revoked | a renewal revokes any other certificate the host held but did not use |
 | An OIDC sign-in was not bound to the browser that started it: someone could hand another person the link back from their own identity provider and sign them in as themselves | a cookie of its own binds it |
 | `return_to=/%09/evil.example` passed the filter, as browsers drop tabs and newlines from URLs: an open redirect after sign-in | no control characters or spaces, on the sign-in page too |
+| A guardrail a tenant set on a sub-tenant belonged to the sub-tenant, whose administrators could remove it | guardrails belong to the tenant that sets them, which alone removes them |
+| An administrator resetting a compromised account's password or second factors left its API tokens working | an option to revoke them too (off by default: a plain reset should not break someone's scripts) |
+| VMs' disks, cached images and cloud-init seeds (holding user data) were world-readable on hosts | readable by root and the VM's own QEMU only; the agent warns when libvirt confines no VM |
+| The Terraform provider showed `user_data` in plans and logs | marked sensitive |
+| The sign-in page showed error text from its address, which anyone could put there | error codes, in the page's own words |
+| Live updates told sub-tenants' users about their ancestors' unshared images | only shared ones |
+| SECURITY.md claimed OVN's RBAC held hosts to their own chassis; it does not keep them off other hosts' ports | corrected (known issues), and the controller watches port bindings |
 
 ## Known issues, and what to do about them
 
@@ -234,6 +243,14 @@ the code after two-factor sign-in was added. Fixed:
   *Mitigation:* keep hosts on a management network that guests and tenants
   cannot reach, and let only hosts reach the migration ports
   (49152-49215).
+- **A host can claim other hosts' VM ports in OVN.** OVN's RBAC lets
+  every host write any port binding's chassis, so a host taken over could
+  draw another tenant's traffic to itself; ovn-controller on the right
+  host claims it back, so traffic flaps rather than stays.
+  *Mitigation:* the controller compares bindings with where VMs run, every
+  minute, and reports any port bound elsewhere (`mst_port_binding_mismatches`,
+  the audit log's `network.port_binding_mismatch`): alert on it, and take
+  that host out of service.
 - **OVN cannot revoke certificates.** Open vSwitch has no revocation
   lists, so a decommissioned host's southbound certificate stays valid
   until it expires (up to 30 days), held by OVN's RBAC to that host's
@@ -261,6 +278,23 @@ the code after two-factor sign-in was added. Fixed:
 - **Networking is IPv4 only.** Port security, security groups and
   guardrails are written for IPv4; guests' IPv6 is dropped (tested), not
   filtered.
+- **Sealed storage pool keys are bound to "a storage pool", not to their
+  pool.** Someone able to write to the database could swap two pools'
+  sealed keys, and values written there unsealed are accepted (as they
+  were before sealing existed).
+  *Mitigation:* the database reachable by the controllers only, with
+  credentials of their own.
+- **Migrating a VM on local disks fetches its image again**, from the
+  image's address: the copy on the destination is not checked to be the
+  same as on the source, so an image changed at its address meanwhile
+  changes what the migrated VM's unwritten blocks hold.
+  *Mitigation:* images at addresses whose content does not change
+  (versioned file names), or shared storage.
+- **QEMU before 9.0 (CVE-2024-4467)** can open files a crafted qcow2
+  image names while `qemu-img info` reads it, before metastratum refuses
+  the image.
+  *Mitigation:* the supported distributions' current QEMU, which has the
+  fix.
 - **Inline styles are allowed** by the Content-Security-Policy (the serial
   terminal and the UI set some); inline scripts are not.
 
@@ -284,6 +318,9 @@ says what to fix:
   cannot reach; migration ports (49152-49215) open between hosts only;
   `metrics_listen` on a private address.
 - Backup repositories exported to the hosts only.
+- AppArmor or SELinux confining VMs on every host (the agent warns when
+  libvirt confines none).
+- An alert on `mst_port_binding_mismatches`.
 - Fencing on every host of clusters with high availability.
 - Per-VM limits on clusters.
 - A second factor required at the provider tenant (Tenants → Sign-in), or

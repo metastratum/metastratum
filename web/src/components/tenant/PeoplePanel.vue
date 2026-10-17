@@ -87,9 +87,14 @@ async function openGrant() {
 function tenantName(id: string) {
   return scope.byId.get(id)?.name ?? ''
 }
+// After a password or second-factor reset: also revoke the person's API
+// tokens. Only when someone else may have got into the account; otherwise
+// it would break their automation for nothing.
+const revokeTokens = ref(false)
 function open(d: Dialog) {
   formError.value = ''
   password.value = ''
+  revokeTokens.value = false
   dialog.value = d
 }
 
@@ -106,9 +111,18 @@ async function submit() {
       await ok(api.POST('/api/v1/users', { body: { tenant_id: props.tenant.id, ...rest, email: email || null } }))
       add.value = { username: '', display_name: '', email: '', password: '', role: 'operator' }
     } else if (d.kind === 'password') {
-      await ok(api.PATCH('/api/v1/users/{id}', { params: { path: { id: d.user.id } }, body: { password: password.value } }))
+      await ok(
+        api.PATCH('/api/v1/users/{id}', {
+          params: { path: { id: d.user.id } },
+          body: { password: password.value, revoke_tokens: revokeTokens.value },
+        }),
+      )
     } else if (d.kind === 'reset') {
-      await ok(api.DELETE('/api/v1/users/{id}/two-factor', { params: { path: { id: d.user.id } } }))
+      await ok(
+        api.DELETE('/api/v1/users/{id}/two-factor', {
+          params: { path: { id: d.user.id }, query: { revoke_tokens: revokeTokens.value } },
+        }),
+      )
     } else {
       await ok(api.DELETE('/api/v1/users/{id}', { params: { path: { id: d.user.id } } }))
     }
@@ -287,12 +301,24 @@ async function submit() {
             <input v-model="password" type="password" required minlength="10" autocomplete="new-password" autofocus />
             <span class="hint">At least 10 characters. This signs them out everywhere.</span>
           </label>
+          <label class="check">
+            <input v-model="revokeTokens" type="checkbox" />
+            <span>Also revoke their API tokens</span>
+          </label>
+          <p class="muted hint">If someone else may have got into the account. Their scripts stop working until they make new tokens.</p>
         </template>
-        <p v-else-if="dialog.kind === 'reset'">
-          For someone who lost their phone or key: this removes all of
-          <strong>{{ dialog.user.username }}</strong>’s second factors and backup codes and signs them out. They then sign
-          in with their password alone, and can add new ones.
-        </p>
+        <template v-else-if="dialog.kind === 'reset'">
+          <p>
+            For someone who lost their phone or key: this removes all of
+            <strong>{{ dialog.user.username }}</strong>’s second factors and backup codes and signs them out. They then
+            sign in with their password alone, and can add new ones.
+          </p>
+          <label class="check">
+            <input v-model="revokeTokens" type="checkbox" />
+            <span>Also revoke their API tokens</span>
+          </label>
+          <p class="muted hint">If someone else may have got into the account. Their scripts stop working until they make new tokens.</p>
+        </template>
         <p v-else>
           Delete <strong>{{ dialog.user.username }}</strong>? Their roles and API tokens go with the account. Their VMs
           stay.

@@ -151,7 +151,7 @@ async fn scenario(
         Value::Null
     );
     let (landed, me) = sign_in(base, slug, "/").await?;
-    assert!(landed.starts_with("/login?error="), "{landed}");
+    assert_eq!(landed, "/login?error=no_provider");
     assert!(me.is_none());
 
     // The secret is required on creation, and never shown.
@@ -217,7 +217,7 @@ async fn scenario(
         .and_then(|l| l.to_str().ok())
         .unwrap_or_default()
         .to_owned();
-    assert!(landed.starts_with("/login?error="), "{landed}");
+    assert_eq!(landed, "/login?error=expired");
     let me = other.get(format!("{base}/api/v1/auth/me")).send().await?;
     assert_eq!(me.status(), 401, "signed in by someone else's link");
 
@@ -244,7 +244,7 @@ async fn scenario(
         )
         .await?;
     let (landed, me) = sign_in(base, slug, "/").await?;
-    assert!(landed.starts_with("/login?error="), "{landed}");
+    assert_eq!(landed, "/login?error=no_role");
     assert!(me.is_none());
     let bindings = admin.get(&format!("/users/{user}/role-bindings")).await?;
     assert_eq!(bindings.as_array().unwrap().len(), 0, "{bindings}");
@@ -262,7 +262,7 @@ async fn scenario(
     // Removing the provider stops OIDC sign-in.
     admin.send(Method::DELETE, &idp, None).await?;
     let (landed, me) = sign_in(base, slug, "/").await?;
-    assert!(landed.starts_with("/login?error="), "{landed}");
+    assert_eq!(landed, "/login?error=no_provider");
     assert!(me.is_none());
     Ok(())
 }

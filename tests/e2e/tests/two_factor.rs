@@ -605,6 +605,42 @@ async fn scenario(admin: &Api, run: &str, tenant: &str) -> anyhow::Result<()> {
             ("carol".into(), true)
         ])
     );
+
+    // Resetting a password or second factors keeps the person's API tokens,
+    // unless the administrator asks (someone else may have got in).
+    let token = carol
+        .post("/tokens", json!({"name": "script", "expires_in_days": 1}))
+        .await?["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let script = Api::with_token(&admin.base, &token)?;
+    let carol_path = format!("/users/{}", ids["carol"]);
+    admin
+        .send(
+            Method::PATCH,
+            &carol_path,
+            Some(json!({"password": PASSWORD})),
+        )
+        .await?;
+    assert_eq!(
+        script.status_of("/auth/me").await?,
+        200,
+        "kept by a plain reset"
+    );
+    let (st, body) = admin
+        .try_send(
+            Method::PATCH,
+            &carol_path,
+            Some(json!({"password": PASSWORD, "revoke_tokens": true})),
+        )
+        .await?;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(
+        script.status_of("/auth/me").await?,
+        401,
+        "revoked on request"
+    );
     let (st, body) = admin.try_send(Method::DELETE, &tf("alice"), None).await?;
     assert_eq!(st, 204, "{body}");
     assert_eq!(alice.status_of("/auth/me").await?, 401, "signed out");

@@ -112,6 +112,22 @@ async fn main() -> anyhow::Result<()> {
         changes: tokio::sync::Mutex::new(lv.watch()),
         libvirt_tls: tokio::sync::watch::Sender::new(None),
     });
+    // VMs' files are root's and their own QEMU's only (made so since; older
+    // ones are tightened here), and libvirt should confine each QEMU.
+    if let Err(e) = agent.pools.local().init().await {
+        tracing::warn!(error = %e, "making the VMs' files private");
+    }
+    if let Err(e) = mst_storage::private_dir(&agent.files.cloud_init_dir).await {
+        tracing::warn!(error = %e, "making cloud-init seeds private");
+    }
+    match lv.security_models().await {
+        Ok(m) if m.iter().any(|m| m == "apparmor" || m == "selinux") => {}
+        Ok(m) => tracing::warn!(
+            models = ?m,
+            "libvirt confines no VM with AppArmor or SELinux: a guest that breaks out of QEMU reaches every VM's files on this host"
+        ),
+        Err(e) => tracing::warn!(error = %e, "asking libvirt how it confines VMs"),
+    }
     tokio::spawn(agent.clone().keep_certificate_fresh());
     tokio::spawn(agent.clone().apply_libvirt_tls());
     tokio::select! {

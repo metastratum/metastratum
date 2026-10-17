@@ -128,12 +128,14 @@ fn visible(p: &Principal, root: Option<&TenantPath>, c: &Change) -> bool {
         ("vm" | "backup" | "snapshot", Some(t)) => p.can(Perm::VmRead, t),
         ("task", Some(t)) => p.can(Perm::TaskRead, t),
         ("tenant", Some(t)) => p.can(Perm::TenantRead, t),
-        // Images may be shared with sub-tenants.
+        // Images may be shared with sub-tenants; unshared ones are not
+        // theirs to know about.
         ("image", Some(t)) => {
             p.can(Perm::ImageRead, t)
-                || p.bindings
-                    .iter()
-                    .any(|b| t.is_ancestor_or_self_of(&b.tenant) && b.role.allows(Perm::ImageRead))
+                || c.shared == Some(true)
+                    && p.bindings.iter().any(|b| {
+                        t.is_ancestor_or_self_of(&b.tenant) && b.role.allows(Perm::ImageRead)
+                    })
         }
         _ => false,
     }
@@ -154,6 +156,7 @@ mod tests {
             id: Uuid::nil(),
             op: "update".into(),
             tenant: tenant.cloned(),
+            shared: None,
         }
     }
 
@@ -178,8 +181,14 @@ mod tests {
         assert!(visible(&p, None, &change("vm", Some(&dev))));
         assert!(!visible(&p, None, &change("vm", Some(&other))));
         assert!(!visible(&p, None, &change("task", Some(&root))));
-        // Shared images come from above.
-        assert!(visible(&p, None, &change("image", Some(&root))));
+        // Shared images come from above; others stay there.
+        let shared = Change {
+            shared: Some(true),
+            ..change("image", Some(&root))
+        };
+        assert!(visible(&p, None, &shared));
+        assert!(!visible(&p, None, &change("image", Some(&root))));
+        assert!(visible(&p, None, &change("image", Some(&acme))));
         assert!(!visible(&p, None, &change("image", Some(&other))));
         assert!(visible(&p, None, &change("host", None)));
         assert!(!visible(&p, Some(&root), &change("cluster", None)));
