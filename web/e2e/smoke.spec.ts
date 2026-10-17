@@ -83,6 +83,15 @@ test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
   await page.getByRole('dialog').getByRole('button', { name: 'Delete snapshot' }).click()
   await expect(first).toHaveCount(0, { timeout: 60_000 })
 
+  // Grow its disk while it runs; CPUs and memory wait for it to stop.
+  await page.getByRole('button', { name: 'Resize' }).click()
+  const resize = page.getByRole('dialog')
+  await expect(resize.getByLabel('vCPUs')).toBeDisabled()
+  await resize.getByLabel('Boot disk (GiB)').fill('6')
+  await resize.getByRole('button', { name: 'Resize' }).click()
+  await expect(resize).toHaveCount(0)
+  await expect(page.locator('.facts div', { hasText: 'Disk' }).locator('dd')).toHaveText('6 GiB')
+
   await page.getByRole('button', { name: 'Delete VM' }).click()
   await page.getByRole('button', { name: `Delete ${name} and its disk` }).click()
   await expect(page.getByRole('heading', { name: 'Virtual machines' })).toBeVisible()

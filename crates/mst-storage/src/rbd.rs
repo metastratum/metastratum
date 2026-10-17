@@ -327,6 +327,20 @@ impl RbdPool {
         result
     }
 
+    /// Grows a volume to `size` bytes; one that large already is left
+    /// alone. Safe while a VM uses it, though the VM only notices through
+    /// libvirt's block resize.
+    pub async fn grow_volume(&self, id: &str, size: u64) -> Result<()> {
+        let vol = self.spec(&Self::volume_name(id)?);
+        if self.size_of(&vol).await? >= size {
+            return Ok(());
+        }
+        let mib = size.div_ceil(1 << 20).to_string();
+        self.rbd(&["resize", "--no-progress", "--size", &mib, &vol])
+            .await?;
+        Ok(())
+    }
+
     /// Size and existence of a volume, for checks and tests.
     pub async fn volume_size(&self, id: &str) -> Result<Option<u64>> {
         let vol = self.spec(&Self::volume_name(id)?);

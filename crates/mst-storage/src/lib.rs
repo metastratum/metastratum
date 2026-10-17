@@ -335,6 +335,18 @@ impl FilePool {
         Ok(removed)
     }
 
+    /// Grows a volume no VM is using to `size` bytes; one that large already
+    /// is left alone. qcow2 cannot resize images with internal snapshots.
+    pub async fn grow_volume(&self, id: &str, size: u64) -> Result<()> {
+        let path = self.volume_path(id)?;
+        if img_info(&path, Some("qcow2")).await?.virtual_size >= size {
+            return Ok(());
+        }
+        let (p, sz) = (path.to_string_lossy(), size.to_string());
+        run("qemu-img", &["resize", "-q", "-f", "qcow2", &p, &sz]).await?;
+        Ok(())
+    }
+
     /// Format and virtual size of a volume, for checks and tests.
     pub async fn volume_info(&self, id: &str) -> Result<(String, u64)> {
         let info = img_info(&self.volume_path(id)?, None).await?;
@@ -498,6 +510,11 @@ mod tests {
         pool.delete_snapshot("blank", snap).await.unwrap();
         assert!(pool.snapshots("blank").await.unwrap().is_empty());
         assert!(pool.create_snapshot("blank", "../x").await.is_err());
+
+        // Grown, never shrunk.
+        pool.grow_volume("blank", 2 << 30).await.unwrap();
+        pool.grow_volume("blank", 1 << 30).await.unwrap();
+        assert_eq!(pool.volume_info("blank").await.unwrap().1, 2 << 30);
 
         pool.delete_volume("vol1").await.unwrap();
         pool.delete_volume("vol1").await.unwrap();

@@ -31,6 +31,7 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(migrate_vm))
         .routes(routes!(cancel_migration))
         .routes(routes!(restore_backup))
+        .routes(routes!(resize_disk))
 }
 
 const GIB: u64 = 1 << 30;
@@ -391,14 +392,7 @@ fn validate(req: &CreateVm) -> ApiResult<()> {
             "name must be 1-63 letters, digits or hyphens, not starting or ending with a hyphen",
         ));
     }
-    if !(1..=128).contains(&req.vcpus) {
-        return Err(ApiError::bad_request("vcpus must be between 1 and 128"));
-    }
-    if !(128..=4 * 1024 * 1024).contains(&req.memory_mib) {
-        return Err(ApiError::bad_request(
-            "memory_mib must be between 128 and 4194304",
-        ));
-    }
+    check_size(req.vcpus, req.memory_mib)?;
     if !(1..=16384).contains(&req.disk_gib) {
         return Err(ApiError::bad_request(
             "disk_gib must be between 1 and 16384",
@@ -901,10 +895,17 @@ pub struct UpdateVm {
     /// not (the host's full CPU, host disk cache). Only while the VM is
     /// stopped; it applies from the next start.
     migratable: Option<bool>,
+    /// Virtual CPUs (1-128). Only while the VM is stopped; its host must
+    /// have room for more.
+    vcpus: Option<u32>,
+    /// Memory in MiB (128-4194304). Only while the VM is stopped; its host
+    /// must have room for more.
+    memory_mib: Option<u64>,
 }
 
 /// Changes a stopped VM's settings. Its definition on the host is updated
-/// right away; the VM picks it up when it next starts.
+/// right away; the VM picks it up when it next starts. Growing its CPUs or
+/// memory counts against the tenant's quotas.
 #[utoipa::path(patch, path = "/vms/{id}", tag = "vms", params(("id" = VmId, Path)), request_body = UpdateVm,
     responses((status = 200, body = VmView), (status = 403), (status = 404), (status = 409), (status = 503)))]
 async fn update_vm(
@@ -914,12 +915,14 @@ async fn update_vm(
     Json(req): Json<UpdateVm>,
 ) -> ApiResult<Json<VmView>> {
     let vm = load(&state, &p, id, Perm::VmWrite).await?;
-    let Some(migratable) = req.migratable else {
-        return Ok(Json(view(vm, &context(&state).await?)));
-    };
-    if migratable == vm.spec.0.migratable {
+    let old = &vm.spec.0;
+    let migratable = req.migratable.unwrap_or(old.migratable);
+    let vcpus = req.vcpus.unwrap_or(old.vcpus);
+    let memory_mib = req.memory_mib.unwrap_or(old.memory_mib);
+    if (migratable, vcpus, memory_mib) == (old.migratable, old.vcpus, old.memory_mib) {
         return Ok(Json(view(vm, &context(&state).await?)));
     }
+    check_size(vcpus, memory_mib)?;
     // Locked, so no power action slips in between the checks and the change.
     let mut tx = state.db.begin().await?;
     let vm = mst_db::vms::get_for_update(&mut tx, id).await?;
@@ -937,8 +940,21 @@ async fn update_vm(
         .host_id
         .ok_or_else(|| ApiError::conflict("the VM is on no host"))?;
     let mut spec = vm.spec.0.clone();
+    let grow_cpu = i64::from(vcpus) - i64::from(spec.vcpus);
+    let grow_mem = memory_mib as i64 - spec.memory_mib as i64;
+    if grow_cpu > 0 || grow_mem > 0 {
+        let delta: mst_db::quotas::Amounts = [("vcpus", grow_cpu), ("memory_mib", grow_mem)]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v))
+            .collect();
+        mst_db::quotas::reserve(&mut tx, vm.tenant_id, &delta).await?;
+        host_has_room(&mut tx, host, grow_cpu, grow_mem).await?;
+    }
+    spec.vcpus = vcpus;
+    spec.memory_mib = memory_mib;
+    let migratable_changed = migratable != spec.migratable;
     spec.migratable = migratable;
-    if migratable {
+    if migratable && migratable_changed {
         // The cluster's CPU model as it is now.
         spec.cpu = Some(crate::migration::baseline_cpu(&state, host).await.ok_or_else(|| {
             ApiError::unavailable("could not determine a CPU model the VM's cluster shares; is its host connected?")
@@ -979,11 +995,160 @@ async fn update_vm(
         Some(vm.tenant_id),
         "vm.update",
         Some(("vm", id.0)),
-        json!({"name": vm.name, "migratable": migratable}),
+        json!({"name": vm.name, "migratable": req.migratable, "vcpus": req.vcpus,
+               "memory_mib": req.memory_mib}),
     )
     .await;
     let vm = mst_db::vms::get(&state.db, id).await?;
     Ok(Json(view(vm, &context(&state).await?)))
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct ResizeDisk {
+    /// The new size: larger than the disk is now (disks only grow), at most
+    /// 16384.
+    size_gib: u64,
+}
+
+/// Grows one of a VM's disks (0 is the boot disk), running or stopped. A
+/// running guest sees the larger disk at once; its partition and file
+/// system grow when it next boots (cloud-init does that), or by hand. The
+/// growth counts against the tenant's disk quota. Disks on local or NFS
+/// storage cannot grow while the VM has snapshots.
+#[utoipa::path(post, path = "/vms/{id}/disks/{index}/resize", tag = "vms",
+    params(("id" = VmId, Path), ("index" = usize, Path)), request_body = ResizeDisk,
+    responses((status = 200, body = VmView), (status = 400), (status = 404), (status = 409), (status = 503)))]
+async fn resize_disk(
+    State(state): State<AppState>,
+    p: Principal,
+    Path((id, index)): Path<(VmId, usize)>,
+    Json(req): Json<ResizeDisk>,
+) -> ApiResult<Json<VmView>> {
+    let vm = load(&state, &p, id, Perm::VmWrite).await?;
+    let disk = vm
+        .spec
+        .0
+        .disks
+        .get(index)
+        .ok_or_else(|| ApiError::not_found("disk"))?;
+    let size = req.size_gib.saturating_mul(GIB);
+    if req.size_gib > 16384 || size <= disk.size_bytes {
+        return Err(ApiError::bad_request(format!(
+            "the disk is {} GiB: it can grow, to at most 16384 GiB",
+            disk.size_bytes.div_ceil(GIB)
+        )));
+    }
+    // Locked, so no power action or other change slips in meanwhile.
+    let mut tx = state.db.begin().await?;
+    let vm = mst_db::vms::get_for_update(&mut tx, id).await?;
+    if vm.status != "ready" {
+        return Err(ApiError::conflict(format!(
+            "the VM is {}: resize it afterwards",
+            vm.status
+        )));
+    }
+    if vm.power != vm.desired_power {
+        return Err(ApiError::conflict(
+            "the VM is starting or stopping: resize it once it is done",
+        ));
+    }
+    super::check_disks_idle(&mut tx, id).await?;
+    let host = vm
+        .host_id
+        .ok_or_else(|| ApiError::conflict("the VM is on no host"))?;
+    let mut spec = vm.spec.0.clone();
+    let disk = &mut spec.disks[index];
+    let pool = mst_db::storage_pools::get(&mut *tx, disk.pool_id).await?;
+    if pool.kind != "rbd" && mst_db::snapshots::count(&mut *tx, id).await? > 0 {
+        return Err(ApiError::conflict(
+            "the VM has snapshots, and qcow2 disks cannot grow with snapshots in them; delete them first",
+        ));
+    }
+    let delta: mst_db::quotas::Amounts = [(
+        "disk_gib".to_owned(),
+        (size - disk.size_bytes).div_ceil(GIB) as i64,
+    )]
+    .into_iter()
+    .collect();
+    mst_db::quotas::reserve(&mut tx, vm.tenant_id, &delta).await?;
+    disk.size_bytes = size;
+    let volume = disk.volume_id;
+    mst_db::vms::set_spec(&mut *tx, id, &spec).await?;
+    mst_db::vms::set_volume_size(&mut *tx, volume, size as i64).await?;
+    let cmd = mst_proto::ResizeDisk {
+        vm_id: id.to_string(),
+        disk: Some(mst_proto::BackupDisk {
+            index: index as u32,
+            volume_id: volume.to_string(),
+            pool: Some(super::agent_pool(&pool).map_err(ApiError::internal)?),
+        }),
+        size_bytes: size,
+    };
+    state
+        .agents
+        .call(
+            host,
+            mst_proto::command::Cmd::ResizeDisk(cmd),
+            std::time::Duration::from_secs(120),
+        )
+        .await
+        .map_err(|e| ApiError::unavailable(format!("growing the disk on its host: {e}")))?;
+    tx.commit().await?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(vm.tenant_id),
+        "vm.resize_disk",
+        Some(("vm", id.0)),
+        json!({"name": vm.name, "disk": index, "size_gib": req.size_gib}),
+    )
+    .await;
+    let vm = mst_db::vms::get(&state.db, id).await?;
+    Ok(Json(view(vm, &context(&state).await?)))
+}
+
+fn check_size(vcpus: u32, memory_mib: u64) -> ApiResult<()> {
+    if !(1..=128).contains(&vcpus) {
+        return Err(ApiError::bad_request("vcpus must be between 1 and 128"));
+    }
+    if !(128..=4 * 1024 * 1024).contains(&memory_mib) {
+        return Err(ApiError::bad_request(
+            "memory_mib must be between 128 and 4194304",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether a VM's host can give it `vcpus` more CPUs and `memory_mib` more
+/// memory, within its cluster's overcommit.
+async fn host_has_room(
+    tx: &mut mst_db::sqlx::PgConnection,
+    host: HostId,
+    vcpus: i64,
+    memory_mib: i64,
+) -> ApiResult<()> {
+    let hosts = mst_db::clusters::candidates_locked(tx).await?;
+    let h = hosts
+        .iter()
+        .find(|h| h.id == host)
+        .ok_or_else(|| ApiError::conflict("the VM's host no longer exists"))?;
+    let free_cpu = f64::from(h.cpu_count) * f64::from(h.cpu_overcommit) - h.used_vcpus as f64;
+    if vcpus > 0 && free_cpu < vcpus as f64 {
+        return Err(ApiError::conflict(format!(
+            "{} has only {:.1} vCPUs free",
+            h.name,
+            free_cpu.max(0.0)
+        )));
+    }
+    let free_mem = h.memory_mib as f64 * f64::from(h.memory_overcommit) - h.used_memory_mib as f64;
+    if memory_mib > 0 && free_mem < memory_mib as f64 {
+        return Err(ApiError::conflict(format!(
+            "{} has only {} MiB of memory free",
+            h.name,
+            free_mem.max(0.0).floor()
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize, ToSchema)]

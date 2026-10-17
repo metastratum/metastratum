@@ -82,6 +82,14 @@ impl Pool {
         }
     }
 
+    /// Grows a volume no VM is using; see each pool's `grow_volume`.
+    pub async fn grow_volume(&self, id: &str, size: u64) -> Result<()> {
+        match self {
+            Pool::File(p) => p.grow_volume(id, size).await,
+            Pool::Rbd(p) => p.grow_volume(id, size).await,
+        }
+    }
+
     pub async fn delete_image(&self, id: &str) -> Result<()> {
         match self {
             Pool::File(p) => p.delete_image(id).await,

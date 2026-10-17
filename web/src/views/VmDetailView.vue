@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { api, ApiError, errorText, ok, type SecurityGroup, type Task, type Vm } from '../api/client'
 import IdChip from '../components/IdChip.vue'
 import MigrateDialog from '../components/MigrateDialog.vue'
+import ResizeDialog from '../components/ResizeDialog.vue'
 import StatusLed from '../components/StatusLed.vue'
 import VmBackups from '../components/VmBackups.vue'
 import VmSnapshots from '../components/VmSnapshots.vue'
@@ -40,6 +41,7 @@ const live = computed(
 )
 const session = useSession()
 const migrating = ref(false)
+const resizing = ref(false)
 const migrationTask = computed(() => tasks.tasks.find((t) => t.id === vm.value?.migration?.task_id))
 // Live migration can change only while the VM is stopped.
 const stopped = computed(
@@ -181,6 +183,14 @@ async function remove() {
         >
           Migrate
         </button>
+        <button
+          class="btn"
+          :disabled="vm.status !== 'ready'"
+          title="Change its CPUs and memory, or grow its disks"
+          @click="resizing = true"
+        >
+          Resize
+        </button>
         <template v-if="!confirmingDelete">
           <button
             class="btn danger"
@@ -313,6 +323,7 @@ async function remove() {
         </section>
       </div>
     </div>
+    <ResizeDialog v-if="resizing" :vm="vm" @close="resizing = false" @done="(v) => ((resizing = false), (vm = v))" />
     <MigrateDialog
       v-if="migrating"
       :vm="vm"

@@ -199,6 +199,7 @@ message Command {
     SnapshotVm snapshot_vm = 36;
     RevertSnapshot revert_snapshot = 37;
     DeleteSnapshot delete_snapshot = 38;
+    ResizeDisk resize_disk = 39;
   }
 }
 
@@ -422,6 +423,15 @@ message DeleteSnapshot {
   string vm_id = 1;
   string snapshot_id = 2;
   repeated BackupDisk disks = 3;
+}
+
+// Grow one of a VM's disks to `size_bytes`: through libvirt while the VM
+// runs (the guest sees the new size at once), otherwise the volume itself.
+// A disk already that large is left alone.
+message ResizeDisk {
+  string vm_id = 1;
+  BackupDisk disk = 2;
+  uint64 size_bytes = 3;
 }
 
 // An image was deleted: remove its cached copy from the local pool, and from

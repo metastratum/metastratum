@@ -331,6 +331,18 @@ repair it and power it on; its agent reconnects by itself, and removes the
 domains of VMs that were restarted elsewhere. Then Manage → Save puts it
 back in service.
 
+## Resizing
+
+Resize a VM from its page (Resize). CPUs and memory change while it is
+stopped, and only as far as its host has room within the cluster's
+overcommit; it gets them at its next start. Disks only grow, running or
+not: a running guest sees the larger disk at once, and cloud images grow
+their partition and root file system at the next boot (cloud-init's
+growpart); otherwise grow them in the guest (`growpart`, `resize2fs`).
+qcow2 disks (local and NFS storage) cannot grow while they hold
+snapshots, so delete the VM's snapshots first; Ceph disks can. What grows
+counts against the tenant's quotas.
+
 ## Snapshots
 
 A snapshot keeps a VM's disks as they are, to put them back to later: before

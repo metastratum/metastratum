@@ -159,3 +159,30 @@ pub async fn domain(
             .collect(),
     })
 }
+
+/// Grows one of a VM's disks: through libvirt while the VM runs, so the
+/// guest sees it at once; otherwise the volume itself.
+pub async fn resize_disk(agent: &crate::session::Agent, c: &mst_proto::ResizeDisk) -> Result<()> {
+    let disk = c.disk.as_ref().context("no disk given")?;
+    let pool = agent.pool(disk.pool.as_ref()).await?;
+    if matches!(
+        agent.lv.power(&c.vm_id).await,
+        Ok(mst_libvirt::Power::Running | mst_libvirt::Power::Paused)
+    ) {
+        agent
+            .lv
+            .block_resize(
+                &c.vm_id,
+                &crate::backup::target_of(disk.index),
+                c.size_bytes,
+            )
+            .await
+            .context("growing the disk")?;
+    } else {
+        pool.grow_volume(&disk.volume_id, c.size_bytes)
+            .await
+            .context("growing the volume")?;
+    }
+    tracing::info!(vm = %c.vm_id, disk = disk.index, size = c.size_bytes, "disk grown");
+    Ok(())
+}

@@ -812,6 +812,23 @@ impl Libvirt {
         Ok(r.result)
     }
 
+    /// Grows a running domain's disk (`vda`, ...) to `bytes`; the guest sees
+    /// the new size at once.
+    pub async fn block_resize(&self, uuid: &str, disk: &str, bytes: u64) -> Result<()> {
+        /// `VIR_DOMAIN_BLOCK_RESIZE_BYTES`: the size is in bytes, not KiB.
+        const BYTES: u32 = 1;
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        c.domain_block_resize(&DomainBlockResizeArgs {
+            dom,
+            disk: disk.to_owned(),
+            size: bytes,
+            flags: BYTES,
+        })
+        .await?;
+        Ok(())
+    }
+
     /// Freezes the guest's file systems through its agent; returns how many.
     pub async fn fs_freeze(&self, uuid: &str) -> Result<u32> {
         let c = self.client().await?;

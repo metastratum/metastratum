@@ -260,6 +260,15 @@ pub async fn delete_volume(db: impl PgExecutor<'_>, id: VolumeId) -> Result<()> 
     Ok(())
 }
 
+pub async fn set_volume_size(db: impl PgExecutor<'_>, id: VolumeId, size: i64) -> Result<()> {
+    sqlx::query("UPDATE volumes SET size_bytes = $2 WHERE id = $1")
+        .bind(id)
+        .bind(size)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 pub async fn set_spec(db: impl PgExecutor<'_>, id: VmId, spec: &VmSpec) -> Result<()> {
     sqlx::query("UPDATE vms SET spec = $2, updated_at = now() WHERE id = $1")
         .bind(id)

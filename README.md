@@ -6,8 +6,8 @@ platforms use, KVM, libvirt and OVN, and aims to be easy to run: one or more
 controllers with PostgreSQL behind them, and an agent on each host.
 
 - **Virtual machines** from cloud images, configured with cloud-init, with a
-  graphical and a serial console in the browser and limits on disk and
-  network bandwidth.
+  graphical and a serial console in the browser, limits on disk and
+  network bandwidth, and more CPUs, memory or disk when they need it.
 - **Live migration** between hosts, on shared storage (NFS, Ceph RBD) or
   local disks. Putting a host in maintenance moves its VMs elsewhere.
 - **Snapshots** to put a VM's disks back to, and **backups** of running
@@ -30,8 +30,8 @@ metastratum is in development and has no release yet.
 - [Getting started](docs/getting-started.md): packages, the first
   controller and the first host
 - [Running metastratum](docs/operations.md): controllers in several places,
-  PostgreSQL and OVN underneath, host failure, snapshots and backups,
-  upgrades, monitoring
+  PostgreSQL and OVN underneath, host failure, resizing, snapshots and
+  backups, upgrades, monitoring
 - [Security](SECURITY.md): the security model, and what the last review
   found
 
@@ -297,7 +297,9 @@ are taken of a running and a stopped VM into the lab's backup export, by hand
 and on a schedule, and restored as new VMs that find a file written before
 the backup; they outlive their VM. Snapshots are taken of a running and a
 stopped VM on local disk, NFS and Ceph, reverted to, and deleted; on NFS the
-VM migrates with them. `MST_E2E_DEBUG=1` prints
+VM migrates with them. Resizing grows a running VM's disk (the guest sees
+it), and a stopped VM's CPUs, memory and disk (its file system grows at
+boot). `MST_E2E_DEBUG=1` prints
 console traffic. The browser suite does the VM lifecycle and tenant
 management through the UI with Playwright, using your installed Chrome.
 

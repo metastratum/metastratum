@@ -1197,7 +1197,8 @@ export interface paths {
         head?: never;
         /**
          * Changes a stopped VM's settings. Its definition on the host is updated
-         *     right away; the VM picks it up when it next starts.
+         *     right away; the VM picks it up when it next starts. Growing its CPUs or
+         *     memory counts against the tenant's quotas.
          */
         patch: operations["update_vm"];
         trace?: never;
@@ -1256,6 +1257,29 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["create_ticket"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/disks/{index}/resize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Grows one of a VM's disks (0 is the boot disk), running or stopped. A
+         *     running guest sees the larger disk at once; its partition and file
+         *     system grow when it next boots (cloud-init does that), or by hand. The
+         *     growth counts against the tenant's disk quota. Disks on local or NFS
+         *     storage cannot grow while the VM has snapshots.
+         */
+        post: operations["resize_disk"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2112,6 +2136,14 @@ export interface components {
             name: string;
             server: string;
         };
+        ResizeDisk: {
+            /**
+             * Format: int64
+             * @description The new size: larger than the disk is now (disks only grow), at most
+             *     16384.
+             */
+            size_gib: number;
+        };
         RestoreBackup: {
             cluster_id?: components["schemas"]["ClusterId"] | null;
             /** @description Name of the new VM. */
@@ -2379,11 +2411,23 @@ export interface components {
         };
         UpdateVm: {
             /**
+             * Format: int64
+             * @description Memory in MiB (128-4194304). Only while the VM is stopped; its host
+             *     must have room for more.
+             */
+            memory_mib?: number | null;
+            /**
              * @description Allow live migration (the cluster's CPU model, no host disk cache) or
              *     not (the host's full CPU, host disk cache). Only while the VM is
              *     stopped; it applies from the next start.
              */
             migratable?: boolean | null;
+            /**
+             * Format: int32
+             * @description Virtual CPUs (1-128). Only while the VM is stopped; its host must
+             *     have room for more.
+             */
+            vcpus?: number | null;
         };
         UpdateVpc: {
             /**
@@ -5825,6 +5869,56 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resize_disk: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResizeDisk"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
