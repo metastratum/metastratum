@@ -541,7 +541,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Takes a host out of service for good; it must have no VMs. It leaves its
+         * Takes a host out of service for good; it must have no VMs, nor disks on
+         *     its storage. It leaves its
          *     cluster and its certificates are revoked, so its agent cannot connect
          *     again. With `wipe`, its agent first removes metastratum from the machine:
          *     lets go of storage pools, deletes cached images, local volumes, seeds,

@@ -2576,7 +2576,8 @@ type ClientInterface interface {
 	// Corresponds with POST /api/v1/hosts/{id}/accept-facts (the `AcceptFacts` operationId).
 	AcceptFacts(ctx context.Context, id HostId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// DecommissionHost Takes a host out of service for good; it must have no VMs. It leaves its
+	// DecommissionHost Takes a host out of service for good; it must have no VMs, nor disks on
+	// its storage. It leaves its
 	// cluster and its certificates are revoked, so its agent cannot connect
 	// again. With `wipe`, its agent first removes metastratum from the machine:
 	// lets go of storage pools, deletes cached images, local volumes, seeds,
@@ -4258,7 +4259,8 @@ func (c *Client) AcceptFacts(ctx context.Context, id HostId, reqEditors ...Reque
 	return c.Client.Do(req)
 }
 
-// DecommissionHost Takes a host out of service for good; it must have no VMs. It leaves its
+// DecommissionHost Takes a host out of service for good; it must have no VMs, nor disks on
+// its storage. It leaves its
 // cluster and its certificates are revoked, so its agent cannot connect
 // again. With `wipe`, its agent first removes metastratum from the machine:
 // lets go of storage pools, deletes cached images, local volumes, seeds,
@@ -13104,7 +13106,8 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with POST /api/v1/hosts/{id}/accept-facts (the `AcceptFacts` operationId).
 	AcceptFactsWithResponse(ctx context.Context, id HostId, reqEditors ...RequestEditorFn) (*AcceptFactsResponse, error)
 
-	// DecommissionHostWithResponse Takes a host out of service for good; it must have no VMs. It leaves its
+	// DecommissionHostWithResponse Takes a host out of service for good; it must have no VMs, nor disks on
+	// its storage. It leaves its
 	// cluster and its certificates are revoked, so its agent cannot connect
 	// again. With `wipe`, its agent first removes metastratum from the machine:
 	// lets go of storage pools, deletes cached images, local volumes, seeds,
@@ -20559,7 +20562,8 @@ func (c *ClientWithResponses) AcceptFactsWithResponse(ctx context.Context, id Ho
 	return ParseAcceptFactsResponse(rsp)
 }
 
-// DecommissionHostWithResponse Takes a host out of service for good; it must have no VMs. It leaves its
+// DecommissionHostWithResponse Takes a host out of service for good; it must have no VMs, nor disks on
+// its storage. It leaves its
 // cluster and its certificates are revoked, so its agent cannot connect
 // again. With `wipe`, its agent first removes metastratum from the machine:
 // lets go of storage pools, deletes cached images, local volumes, seeds,
