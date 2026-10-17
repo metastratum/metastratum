@@ -26,7 +26,8 @@ controllers with PostgreSQL behind them, and an agent on each host.
   short-lived host certificates with revocation, secrets sealed in the
   database.
 
-metastratum is in development and has no release yet.
+metastratum is young: expect things to change between
+[releases](https://github.com/metastratum/metastratum/releases).
 
 - [Getting started](docs/getting-started.md): packages, the first
   controller and the first host
