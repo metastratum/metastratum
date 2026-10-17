@@ -226,6 +226,7 @@ async fn the_model_snapshot_has_everything_the_compiler_needs(pool: PgPool) {
             spec: &VmSpec {
                 cpu: None,
                 migratable: true,
+                extra: Default::default(),
                 vcpus: 1,
                 memory_mib: 512,
                 max_memory_mib: None,

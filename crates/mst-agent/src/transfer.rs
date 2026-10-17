@@ -3,8 +3,10 @@
 //! in (`CopyVolume`), from a pool it reaches or from another host.
 
 use std::collections::HashMap;
+use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -17,28 +19,89 @@ use crate::session::Agent;
 const RUN_DIR: &str = "/run/metastratum/transfer";
 /// The ports hosts open to each other for migrations, which copies use too.
 const PORTS: std::ops::RangeInclusive<u16> = 49152..=49215;
-/// How long a volume is served at most, copied or not.
-const SERVED_FOR: Duration = Duration::from_secs(3600);
+/// How long a volume is served at most: longer than the controller waits
+/// for any copy (it ends the serving itself once the copy is done).
+const SERVED_FOR: Duration = Duration::from_secs(13 * 3600);
 
-/// Volumes being served: the `qemu-nbd` serving each.
-static EXPORTS: LazyLock<Mutex<HashMap<String, u32>>> = LazyLock::new(Mutex::default);
+/// Volumes being served: the `qemu-nbd` serving each, and its pid file.
+static EXPORTS: LazyLock<Mutex<HashMap<String, (u32, PathBuf)>>> = LazyLock::new(Mutex::default);
+
+/// One copy at a time per volume: a copy asked for again waits for the
+/// one under way (which then cannot take its place after it).
+static COPIES: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(Mutex::default);
+
+fn copy_lock(volume: &str) -> Arc<tokio::sync::Mutex<()>> {
+    COPIES
+        .lock()
+        .unwrap()
+        .entry(volume.to_owned())
+        .or_default()
+        .clone()
+}
 
 /// Writes a copy's credentials where QEMU's `tls-creds-x509` takes them:
-/// `ca-cert.pem`, and `<role>-cert.pem` and `<role>-key.pem`.
-async fn credentials(volume: &str, role: &str, tls: &MigrationTls) -> Result<PathBuf> {
+/// `ca-cert.pem`, and `<role>-cert.pem` and `<role>-key.pem`, readable by
+/// root only from the start.
+fn credentials(volume: &str, role: &str, tls: &MigrationTls) -> Result<PathBuf> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(RUN_DIR)?;
     let dir = Path::new(RUN_DIR).join(format!("{volume}-{role}"));
-    mst_storage::private_dir(Path::new(RUN_DIR)).await?;
-    let _ = tokio::fs::remove_dir_all(&dir).await;
-    tokio::fs::create_dir(&dir).await?;
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
     for (name, pem) in [
         ("ca-cert.pem".to_owned(), &tls.ca_pem),
         (format!("{role}-cert.pem"), &tls.cert_pem),
         (format!("{role}-key.pem"), &tls.key_pem),
     ] {
-        tokio::fs::write(dir.join(name), pem).await?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(dir.join(name))?
+            .write_all(pem.as_bytes())?;
     }
-    mst_storage::private_dir(&dir).await?;
     Ok(dir)
+}
+
+/// The `qemu-nbd` processes serving from our directory, by pid: the one
+/// with `pid_file`, or (none given) all of them.
+fn servers(pid_file: Option<&Path>) -> Vec<u32> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return vec![];
+    };
+    entries
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|pid| {
+            let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+                return false;
+            };
+            let args: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
+            args.first().is_some_and(|a| a.ends_with(b"qemu-nbd"))
+                && args.iter().any(|a| match pid_file {
+                    Some(p) => *a == p.as_os_str().as_encoded_bytes(),
+                    None => a.starts_with(RUN_DIR.as_bytes()),
+                })
+        })
+        .collect()
+}
+
+fn kill(pid: u32) {
+    let _ = std::process::Command::new("kill")
+        .arg(pid.to_string())
+        .status();
+}
+
+/// As the agent starts: whatever it served before it restarted stops, and
+/// those copies' credentials go.
+pub fn clean_up() {
+    for pid in servers(None) {
+        kill(pid);
+    }
+    let _ = std::fs::remove_dir_all(RUN_DIR);
 }
 
 /// Serves the volume for the host this copy's client certificate belongs
@@ -53,14 +116,15 @@ pub async fn export(agent: &Agent, c: &ExportVolume) -> Result<String> {
     }
     end(&c.volume_id);
     let tls = c.tls.as_ref().context("no credentials for the copy")?;
-    let dir = credentials(&c.volume_id, "server", tls).await?;
+    let dir = credentials(&c.volume_id, "server", tls)?;
     let object = format!(
         "tls-creds-x509,id=tls0,dir={},endpoint=server,verify-peer=on",
         dir.to_string_lossy()
     );
     let pid_file = dir.join("pid");
     for port in PORTS {
-        // Forks once it listens; serves one client, then exits.
+        // Forks once it listens; serves one client, then exits. A client
+        // gets 10 seconds to finish its TLS handshake (QEMU's default).
         let out = Command::new("qemu-nbd")
             .arg("--object")
             .arg(&object)
@@ -80,11 +144,15 @@ pub async fn export(agent: &Agent, c: &ExportVolume) -> Result<String> {
                 .trim()
                 .parse()
                 .context("qemu-nbd's pid")?;
-            EXPORTS.lock().unwrap().insert(c.volume_id.clone(), pid);
+            EXPORTS
+                .lock()
+                .unwrap()
+                .insert(c.volume_id.clone(), (pid, pid_file.clone()));
             let volume = c.volume_id.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(SERVED_FOR).await;
-                if EXPORTS.lock().unwrap().get(&volume) == Some(&pid) {
+                let current = EXPORTS.lock().unwrap().get(&volume).map(|e| e.0);
+                if current == Some(pid) {
                     end(&volume);
                 }
             });
@@ -93,56 +161,49 @@ pub async fn export(agent: &Agent, c: &ExportVolume) -> Result<String> {
         }
         let err = String::from_utf8_lossy(&out.stderr);
         if !err.contains("in use") {
-            let _ = tokio::fs::remove_dir_all(&dir).await;
+            let _ = std::fs::remove_dir_all(&dir);
             bail!("qemu-nbd: {}", err.trim());
         }
     }
-    let _ = tokio::fs::remove_dir_all(&dir).await;
+    let _ = std::fs::remove_dir_all(&dir);
     bail!("no free port in 49152-49215 to serve the volume on")
 }
 
 /// Stops serving the volume, if it still is.
 pub fn end(volume: &str) {
-    if let Some(pid) = EXPORTS.lock().unwrap().remove(volume) {
-        // Only if it still is that qemu-nbd (it exits after its client).
-        let ours = std::fs::read(format!("/proc/{pid}/cmdline"))
-            .is_ok_and(|c| c.split(|b| *b == 0).any(|a| a.ends_with(b"qemu-nbd")));
-        if ours {
-            let _ = std::process::Command::new("kill")
-                .arg(pid.to_string())
-                .status();
+    let served = EXPORTS.lock().unwrap().remove(volume);
+    if let Some((_, pid_file)) = served {
+        // Only that qemu-nbd (it exits after its client, and its pid may be
+        // another process's by now).
+        for pid in servers(Some(&pid_file)) {
+            kill(pid);
         }
     }
     let _ = std::fs::remove_dir_all(Path::new(RUN_DIR).join(format!("{volume}-server")));
 }
 
-/// Copies a volume in, from a pool here or from another host.
+/// Copies a volume in, from a pool here or from another host, replacing
+/// whatever is under its name in the pool (see `mst_storage::copy_into`).
 pub async fn copy(agent: &Agent, c: &CopyVolume) -> Result<()> {
+    let lock = copy_lock(&c.volume_id);
+    let _held = lock.lock().await;
     let pool = agent.pool(c.pool.as_ref()).await?;
-    let scratch = agent.pools.local().root().join("transfer");
-    mst_storage::private_dir(&scratch).await?;
     if let Some(source) = &c.source_pool {
         let source = agent.pool(Some(source)).await?;
-        match source.volume_file(&c.volume_id)? {
-            // Read with its image, so the copy depends on nothing.
-            Some(file) => {
-                pool.import_volume(&c.volume_id, c.size_bytes, &file)
-                    .await?
+        match (&source, source.volume_file(&c.volume_id)?) {
+            (_, Some(file)) => {
+                let src = mst_storage::CopySource::File(&file);
+                mst_storage::copy_into(&pool, &c.volume_id, c.size_bytes, &src).await?;
             }
-            None => {
-                let file = scratch.join(format!("{}.qcow2", c.volume_id));
-                let result = async {
-                    source.export_volume(&c.volume_id, &file).await?;
-                    pool.import_volume(&c.volume_id, c.size_bytes, &file).await
-                }
-                .await;
-                let _ = tokio::fs::remove_file(&file).await;
-                result?;
+            (mst_storage::Pool::Rbd(rbd), None) => {
+                let src = mst_storage::CopySource::Rbd(rbd, &c.volume_id);
+                mst_storage::copy_into(&pool, &c.volume_id, c.size_bytes, &src).await?;
             }
+            (mst_storage::Pool::File(_), None) => bail!("no volume file to copy"),
         }
     } else {
         let tls = c.tls.as_ref().context("no credentials for the copy")?;
-        let dir = credentials(&c.volume_id, "client", tls).await?;
+        let dir = credentials(&c.volume_id, "client", tls)?;
         let port = u16::try_from(c.nbd_port).context("no port to copy from")?;
         let source = mst_storage::NbdSource {
             host: c.nbd_address.clone(),
@@ -150,10 +211,9 @@ pub async fn copy(agent: &Agent, c: &CopyVolume) -> Result<()> {
             export: c.volume_id.clone(),
             tls_dir: dir.clone(),
         };
-        let result = pool
-            .import_nbd(&c.volume_id, c.size_bytes, &source, &scratch)
-            .await;
-        let _ = tokio::fs::remove_dir_all(&dir).await;
+        let src = mst_storage::CopySource::Nbd(&source);
+        let result = mst_storage::copy_into(&pool, &c.volume_id, c.size_bytes, &src).await;
+        let _ = std::fs::remove_dir_all(&dir);
         result?;
     }
     tracing::info!(volume = %c.volume_id, "volume copied in");

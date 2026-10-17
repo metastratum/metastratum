@@ -437,10 +437,13 @@ pub async fn start(
             }
         )));
     }
+    let mut tx = state.db.begin().await?;
+    // Locked: its disks stay as recorded here until the task has them (an
+    // attach or detach waits, or is seen as busy below).
+    let vm = &mst_db::vms::get_for_update(&mut tx, vm.id).await?;
     let spec = &vm.spec.0;
     let size: u64 = spec.disks.iter().map(|d| d.size_bytes).sum();
-    let mut tx = state.db.begin().await?;
-    // One at a time per VM, and not while a snapshot is worked on.
+    // One at a time per VM, and not while a snapshot (or a disk) is worked on.
     super::snapshots::check_idle(&mut tx, vm.id).await?;
     let delta = [("backup_gib".to_owned(), size.div_ceil(1 << 30) as i64)]
         .into_iter()

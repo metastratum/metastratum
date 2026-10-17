@@ -206,10 +206,13 @@ pub async fn start(ctx: &TaskCtx) -> Result<()> {
     let vm = mst_db::vms::get(&ctx.state.db, target(ctx)?).await?;
     // Starting afresh, the VM gets devices a running VM keeps as it was
     // started with: a balloon that hands the guest's free memory back, and
-    // a controller for disks to plug in (where its host's agent does).
-    let hotplug = vm.spec.0.disk_hotplug.is_none()
+    // a controller for disks to plug in (where its host's agent does). Only
+    // from stopped: one running (asked to start again) keeps its devices.
+    let stopped = vm.power == "stopped" || vm.power == "missing";
+    let hotplug = stopped
+        && vm.spec.0.disk_hotplug.is_none()
         && mst_db::hosts::agent_supports(&ctx.state.db, host_of(&vm)?, "attach_disk").await?;
-    if vm.spec.0.free_page_reporting.is_none() || hotplug {
+    if (stopped && vm.spec.0.free_page_reporting.is_none()) || hotplug {
         let mut spec = vm.spec.0.clone();
         spec.free_page_reporting.get_or_insert(true);
         if hotplug {
@@ -331,7 +334,33 @@ pub async fn delete(ctx: &TaskCtx) -> Result<()> {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
         let mut images: std::collections::BTreeMap<_, Vec<mst_proto::Pool>> = Default::default();
-        for vol in mst_db::disks::of_vm(db, id).await? {
+        let disks = mst_db::disks::of_vm(db, id).await?;
+        // Disks kept lose the VM's snapshots, which go with it.
+        let mut kept = vec![];
+        for (i, d) in disks.iter().enumerate() {
+            if !all && d.name.is_some() && !d.boot {
+                let pool = mst_db::storage_pools::get(db, d.pool_id).await?;
+                kept.push(mst_proto::BackupDisk {
+                    index: i as u32,
+                    volume_id: d.id.to_string(),
+                    pool: Some(crate::api::agent_pool(&pool)?),
+                    target: String::new(),
+                });
+            }
+        }
+        if !kept.is_empty() {
+            for snap in mst_db::snapshots::of_vm(db, id).await? {
+                let cmd = Cmd::DeleteSnapshot(mst_proto::DeleteSnapshot {
+                    vm_id: id.to_string(),
+                    snapshot_id: snap.id.to_string(),
+                    disks: kept.clone(),
+                });
+                if let Err(e) = call(ctx, host, cmd, Duration::from_secs(3600)).await {
+                    tracing::warn!(vm = %id, snapshot = %snap.id, error = %format!("{e:#}"), "removing a deleted VM's snapshot from a disk kept");
+                }
+            }
+        }
+        for vol in disks {
             if !all && vol.name.is_some() && !vol.boot {
                 continue;
             }

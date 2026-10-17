@@ -121,6 +121,70 @@ fn validate_config(kind: &str, config: &Value) -> ApiResult<()> {
     Ok(())
 }
 
+/// The storage a pool's data is on: pools with the same are one storage
+/// under two names (one's volumes are the other's).
+fn storage_of(kind: &str, config: &Value) -> Option<String> {
+    let field = |k: &str| config.get(k).and_then(Value::as_str).map(str::trim);
+    match kind {
+        "nfs" => Some(format!(
+            "nfs:{}:{}",
+            field("server")?.to_lowercase(),
+            field("export")?.trim_end_matches('/')
+        )),
+        "rbd" => {
+            let mut monitors: Vec<String> = config
+                .get("monitors")?
+                .as_array()?
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|m| {
+                    let m = m.trim().to_lowercase();
+                    if m.contains(':') {
+                        m
+                    } else {
+                        format!("{m}:6789")
+                    }
+                })
+                .collect();
+            monitors.sort();
+            Some(format!("rbd:{}:{}", monitors.join(","), field("pool")?))
+        }
+        _ => None,
+    }
+}
+
+/// Whether two pools are one storage under two names.
+pub fn same_storage(a: &mst_db::storage_pools::Pool, b: &mst_db::storage_pools::Pool) -> bool {
+    a.id != b.id
+        && a.kind == b.kind
+        && storage_of(&a.kind, &a.config).is_some_and(|s| Some(s) == storage_of(&b.kind, &b.config))
+}
+
+/// Refuses a pool on the storage of another: a disk moved from one to the
+/// other would be its own copy, and removed as the old one.
+async fn check_unique(
+    state: &AppState,
+    id: Option<StoragePoolId>,
+    kind: &str,
+    config: &Value,
+) -> ApiResult<()> {
+    let Some(storage) = storage_of(kind, config) else {
+        return Ok(());
+    };
+    for other in mst_db::storage_pools::list(&state.db).await? {
+        if Some(other.id) != id
+            && other.kind == kind
+            && storage_of(&other.kind, &other.config) == Some(storage.clone())
+        {
+            return Err(ApiError::conflict(format!(
+                "{} is on that storage already",
+                other.name
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn valid_name(name: &str) -> ApiResult<&str> {
     let n = name.trim();
     if n.is_empty() || n.len() > 64 {
@@ -139,6 +203,7 @@ async fn create_pool(
     authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
     let kind = req.kind.as_deref().unwrap_or("");
     validate_config(kind, &req.config)?;
+    check_unique(&state, None, kind, &req.config).await?;
     let name = valid_name(&req.name)?;
     let mut config = req.config.clone();
     seal_config(&mut config);
@@ -182,6 +247,7 @@ async fn update_pool(
         }
     }
     validate_config(&current.kind, &req.config)?;
+    check_unique(&state, Some(id), &current.kind, &req.config).await?;
     let name = valid_name(&req.name)?;
     let removed: Vec<_> = current
         .clusters
@@ -376,5 +442,33 @@ mod tests {
             redact(json!({"user": "u", "key": "secret"})),
             json!({"user": "u", "key": "(set)"})
         );
+    }
+}
+
+#[cfg(test)]
+mod same_storage_tests {
+    use super::storage_of;
+    use serde_json::json;
+
+    #[test]
+    fn the_same_storage_under_two_names_is_found() {
+        let nfs = |server: &str, export: &str| {
+            storage_of("nfs", &json!({"server": server, "export": export}))
+        };
+        assert_eq!(nfs("10.0.0.1", "/srv/a"), nfs(" 10.0.0.1", "/srv/a/"));
+        assert_ne!(nfs("10.0.0.1", "/srv/a"), nfs("10.0.0.1", "/srv/a/b"));
+        let rbd = |mons: serde_json::Value, pool: &str| {
+            storage_of(
+                "rbd",
+                &json!({"monitors": mons, "pool": pool, "user": "u", "key": "k"}),
+            )
+        };
+        assert_eq!(
+            rbd(json!(["m1", "m2:6789"]), "p"),
+            rbd(json!(["m2", "m1:6789"]), "p"),
+            "monitors in any order, the default port or not"
+        );
+        assert_ne!(rbd(json!(["m1"]), "p"), rbd(json!(["m1"]), "q"));
+        assert_eq!(storage_of("local", &json!({})), None);
     }
 }

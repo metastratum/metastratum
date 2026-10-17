@@ -113,12 +113,17 @@ impl RbdPool {
         crate::run("rbd", &all).await
     }
 
-    async fn exists(&self, spec: &str) -> Result<bool> {
+    pub(crate) async fn exists(&self, spec: &str) -> Result<bool> {
         match self.rbd(&["info", spec]).await {
             Ok(_) => Ok(true),
             Err(Error::Tool { stderr, .. }) if stderr.contains("No such file") => Ok(false),
             Err(e) => Err(e),
         }
+    }
+
+    /// Where copies keep their temporary files (Ceph keys for QEMU).
+    pub(crate) fn work_dir(&self) -> &Path {
+        &self.work_dir
     }
 
     pub(crate) fn spec(&self, name: &str) -> String {
@@ -324,29 +329,6 @@ impl RbdPool {
         }
         .await;
         let _ = tokio::fs::remove_file(&raw).await;
-        result
-    }
-
-    /// Creates a volume as a copy of one another host serves, of at least
-    /// `size` bytes, by way of a qcow2 file in `scratch`. An existing volume
-    /// is left alone.
-    pub async fn import_nbd(
-        &self,
-        id: &str,
-        size: u64,
-        src: &crate::NbdSource,
-        scratch: &Path,
-    ) -> Result<()> {
-        if self.exists(&self.spec(&Self::volume_name(id)?)).await? {
-            return Ok(());
-        }
-        let file = crate::transfer::temporary(&scratch.join(format!("{id}.qcow2")));
-        let result = async {
-            crate::transfer::copy_from_nbd(src, &file, "qcow2").await?;
-            self.import_volume(id, size, &file).await
-        }
-        .await;
-        let _ = tokio::fs::remove_file(&file).await;
         result
     }
 

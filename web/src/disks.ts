@@ -18,16 +18,15 @@ export function movesTo(d: Disk, host: string | null | undefined): boolean {
 }
 
 /**
- * Attaches the disk to the VM. A disk on another host's local storage moves
- * to the VM's host first, then attaches: that runs as a task.
+ * Attaches the disk to the VM (a task). A disk on another host's local
+ * storage moves to the VM's host first, then attaches.
  */
-export async function attachDisk(d: Disk, vm: { id: string; host_id?: string | null }): Promise<'attached' | 'moving'> {
+export async function attachDisk(d: Disk, vm: { id: string; host_id?: string | null }): Promise<void> {
   if (movesTo(d, vm.host_id)) {
     await ok(api.POST('/api/v1/disks/{id}/move', { params: { path: { id: d.id } }, body: { vm_id: vm.id } }))
-    return 'moving'
+  } else {
+    await ok(api.POST('/api/v1/vms/{id}/disks', { params: { path: { id: vm.id } }, body: { disk_id: d.id } }))
   }
-  await ok(api.POST('/api/v1/vms/{id}/disks', { params: { path: { id: vm.id } }, body: { disk_id: d.id } }))
-  return 'attached'
 }
 
 export const DISK_STATES: Record<string, string> = {
@@ -35,6 +34,7 @@ export const DISK_STATES: Record<string, string> = {
   attaching: 'Attaching',
   detaching: 'Detaching',
   moving: 'Moving',
+  growing: 'Growing',
   deleting: 'Deleting',
   failed: 'Failed',
 }

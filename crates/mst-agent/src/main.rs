@@ -119,6 +119,8 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = agent.pools.local().init().await {
         tracing::warn!(error = %e, "making the VMs' files private");
     }
+    // Copies it served before restarting are over.
+    transfer::clean_up();
     if let Err(e) = mst_storage::private_dir(&agent.files.cloud_init_dir).await {
         tracing::warn!(error = %e, "making cloud-init seeds private");
     }

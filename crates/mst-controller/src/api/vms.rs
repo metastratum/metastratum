@@ -482,7 +482,9 @@ pub struct TaskRef {
     task_id: TaskId,
 }
 
-fn validate(req: &CreateVm) -> ApiResult<()> {
+/// `disk_gib` is the boot disk's size for VMs from images; for clones and
+/// restores, the sum of the disks they copy (each within bounds already).
+fn validate(req: &CreateVm, from_image: bool) -> ApiResult<()> {
     let name_ok = !req.name.is_empty()
         && req.name.len() <= 63
         && req
@@ -499,7 +501,7 @@ fn validate(req: &CreateVm) -> ApiResult<()> {
     check_size(req.vcpus, req.memory_mib)?;
     check_max_vcpus(req.vcpus, req.max_vcpus)?;
     check_max_memory(req.memory_mib, req.max_memory_mib)?;
-    if !(1..=16384).contains(&req.disk_gib) {
+    if from_image && !(1..=16384).contains(&req.disk_gib) {
         return Err(ApiError::bad_request(
             "disk_gib must be between 1 and 16384",
         ));
@@ -583,7 +585,7 @@ async fn create_inner(
     req: CreateVm,
     source: Source<'_>,
 ) -> ApiResult<(StatusCode, Json<Accepted<VmView>>)> {
-    validate(&req)?;
+    validate(&req, matches!(source, Source::Image))?;
     let tenant = req.tenant_id.unwrap_or(p.tenant_id);
     authorize(&state.db, &p, Perm::VmWrite, tenant).await?;
     if matches!(source, Source::Image)
@@ -591,22 +593,56 @@ async fn create_inner(
     {
         return Err(ApiError::not_found("image"));
     }
-    let pool_id = match source {
-        Source::Clone(vm) => vm.spec.0.disks.first().map_or(LOCAL_POOL, |d| d.pool_id),
-        _ => req.storage_pool_id.unwrap_or(LOCAL_POOL),
+    // A clone's disks are copied in their own pools: local ones on their
+    // host, which pins the clone there.
+    let pools: Vec<mst_db::storage_pools::Pool> = match source {
+        Source::Clone(vm) => {
+            let mut ids: Vec<StoragePoolId> = vm.spec.0.disks.iter().map(|d| d.pool_id).collect();
+            ids.dedup();
+            let mut pools = vec![];
+            for id in ids {
+                if !pools
+                    .iter()
+                    .any(|p: &mst_db::storage_pools::Pool| p.id == id)
+                {
+                    pools.push(mst_db::storage_pools::get(&state.db, id).await?);
+                }
+            }
+            pools
+        }
+        _ => vec![
+            mst_db::storage_pools::get(&state.db, req.storage_pool_id.unwrap_or(LOCAL_POOL))
+                .await?,
+        ],
     };
-    let pool = mst_db::storage_pools::get(&state.db, pool_id).await?;
-    if !super::storage_pools::may_use(&state, tenant, &pool).await? {
-        return Err(ApiError::not_found("storage pool"));
+    for pool in &pools {
+        if !super::storage_pools::may_use(&state, tenant, pool).await? {
+            return Err(ApiError::not_found("storage pool"));
+        }
     }
-    // Local disks are copied on their host.
     let pin = match source {
-        Source::Clone(vm) if pool.kind == "local" => vm.host_id,
+        Source::Clone(vm) if pools.iter().any(|p| p.kind == "local") => vm.host_id,
         _ => None,
     };
+    // Placed by a shared pool if there is one (its clusters), then checked
+    // against the others.
+    let pool = pools
+        .iter()
+        .find(|p| p.kind != "local")
+        .or(pools.first())
+        .cloned()
+        .ok_or_else(|| ApiError::conflict("the VM has no disks"))?;
 
     let mut tx = state.db.begin().await?;
     let host = place(&state, &mut tx, tenant, &req, &pool, pin).await?;
+    for other in pools.iter().filter(|p| p.kind != "local") {
+        if !host.cluster.is_some_and(|c| other.clusters.contains(&c)) {
+            return Err(ApiError::conflict(format!(
+                "no host has room that reaches all of its disks' pools ({} too)",
+                other.name
+            )));
+        }
+    }
     let delta: mst_db::quotas::Amounts = [
         ("vms", 1),
         ("vcpus", i64::from(reserved_vcpus(&req))),
@@ -645,6 +681,7 @@ async fn create_inner(
             restored_from: None,
             cloned_from: None,
             unit: None,
+            extra: Default::default(),
         }],
         // Every disk the source has, at its size and on the image it was
         // made from (file pools keep sharing it).
@@ -655,12 +692,13 @@ async fn create_inner(
             .iter()
             .map(|d| DiskSpec {
                 volume_id: VolumeId::new(),
-                pool_id: pool.id,
+                pool_id: d.pool_id,
                 size_bytes: d.size_bytes,
                 image_id: d.image_id,
                 restored_from: None,
                 cloned_from: Some(d.volume_id),
                 unit: d.unit,
+                extra: Default::default(),
             })
             .collect(),
         // Every disk the backup has, at its size, in the chosen pool.
@@ -681,6 +719,7 @@ async fn create_inner(
                 }),
                 cloned_from: None,
                 unit: d.unit,
+                extra: Default::default(),
             })
             .collect(),
     };
@@ -703,6 +742,7 @@ async fn create_inner(
         // The create task sets the cluster's baseline CPU before defining the VM.
         cpu: None,
         migratable,
+        extra: Default::default(),
         vcpus: req.vcpus,
         max_vcpus: req.max_vcpus.filter(|m| *m > req.vcpus),
         memory_mib: req.memory_mib,
@@ -740,6 +780,10 @@ async fn create_inner(
     )
     .await?;
     for disk in &disks {
+        let local = pools
+            .iter()
+            .find(|p| p.id == disk.pool_id)
+            .is_some_and(|p| p.kind == "local");
         mst_db::vms::create_volume(
             &mut *tx,
             &mst_db::vms::Volume {
@@ -747,8 +791,8 @@ async fn create_inner(
                 tenant_id: tenant,
                 vm_id: Some(vm_id),
                 // Only local volumes are tied to a host.
-                host_id: (pool.kind == "local").then_some(host.id),
-                pool_id: pool.id,
+                host_id: local.then_some(host.id),
+                pool_id: disk.pool_id,
                 size_bytes: disk.size_bytes as i64,
                 image_id: disk.image_id,
             },
@@ -956,6 +1000,13 @@ async fn power_action(
     if mst_db::snapshots::busy(&mut *tx, id).await?.as_deref() == Some("reverting") {
         return Err(ApiError::conflict(
             "the VM is being reverted to a snapshot; start it once that is done",
+        ));
+    }
+    // Its disks change with it as it is: plugged in or out while it runs,
+    // in its definition while it is stopped.
+    if mst_db::disks::busy_on_vm(&mut *tx, id).await?.is_some() {
+        return Err(ApiError::conflict(
+            "a disk of the VM is being attached or detached; try again once that is done",
         ));
     }
     if desired == Some("running") {
@@ -1453,18 +1504,40 @@ async fn resize_disk(
     Path((id, index)): Path<(VmId, usize)>,
     Json(req): Json<ResizeDisk>,
 ) -> ApiResult<Json<VmView>> {
-    grow_disk(&state, &p, id, index, req.size_gib).await
+    grow_disk(&state, &p, id, Which::Index(index), req.size_gib).await
 }
 
-/// Grows the VM's disk at `index` to `size_gib` (see `resize_disk`).
+/// Which of a VM's disks.
+pub(crate) enum Which {
+    /// By its place (0 is the boot disk).
+    Index(usize),
+    /// By its volume.
+    Volume(VolumeId),
+}
+
+/// Grows one of the VM's disks to `size_gib` (see `resize_disk`).
 pub(crate) async fn grow_disk(
     state: &AppState,
     p: &Principal,
     id: VmId,
-    index: usize,
+    which: Which,
     size_gib: u64,
 ) -> ApiResult<Json<VmView>> {
-    let vm = load(state, p, id, Perm::VmWrite).await?;
+    load(state, p, id, Perm::VmWrite).await?;
+    // Locked, so no power action or other change slips in meanwhile; the
+    // disk is found (and its size checked) in what is locked.
+    let mut tx = state.db.begin().await?;
+    let vm = mst_db::vms::get_for_update(&mut tx, id).await?;
+    let index = match which {
+        Which::Index(i) => i,
+        Which::Volume(v) => vm
+            .spec
+            .0
+            .disks
+            .iter()
+            .position(|d| d.volume_id == v)
+            .ok_or_else(|| ApiError::not_found("disk"))?,
+    };
     let disk = vm
         .spec
         .0
@@ -1478,9 +1551,6 @@ pub(crate) async fn grow_disk(
             disk.size_bytes.div_ceil(GIB)
         )));
     }
-    // Locked, so no power action or other change slips in meanwhile.
-    let mut tx = state.db.begin().await?;
-    let vm = mst_db::vms::get_for_update(&mut tx, id).await?;
     if vm.status != "ready" {
         return Err(ApiError::conflict(format!(
             "the VM is {}: resize it afterwards",
@@ -1733,9 +1803,9 @@ mod tests {
         let mk = |name: &str| -> CreateVm {
             serde_json::from_value(json!({"name": name, "vcpus": 1, "memory_mib": 512, "disk_gib": 10, "image_id": ImageId::new()})).unwrap()
         };
-        assert!(validate(&mk("web-1")).is_ok());
+        assert!(validate(&mk("web-1"), true).is_ok());
         for bad in ["", "-a", "a-", "a_b", "a.b", &"x".repeat(64)] {
-            assert!(validate(&mk(bad)).is_err(), "{bad:?}");
+            assert!(validate(&mk(bad), true).is_err(), "{bad:?}");
         }
     }
 }

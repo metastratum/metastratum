@@ -378,8 +378,8 @@ async fn serve(db: mst_db::sqlx::PgPool, cfg: &config::Config) -> anyhow::Result
     tokio::spawn(state.events.clone().listen(db.clone()));
     tokio::spawn(state.events.clone().watch_hosts(db.clone()));
     tokio::spawn(state.net.clone().run());
-    // Host failure handling, backup schedules and the port binding watch
-    // run on one replica at a time.
+    // Host failure handling, backup schedules, the port binding watch and
+    // removing disks' stale copies run on one replica at a time.
     tokio::spawn({
         let state = state.clone();
         let southbound = cfg.ovn.southbound.clone();
@@ -389,7 +389,8 @@ async fn serve(db: mst_db::sqlx::PgPool, cfg: &config::Config) -> anyhow::Result
                 tokio::join!(
                     ha::monitor(state.clone()),
                     engine::backup_schedule(state.clone()),
-                    port_watch::watch(state, southbound),
+                    port_watch::watch(state.clone(), southbound),
+                    engine::sweep_disks(state),
                 );
             }
         })

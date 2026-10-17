@@ -64,6 +64,12 @@ pub struct VmSpec {
     /// to the host. VMs from before this setting existed could migrate.
     #[serde(default = "yes")]
     pub migratable: bool,
+    /// Fields a newer version added, kept as they are when this one writes
+    /// the spec back (controllers of two versions run side by side while
+    /// they are upgraded).
+    #[serde(flatten, default)]
+    #[cfg_attr(feature = "utoipa", schema(ignore))]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl VmSpec {
@@ -186,6 +192,10 @@ pub struct DiskSpec {
     /// kept while it is attached; unset for the boot disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<u32>,
+    /// Fields a newer version added (see [`VmSpec::extra`]).
+    #[serde(flatten, default)]
+    #[cfg_attr(feature = "utoipa", schema(ignore))]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// One of a backup's disks.
@@ -278,6 +288,7 @@ mod tests {
             restored_from: None,
             cloned_from: None,
             unit,
+            extra: Default::default(),
         };
         let mut spec: VmSpec =
             serde_json::from_str(r#"{"vcpus":1,"memory_mib":512,"disks":[],"nics":[]}"#).unwrap();
@@ -303,6 +314,15 @@ mod tests {
         assert_eq!(targets(&spec), ["vda", "sdd"]);
         assert_eq!(spec.disk_slots()[1].scsi_unit, Some(2));
         assert_eq!(spec.free_unit(), 0);
+    }
+
+    #[test]
+    fn fields_of_newer_versions_survive_a_rewrite() {
+        let json = r#"{"vcpus":1,"memory_mib":512,"future":{"x":1},"disks":[{"volume_id":"0199f0a2-7b3c-7d00-8000-000000000001","size_bytes":1,"later":true}],"nics":[]}"#;
+        let spec: VmSpec = serde_json::from_str(json).unwrap();
+        let again = serde_json::to_value(&spec).unwrap();
+        assert_eq!(again["future"], serde_json::json!({"x": 1}));
+        assert_eq!(again["disks"][0]["later"], true);
     }
 
     #[test]

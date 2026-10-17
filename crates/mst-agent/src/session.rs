@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use mst_libvirt::{Change, Libvirt, Power};
 use mst_proto::agent_control_client::AgentControlClient;
 use mst_proto::command::Cmd;
@@ -381,10 +381,20 @@ impl Agent {
                 let v = c.vm.context("no VM to attach the disk to")?;
                 let def = self.domain_def(&v).await?;
                 if self.lv.power(&v.vm_id).await? != Power::Stopped {
+                    let (live, scsi) = self.lv.live_disks(&v.vm_id).await?;
                     let xml = def
                         .disk_xml(&c.target)
                         .with_context(|| format!("the VM has no disk at {}", c.target))?;
-                    self.lv.attach_device(&v.vm_id, &xml).await?;
+                    match live.iter().find(|(t, _)| *t == c.target) {
+                        // Plugged in already (the request is repeated).
+                        Some((_, path))
+                            if !c.volume_id.is_empty() && path.contains(&c.volume_id) => {}
+                        Some(_) => bail!("the VM has another disk at {}", c.target),
+                        None if xml.contains("bus='scsi'") && !scsi => bail!(
+                            "the VM runs without the controller disks plug into: stop it and start it again first"
+                        ),
+                        None => self.lv.attach_device(&v.vm_id, &xml).await?,
+                    }
                 }
                 self.lv.define(def.to_xml()).await?;
                 tracing::info!(vm = %v.vm_id, target = %c.target, "disk attached");
@@ -393,9 +403,21 @@ impl Agent {
                 let v = c.vm.context("no VM to detach the disk from")?;
                 let def = self.domain_def(&v).await?;
                 if self.lv.power(&v.vm_id).await? != Power::Stopped {
-                    self.lv
-                        .detach_disk(&v.vm_id, &c.target, Duration::from_secs(30))
-                        .await?;
+                    let (live, _) = self.lv.live_disks(&v.vm_id).await?;
+                    let ours = |path: &str| !c.volume_id.is_empty() && path.contains(&c.volume_id);
+                    match live.iter().find(|(t, _)| *t == c.target) {
+                        Some((_, path)) if c.volume_id.is_empty() || ours(path) => {
+                            self.lv
+                                .detach_disk(&v.vm_id, &c.target, Duration::from_secs(30))
+                                .await?;
+                        }
+                        Some(_) => bail!("the VM has another disk at {}", c.target),
+                        // Unplugged already, unless it sits elsewhere.
+                        None if live.iter().any(|(_, p)| ours(p)) => {
+                            bail!("the VM has the disk, but not at {}", c.target)
+                        }
+                        None => {}
+                    }
                 }
                 self.lv.define(def.to_xml()).await?;
                 tracing::info!(vm = %v.vm_id, target = %c.target, "disk detached");
@@ -605,7 +627,21 @@ impl Agent {
                             .await
                             .map(|j| j.active)
                             .unwrap_or(false);
-                        serde_json::json!({"defined": true, "power": session_power_name(st.power), "job_active": job})
+                        // What is plugged in, while it runs.
+                        let disks: Vec<_> = match st.power {
+                            Power::Stopped => vec![],
+                            _ => self
+                                .lv
+                                .live_disks(&c.vm_id)
+                                .await
+                                .map(|(d, _)| d)
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|(target, path)| serde_json::json!({"target": target, "path": path}))
+                                .collect(),
+                        };
+                        serde_json::json!({"defined": true, "power": session_power_name(st.power),
+                                           "job_active": job, "disks": disks})
                     }
                     Err(mst_libvirt::conn::Error::NoDomain(_)) => {
                         serde_json::json!({"defined": false, "power": "missing", "job_active": false})

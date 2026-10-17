@@ -5,7 +5,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use mst_core::ids::{HostId, LOCAL_POOL, StoragePoolId, TaskId, TenantId, VmId, VolumeId};
+use mst_core::ids::{HostId, LOCAL_POOL, StoragePoolId, TaskId, TenantId, UserId, VmId, VolumeId};
 use mst_core::vm::{DiskSpec, MAX_DATA_DISKS};
 use mst_db::disks::Disk;
 use mst_db::sqlx::PgConnection;
@@ -189,17 +189,33 @@ pub struct CreateDisk {
     host_id: Option<HostId>,
 }
 
-/// Makes an empty disk, attached to a VM or not. It counts against the
-/// tenant's disk quota.
+#[derive(Serialize, ToSchema)]
+pub struct DiskTask {
+    /// The task attaching, detaching or moving it, if one was started:
+    /// the disk is `attaching`, `detaching` or `moving` until it is done.
+    task_id: Option<TaskId>,
+    #[serde(flatten)]
+    disk: DiskView,
+}
+
+async fn disk_task(state: &AppState, id: VolumeId, task_id: Option<TaskId>) -> ApiResult<DiskTask> {
+    Ok(DiskTask {
+        task_id,
+        disk: mst_db::disks::get(&state.db, id).await?.into(),
+    })
+}
+
+/// Makes an empty disk, attached to a VM or not (given one, a task attaches
+/// it). It counts against the tenant's disk quota.
 #[utoipa::path(post, path = "/disks", tag = "disks", request_body = CreateDisk,
-    responses((status = 201, body = DiskView), (status = 400), (status = 404),
+    responses((status = 201, body = DiskTask), (status = 400), (status = 404),
         (status = 409, description = "No room in the quota, or the VM cannot take it now"),
         (status = 503)))]
 async fn create_disk(
     State(state): State<AppState>,
     p: Principal,
     Json(req): Json<CreateDisk>,
-) -> ApiResult<(StatusCode, Json<DiskView>)> {
+) -> ApiResult<(StatusCode, Json<DiskTask>)> {
     let name = check_name(&req.name)?;
     if req.size_gib == 0 || req.size_gib > MAX_GIB {
         return Err(ApiError::bad_request("size_gib is 1 to 16384"));
@@ -234,11 +250,7 @@ async fn create_disk(
             .host_id
             .ok_or_else(|| ApiError::conflict("the VM is on no host"))?,
         ("local", None, Some(h)) => {
-            let host = mst_db::hosts::get(&state.db, h).await?;
-            let allowed = super::clusters::allowed_clusters(&state, tenant).await?;
-            if allowed.is_some_and(|a| !host.cluster_id.is_some_and(|c| a.contains(&c))) {
-                return Err(ApiError::not_found("host"));
-            }
+            check_host(&state, tenant, h).await?;
             h
         }
         ("local", None, None) => {
@@ -252,6 +264,8 @@ async fn create_disk(
         },
     };
 
+    // Recorded (and counted) first; made on its host outside any
+    // transaction, so no lock waits on the host.
     let id = VolumeId::new();
     let size = req.size_gib * GIB;
     let mut tx = state.db.begin().await?;
@@ -271,38 +285,67 @@ async fn create_disk(
         },
     )
     .await?;
+    tx.commit().await?;
     let cmd = mst_proto::EnsureVolume {
         volume_id: id.to_string(),
         size_bytes: size,
         image_id: String::new(),
         pool: Some(super::agent_pool(&pool).map_err(ApiError::internal)?),
     };
-    state
+    if let Err(e) = state
         .agents
         .call(host, mst_proto::command::Cmd::EnsureVolume(cmd), AGENT)
         .await
-        .map_err(|e| ApiError::unavailable(format!("making the disk on its host: {e}")))?;
-    mst_db::disks::set_state(&mut *tx, id, "ready", None).await?;
-    if let Some(vm) = &vm {
-        let disk = mst_db::disks::get_for_update(&mut tx, id).await?;
-        if let Err(e) = attach(&state, &mut tx, vm.id, &disk).await {
-            drop(tx);
-            remove_volume(&state, host, &pool, id).await;
-            return Err(e);
-        }
+    {
+        // Not made after all: it goes, with whatever its host made.
+        remove_volume(&state, host, &pool, id).await;
+        mst_db::vms::delete_volume(&state.db, id).await?;
+        return Err(ApiError::unavailable(format!(
+            "making the disk on its host: {e}"
+        )));
     }
-    tx.commit().await?;
-    let disk = mst_db::disks::get(&state.db, id).await?;
+    mst_db::disks::set_state(&state.db, id, "ready", None).await?;
     audit(
         &state.db,
         Some(&p),
         Some(tenant),
         "disk.create",
         Some(("disk", id.0)),
-        json!({"name": name, "size_gib": req.size_gib, "pool": pool.name, "vm": disk.vm_name}),
+        json!({"name": name, "size_gib": req.size_gib, "pool": pool.name, "vm": vm.as_ref().map(|v| &v.name)}),
     )
     .await;
-    Ok((StatusCode::CREATED, Json(disk.into())))
+    let task = match &vm {
+        Some(vm) => {
+            let mut tx = state.db.begin().await?;
+            let disk = mst_db::disks::get_for_update(&mut tx, id).await?;
+            // Made: should attaching be refused now, the disk stays.
+            let task = begin_attach(&state, &mut tx, vm.id, &disk, Some(p.user_id)).await?;
+            tx.commit().await?;
+            Some(task)
+        }
+        None => None,
+    };
+    Ok((
+        StatusCode::CREATED,
+        Json(disk_task(&state, id, task).await?),
+    ))
+}
+
+/// A host a tenant may put a disk on.
+async fn check_host(
+    state: &AppState,
+    tenant: TenantId,
+    host: HostId,
+) -> ApiResult<mst_db::hosts::Host> {
+    let h = mst_db::hosts::get(&state.db, host).await?;
+    let allowed = super::clusters::allowed_clusters(state, tenant).await?;
+    if allowed.is_some_and(|a| !h.cluster_id.is_some_and(|c| a.contains(&c))) {
+        return Err(ApiError::not_found("host"));
+    }
+    if h.state != "ready" && h.state != "maintenance" {
+        return Err(ApiError::conflict(format!("{} is {}", h.name, h.state)));
+    }
+    Ok(h)
 }
 
 /// A connected host that reaches a shared pool.
@@ -388,15 +431,14 @@ async fn update_disk(
     if let Some(size_gib) = req.size_gib {
         match disk.vm_id {
             Some(vm_id) => {
-                let vm = mst_db::vms::get(&state.db, vm_id).await?;
-                let index = vm
-                    .spec
-                    .0
-                    .disks
-                    .iter()
-                    .position(|d| d.volume_id == id)
-                    .ok_or_else(|| ApiError::conflict("the disk is being attached or detached"))?;
-                let _grown = super::vms::grow_disk(&state, &p, vm_id, index, size_gib).await?;
+                let _grown = super::vms::grow_disk(
+                    &state,
+                    &p,
+                    vm_id,
+                    super::vms::Which::Volume(id),
+                    size_gib,
+                )
+                .await?;
             }
             None => grow_detached(&state, &p, id, size_gib).await?,
         }
@@ -404,6 +446,8 @@ async fn update_disk(
     Ok(Json(mst_db::disks::get(&state.db, id).await?.into()))
 }
 
+/// Grows a disk attached to no VM: recorded (and counted) first, grown on
+/// its host outside any transaction, and put back should that fail.
 async fn grow_detached(
     state: &AppState,
     p: &Principal,
@@ -413,10 +457,11 @@ async fn grow_detached(
     let mut tx = state.db.begin().await?;
     let disk = mst_db::disks::get_for_update(&mut tx, id).await?;
     let size = size_gib.saturating_mul(GIB);
-    if size_gib > MAX_GIB || size <= disk.size_bytes as u64 {
+    let was = disk.size_bytes as u64;
+    if size_gib > MAX_GIB || size <= was {
         return Err(ApiError::bad_request(format!(
             "the disk is {} GiB: it can grow, to at most 16384 GiB",
-            (disk.size_bytes as u64).div_ceil(GIB)
+            was.div_ceil(GIB)
         )));
     }
     if disk.vm_id.is_some() || disk.state != "ready" {
@@ -429,33 +474,42 @@ async fn grow_detached(
             }
         )));
     }
-    let delta: mst_db::quotas::Amounts = [(
-        "disk_gib".to_owned(),
-        (size - disk.size_bytes as u64).div_ceil(GIB) as i64,
-    )]
-    .into_iter()
-    .collect();
+    let delta: mst_db::quotas::Amounts =
+        [("disk_gib".to_owned(), (size - was).div_ceil(GIB) as i64)]
+            .into_iter()
+            .collect();
     mst_db::quotas::reserve(&mut tx, disk.tenant_id, &delta).await?;
     mst_db::vms::set_volume_size(&mut *tx, id, size as i64).await?;
-    let host = host_of(state, &disk).await?;
-    let pool = mst_db::storage_pools::get(&mut *tx, disk.pool_id).await?;
-    let cmd = mst_proto::ResizeDisk {
-        // Attached to no VM: the volume itself grows.
-        vm_id: String::new(),
-        disk: Some(mst_proto::BackupDisk {
-            index: 0,
-            volume_id: id.to_string(),
-            pool: Some(super::agent_pool(&pool).map_err(ApiError::internal)?),
-            target: String::new(),
-        }),
-        size_bytes: size,
-    };
-    state
-        .agents
-        .call(host, mst_proto::command::Cmd::ResizeDisk(cmd), AGENT)
-        .await
-        .map_err(|e| ApiError::unavailable(format!("growing the disk on its host: {e}")))?;
+    mst_db::disks::set_state(&mut *tx, id, "growing", None).await?;
     tx.commit().await?;
+    let grown = async {
+        let host = host_of(state, &disk).await?;
+        let pool = mst_db::storage_pools::get(&state.db, disk.pool_id).await?;
+        let cmd = mst_proto::ResizeDisk {
+            // Attached to no VM: the volume itself grows.
+            vm_id: String::new(),
+            disk: Some(mst_proto::BackupDisk {
+                index: 0,
+                volume_id: id.to_string(),
+                pool: Some(super::agent_pool(&pool).map_err(ApiError::internal)?),
+                target: String::new(),
+            }),
+            size_bytes: size,
+        };
+        state
+            .agents
+            .call(host, mst_proto::command::Cmd::ResizeDisk(cmd), AGENT)
+            .await
+            .map_err(|e| ApiError::unavailable(format!("growing the disk on its host: {e}")))
+    }
+    .await;
+    if let Err(e) = grown {
+        // Not grown: its size, and the quota, go back.
+        mst_db::vms::set_volume_size(&state.db, id, was as i64).await?;
+        mst_db::disks::set_state(&state.db, id, "ready", None).await?;
+        return Err(e);
+    }
+    mst_db::disks::set_state(&state.db, id, "ready", None).await?;
     audit(
         &state.db,
         Some(p),
@@ -521,27 +575,27 @@ pub struct AttachDisk {
     disk_id: VolumeId,
 }
 
-/// Attaches a disk to a VM of its tenant: plugged in at once if it runs
+/// Attaches a disk to a VM of its tenant (a task): plugged in if it runs
 /// (where it started since disks could be), otherwise from its next start.
-/// A disk on local storage attaches to VMs on its host. Not while the VM
-/// has snapshots (they cover the disks it had).
+/// A disk on local storage attaches to VMs on its host; move it there first
+/// (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
+/// cover the disks it had).
 #[utoipa::path(post, path = "/vms/{id}/disks", tag = "disks", params(("id" = VmId, Path)),
     request_body = AttachDisk,
-    responses((status = 200, body = DiskView), (status = 404),
-        (status = 409, description = "The disk or the VM cannot be attached now"),
-        (status = 503)))]
+    responses((status = 202, body = DiskTask), (status = 404),
+        (status = 409, description = "The disk or the VM cannot be attached now")))]
 async fn attach_disk(
     State(state): State<AppState>,
     p: Principal,
     Path(vm_id): Path<VmId>,
     Json(req): Json<AttachDisk>,
-) -> ApiResult<Json<DiskView>> {
+) -> ApiResult<(StatusCode, Json<DiskTask>)> {
     let vm = mst_db::vms::get(&state.db, vm_id).await?;
     authorize_resource(&state.db, &p, Perm::VmWrite, vm.tenant_id, "vm").await?;
     load(&state, &p, req.disk_id, Perm::VmWrite).await?;
     let mut tx = state.db.begin().await?;
     let disk = mst_db::disks::get_for_update(&mut tx, req.disk_id).await?;
-    attach(&state, &mut tx, vm_id, &disk).await?;
+    let task = begin_attach(&state, &mut tx, vm_id, &disk, Some(p.user_id)).await?;
     tx.commit().await?;
     audit(
         &state.db,
@@ -552,7 +606,10 @@ async fn attach_disk(
         json!({"name": vm.name, "disk": disk.id, "disk_name": disk.name}),
     )
     .await;
-    Ok(Json(mst_db::disks::get(&state.db, disk.id).await?.into()))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(disk_task(&state, disk.id, Some(task)).await?),
+    ))
 }
 
 /// Refuses changing the VM's disks while it is busy, or has snapshots.
@@ -577,13 +634,15 @@ async fn check_vm(tx: &mut PgConnection, vm: &mst_db::vms::Vm, what: &str) -> Ap
     Ok(())
 }
 
-/// Attaches `disk` (locked) to the VM, in `tx`.
-pub async fn attach(
+/// Starts attaching `disk` (locked) to the VM, in `tx`: the VM's
+/// definition has it from now, and a task plugs it in (`engine::disk`).
+pub async fn begin_attach(
     state: &AppState,
     tx: &mut PgConnection,
     vm_id: VmId,
     disk: &Disk,
-) -> ApiResult<()> {
+    by: Option<UserId>,
+) -> ApiResult<TaskId> {
     let vm = mst_db::vms::get_for_update(&mut *tx, vm_id).await?;
     if let Some(other) = &disk.vm_name {
         return Err(ApiError::conflict(format!(
@@ -612,7 +671,7 @@ pub async fn attach(
     if pool.kind == "local" {
         if disk.host_id != Some(host) {
             return Err(ApiError::conflict(format!(
-                "the disk is on {}, the VM on another host: a disk on local storage attaches to VMs on its host",
+                "the disk is on {}, the VM on another host: move it to the VM (it moves, then attaches)",
                 disk.host_name.as_deref().unwrap_or("no host")
             )));
         }
@@ -625,8 +684,7 @@ pub async fn attach(
             )));
         }
     }
-    let running = vm.power != "stopped";
-    if running && spec.disk_hotplug != Some(true) {
+    if vm.power != "stopped" && spec.disk_hotplug != Some(true) {
         return Err(ApiError::conflict(
             "the VM was started before disks could be plugged in while it runs: stop it to attach the disk (from its next start they can be)",
         ));
@@ -640,38 +698,38 @@ pub async fn attach(
         restored_from: None,
         cloned_from: None,
         unit: Some(unit),
+        extra: Default::default(),
     });
-    let target = spec
-        .disk_slots()
-        .pop()
-        .map(|s| s.target)
-        .ok_or_else(|| ApiError::internal("no disk slot"))?;
-    let generation = mst_db::vms::redefine(&mut *tx, vm.id, &spec).await?;
+    mst_db::vms::redefine(&mut *tx, vm.id, &spec).await?;
     mst_db::disks::set_vm(&mut *tx, disk.id, Some(vm.id)).await?;
-    let define = super::vms::definition(state, &mut *tx, &vm, host, &spec, generation).await?;
-    let cmd = mst_proto::AttachDisk {
-        vm: Some(define),
-        target,
-    };
-    state
-        .agents
-        .call(host, mst_proto::command::Cmd::AttachDisk(cmd), AGENT)
-        .await
-        .map_err(|e| ApiError::unavailable(format!("attaching the disk on the VM's host: {e}")))?;
-    Ok(())
+    mst_db::disks::set_state(&mut *tx, disk.id, "attaching", None).await?;
+    let task = mst_db::tasks::enqueue(
+        &mut *tx,
+        mst_db::tasks::NewTask {
+            tenant_id: vm.tenant_id,
+            kind: "disk.attach",
+            target: Some(("disk", disk.id.0)),
+            params: json!({"vm": vm.id}),
+            created_by: by,
+        },
+    )
+    .await?;
+    let _ = state;
+    Ok(task.id)
 }
 
-/// Detaches a disk (not the boot disk) from a VM, unplugging it if the VM
-/// runs: unmount it in the guest first. The disk is kept, to attach again.
+/// Detaches a disk (not the boot disk) from a VM (a task), unplugging it if
+/// the VM runs: unmount it in the guest first. The disk is kept, to attach
+/// again.
 #[utoipa::path(delete, path = "/vms/{id}/disks/{disk_id}", tag = "disks",
     params(("id" = VmId, Path), ("disk_id" = VolumeId, Path)),
-    responses((status = 200, body = DiskView), (status = 404),
-        (status = 409, description = "The VM cannot let go of the disk now"), (status = 503)))]
+    responses((status = 202, body = DiskTask), (status = 404),
+        (status = 409, description = "The VM cannot let go of the disk now")))]
 async fn detach_disk(
     State(state): State<AppState>,
     p: Principal,
     Path((vm_id, disk_id)): Path<(VmId, VolumeId)>,
-) -> ApiResult<Json<DiskView>> {
+) -> ApiResult<(StatusCode, Json<DiskTask>)> {
     let vm = mst_db::vms::get(&state.db, vm_id).await?;
     authorize_resource(&state.db, &p, Perm::VmWrite, vm.tenant_id, "vm").await?;
     let mut tx = state.db.begin().await?;
@@ -683,35 +741,27 @@ async fn detach_disk(
     if disk.boot {
         return Err(ApiError::conflict("the boot disk stays with its VM"));
     }
+    if disk.state != "ready" {
+        return Err(ApiError::conflict(format!("the disk is {}", disk.state)));
+    }
     check_vm(&mut tx, &vm, "detach the disk").await?;
-    let host = vm
-        .host_id
-        .ok_or_else(|| ApiError::conflict("the VM is on no host"))?;
-    let mut spec = vm.spec.0.clone();
-    let index = spec
-        .disks
-        .iter()
-        .position(|d| d.volume_id == disk_id)
-        .ok_or_else(|| ApiError::not_found("disk"))?;
-    let target = spec.disk_slots()[index].target.clone();
-    if vm.power != "stopped" && spec.disk_hotplug != Some(true) {
+    if vm.power != "stopped" && vm.spec.0.disk_hotplug != Some(true) {
         return Err(ApiError::conflict(
             "the VM was started before disks could be unplugged while it runs: stop it to detach the disk",
         ));
     }
-    spec.disks.remove(index);
-    let generation = mst_db::vms::redefine(&mut tx, vm.id, &spec).await?;
-    mst_db::disks::set_vm(&mut *tx, disk_id, None).await?;
-    let define = super::vms::definition(&state, &mut tx, &vm, host, &spec, generation).await?;
-    let cmd = mst_proto::DetachDisk {
-        vm: Some(define),
-        target,
-    };
-    state
-        .agents
-        .call(host, mst_proto::command::Cmd::DetachDisk(cmd), AGENT)
-        .await
-        .map_err(|e| ApiError::unavailable(format!("detaching the disk on the VM's host: {e}")))?;
+    mst_db::disks::set_state(&mut *tx, disk_id, "detaching", None).await?;
+    let task = mst_db::tasks::enqueue(
+        &mut *tx,
+        mst_db::tasks::NewTask {
+            tenant_id: vm.tenant_id,
+            kind: "disk.detach",
+            target: Some(("disk", disk_id.0)),
+            params: json!({"vm": vm_id}),
+            created_by: Some(p.user_id),
+        },
+    )
+    .await?;
     tx.commit().await?;
     audit(
         &state.db,
@@ -722,7 +772,10 @@ async fn detach_disk(
         json!({"name": vm.name, "disk": disk_id, "disk_name": disk.name}),
     )
     .await;
-    Ok(Json(mst_db::disks::get(&state.db, disk_id).await?.into()))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(disk_task(&state, disk_id, Some(task.id)).await?),
+    ))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -736,27 +789,20 @@ pub struct MoveDisk {
     vm_id: Option<VmId>,
 }
 
-#[derive(Serialize, ToSchema)]
-pub struct MoveAccepted {
-    task_id: TaskId,
-    #[serde(flatten)]
-    disk: DiskView,
-}
-
 /// Moves a disk attached to no VM: to another host (local storage), or to
-/// another pool. It is copied, with what its image held (the copy depends
-/// on nothing), then the old copy is removed. Given a VM, it goes where the
-/// VM can reach it and is attached once there.
+/// another pool (a task). It is copied, with what its image held (the copy
+/// depends on nothing), then the old copy is removed. Given a VM, it goes
+/// where the VM can reach it and is attached once there.
 #[utoipa::path(post, path = "/disks/{id}/move", tag = "disks", params(("id" = VolumeId, Path)),
     request_body = MoveDisk,
-    responses((status = 202, body = MoveAccepted), (status = 400), (status = 404),
+    responses((status = 202, body = DiskTask), (status = 400), (status = 404),
         (status = 409, description = "The disk is attached, or busy")))]
 async fn move_disk(
     State(state): State<AppState>,
     p: Principal,
     Path(id): Path<VolumeId>,
     Json(req): Json<MoveDisk>,
-) -> ApiResult<(StatusCode, Json<MoveAccepted>)> {
+) -> ApiResult<(StatusCode, Json<DiskTask>)> {
     let disk = load(&state, &p, id, Perm::VmWrite).await?;
     let pool =
         mst_db::storage_pools::get(&state.db, req.storage_pool_id.unwrap_or(disk.pool_id)).await?;
@@ -790,11 +836,7 @@ async fn move_disk(
                 ));
             }
         };
-        let h = mst_db::hosts::get(&state.db, host).await?;
-        let allowed = super::clusters::allowed_clusters(&state, disk.tenant_id).await?;
-        if allowed.is_some_and(|a| !h.cluster_id.is_some_and(|c| a.contains(&c))) {
-            return Err(ApiError::not_found("host"));
-        }
+        let h = check_host(&state, disk.tenant_id, host).await?;
         if !h.is_live() {
             return Err(ApiError::conflict(format!("{} is not connected", h.name)));
         }
@@ -817,6 +859,13 @@ async fn move_disk(
     if pool.id == disk.pool_id && (pool.kind != "local" || host == disk.host_id) {
         return Err(ApiError::bad_request("the disk is there already"));
     }
+    let source = mst_db::storage_pools::get(&state.db, disk.pool_id).await?;
+    if super::storage_pools::same_storage(&source, &pool) {
+        return Err(ApiError::bad_request(format!(
+            "{} and {} are the same storage: the disk is there already",
+            source.name, pool.name
+        )));
+    }
 
     let mut tx = state.db.begin().await?;
     let disk = mst_db::disks::get_for_update(&mut tx, id).await?;
@@ -838,7 +887,9 @@ async fn move_disk(
             tenant_id: disk.tenant_id,
             kind: "disk.move",
             target: Some(("disk", id.0)),
-            params: json!({"pool": pool.id, "host": host, "vm": req.vm_id}),
+            // Where it is now too: a resumed task picks up from there.
+            params: json!({"pool": pool.id, "host": host, "vm": req.vm_id,
+                           "from_pool": disk.pool_id, "from_host": disk.host_id}),
             created_by: Some(p.user_id),
         },
     )
@@ -855,9 +906,6 @@ async fn move_disk(
     .await;
     Ok((
         StatusCode::ACCEPTED,
-        Json(MoveAccepted {
-            task_id: task.id,
-            disk: mst_db::disks::get(&state.db, id).await?.into(),
-        }),
+        Json(disk_task(&state, id, Some(task.id)).await?),
     ))
 }

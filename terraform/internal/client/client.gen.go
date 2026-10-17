@@ -671,6 +671,41 @@ type DiskSpec struct {
 	VolumeId VolumeId `json:"volume_id"`
 }
 
+// DiskTask defines model for DiskTask.
+type DiskTask struct {
+	// Boot The VM's boot disk, which stays with it.
+	Boot      bool      `json:"boot"`
+	CreatedAt time.Time `json:"created_at"`
+
+	// Error What went wrong, when `failed`.
+	Error *string `json:"error,omitempty"`
+
+	// GuestPath Where the guest finds it, for disks attached besides the boot disk:
+	// by its serial number, which is its ID.
+	GuestPath *string  `json:"guest_path,omitempty"`
+	HostId    *HostId  `json:"host_id,omitempty"`
+	HostName  *string  `json:"host_name,omitempty"`
+	Id        VolumeId `json:"id"`
+
+	// Name Unset for disks made with a VM: its boot disk, and copies of disks
+	// made with a clone or a restore.
+	Name    *string `json:"name,omitempty"`
+	SizeGib int64   `json:"size_gib"`
+
+	// State `creating`, `ready`, `attaching`, `detaching`, `moving`, `deleting`
+	// or `failed`.
+	State         string        `json:"state"`
+	StoragePoolId StoragePoolId `json:"storage_pool_id"`
+
+	// StoragePoolKind `local`, `nfs` or `rbd`.
+	StoragePoolKind string   `json:"storage_pool_kind"`
+	StoragePoolName string   `json:"storage_pool_name"`
+	TaskId          *TaskId  `json:"task_id,omitempty"`
+	TenantId        TenantId `json:"tenant_id"`
+	VmId            *VmId    `json:"vm_id,omitempty"`
+	VmName          *string  `json:"vm_name,omitempty"`
+}
+
 // DiskView defines model for DiskView.
 type DiskView struct {
 	// Boot The VM's boot disk, which stays with it.
@@ -1028,41 +1063,6 @@ type MigrationView struct {
 	// State `preparing`, `running` or `committing`.
 	State  string `json:"state"`
 	TaskId TaskId `json:"task_id"`
-}
-
-// MoveAccepted defines model for MoveAccepted.
-type MoveAccepted struct {
-	// Boot The VM's boot disk, which stays with it.
-	Boot      bool      `json:"boot"`
-	CreatedAt time.Time `json:"created_at"`
-
-	// Error What went wrong, when `failed`.
-	Error *string `json:"error,omitempty"`
-
-	// GuestPath Where the guest finds it, for disks attached besides the boot disk:
-	// by its serial number, which is its ID.
-	GuestPath *string  `json:"guest_path,omitempty"`
-	HostId    *HostId  `json:"host_id,omitempty"`
-	HostName  *string  `json:"host_name,omitempty"`
-	Id        VolumeId `json:"id"`
-
-	// Name Unset for disks made with a VM: its boot disk, and copies of disks
-	// made with a clone or a restore.
-	Name    *string `json:"name,omitempty"`
-	SizeGib int64   `json:"size_gib"`
-
-	// State `creating`, `ready`, `attaching`, `detaching`, `moving`, `deleting`
-	// or `failed`.
-	State         string        `json:"state"`
-	StoragePoolId StoragePoolId `json:"storage_pool_id"`
-
-	// StoragePoolKind `local`, `nfs` or `rbd`.
-	StoragePoolKind string   `json:"storage_pool_kind"`
-	StoragePoolName string   `json:"storage_pool_name"`
-	TaskId          TaskId   `json:"task_id"`
-	TenantId        TenantId `json:"tenant_id"`
-	VmId            *VmId    `json:"vm_id,omitempty"`
-	VmName          *string  `json:"vm_name,omitempty"`
 }
 
 // MoveDisk defines model for MoveDisk.
@@ -2418,16 +2418,16 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/disks (the `ListDisks` operationId).
 	ListDisks(ctx context.Context, params *ListDisksParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CreateDiskWithBody Makes an empty disk, attached to a VM or not. It counts against the
-	// tenant's disk quota.
+	// CreateDiskWithBody Makes an empty disk, attached to a VM or not (given one, a task attaches
+	// it). It counts against the tenant's disk quota.
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with POST /api/v1/disks (the `CreateDisk` operationId).
 	CreateDiskWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CreateDisk Makes an empty disk, attached to a VM or not. It counts against the
-	// tenant's disk quota.
+	// CreateDisk Makes an empty disk, attached to a VM or not (given one, a task attaches
+	// it). It counts against the tenant's disk quota.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -2457,9 +2457,9 @@ type ClientInterface interface {
 	UpdateDisk(ctx context.Context, id VolumeId, body UpdateDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// MoveDiskWithBody Moves a disk attached to no VM: to another host (local storage), or to
-	// another pool. It is copied, with what its image held (the copy depends
-	// on nothing), then the old copy is removed. Given a VM, it goes where the
-	// VM can reach it and is attached once there.
+	// another pool (a task). It is copied, with what its image held (the copy
+	// depends on nothing), then the old copy is removed. Given a VM, it goes
+	// where the VM can reach it and is attached once there.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -2467,9 +2467,9 @@ type ClientInterface interface {
 	MoveDiskWithBody(ctx context.Context, id VolumeId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// MoveDisk Moves a disk attached to no VM: to another host (local storage), or to
-	// another pool. It is copied, with what its image held (the copy depends
-	// on nothing), then the old copy is removed. Given a VM, it goes where the
-	// VM can reach it and is attached once there.
+	// another pool (a task). It is copied, with what its image held (the copy
+	// depends on nothing), then the old copy is removed. Given a VM, it goes
+	// where the VM can reach it and is attached once there.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -3246,28 +3246,31 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/vms/{id}/disks (the `VmDisks` operationId).
 	VmDisks(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// AttachDiskWithBody Attaches a disk to a VM of its tenant: plugged in at once if it runs
+	// AttachDiskWithBody Attaches a disk to a VM of its tenant (a task): plugged in if it runs
 	// (where it started since disks could be), otherwise from its next start.
-	// A disk on local storage attaches to VMs on its host. Not while the VM
-	// has snapshots (they cover the disks it had).
+	// A disk on local storage attaches to VMs on its host; move it there first
+	// (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
+	// cover the disks it had).
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with POST /api/v1/vms/{id}/disks (the `AttachDisk` operationId).
 	AttachDiskWithBody(ctx context.Context, id VmId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// AttachDisk Attaches a disk to a VM of its tenant: plugged in at once if it runs
+	// AttachDisk Attaches a disk to a VM of its tenant (a task): plugged in if it runs
 	// (where it started since disks could be), otherwise from its next start.
-	// A disk on local storage attaches to VMs on its host. Not while the VM
-	// has snapshots (they cover the disks it had).
+	// A disk on local storage attaches to VMs on its host; move it there first
+	// (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
+	// cover the disks it had).
 	//
 	// Takes a body of the `application/json` content type.
 	//
 	// Corresponds with POST /api/v1/vms/{id}/disks (the `AttachDisk` operationId).
 	AttachDisk(ctx context.Context, id VmId, body AttachDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// DetachDisk Detaches a disk (not the boot disk) from a VM, unplugging it if the VM
-	// runs: unmount it in the guest first. The disk is kept, to attach again.
+	// DetachDisk Detaches a disk (not the boot disk) from a VM (a task), unplugging it if
+	// the VM runs: unmount it in the guest first. The disk is kept, to attach
+	// again.
 	//
 	// Corresponds with DELETE /api/v1/vms/{id}/disks/{disk_id} (the `DetachDisk` operationId).
 	DetachDisk(ctx context.Context, id VmId, diskId VolumeId, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3821,8 +3824,8 @@ func (c *Client) ListDisks(ctx context.Context, params *ListDisksParams, reqEdit
 	return c.Client.Do(req)
 }
 
-// CreateDiskWithBody Makes an empty disk, attached to a VM or not. It counts against the
-// tenant's disk quota.
+// CreateDiskWithBody Makes an empty disk, attached to a VM or not (given one, a task attaches
+// it). It counts against the tenant's disk quota.
 //
 // Takes any type of body and a specified content type.
 //
@@ -3839,8 +3842,8 @@ func (c *Client) CreateDiskWithBody(ctx context.Context, contentType string, bod
 	return c.Client.Do(req)
 }
 
-// CreateDisk Makes an empty disk, attached to a VM or not. It counts against the
-// tenant's disk quota.
+// CreateDisk Makes an empty disk, attached to a VM or not (given one, a task attaches
+// it). It counts against the tenant's disk quota.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -3920,9 +3923,9 @@ func (c *Client) UpdateDisk(ctx context.Context, id VolumeId, body UpdateDiskJSO
 }
 
 // MoveDiskWithBody Moves a disk attached to no VM: to another host (local storage), or to
-// another pool. It is copied, with what its image held (the copy depends
-// on nothing), then the old copy is removed. Given a VM, it goes where the
-// VM can reach it and is attached once there.
+// another pool (a task). It is copied, with what its image held (the copy
+// depends on nothing), then the old copy is removed. Given a VM, it goes
+// where the VM can reach it and is attached once there.
 //
 // Takes any type of body and a specified content type.
 //
@@ -3940,9 +3943,9 @@ func (c *Client) MoveDiskWithBody(ctx context.Context, id VolumeId, contentType 
 }
 
 // MoveDisk Moves a disk attached to no VM: to another host (local storage), or to
-// another pool. It is copied, with what its image held (the copy depends
-// on nothing), then the old copy is removed. Given a VM, it goes where the
-// VM can reach it and is attached once there.
+// another pool (a task). It is copied, with what its image held (the copy
+// depends on nothing), then the old copy is removed. Given a VM, it goes
+// where the VM can reach it and is attached once there.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -6159,10 +6162,11 @@ func (c *Client) VmDisks(ctx context.Context, id VmId, reqEditors ...RequestEdit
 	return c.Client.Do(req)
 }
 
-// AttachDiskWithBody Attaches a disk to a VM of its tenant: plugged in at once if it runs
+// AttachDiskWithBody Attaches a disk to a VM of its tenant (a task): plugged in if it runs
 // (where it started since disks could be), otherwise from its next start.
-// A disk on local storage attaches to VMs on its host. Not while the VM
-// has snapshots (they cover the disks it had).
+// A disk on local storage attaches to VMs on its host; move it there first
+// (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
+// cover the disks it had).
 //
 // Takes any type of body and a specified content type.
 //
@@ -6179,10 +6183,11 @@ func (c *Client) AttachDiskWithBody(ctx context.Context, id VmId, contentType st
 	return c.Client.Do(req)
 }
 
-// AttachDisk Attaches a disk to a VM of its tenant: plugged in at once if it runs
+// AttachDisk Attaches a disk to a VM of its tenant (a task): plugged in if it runs
 // (where it started since disks could be), otherwise from its next start.
-// A disk on local storage attaches to VMs on its host. Not while the VM
-// has snapshots (they cover the disks it had).
+// A disk on local storage attaches to VMs on its host; move it there first
+// (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
+// cover the disks it had).
 //
 // Takes a body of the `application/json` content type.
 //
@@ -6199,8 +6204,9 @@ func (c *Client) AttachDisk(ctx context.Context, id VmId, body AttachDiskJSONReq
 	return c.Client.Do(req)
 }
 
-// DetachDisk Detaches a disk (not the boot disk) from a VM, unplugging it if the VM
-// runs: unmount it in the guest first. The disk is kept, to attach again.
+// DetachDisk Detaches a disk (not the boot disk) from a VM (a task), unplugging it if
+// the VM runs: unmount it in the guest first. The disk is kept, to attach
+// again.
 //
 // Corresponds with DELETE /api/v1/vms/{id}/disks/{disk_id} (the `DetachDisk` operationId).
 func (c *Client) DetachDisk(ctx context.Context, id VmId, diskId VolumeId, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -12920,16 +12926,16 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/disks (the `ListDisks` operationId).
 	ListDisksWithResponse(ctx context.Context, params *ListDisksParams, reqEditors ...RequestEditorFn) (*ListDisksResponse, error)
 
-	// CreateDiskWithBodyWithResponse Makes an empty disk, attached to a VM or not. It counts against the
-	// tenant's disk quota.
+	// CreateDiskWithBodyWithResponse Makes an empty disk, attached to a VM or not (given one, a task attaches
+	// it). It counts against the tenant's disk quota.
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/disks (the `CreateDisk` operationId).
 	CreateDiskWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateDiskResponse, error)
 
-	// CreateDiskWithResponse Makes an empty disk, attached to a VM or not. It counts against the
-	// tenant's disk quota.
+	// CreateDiskWithResponse Makes an empty disk, attached to a VM or not (given one, a task attaches
+	// it). It counts against the tenant's disk quota.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -12963,9 +12969,9 @@ type ClientWithResponsesInterface interface {
 	UpdateDiskWithResponse(ctx context.Context, id VolumeId, body UpdateDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateDiskResponse, error)
 
 	// MoveDiskWithBodyWithResponse Moves a disk attached to no VM: to another host (local storage), or to
-	// another pool. It is copied, with what its image held (the copy depends
-	// on nothing), then the old copy is removed. Given a VM, it goes where the
-	// VM can reach it and is attached once there.
+	// another pool (a task). It is copied, with what its image held (the copy
+	// depends on nothing), then the old copy is removed. Given a VM, it goes
+	// where the VM can reach it and is attached once there.
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -12973,9 +12979,9 @@ type ClientWithResponsesInterface interface {
 	MoveDiskWithBodyWithResponse(ctx context.Context, id VolumeId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*MoveDiskResponse, error)
 
 	// MoveDiskWithResponse Moves a disk attached to no VM: to another host (local storage), or to
-	// another pool. It is copied, with what its image held (the copy depends
-	// on nothing), then the old copy is removed. Given a VM, it goes where the
-	// VM can reach it and is attached once there.
+	// another pool (a task). It is copied, with what its image held (the copy
+	// depends on nothing), then the old copy is removed. Given a VM, it goes
+	// where the VM can reach it and is attached once there.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -13914,28 +13920,31 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/vms/{id}/disks (the `VmDisks` operationId).
 	VmDisksWithResponse(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*VmDisksResponse, error)
 
-	// AttachDiskWithBodyWithResponse Attaches a disk to a VM of its tenant: plugged in at once if it runs
+	// AttachDiskWithBodyWithResponse Attaches a disk to a VM of its tenant (a task): plugged in if it runs
 	// (where it started since disks could be), otherwise from its next start.
-	// A disk on local storage attaches to VMs on its host. Not while the VM
-	// has snapshots (they cover the disks it had).
+	// A disk on local storage attaches to VMs on its host; move it there first
+	// (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
+	// cover the disks it had).
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/vms/{id}/disks (the `AttachDisk` operationId).
 	AttachDiskWithBodyWithResponse(ctx context.Context, id VmId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AttachDiskResponse, error)
 
-	// AttachDiskWithResponse Attaches a disk to a VM of its tenant: plugged in at once if it runs
+	// AttachDiskWithResponse Attaches a disk to a VM of its tenant (a task): plugged in if it runs
 	// (where it started since disks could be), otherwise from its next start.
-	// A disk on local storage attaches to VMs on its host. Not while the VM
-	// has snapshots (they cover the disks it had).
+	// A disk on local storage attaches to VMs on its host; move it there first
+	// (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
+	// cover the disks it had).
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/vms/{id}/disks (the `AttachDisk` operationId).
 	AttachDiskWithResponse(ctx context.Context, id VmId, body AttachDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*AttachDiskResponse, error)
 
-	// DetachDiskWithResponse Detaches a disk (not the boot disk) from a VM, unplugging it if the VM
-	// runs: unmount it in the guest first. The disk is kept, to attach again.
+	// DetachDiskWithResponse Detaches a disk (not the boot disk) from a VM (a task), unplugging it if
+	// the VM runs: unmount it in the guest first. The disk is kept, to attach
+	// again.
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -14945,11 +14954,11 @@ type CreateDiskResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
 	// JSON201 the response for an HTTP 201 `application/json` response
-	JSON201 *DiskView
+	JSON201 *DiskTask
 }
 
 // GetJSON201 returns the response for an HTTP 201 `application/json` response
-func (r CreateDiskResponse) GetJSON201() *DiskView {
+func (r CreateDiskResponse) GetJSON201() *DiskTask {
 	return r.JSON201
 }
 
@@ -15102,11 +15111,11 @@ type MoveDiskResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
 	// JSON202 the response for an HTTP 202 `application/json` response
-	JSON202 *MoveAccepted
+	JSON202 *DiskTask
 }
 
 // GetJSON202 returns the response for an HTTP 202 `application/json` response
-func (r MoveDiskResponse) GetJSON202() *MoveAccepted {
+func (r MoveDiskResponse) GetJSON202() *DiskTask {
 	return r.JSON202
 }
 
@@ -19177,13 +19186,13 @@ func (r VmDisksResponse) ContentType() string {
 type AttachDiskResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
-	// JSON200 the response for an HTTP 200 `application/json` response
-	JSON200 *DiskView
+	// JSON202 the response for an HTTP 202 `application/json` response
+	JSON202 *DiskTask
 }
 
-// GetJSON200 returns the response for an HTTP 200 `application/json` response
-func (r AttachDiskResponse) GetJSON200() *DiskView {
-	return r.JSON200
+// GetJSON202 returns the response for an HTTP 202 `application/json` response
+func (r AttachDiskResponse) GetJSON202() *DiskTask {
+	return r.JSON202
 }
 
 // GetBody returns the raw response body bytes
@@ -19218,13 +19227,13 @@ func (r AttachDiskResponse) ContentType() string {
 type DetachDiskResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
-	// JSON200 the response for an HTTP 200 `application/json` response
-	JSON200 *DiskView
+	// JSON202 the response for an HTTP 202 `application/json` response
+	JSON202 *DiskTask
 }
 
-// GetJSON200 returns the response for an HTTP 200 `application/json` response
-func (r DetachDiskResponse) GetJSON200() *DiskView {
-	return r.JSON200
+// GetJSON202 returns the response for an HTTP 202 `application/json` response
+func (r DetachDiskResponse) GetJSON202() *DiskTask {
+	return r.JSON202
 }
 
 // GetBody returns the raw response body bytes
@@ -20208,8 +20217,8 @@ func (c *ClientWithResponses) ListDisksWithResponse(ctx context.Context, params 
 	return ParseListDisksResponse(rsp)
 }
 
-// CreateDiskWithBodyWithResponse Makes an empty disk, attached to a VM or not. It counts against the
-// tenant's disk quota.
+// CreateDiskWithBodyWithResponse Makes an empty disk, attached to a VM or not (given one, a task attaches
+// it). It counts against the tenant's disk quota.
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -20222,8 +20231,8 @@ func (c *ClientWithResponses) CreateDiskWithBodyWithResponse(ctx context.Context
 	return ParseCreateDiskResponse(rsp)
 }
 
-// CreateDiskWithResponse Makes an empty disk, attached to a VM or not. It counts against the
-// tenant's disk quota.
+// CreateDiskWithResponse Makes an empty disk, attached to a VM or not (given one, a task attaches
+// it). It counts against the tenant's disk quota.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -20287,9 +20296,9 @@ func (c *ClientWithResponses) UpdateDiskWithResponse(ctx context.Context, id Vol
 }
 
 // MoveDiskWithBodyWithResponse Moves a disk attached to no VM: to another host (local storage), or to
-// another pool. It is copied, with what its image held (the copy depends
-// on nothing), then the old copy is removed. Given a VM, it goes where the
-// VM can reach it and is attached once there.
+// another pool (a task). It is copied, with what its image held (the copy
+// depends on nothing), then the old copy is removed. Given a VM, it goes
+// where the VM can reach it and is attached once there.
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -20303,9 +20312,9 @@ func (c *ClientWithResponses) MoveDiskWithBodyWithResponse(ctx context.Context, 
 }
 
 // MoveDiskWithResponse Moves a disk attached to no VM: to another host (local storage), or to
-// another pool. It is copied, with what its image held (the copy depends
-// on nothing), then the old copy is removed. Given a VM, it goes where the
-// VM can reach it and is attached once there.
+// another pool (a task). It is copied, with what its image held (the copy
+// depends on nothing), then the old copy is removed. Given a VM, it goes
+// where the VM can reach it and is attached once there.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -22108,10 +22117,11 @@ func (c *ClientWithResponses) VmDisksWithResponse(ctx context.Context, id VmId, 
 	return ParseVmDisksResponse(rsp)
 }
 
-// AttachDiskWithBodyWithResponse Attaches a disk to a VM of its tenant: plugged in at once if it runs
+// AttachDiskWithBodyWithResponse Attaches a disk to a VM of its tenant (a task): plugged in if it runs
 // (where it started since disks could be), otherwise from its next start.
-// A disk on local storage attaches to VMs on its host. Not while the VM
-// has snapshots (they cover the disks it had).
+// A disk on local storage attaches to VMs on its host; move it there first
+// (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
+// cover the disks it had).
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -22124,10 +22134,11 @@ func (c *ClientWithResponses) AttachDiskWithBodyWithResponse(ctx context.Context
 	return ParseAttachDiskResponse(rsp)
 }
 
-// AttachDiskWithResponse Attaches a disk to a VM of its tenant: plugged in at once if it runs
+// AttachDiskWithResponse Attaches a disk to a VM of its tenant (a task): plugged in if it runs
 // (where it started since disks could be), otherwise from its next start.
-// A disk on local storage attaches to VMs on its host. Not while the VM
-// has snapshots (they cover the disks it had).
+// A disk on local storage attaches to VMs on its host; move it there first
+// (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
+// cover the disks it had).
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -22140,8 +22151,9 @@ func (c *ClientWithResponses) AttachDiskWithResponse(ctx context.Context, id VmI
 	return ParseAttachDiskResponse(rsp)
 }
 
-// DetachDiskWithResponse Detaches a disk (not the boot disk) from a VM, unplugging it if the VM
-// runs: unmount it in the guest first. The disk is kept, to attach again.
+// DetachDiskWithResponse Detaches a disk (not the boot disk) from a VM (a task), unplugging it if
+// the VM runs: unmount it in the guest first. The disk is kept, to attach
+// again.
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -23008,7 +23020,7 @@ func ParseCreateDiskResponse(rsp *http.Response) (*CreateDiskResponse, error) {
 
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
-		var dest DiskView
+		var dest DiskTask
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
@@ -23129,7 +23141,7 @@ func ParseMoveDiskResponse(rsp *http.Response) (*MoveDiskResponse, error) {
 
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
-		var dest MoveAccepted
+		var dest DiskTask
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
@@ -26049,20 +26061,17 @@ func ParseAttachDiskResponse(rsp *http.Response) (*AttachDiskResponse, error) {
 	}
 
 	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
-		var dest DiskView
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
+		var dest DiskTask
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
-		response.JSON200 = &dest
+		response.JSON202 = &dest
 
 	case rsp.StatusCode == 404:
 		break // No content-type
 
 	case rsp.StatusCode == 409:
-		break // No content-type
-
-	case rsp.StatusCode == 503:
 		break // No content-type
 
 	}
@@ -26084,20 +26093,17 @@ func ParseDetachDiskResponse(rsp *http.Response) (*DetachDiskResponse, error) {
 	}
 
 	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
-		var dest DiskView
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
+		var dest DiskTask
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
-		response.JSON200 = &dest
+		response.JSON202 = &dest
 
 	case rsp.StatusCode == 404:
 		break // No content-type
 
 	case rsp.StatusCode == 409:
-		break // No content-type
-
-	case rsp.StatusCode == 503:
 		break // No content-type
 
 	}

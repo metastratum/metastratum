@@ -4,6 +4,7 @@ import { api, errorText, ok, type Disk, type Vm } from '../api/client'
 import { DISK_STATES, diskWhere } from '../disks'
 import { useLiveRefresh } from '../stores/live'
 import { useScope } from '../stores/scope'
+import { useTasks } from '../stores/tasks'
 import AddDiskDialog from './AddDiskDialog.vue'
 import EditDiskDialog from './EditDiskDialog.vue'
 import IdChip from './IdChip.vue'
@@ -12,6 +13,7 @@ import StatusLed from './StatusLed.vue'
 
 const props = defineProps<{ vm: Vm }>()
 const scope = useScope()
+const tasks = useTasks()
 
 const disks = ref<Disk[] | null>(null)
 const error = ref('')
@@ -34,6 +36,7 @@ async function detach(d: Disk) {
   busy.value = true
   try {
     await ok(api.DELETE('/api/v1/vms/{id}/disks/{disk_id}', { params: { path: { id: props.vm.id, disk_id: d.id } } }))
+    tasks.poke()
     detaching.value = null
     await load()
   } catch (e) {
@@ -59,8 +62,8 @@ async function detach(d: Disk) {
           <span v-if="d.guest_path" class="path mono" :title="`In the guest: ${d.guest_path}`">{{ d.guest_path }}</span>
         </span>
         <span v-if="canWrite" class="actions">
-          <button class="btn small" :disabled="busy || !settled" @click="editing = d">Grow…</button>
-          <button v-if="!d.boot" class="btn small" :disabled="busy || !settled" @click="detaching = d">
+          <button class="btn small" :disabled="busy || !settled || d.state !== 'ready'" @click="editing = d">Grow…</button>
+          <button v-if="!d.boot" class="btn small" :disabled="busy || !settled || d.state !== 'ready'" @click="detaching = d">
             Detach…
           </button>
         </span>

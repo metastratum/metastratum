@@ -996,6 +996,21 @@ impl Libvirt {
         Ok(crate::xml::disk_targets(&xml))
     }
 
+    /// The running domain's disks (target and where its data is), and
+    /// whether it has the virtio-SCSI controller data disks plug into.
+    pub async fn live_disks(&self, uuid: &str) -> Result<(Vec<(String, String)>, bool)> {
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        let xml = c
+            .domain_get_xml_desc(&DomainGetXmlDescArgs { dom, flags: 0 })
+            .await?
+            .xml;
+        Ok((
+            crate::xml::disk_paths(&xml),
+            crate::xml::has_scsi_controller(&xml),
+        ))
+    }
+
     /// A running domain's disks, each target with its source's index (see
     /// [`crate::xml::disk_sources`]).
     pub async fn disk_sources(&self, uuid: &str) -> Result<Vec<(String, u32)>> {

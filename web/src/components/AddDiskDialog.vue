@@ -44,8 +44,9 @@ async function submit() {
         }),
       )
     } else if (chosen.value) {
-      if ((await attachDisk(chosen.value, props.vm)) === 'moving') tasks.poke()
+      await attachDisk(chosen.value, props.vm)
     }
+    tasks.poke()
     emit('done')
   } catch (e) {
     error.value = errorText(e)

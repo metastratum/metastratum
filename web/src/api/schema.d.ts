@@ -316,8 +316,8 @@ export interface paths {
         get: operations["list_disks"];
         put?: never;
         /**
-         * Makes an empty disk, attached to a VM or not. It counts against the
-         *     tenant's disk quota.
+         * Makes an empty disk, attached to a VM or not (given one, a task attaches
+         *     it). It counts against the tenant's disk quota.
          */
         post: operations["create_disk"];
         delete?: never;
@@ -355,9 +355,9 @@ export interface paths {
         put?: never;
         /**
          * Moves a disk attached to no VM: to another host (local storage), or to
-         *     another pool. It is copied, with what its image held (the copy depends
-         *     on nothing), then the old copy is removed. Given a VM, it goes where the
-         *     VM can reach it and is attached once there.
+         *     another pool (a task). It is copied, with what its image held (the copy
+         *     depends on nothing), then the old copy is removed. Given a VM, it goes
+         *     where the VM can reach it and is attached once there.
          */
         post: operations["move_disk"];
         delete?: never;
@@ -1607,10 +1607,11 @@ export interface paths {
         get: operations["vm_disks"];
         put?: never;
         /**
-         * Attaches a disk to a VM of its tenant: plugged in at once if it runs
+         * Attaches a disk to a VM of its tenant (a task): plugged in if it runs
          *     (where it started since disks could be), otherwise from its next start.
-         *     A disk on local storage attaches to VMs on its host. Not while the VM
-         *     has snapshots (they cover the disks it had).
+         *     A disk on local storage attaches to VMs on its host; move it there first
+         *     (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
+         *     cover the disks it had).
          */
         post: operations["attach_disk"];
         delete?: never;
@@ -1630,8 +1631,9 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * Detaches a disk (not the boot disk) from a VM, unplugging it if the VM
-         *     runs: unmount it in the guest first. The disk is kept, to attach again.
+         * Detaches a disk (not the boot disk) from a VM (a task), unplugging it if
+         *     the VM runs: unmount it in the guest first. The disk is kept, to attach
+         *     again.
          */
         delete: operations["detach_disk"];
         options?: never;
@@ -2345,6 +2347,9 @@ export interface components {
             unit?: number | null;
             volume_id: components["schemas"]["VolumeId"];
         };
+        DiskTask: components["schemas"]["DiskView"] & {
+            task_id?: components["schemas"]["TaskId"] | null;
+        };
         DiskView: {
             /** @description The VM's boot disk, which stays with it. */
             boot: boolean;
@@ -2677,9 +2682,6 @@ export interface components {
             started_at: string;
             /** @description `preparing`, `running` or `committing`. */
             state: string;
-            task_id: components["schemas"]["TaskId"];
-        };
-        MoveAccepted: components["schemas"]["DiskView"] & {
             task_id: components["schemas"]["TaskId"];
         };
         MoveDisk: {
@@ -4111,7 +4113,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DiskView"];
+                    "application/json": components["schemas"]["DiskTask"];
                 };
             };
             400: {
@@ -4275,7 +4277,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MoveAccepted"];
+                    "application/json": components["schemas"]["DiskTask"];
                 };
             };
             400: {
@@ -7802,12 +7804,12 @@ export interface operations {
             };
         };
         responses: {
-            200: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DiskView"];
+                    "application/json": components["schemas"]["DiskTask"];
                 };
             };
             404: {
@@ -7818,12 +7820,6 @@ export interface operations {
             };
             /** @description The disk or the VM cannot be attached now */
             409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7843,12 +7839,12 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            200: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DiskView"];
+                    "application/json": components["schemas"]["DiskTask"];
                 };
             };
             404: {
@@ -7859,12 +7855,6 @@ export interface operations {
             };
             /** @description The VM cannot let go of the disk now */
             409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            503: {
                 headers: {
                     [name: string]: unknown;
                 };

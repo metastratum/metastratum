@@ -467,7 +467,8 @@ async fn decommission_host(
         ));
     }
     // Disks attached to no VM, on its own storage: wiping it would take them.
-    let disks = mst_db::disks::count_on_host(&state.db, id).await?;
+    let disks = mst_db::disks::count_on_host(&state.db, id).await?
+        + mst_db::disks::moving_to_host(&state.db, id).await?;
     if disks > 0 {
         return Err(ApiError::conflict(format!(
             "{disks} disks are on the host's storage: move or delete them before decommissioning it"

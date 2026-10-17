@@ -71,11 +71,14 @@ pub async fn in_subtrees(db: impl PgExecutor<'_>, roots: &[TenantId]) -> Result<
     .await?)
 }
 
-/// A VM's disks, its boot disk first, then the others as attached.
+/// A VM's disks, in its definition's order: its boot disk first, then the
+/// others as attached.
 pub async fn of_vm(db: impl PgExecutor<'_>, vm: VmId) -> Result<Vec<Disk>> {
     Ok(sqlx::query_as(concat!(
         disk_select!(),
-        " WHERE v.vm_id = $1 ORDER BY boot DESC, v.created_at"
+        " WHERE v.vm_id = $1
+          ORDER BY (SELECT e.n FROM jsonb_array_elements(m.spec->'disks') WITH ORDINALITY e(d, n)
+                    WHERE e.d->>'volume_id' = v.id::text) NULLS LAST, v.created_at"
     ))
     .bind(vm)
     .fetch_all(db)
@@ -190,4 +193,26 @@ pub async fn count_on_host(db: impl PgExecutor<'_>, host: HostId) -> Result<i64>
             .fetch_one(db)
             .await?,
     )
+}
+
+/// What one of the VM's disks is being made to do (attached, detached,
+/// grown), if any.
+pub async fn busy_on_vm(db: impl PgExecutor<'_>, vm: VmId) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT state FROM volumes WHERE vm_id = $1 AND state IN ('attaching', 'detaching', 'growing') LIMIT 1",
+    )
+    .bind(vm)
+    .fetch_optional(db)
+    .await?)
+}
+
+/// How many disks are being moved onto the host.
+pub async fn moving_to_host(db: impl PgExecutor<'_>, host: HostId) -> Result<i64> {
+    Ok(sqlx::query_scalar(
+        "SELECT count(*) FROM tasks WHERE kind = 'disk.move' AND state IN ('pending', 'running')
+           AND params->>'host' = $1::text",
+    )
+    .bind(host)
+    .fetch_one(db)
+    .await?)
 }

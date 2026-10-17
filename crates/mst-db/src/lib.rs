@@ -25,6 +25,7 @@ pub mod rbac;
 pub mod replicas;
 pub mod sessions;
 pub mod snapshots;
+pub mod stale;
 pub mod stats;
 pub mod storage_pools;
 pub mod tasks;

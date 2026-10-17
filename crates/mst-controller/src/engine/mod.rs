@@ -13,6 +13,7 @@ mod snapshot;
 mod vm;
 
 pub use backup::schedule as backup_schedule;
+pub use disk::sweep as sweep_disks;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -124,6 +125,8 @@ async fn execute(state: AppState, task: Task) {
         "snapshot.revert" => snapshot::revert(&ctx).await,
         "snapshot.delete" => snapshot::delete(&ctx).await,
         "disk.move" => disk::move_disk(&ctx).await,
+        "disk.attach" => disk::attach(&ctx).await,
+        "disk.detach" => disk::detach(&ctx).await,
         other => Err(anyhow::anyhow!("unknown task kind {other}")),
     };
     renew.abort();

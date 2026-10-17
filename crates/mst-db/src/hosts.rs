@@ -452,3 +452,18 @@ pub async fn accepts_cert(db: impl PgExecutor<'_>, id: HostId, fingerprint: &str
     .fetch_one(db)
     .await?)
 }
+
+/// The hosts whose agents handle `command` (see `mst_proto::capability`).
+pub async fn supporting(
+    db: impl PgExecutor<'_>,
+    command: &str,
+) -> Result<std::collections::HashSet<HostId>> {
+    Ok(
+        sqlx::query_scalar::<_, HostId>("SELECT id FROM hosts WHERE $1 = ANY (agent_capabilities)")
+            .bind(command)
+            .fetch_all(db)
+            .await?
+            .into_iter()
+            .collect(),
+    )
+}

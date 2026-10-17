@@ -30,7 +30,8 @@ async function submit() {
   error.value = ''
   busy.value = true
   try {
-    if ((await attachDisk(props.disk, vm.value)) === 'moving') tasks.poke()
+    await attachDisk(props.disk, vm.value)
+    tasks.poke()
     emit('done')
   } catch (e) {
     error.value = errorText(e)

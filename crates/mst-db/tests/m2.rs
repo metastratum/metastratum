@@ -92,6 +92,7 @@ async fn allocate(
     let spec = VmSpec {
         cpu: None,
         migratable: true,
+        extra: Default::default(),
         vcpus,
         memory_mib: mem,
         max_memory_mib: None,

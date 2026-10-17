@@ -340,7 +340,8 @@ test('destructive operations say what they remove, and ask first', async ({ page
   // Delete (in the menu) says what it removes and needs the name typed.
   const addPool = async (name: string) => {
     const r = await page.request.post('/api/v1/storage-pools', {
-      data: { name, kind: 'nfs', cluster_ids: [], config: { server: '10.77.0.10', export: `/srv/nfs/e2e-unused-${run}` } },
+      // An export of its own: two pools on one storage are refused.
+      data: { name, kind: 'nfs', cluster_ids: [], config: { server: '10.77.0.10', export: `/srv/nfs/${name}` } },
     })
     expect(r.ok()).toBeTruthy()
   }

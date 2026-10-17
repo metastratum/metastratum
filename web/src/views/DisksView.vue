@@ -11,8 +11,10 @@ import StatusLed from '../components/StatusLed.vue'
 import { DISK_STATES, diskLabel, diskWhere } from '../disks'
 import { useLiveRefresh } from '../stores/live'
 import { useScope } from '../stores/scope'
+import { useTasks } from '../stores/tasks'
 
 const scope = useScope()
+const tasks = useTasks()
 const disks = ref<Disk[] | null>(null)
 const error = ref('')
 const busy = ref(false)
@@ -44,6 +46,7 @@ async function act(fn: () => Promise<unknown>) {
   busy.value = true
   try {
     await fn()
+    tasks.poke()
     detaching.value = null
     deleting.value = null
     await load()
@@ -115,6 +118,7 @@ const done = () => {
             </td>
             <td class="end">
               <template v-if="canWrite(d) && (d.state === 'ready' || d.state === 'failed')">
+                <!-- Busy disks (attaching, moving...) wait. -->
                 <button v-if="!d.vm_id && d.state === 'ready'" class="btn small" @click="attaching = d">Attach…</button>
                 <button v-if="d.vm_id && !d.boot" class="btn small" @click="detaching = d">Detach…</button>
                 <button v-if="!d.vm_id && d.state === 'ready'" class="btn small" @click="moving = d">Move…</button>

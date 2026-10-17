@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -110,8 +111,21 @@ func (r *diskResource) Create(ctx context.Context, req resource.CreateRequest, r
 		apiError(&resp.Diagnostics, "create the disk", err)
 		return
 	}
-	plan.set(res.JSON201)
+	d, err := r.get(ctx, res.JSON201.Id)
+	if err != nil {
+		apiError(&resp.Diagnostics, "read the disk", err)
+		return
+	}
+	plan.set(d)
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+}
+
+// waitTask waits for a task the API started, if it started one.
+func waitTask(ctx context.Context, api *client.API, task *client.TaskId) error {
+	if task == nil {
+		return nil
+	}
+	return api.Wait(ctx, *task)
 }
 
 func (r *diskResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -157,7 +171,7 @@ func (r *diskResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			err = client.Check(res.StatusCode(), res.Body, http.StatusAccepted)
 		}
 		if err == nil {
-			err = r.data.api.Wait(ctx, res.JSON202.TaskId)
+			err = waitTask(ctx, r.data.api, res.JSON202.TaskId)
 		}
 		if err != nil {
 			apiError(&resp.Diagnostics, "move the disk", err)
@@ -288,14 +302,22 @@ func (r *diskAttachmentResource) Create(ctx context.Context, req resource.Create
 			err = client.Check(res.StatusCode(), res.Body, http.StatusAccepted)
 		}
 		if err == nil {
-			err = r.data.api.Wait(ctx, res.JSON202.TaskId)
+			err = waitTask(ctx, r.data.api, res.JSON202.TaskId)
 		}
 	} else if err == nil {
 		res, e := r.data.api.AttachDiskWithResponse(ctx, vm, client.AttachDisk{DiskId: diskID})
 		err = e
 		if err == nil {
-			err = client.Check(res.StatusCode(), res.Body, http.StatusOK)
+			err = client.Check(res.StatusCode(), res.Body, http.StatusAccepted)
 		}
+		if err == nil {
+			err = waitTask(ctx, r.data.api, res.JSON202.TaskId)
+		}
+	}
+	// A move attaches it with a task of its own: attached once the disk
+	// says so.
+	if err == nil {
+		err = r.attached(ctx, diskID, vm)
 	}
 	if err == nil {
 		d, err = r.disk(ctx, diskID)
@@ -347,7 +369,10 @@ func (r *diskAttachmentResource) Delete(ctx context.Context, req resource.Delete
 	}
 	res, err := r.data.api.DetachDiskWithResponse(ctx, vm, diskID)
 	if err == nil {
-		err = client.Check(res.StatusCode(), res.Body, http.StatusOK, http.StatusNotFound)
+		err = client.Check(res.StatusCode(), res.Body, http.StatusAccepted, http.StatusNotFound)
+	}
+	if err == nil && res.JSON202 != nil {
+		err = waitTask(ctx, r.data.api, res.JSON202.TaskId)
 	}
 	if err != nil {
 		apiError(&resp.Diagnostics, "detach the disk", err)
@@ -364,4 +389,29 @@ func (r *diskAttachmentResource) ImportState(ctx context.Context, req resource.I
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("vm_id"), vm)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("disk_id"), disk)...)
+}
+
+// attached waits until the disk is attached to the VM, or says why not.
+func (r *diskAttachmentResource) attached(ctx context.Context, disk uuid.UUID, vm uuid.UUID) error {
+	deadline := time.Now().Add(15 * time.Minute)
+	for {
+		d, err := r.disk(ctx, disk)
+		if err != nil {
+			return err
+		}
+		if d.State == "ready" && d.VmId != nil && *d.VmId == vm {
+			return nil
+		}
+		if d.State == "ready" && d.Error != nil {
+			return fmt.Errorf("%s", *d.Error)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the disk is %s, not attached", d.State)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
 }

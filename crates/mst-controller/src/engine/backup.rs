@@ -56,6 +56,13 @@ async fn take(ctx: &TaskCtx, backup: &mst_db::backups::Backup) -> Result<Taken> 
     let vm = mst_db::vms::get(db, vm_id).await?;
     let host = vm.host_id.context("the VM is not placed on a host")?;
     let repo = mst_db::backups::get_repository(db, backup.repository_id).await?;
+    // The disks recorded with the backup, in that order: a restore puts
+    // them back so.
+    let recorded: Vec<_> = backup.spec.0.disks.iter().map(|d| d.volume_id).collect();
+    let now: Vec<_> = vm.spec.0.disks.iter().map(|d| d.volume_id).collect();
+    if recorded != now {
+        anyhow::bail!("the VM's disks changed since the backup was asked for: take it again");
+    }
     let mut disks = vec![];
     let slots = vm.spec.0.disk_slots();
     for (i, (d, slot)) in vm.spec.0.disks.iter().zip(slots).enumerate() {

@@ -61,6 +61,8 @@ const LABELS: Record<string, string> = {
   'snapshot.revert': 'Revert to snapshot',
   'snapshot.delete': 'Delete snapshot',
   'disk.move': 'Move disk',
+  'disk.attach': 'Attach disk',
+  'disk.detach': 'Detach disk',
 }
 
 export function taskLabel(t: Task): string {

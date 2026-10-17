@@ -430,11 +430,20 @@ it there); a stopped one from its next start. Detaching one from a
 running VM unplugs it: unmount it in the guest first. Disks grow like a
 VM's (Change), attached or not, and count against the tenant's disk quota.
 
+Attaching and detaching run as tasks: the VM's definition changes first,
+then its host plugs the disk in or out. Should that fail, or its answer be
+lost, the task asks the VM what it has and settles on that, so the disk is
+never attached in the records but not in the VM, or the other way round.
+Meanwhile the VM is not started, stopped, migrated, snapshotted or backed
+up.
+
 VMs plug disks in while they run from their first start with agents of
 this version on: data disks sit on a virtio-SCSI controller, at places of
-their own. VMs started before plug disks in from their next start (attach
-to them while stopped meanwhile). Not while a VM has snapshots: they cover
-the disks it had.
+their own. VMs started before plug disks in from their next start from
+stopped (attach to them while stopped meanwhile). Such VMs migrate, and
+restart elsewhere when their host fails, only to hosts whose agents know
+of it: upgrade every agent. Not while a VM has snapshots: they cover the
+disks it had.
 
 Deleting a VM deletes the disks made with it (its boot disk, and the copies
 a clone or restore made); disks of their own attached to it are kept,
@@ -446,10 +455,18 @@ with its VM when that migrates. Attached to nothing, it moves on its own
 a VM on another host moves it there first. The host that has it serves it
 read-only with `qemu-nbd` over TLS, with credentials made for that copy
 alone, on a port of the migration range (49152-49215), and the other host
-copies it in; a host that reaches both copies it alone (between pools).
-The copy carries what its image held: it depends on nothing there. Once
-copied, the old copy is removed. Disks on Ceph move through a host that
-reaches both their pool and where they go.
+copies it in; a host that reaches both copies it alone (between pools),
+straight into and out of Ceph. A copy goes to a name of its own and then
+replaces what is there, so a copy left by a move that failed is never
+taken for the disk. The copy carries what its image held: it depends on
+nothing there. Once copied, the disk is recorded where it went and its
+old copy is removed, or, should its host not answer, removed later (a
+copy is never removed where its disk is). A move the controller was
+interrupted in goes on from where the disk is. Disks on Ceph move through
+a host that reaches both their pool and where they go. Two pools on the
+same storage (the same NFS export, the same Ceph pool) are refused: a
+disk moved between them would be its own copy. A host with disks on its
+storage, or disks moving there, is not decommissioned.
 
 ## Templates and clones
 
@@ -599,6 +616,14 @@ commands an agent handles. Upgrade **controllers first, then agents**:
 2. Upgrade the agents, a host at a time or all at once. Restarting an agent
    does not touch its VMs. Hosts can be drained to upgraded hosts
    throughout.
+
+Controllers keep the fields of VM definitions that newer controllers
+added when they write a definition back, from 0.3 on: replicas of two
+versions side by side do not undo each other's changes. Replicas of 0.2
+and older drop them, so when upgrading from 0.2, upgrade every controller
+before starting VMs or using disks: a 0.2 replica that rewrites a VM's
+definition (resizing it, say) after a newer one gave it disks to plug in
+would describe them as they were.
 
 The release notes say when a release drops support for an agent revision.
 

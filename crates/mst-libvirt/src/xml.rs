@@ -168,8 +168,94 @@ pub fn disk_sources(xml: &str) -> Vec<(String, u32)> {
     }
 }
 
+/// A domain's disks: each target with where its data is (a file's path,
+/// or a network disk's name, such as an RBD `pool/image`).
+pub fn disk_paths(xml: &str) -> Vec<(String, String)> {
+    use quick_xml::events::Event;
+    let attr = |e: &quick_xml::events::BytesStart<'_>, name: &str| {
+        e.attributes()
+            .flatten()
+            .find(|a| a.key.as_ref() == name)
+            .and_then(|a| a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok())
+            .map(|v| v.into_owned())
+    };
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut out = Vec::new();
+    let mut disk: Option<(Option<String>, Option<String>)> = None;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) if e.local_name().as_ref() == "disk" => disk = Some((None, None)),
+            Ok(Event::End(e)) if e.local_name().as_ref() == "disk" => {
+                if let Some((Some(target), source)) = disk.take() {
+                    out.push((target, source.unwrap_or_default()));
+                }
+            }
+            Ok(Event::Start(e) | Event::Empty(e)) if disk.is_some() => {
+                let Some((target, source)) = disk.as_mut() else {
+                    continue;
+                };
+                match e.local_name().as_ref() {
+                    "target" if target.is_none() => *target = attr(&e, "dev"),
+                    // The disk's own source; backing stores nest theirs.
+                    "source" if source.is_none() => {
+                        *source = attr(&e, "file").or_else(|| attr(&e, "name"));
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return out,
+            _ => {}
+        }
+    }
+}
+
+/// Whether the domain has the virtio-SCSI controller data disks plug into.
+pub fn has_scsi_controller(xml: &str) -> bool {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(xml);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e) | Event::Empty(e)) if e.local_name().as_ref() == "controller" => {
+                let has = |k: &str, v: &str| {
+                    e.attributes()
+                        .flatten()
+                        .any(|a| a.key.as_ref() == k && a.value.as_ref() == v)
+                };
+                if has("type", "scsi") && has("model", "virtio-scsi") {
+                    return true;
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return false,
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn disk_paths_and_the_scsi_controller() {
+        let xml = r#"<domain><devices>
+            <controller type='scsi' index='0' model='virtio-scsi'/>
+            <disk type='file' device='disk'><source file='/p/volumes/a.qcow2' index='2'>
+              <backingStore type='file'><source file='/p/images/i.qcow2'/></backingStore></source>
+              <target dev='vda' bus='virtio'/></disk>
+            <disk type='network' device='disk'><source protocol='rbd' name='pool/vol-b'/>
+              <target dev='sdb' bus='scsi'/></disk>
+        </devices></domain>"#;
+        assert_eq!(
+            super::disk_paths(xml),
+            [
+                ("vda".to_owned(), "/p/volumes/a.qcow2".to_owned()),
+                ("sdb".to_owned(), "pool/vol-b".to_owned())
+            ]
+        );
+        assert!(super::has_scsi_controller(xml));
+        assert!(!super::has_scsi_controller(
+            "<domain><devices><controller type='usb'/></devices></domain>"
+        ));
+    }
+
     #[test]
     fn disk_sources_index_the_top_source() {
         let xml = r#"<domain><devices>

@@ -63,9 +63,17 @@ pub async fn recover(ctx: &TaskCtx) -> Result<()> {
             .iter()
             .find(|c| c.id == host)
             .and_then(|c| c.cluster_id);
+        // A VM whose disks plug in while it runs is defined so only by
+        // agents that know of it.
+        let pluggable = if vm.spec.0.disk_hotplug == Some(true) {
+            Some(mst_db::hosts::supporting(&mut *tx, "attach_disk").await?)
+        } else {
+            None
+        };
         let hosts: Vec<mst_scheduler::Host> = candidates
             .iter()
             .filter(|c| c.id != host)
+            .filter(|c| pluggable.as_ref().is_none_or(|p| p.contains(&c.id)))
             .map(|c| mst_scheduler::Host {
                 id: c.id,
                 name: c.name.clone(),

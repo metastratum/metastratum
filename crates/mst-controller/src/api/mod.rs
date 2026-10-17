@@ -26,10 +26,10 @@ mod vpcs;
 
 pub use auth::hash_password;
 pub use backups::{queue_delete as queue_backup_delete, repository_pool, start as start_backup};
-pub use disks::attach as attach_disk;
+pub use disks::begin_attach;
 pub use snapshots::check_idle as check_disks_idle;
 pub use storage_pools::agent_pool;
-pub use vms::define_on_host;
+pub use vms::{define_on_host, definition as vm_definition};
 
 use axum::Router;
 use axum::extract::FromRequestParts;

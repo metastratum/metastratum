@@ -55,6 +55,7 @@ async fn vm(pool: &PgPool, tenant: &tenants::Tenant, host: &hosts::Host, name: &
     let spec = VmSpec {
         cpu: None,
         migratable: true,
+        extra: Default::default(),
         vcpus: 1,
         memory_mib: 512,
         max_memory_mib: None,
@@ -496,6 +497,7 @@ async fn scheduling_snapshot_reports_allocations_and_liveness(pool: PgPool) {
     let spec = VmSpec {
         cpu: None,
         migratable: true,
+        extra: Default::default(),
         vcpus: 3,
         memory_mib: 1024,
         max_memory_mib: None,
@@ -918,6 +920,7 @@ async fn a_source_is_being_cloned_while_its_clone_is_created(pool: PgPool) {
         restored_from: None,
         cloned_from,
         unit: None,
+        extra: Default::default(),
     };
     let src = vm(&pool, &t, &h, "tpl").await;
     let src_volume = VolumeId::new();

@@ -551,6 +551,8 @@ message TunnelChunk {
 message AttachDisk {
   DefineVm vm = 1;
   string target = 2;
+  // The disk's volume, to tell it from another disk at `target`.
+  string volume_id = 3;
 }
 
 // Unplug the disk at `target` from the running VM, waiting until the guest
@@ -559,6 +561,8 @@ message AttachDisk {
 message DetachDisk {
   DefineVm vm = 1;
   string target = 2;
+  // The disk's volume, to tell it from another disk at `target`.
+  string volume_id = 3;
 }
 
 // Serve a volume, read-only, to one other host over NBD with TLS, for it to

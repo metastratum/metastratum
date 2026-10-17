@@ -2,11 +2,13 @@
 import { computed, onMounted, ref } from 'vue'
 import { api, errorText, ok, type Host, type Schemas, type Vm } from '../api/client'
 import { useScope } from '../stores/scope'
+import { useTasks } from '../stores/tasks'
 import ModalDialog from './ModalDialog.vue'
 
 const props = defineProps<{ tenantId: string }>()
 const emit = defineEmits<{ close: []; done: [] }>()
 const scope = useScope()
+const tasks = useTasks()
 
 const name = ref('')
 const sizeGib = ref(10)
@@ -51,6 +53,7 @@ async function submit() {
         },
       }),
     )
+    tasks.poke()
     emit('done')
   } catch (e) {
     error.value = errorText(e)

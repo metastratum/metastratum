@@ -3,7 +3,7 @@
 //! hold, grown, moved along when the VM migrates, kept when the VM goes,
 //! and attached to another VM; on local storage and on NFS.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mst_e2e::{Api, Console};
 use reqwest::Method;
@@ -43,7 +43,7 @@ async fn vm(api: &Api, name: &str) -> anyhow::Result<String> {
     let vm = api
         .post(
             "/vms",
-            json!({"name": name, "vcpus": 1, "memory_mib": 768, "disk_gib": 4, "image_id": image,
+            json!({"name": name, "vcpus": 1, "memory_mib": 512, "disk_gib": 4, "image_id": image,
                    "password": PASSWORD, "migratable": true}),
         )
         .await?;
@@ -65,10 +65,70 @@ async fn present(api: &Api, vm: &str, path: &str) -> anyhow::Result<bool> {
     Ok(value(api, vm, &format!("test -b {path} && echo yes || echo no")).await? == "yes")
 }
 
+/// Waits for the task an answer names, if it names one.
+async fn settle(api: &Api, answer: &Value) -> anyhow::Result<()> {
+    if let Some(t) = answer["task_id"].as_str() {
+        api.wait_task(t, BOOT).await?;
+    }
+    Ok(())
+}
+
+/// Waits until the disk is attached to the VM (a move attaches it with a
+/// task of its own once there).
+async fn attached(api: &Api, id: &str, vm: &str) -> anyhow::Result<Value> {
+    let deadline = Instant::now() + BOOT;
+    loop {
+        let d = disk(api, id).await?;
+        if d["state"] == "ready" && d["vm_id"] == vm {
+            return Ok(d);
+        }
+        anyhow::ensure!(
+            d["state"] != "ready" || d["error"].is_null(),
+            "not attached: {d}"
+        );
+        anyhow::ensure!(Instant::now() < deadline, "not attached in time: {d}");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+async fn attach(api: &Api, vm: &str, id: &str) -> anyhow::Result<Value> {
+    let (st, d) = api
+        .try_send(
+            Method::POST,
+            &format!("/vms/{vm}/disks"),
+            Some(json!({"disk_id": id})),
+        )
+        .await?;
+    anyhow::ensure!(st == 202, "attaching: {st} {d}");
+    settle(api, &d).await?;
+    attached(api, id, vm).await
+}
+
+async fn detach(api: &Api, vm: &str, id: &str) -> anyhow::Result<Value> {
+    let (st, d) = api
+        .try_send(Method::DELETE, &format!("/vms/{vm}/disks/{id}"), None)
+        .await?;
+    anyhow::ensure!(st == 202, "detaching: {st} {d}");
+    settle(api, &d).await?;
+    disk(api, id).await
+}
+
+/// Moves the disk (a task) and returns it where it went.
+async fn relocate(api: &Api, id: &str, to: Value) -> anyhow::Result<Value> {
+    let (st, m) = api
+        .try_send(Method::POST, &format!("/disks/{id}/move"), Some(to))
+        .await?;
+    anyhow::ensure!(st == 202, "moving: {st} {m}");
+    settle(api, &m).await?;
+    let d = disk(api, id).await?;
+    anyhow::ensure!(d["state"] == "ready" && d["error"].is_null(), "moved: {d}");
+    Ok(d)
+}
+
 async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
     let a = vm(api, &format!("{run}-a")).await?;
 
-    // Made and plugged into the running VM at once.
+    // Made and plugged into the running VM.
     let (st, d) = api
         .try_send(
             Method::POST,
@@ -78,15 +138,13 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
         .await?;
     assert_eq!(st, 201, "{d}");
     let data = d["id"].as_str().unwrap().to_owned();
+    settle(api, &d).await?;
+    let d = attached(api, &data, &a).await?;
     let path = d["guest_path"]
         .as_str()
         .expect("where the guest finds it")
         .to_owned();
-    assert_eq!(
-        (d["vm_id"].as_str(), d["boot"].as_bool()),
-        (Some(a.as_str()), Some(false)),
-        "{d}"
-    );
+    assert_eq!(d["boot"], false, "{d}");
     assert!(present(api, &a, &path).await?, "the guest sees {path}");
     sh(
         api,
@@ -97,6 +155,11 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
         ),
     )
     .await?;
+    let marker = |p: &str| {
+        format!(
+            "sudo mkdir -p /mnt/d && sudo mount {p} /mnt/d && cat /mnt/d/marker && sudo umount /mnt/d"
+        )
+    };
 
     // Not deleted while attached; the boot disk stays with its VM.
     let (st, b) = api
@@ -112,28 +175,11 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
     assert_eq!(st, 409, "{b}");
 
     // Unplugged while it runs, and plugged in again with what it holds.
-    let (st, d) = api
-        .try_send(Method::DELETE, &format!("/vms/{a}/disks/{data}"), None)
-        .await?;
-    assert_eq!((st, d["vm_id"].is_null()), (200, true), "{d}");
+    let d = detach(api, &a, &data).await?;
+    assert!(d["vm_id"].is_null() && d["error"].is_null(), "{d}");
     assert!(!present(api, &a, &path).await?, "gone from the guest");
-    let (st, d) = api
-        .try_send(
-            Method::POST,
-            &format!("/vms/{a}/disks"),
-            Some(json!({"disk_id": data})),
-        )
-        .await?;
-    assert_eq!(st, 200, "{d}");
-    assert_eq!(
-        value(
-            api,
-            &a,
-            &format!("sudo mount {path} /mnt/d && cat /mnt/d/marker && sudo umount /mnt/d")
-        )
-        .await?,
-        "kept"
-    );
+    attach(api, &a, &data).await?;
+    assert_eq!(value(api, &a, &marker(&path)).await?, "kept");
 
     // Grown under the running guest.
     let (st, d) = api
@@ -173,25 +219,40 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
     let after = disk(api, &data).await?;
     assert_ne!(after["host_id"], before["host_id"], "{after}");
     assert_eq!(after["host_id"], v["host_id"], "with its VM: {after}");
-    assert_eq!(
-        value(
-            api,
-            &a,
-            &format!("sudo mount {path} /mnt/d && cat /mnt/d/marker && sudo umount /mnt/d")
-        )
-        .await?,
-        "kept"
-    );
+    assert_eq!(value(api, &a, &marker(&path)).await?, "kept");
 
     // On NFS (when the storage tests made a pool): attached to a stopped
     // VM, it is there from its next start.
     let pools = api.get("/storage-pools").await?;
-    let nfs = pools
+    let shared_pool = |kind: &str| {
+        pools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["kind"] == kind && !p["cluster_ids"].as_array().unwrap().is_empty())
+            .map(|p| p["id"].clone())
+    };
+    let (nfs, rbd) = (shared_pool("nfs"), shared_pool("rbd"));
+    // One storage under two names would make a moved disk its own copy:
+    // refused.
+    if let Some(p) = pools
         .as_array()
         .unwrap()
         .iter()
-        .find(|p| p["kind"] == "nfs" && !p["cluster_ids"].as_array().unwrap().is_empty())
-        .map(|p| p["id"].clone());
+        .find(|p| p["kind"] == "nfs")
+    {
+        let (st, b) = api
+            .try_send(
+                Method::POST,
+                "/storage-pools",
+                Some(json!({"name": format!("{run}-alias"), "kind": "nfs",
+                            "config": {"server": p["config"]["server"],
+                                       "export": format!("{}/", p["config"]["export"].as_str().unwrap())},
+                            "cluster_ids": []})),
+            )
+            .await?;
+        assert_eq!(st, 409, "a second pool on {}: {b}", p["name"]);
+    }
     let shared = match &nfs {
         Some(nfs) => {
             let (st, d) = api
@@ -210,14 +271,7 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
                 v["status"] == "ready" && v["power"] == "stopped"
             })
             .await?;
-            let (st, d) = api
-                .try_send(
-                    Method::POST,
-                    &format!("/vms/{a}/disks"),
-                    Some(json!({"disk_id": shared})),
-                )
-                .await?;
-            assert_eq!(st, 200, "{d}");
+            let d = attach(api, &a, &shared).await?;
             let p = d["guest_path"].as_str().unwrap().to_owned();
             let t = api.post(&format!("/vms/{a}/start"), json!({})).await?;
             api.wait_task(t["task_id"].as_str().unwrap(), BOOT).await?;
@@ -261,16 +315,8 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
         .find(|h| h["id"] != here)
         .expect("another host")["id"]
         .clone();
-    let m = api
-        .post(&format!("/disks/{data}/move"), json!({"host_id": other}))
-        .await?;
-    api.wait_task(m["task_id"].as_str().unwrap(), BOOT).await?;
-    let d = disk(api, &data).await?;
-    assert_eq!(
-        (&d["host_id"], d["state"].as_str()),
-        (&other, Some("ready")),
-        "{d}"
-    );
+    let d = relocate(api, &data, json!({"host_id": other})).await?;
+    assert_eq!(d["host_id"], other, "{d}");
 
     // To another VM: moved where it is, and attached there.
     let b = vm(api, &format!("{run}-b")).await?;
@@ -283,18 +329,12 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
         .await?;
     match st {
         202 => {
-            api.wait_task(m["task_id"].as_str().unwrap(), BOOT).await?;
+            settle(api, &m).await?;
+            attached(api, &data, &b).await?;
         }
         // On its host already: attached as it is.
         400 => {
-            let (st, d) = api
-                .try_send(
-                    Method::POST,
-                    &format!("/vms/{b}/disks"),
-                    Some(json!({"disk_id": data})),
-                )
-                .await?;
-            assert_eq!(st, 200, "{d}");
+            attach(api, &b, &data).await?;
         }
         _ => panic!("moving to {b}: {st} {m}"),
     }
@@ -305,55 +345,81 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
         (Some(b.as_str()), &vb["host_id"]),
         "{d}"
     );
-    let marker = |p: &str| {
-        format!(
-            "sudo mkdir -p /mnt/d && sudo mount {p} /mnt/d && cat /mnt/d/marker && sudo umount /mnt/d"
-        )
-    };
     assert_eq!(value(api, &b, &marker(&path)).await?, "kept");
 
     if let (Some(shared), Some(nfs)) = (&shared, &nfs) {
         // Attached to a VM on any host.
-        let (st, d) = api
-            .try_send(
-                Method::POST,
-                &format!("/vms/{b}/disks"),
-                Some(json!({"disk_id": shared})),
-            )
-            .await?;
-        assert_eq!(st, 200, "{d}");
+        let d = attach(api, &b, shared).await?;
         assert_eq!(
             value(api, &b, &marker(d["guest_path"].as_str().unwrap())).await?,
             "shared"
         );
 
         // Into another pool: from the host's own storage to NFS.
-        let (st, d) = api
-            .try_send(Method::DELETE, &format!("/vms/{b}/disks/{data}"), None)
-            .await?;
-        assert_eq!(st, 200, "{d}");
-        let m = api
-            .post(
-                &format!("/disks/{data}/move"),
-                json!({"storage_pool_id": nfs}),
-            )
-            .await?;
-        api.wait_task(m["task_id"].as_str().unwrap(), BOOT).await?;
-        let d = disk(api, &data).await?;
+        detach(api, &b, &data).await?;
+        let d = relocate(api, &data, json!({"storage_pool_id": nfs})).await?;
         assert_eq!(
             (d["storage_pool_kind"].as_str(), d["host_id"].is_null()),
             (Some("nfs"), true),
             "{d}"
         );
-        let (st, d) = api
-            .try_send(
-                Method::POST,
-                &format!("/vms/{b}/disks"),
-                Some(json!({"disk_id": data})),
+        attach(api, &b, &data).await?;
+        assert_eq!(value(api, &b, &marker(&path)).await?, "kept");
+    }
+    if let Some(rbd) = &rbd {
+        // Into Ceph and back to the host: copied straight in and out.
+        detach(api, &b, &data).await?;
+        let d = relocate(api, &data, json!({"storage_pool_id": rbd})).await?;
+        assert_eq!(d["storage_pool_kind"], "rbd", "{d}");
+        attach(api, &b, &data).await?;
+        assert_eq!(value(api, &b, &marker(&path)).await?, "kept");
+        detach(api, &b, &data).await?;
+        let local = disks[0]["storage_pool_id"].clone();
+        let d = relocate(
+            api,
+            &data,
+            json!({"storage_pool_id": local, "host_id": vb["host_id"]}),
+        )
+        .await?;
+        assert_eq!(d["storage_pool_kind"], "local", "{d}");
+        attach(api, &b, &data).await?;
+        assert_eq!(value(api, &b, &marker(&path)).await?, "kept");
+    }
+
+    // Cloned, each disk is copied in its own pool (the clone's copies go
+    // with it).
+    if shared.is_some() {
+        let t = api.post(&format!("/vms/{b}/stop"), json!({})).await?;
+        api.wait_task(t["task_id"].as_str().unwrap(), BOOT).await?;
+        api.wait_vm(&b, BOOT, |v| {
+            v["status"] == "ready" && v["power"] == "stopped"
+        })
+        .await?;
+        let pools_of = |disks: &Value| {
+            disks
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| d["storage_pool_id"].clone())
+                .collect::<Vec<_>>()
+        };
+        let original = pools_of(&api.get(&format!("/vms/{b}/disks")).await?);
+        let c = api
+            .post(
+                &format!("/vms/{b}/clone"),
+                json!({"name": format!("{run}-c"), "password": PASSWORD, "start": false}),
             )
             .await?;
-        assert_eq!(st, 200, "{d}");
-        assert_eq!(value(api, &b, &marker(&path)).await?, "kept");
+        let cid = c["id"].as_str().unwrap().to_owned();
+        api.wait_task(c["task_id"].as_str().unwrap(), BOOT).await?;
+        assert_eq!(
+            pools_of(&api.get(&format!("/vms/{cid}/disks")).await?),
+            original
+        );
+        let (_, t) = api
+            .try_send(Method::DELETE, &format!("/vms/{cid}"), None)
+            .await?;
+        api.wait_task(t["task_id"].as_str().unwrap(), BOOT).await?;
     }
 
     // Deleted with the VM when asked.
