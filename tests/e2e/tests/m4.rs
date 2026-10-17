@@ -69,49 +69,33 @@ async fn live_migration_keeps_vms_running_and_reachable() -> anyhow::Result<()> 
     let Some(api) = mst_e2e::connect().await? else {
         return Ok(());
     };
-    let run = format!(
-        "e2e-{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
-    // In a task, so a failed assertion still reaches the cleanup below.
-    let result = tokio::spawn({
-        let (api, run) = (api.clone(), run.clone());
-        async move { scenario(&api, &run).await }
-    })
-    .await;
-    if let Ok(vms) = api.get("/vms").await {
-        for vm in vms.as_array().into_iter().flatten() {
-            if vm["name"].as_str().is_some_and(|n| n.starts_with(&run)) {
-                let id = vm["id"].as_str().unwrap();
-                let _ = api
-                    .try_send(Method::POST, &format!("/vms/{id}/migrate/cancel"), None)
-                    .await;
-                for _ in 0..60 {
-                    if api
-                        .get(&format!("/vms/{id}"))
-                        .await
-                        .is_ok_and(|v| v["status"] != "migrating")
-                    {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-                if let Ok((_, t)) = api
-                    .try_send(Method::DELETE, &format!("/vms/{id}"), None)
+    let run = mst_e2e::run_name("m4");
+    let outcome = mst_e2e::attempt(scenario(&api, &run)).await;
+    // Migrations still going are cancelled before the VMs are deleted.
+    let cleanup = async {
+        for vm in api.get("/vms").await?.as_array().into_iter().flatten() {
+            if !vm["name"].as_str().is_some_and(|n| n.starts_with(&run)) {
+                continue;
+            }
+            let id = vm["id"].as_str().unwrap();
+            let _ = api
+                .try_send(Method::POST, &format!("/vms/{id}/migrate/cancel"), None)
+                .await;
+            for _ in 0..60 {
+                if api
+                    .get(&format!("/vms/{id}"))
                     .await
-                    && let Some(t) = t["task_id"].as_str()
+                    .is_ok_and(|v| v["status"] != "migrating")
                 {
-                    let _ = api.wait_task(t, Duration::from_secs(120)).await;
+                    break;
                 }
+                tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
+        mst_e2e::clean(&api, &run).await
     }
-    match result {
-        Ok(r) => r,
-        Err(panic) => std::panic::resume_unwind(panic.into_panic()),
-    }
+    .await;
+    outcome.finish(cleanup)
 }
 
 async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {

@@ -16,12 +16,7 @@ async fn tenant_images_are_not_fetched_from_internal_addresses() -> anyhow::Resu
     let Some(admin) = mst_e2e::connect().await? else {
         return Ok(());
     };
-    let run = format!(
-        "e2e{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let run = mst_e2e::run_name("m5");
     let root = admin.get("/auth/me").await?["tenant_id"]
         .as_str()
         .unwrap()
@@ -93,12 +88,7 @@ async fn every_replica_reaches_every_host() -> anyhow::Result<()> {
         assert_eq!(h["controller"], other["controller"]);
     }
     let image = a.image().await?;
-    let name = format!(
-        "e2e-{:x}-ha",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let name = format!("{}-ha", mst_e2e::run_name("m5"));
     let vm = a
         .post(
             "/vms",
@@ -194,12 +184,7 @@ async fn failed_hosts_are_fenced_and_their_vms_restart_elsewhere() -> anyhow::Re
         .unwrap()
         .iter()
         .find(|p| p["kind"] == "nfs" && !p["cluster_ids"].as_array().unwrap().is_empty());
-    let name = format!(
-        "e2e-{:x}-ha",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let name = format!("{}-ha", mst_e2e::run_name("m5"));
     let vm = api
         .post(
             "/vms",
@@ -344,12 +329,7 @@ async fn hosts_renew_their_certificates() -> anyhow::Result<()> {
     }
     // Migration uses the hosts' TLS certificates.
     let image = api.image().await?;
-    let name = format!(
-        "e2e-{:x}-renew",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let name = format!("{}-renew", mst_e2e::run_name("m5"));
     let vm = api
         .post(
             "/vms",

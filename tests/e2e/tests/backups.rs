@@ -19,12 +19,7 @@ async fn backup_restore_and_schedule() -> anyhow::Result<()> {
     let Some(api) = mst_e2e::connect().await? else {
         return Ok(());
     };
-    let run = format!(
-        "e2e-{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let run = mst_e2e::run_name("backups");
     let nfs = std::env::var("MST_E2E_BACKUP_NFS")
         .unwrap_or_else(|_| "10.77.0.10:/srv/nfs/backups".into());
     let (server, export) = nfs

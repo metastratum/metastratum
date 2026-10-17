@@ -18,12 +18,7 @@ async fn resize_cpus_memory_and_disks() -> anyhow::Result<()> {
     let Some(api) = mst_e2e::connect().await? else {
         return Ok(());
     };
-    let run = format!(
-        "e2e-resize-{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let run = mst_e2e::run_name("resize");
     // Local disk, and Ceph when the storage tests have set it up.
     let pools = api.get("/storage-pools").await?;
     let rbd = pools

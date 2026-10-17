@@ -17,12 +17,7 @@ async fn cpus_plug_in_and_out_while_the_vm_runs() -> anyhow::Result<()> {
     let Some(api) = mst_e2e::connect().await? else {
         return Ok(());
     };
-    let name = format!(
-        "e2e-hotplug-{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let name = mst_e2e::run_name("hotplug");
     let image = api.image().await?;
     let vm = api
         .post(

@@ -90,12 +90,7 @@ async fn tenant_users_sign_in_with_their_identity_provider() -> anyhow::Result<(
         return Ok(());
     };
     let base = admin.base.clone();
-    let slug = format!(
-        "e2e{:x}-oidc",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let slug = format!("{}-oidc", mst_e2e::run_name("oidc"));
     let root = admin.get("/auth/me").await?["tenant_id"]
         .as_str()
         .unwrap()

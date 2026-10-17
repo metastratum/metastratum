@@ -11,12 +11,7 @@ async fn sign_in_starts_from_the_domains_tenant() -> anyhow::Result<()> {
     let Some(admin) = mst_e2e::connect().await? else {
         return Ok(());
     };
-    let run = format!(
-        "e2e{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_millis()
-    );
+    let run = mst_e2e::run_name("domains");
     let root = admin.get("/auth/me").await?["tenant_id"]
         .as_str()
         .unwrap()

@@ -17,12 +17,7 @@ async fn memory_changes_while_the_vm_runs() -> anyhow::Result<()> {
     let Some(api) = mst_e2e::connect().await? else {
         return Ok(());
     };
-    let name = format!(
-        "e2e-balloon-{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let name = mst_e2e::run_name("balloon");
     let image = api.image().await?;
     let vm = api
         .post(

@@ -40,12 +40,7 @@ async fn nested_tenancy_roles_quotas_audit_and_tokens() -> anyhow::Result<()> {
         return Ok(());
     };
     let base = admin.base.clone();
-    let run = format!(
-        "e2e{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let run = mst_e2e::run_name("m2");
     let me = admin.get("/auth/me").await?;
     let root = me["tenant_id"].as_str().unwrap().to_owned();
 

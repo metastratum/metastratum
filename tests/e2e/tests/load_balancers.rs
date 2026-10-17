@@ -21,12 +21,7 @@ async fn load_balancers_spread_check_and_follow_members() -> anyhow::Result<()> 
     let Some(admin) = mst_e2e::connect().await? else {
         return Ok(());
     };
-    let run = format!(
-        "e2e-lb-{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let run = mst_e2e::run_name("load-balancers");
     let root = admin.get("/auth/me").await?["tenant_id"]
         .as_str()
         .unwrap()

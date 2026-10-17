@@ -42,12 +42,7 @@ async fn vpcs_security_groups_guardrails_and_floating_ips() -> anyhow::Result<()
     let Some(admin) = mst_e2e::connect().await? else {
         return Ok(());
     };
-    let run = format!(
-        "e2e{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let run = mst_e2e::run_name("m3");
     let root = admin.get("/auth/me").await?["tenant_id"]
         .as_str()
         .unwrap()
@@ -71,37 +66,8 @@ async fn vpcs_security_groups_guardrails_and_floating_ips() -> anyhow::Result<()
         .unwrap()
         .to_owned();
 
-    let result = tokio::spawn({
-        let (admin, run, p, c) = (admin.clone(), run.clone(), p.clone(), c.clone());
-        async move { scenario(&admin, &run, &p, &c).await }
-    })
-    .await;
-
-    // VMs first; deleting the tenants then removes their network setup.
-    if let Ok(vms) = admin.get(&format!("/vms?tenant_id={c}")).await {
-        for vm in vms.as_array().into_iter().flatten() {
-            let (_, t) = admin
-                .try_send(
-                    Method::DELETE,
-                    &format!("/vms/{}", vm["id"].as_str().unwrap()),
-                    None,
-                )
-                .await?;
-            if let Some(t) = t["task_id"].as_str() {
-                let _ = admin.wait_task(t, Duration::from_secs(120)).await;
-            }
-        }
-    }
-    for t in [&c, &p] {
-        let (st, body) = admin
-            .try_send(Method::DELETE, &format!("/tenants/{t}"), None)
-            .await?;
-        assert_eq!(st, 204, "deleting tenant {t}: {body}");
-    }
-    match result {
-        Ok(r) => r,
-        Err(panic) => std::panic::resume_unwind(panic.into_panic()),
-    }
+    // Deleting the tenants (after their VMs) removes their network setup.
+    mst_e2e::cleaned_up(&admin, &run, scenario(&admin, &run, &p, &c)).await
 }
 
 /// The lab's external network, registered on first use.

@@ -284,6 +284,13 @@ MST_E2E_URL=http://127.0.0.1:18080 MST_E2E_PASSWORD=... cargo test -p mst-e2e --
 cd web && MST_E2E_URL=http://127.0.0.1:18080 MST_E2E_PASSWORD=... npm run e2e
 ```
 
+`deploy/lab/e2e.sh` runs them all, three suites at a time (about 8 minutes
+rather than 25 one after another), or some: name them (`e2e.sh balloon
+browser`), or let `--changed` pick those what changed since `origin/main`
+can affect (web changes only the browser tests, a change to the shared VM
+code all of them; `-n` says which without running them). Each suite's
+output is kept in a log; those of failed suites are printed.
+
 The Rust suite creates two VMs, checks both consoles, pings across the overlay
 network between hosts, power-cycles and deletes them; checks tenant isolation,
 inherited roles, quotas, the audit log and API tokens; and boots VMs from the

@@ -515,6 +515,18 @@ impl Outcome {
     }
 }
 
+/// A name for this run of `suite`, which what the run makes is named after:
+/// unique among suites run at the same time, so that cleaning up after one
+/// never removes another's.
+pub fn run_name(suite: &str) -> String {
+    // Milliseconds: a suite's tests may follow each other within a second.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("e2e-{suite}-{now:x}")
+}
+
 /// Runs a test's body, then removes what its run made ([`clean`]), however
 /// the body ended.
 pub async fn cleaned_up(

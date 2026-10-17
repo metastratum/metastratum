@@ -18,12 +18,7 @@ async fn templates_and_clones() -> anyhow::Result<()> {
     let Some(api) = mst_e2e::connect().await? else {
         return Ok(());
     };
-    let run = format!(
-        "e2e-clone-{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let run = mst_e2e::run_name("clone");
     let pools = api.get("/storage-pools").await?;
     let pool = |name: &str| {
         pools

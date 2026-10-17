@@ -67,12 +67,7 @@ async fn vm_on_nfs_pool() -> anyhow::Result<()> {
     let pool = nfs_pool(&admin).await?;
     let image = admin.image().await?;
     let before = volumes_in(&admin, &pool).await?;
-    let name = format!(
-        "e2e-nfs-{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let name = mst_e2e::run_name("storage-nfs");
 
     let vm = admin
         .post(
@@ -121,12 +116,7 @@ async fn shared_pools_need_a_grant() -> anyhow::Result<()> {
         .as_str()
         .unwrap()
         .to_owned();
-    let slug = format!(
-        "e2e-s{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let slug = mst_e2e::run_name("storage-grant");
     let t = admin
         .post(
             "/tenants",
@@ -200,12 +190,7 @@ async fn vm_on_rbd_pool() -> anyhow::Result<()> {
     };
     let image = admin.image().await?;
     let before = volumes_in(&admin, &pool).await?;
-    let name = format!(
-        "e2e-rbd-{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let name = mst_e2e::run_name("storage-rbd");
     let vm = admin
         .post(
             "/vms",

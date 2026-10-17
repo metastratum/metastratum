@@ -15,12 +15,7 @@ async fn changes_reach_only_those_who_may_see_them() -> anyhow::Result<()> {
         return Ok(());
     };
     let base = admin.base.clone();
-    let run = format!(
-        "e2e{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let run = mst_e2e::run_name("events");
     let root = admin.get("/auth/me").await?["tenant_id"]
         .as_str()
         .unwrap()

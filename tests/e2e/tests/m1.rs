@@ -24,12 +24,7 @@ async fn vm_lifecycle_consoles_and_network() -> anyhow::Result<()> {
     let Some(api) = mst_e2e::connect().await? else {
         return Ok(());
     };
-    let run = format!(
-        "e2e-{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-    );
+    let run = mst_e2e::run_name("m1");
     mst_e2e::cleaned_up(&api, &run, scenario(&api, &run)).await
 }
 
