@@ -12,7 +12,6 @@ mod snapshot;
 mod vm;
 
 pub use backup::schedule as backup_schedule;
-pub use migrate::DRIVEN_PROTOCOL;
 
 use std::sync::Arc;
 use std::time::Duration;

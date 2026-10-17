@@ -229,12 +229,11 @@ migrations on each host's own libvirt, and QEMU sends the VM over TLS
 (migration ports 49152-49215 must be open between hosts). Each migration
 gets certificates of its own from a CA the controller makes for it, so the
 destination accepts the VM from that source only. The agent puts them in
-`/etc/pki/qemu` just while QEMU loads them, and the host's own back after;
-between hosts with older agents, any host certificate is accepted (the
-controller logs a warning). The agent closes
-libvirt's TLS listener, and opens it only while a host in its cluster runs
-an agent from before protocol 3, which migrates peer to peer; it then also
-limits it to host certificates (`tls_allowed_dn_list`). Either change
+`/etc/pki/qemu` just while QEMU loads them, and the host's own back after.
+The destination defines the incoming VM from the controller's description
+of it, never from what the source sends. Agents older than protocol 4 (the
+first release's) are refused, and the agent closes libvirt's TLS listener
+should an older one have left it open. Either change
 restarts libvirt once, after migrations on the host have ended; running VMs
 do not notice. `mst_host_cert_expiry_timestamp_seconds` shows how long
 each has.
@@ -348,8 +347,9 @@ Connections keep the client's address, so the members' security groups
 decide who gets through (guardrails too). With health checks (the default)
 OVN connects to each member's port every few seconds and leaves out those
 that do not answer; the checks come from an address reserved in each
-member's network (its highest free one), which security groups and
-guardrails let through. Load balancers count against the tenant's
+member's network (its highest free one), and OVN lets them past security
+groups and guardrails (by its own MAC address, so nothing else from that
+address gets through). Load balancers count against the tenant's
 `load_balancers` quota.
 
 ## Resizing
@@ -505,9 +505,7 @@ commands an agent handles. Upgrade **controllers first, then agents**:
    can restart, until they are replaced.
 2. Upgrade the agents, a host at a time or all at once. Restarting an agent
    does not touch its VMs. Hosts can be drained to upgraded hosts
-   throughout: while a cluster mixes agents that migrate peer to peer with
-   newer ones, the newer ones keep libvirt's TLS listener open for them,
-   and close it once the last host is upgraded.
+   throughout.
 
 The release notes say when a release drops support for an agent revision.
 

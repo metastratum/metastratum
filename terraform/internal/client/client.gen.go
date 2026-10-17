@@ -2384,16 +2384,18 @@ type ClientInterface interface {
 	// GetNetwork performs a GET /api/v1/networks/{id} (the `GetNetwork` operationId) request.
 	GetNetwork(ctx context.Context, id NetworkId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CreateBindingWithBody Gives a user a role at a tenant (and so its sub-tenants). Requires
-	// managing users at that tenant and being able to see the user.
+	// CreateBindingWithBody Gives a user a role at a tenant (and so its sub-tenants): their own
+	// tenant or one below it. Requires managing users at that tenant and being
+	// able to see the user.
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with POST /api/v1/role-bindings (the `CreateBinding` operationId).
 	CreateBindingWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CreateBinding Gives a user a role at a tenant (and so its sub-tenants). Requires
-	// managing users at that tenant and being able to see the user.
+	// CreateBinding Gives a user a role at a tenant (and so its sub-tenants): their own
+	// tenant or one below it. Requires managing users at that tenant and being
+	// able to see the user.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -4091,8 +4093,9 @@ func (c *Client) GetNetwork(ctx context.Context, id NetworkId, reqEditors ...Req
 	return c.Client.Do(req)
 }
 
-// CreateBindingWithBody Gives a user a role at a tenant (and so its sub-tenants). Requires
-// managing users at that tenant and being able to see the user.
+// CreateBindingWithBody Gives a user a role at a tenant (and so its sub-tenants): their own
+// tenant or one below it. Requires managing users at that tenant and being
+// able to see the user.
 //
 // Takes any type of body and a specified content type.
 //
@@ -4109,8 +4112,9 @@ func (c *Client) CreateBindingWithBody(ctx context.Context, contentType string, 
 	return c.Client.Do(req)
 }
 
-// CreateBinding Gives a user a role at a tenant (and so its sub-tenants). Requires
-// managing users at that tenant and being able to see the user.
+// CreateBinding Gives a user a role at a tenant (and so its sub-tenants): their own
+// tenant or one below it. Requires managing users at that tenant and being
+// able to see the user.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -12058,16 +12062,18 @@ type ClientWithResponsesInterface interface {
 	// Returns a wrapper object for the known response body format(s).
 	GetNetworkWithResponse(ctx context.Context, id NetworkId, reqEditors ...RequestEditorFn) (*GetNetworkResponse, error)
 
-	// CreateBindingWithBodyWithResponse Gives a user a role at a tenant (and so its sub-tenants). Requires
-	// managing users at that tenant and being able to see the user.
+	// CreateBindingWithBodyWithResponse Gives a user a role at a tenant (and so its sub-tenants): their own
+	// tenant or one below it. Requires managing users at that tenant and being
+	// able to see the user.
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/role-bindings (the `CreateBinding` operationId).
 	CreateBindingWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateBindingResponse, error)
 
-	// CreateBindingWithResponse Gives a user a role at a tenant (and so its sub-tenants). Requires
-	// managing users at that tenant and being able to see the user.
+	// CreateBindingWithResponse Gives a user a role at a tenant (and so its sub-tenants): their own
+	// tenant or one below it. Requires managing users at that tenant and being
+	// able to see the user.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -19031,8 +19037,9 @@ func (c *ClientWithResponses) GetNetworkWithResponse(ctx context.Context, id Net
 	return ParseGetNetworkResponse(rsp)
 }
 
-// CreateBindingWithBodyWithResponse Gives a user a role at a tenant (and so its sub-tenants). Requires
-// managing users at that tenant and being able to see the user.
+// CreateBindingWithBodyWithResponse Gives a user a role at a tenant (and so its sub-tenants): their own
+// tenant or one below it. Requires managing users at that tenant and being
+// able to see the user.
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -19045,8 +19052,9 @@ func (c *ClientWithResponses) CreateBindingWithBodyWithResponse(ctx context.Cont
 	return ParseCreateBindingResponse(rsp)
 }
 
-// CreateBindingWithResponse Gives a user a role at a tenant (and so its sub-tenants). Requires
-// managing users at that tenant and being able to see the user.
+// CreateBindingWithResponse Gives a user a role at a tenant (and so its sub-tenants): their own
+// tenant or one below it. Requires managing users at that tenant and being
+// able to see the user.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -21959,6 +21967,9 @@ func ParseCreateBindingResponse(rsp *http.Response) (*CreateBindingResponse, err
 			return nil, err
 		}
 		response.JSON201 = &dest
+
+	case rsp.StatusCode == 400:
+		break // No content-type
 
 	case rsp.StatusCode == 403:
 		break // No content-type

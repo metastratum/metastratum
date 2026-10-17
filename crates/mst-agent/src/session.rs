@@ -46,6 +46,10 @@ pub struct Agent {
     /// Held while QEMU's TLS files are changed, and while a migration's own
     /// credentials are in place for QEMU to load.
     pub qemu_tls: tokio::sync::Mutex<()>,
+    /// Domain definitions for incoming migrations, by VM, made here from the
+    /// controller's spec (`PrepareMigration`): what arrives is defined from
+    /// these, never from what the source host sends.
+    pub incoming: std::sync::Mutex<std::collections::HashMap<String, String>>,
     /// The OVN southbound remote the controller manages access to, if any.
     pub ovn_sb_remote: std::sync::Mutex<String>,
     /// Domain lifecycle changes from libvirt, forwarded while a session is up.
@@ -368,7 +372,11 @@ impl Agent {
                 // Everything the domain needs here, except the domain itself:
                 // pools mounted, Ceph secrets set, the seed ISO written.
                 let c = c.vm.context("no VM to prepare for")?;
-                self.domain_def(&c).await?;
+                let def = self.domain_def(&c).await?;
+                self.incoming
+                    .lock()
+                    .unwrap()
+                    .insert(c.vm_id.clone(), def.to_xml());
                 tracing::info!(vm = %c.vm_id, "prepared for incoming migration");
             }
             Cmd::MigrateVm(c) => {
@@ -388,7 +396,12 @@ impl Agent {
                 let which = Step::try_from(c.step).context("unknown migration step")?;
                 let step = match which {
                     Step::Begin => mst_libvirt::MigrationStep::Begin,
-                    Step::Prepare => mst_libvirt::MigrationStep::Prepare { xml: c.xml },
+                    // Not the XML the source sent (a host taken over could
+                    // name other VMs' disks, or host devices, in it): the
+                    // one made here from the controller's spec.
+                    Step::Prepare => mst_libvirt::MigrationStep::Prepare {
+                        xml: self.incoming_def(&c.vm_id)?,
+                    },
                     Step::Perform => mst_libvirt::MigrationStep::Perform { uri: c.uri },
                     Step::Finish => mst_libvirt::MigrationStep::Finish {
                         uri: c.uri,
@@ -449,6 +462,13 @@ impl Agent {
                             .await?
                     }
                 };
+                if which == Step::Finish && !c.cancelled {
+                    // Its persistent definition came from the source too, in
+                    // the cookie: replace it with the one made here.
+                    let xml = self.incoming_def(&c.vm_id)?;
+                    self.lv.define(xml).await?;
+                    self.incoming.lock().unwrap().remove(&c.vm_id);
+                }
                 if matches!(which, Step::Finish | Step::Confirm) {
                     // The domain arrived here, or left: say so at once.
                     let _ = self.full_sync(tx).await;
@@ -727,6 +747,16 @@ impl Agent {
     }
 
     /// The domain for a VM, with what it needs on this host set up.
+    /// The definition made for an incoming VM by `PrepareMigration`.
+    fn incoming_def(&self, vm_id: &str) -> anyhow::Result<String> {
+        self.incoming
+            .lock()
+            .unwrap()
+            .get(vm_id)
+            .cloned()
+            .context("not prepared for this VM (the agent restarted?); migrate it again")
+    }
+
     async fn domain_def(&self, c: &mst_proto::DefineVm) -> Result<mst_libvirt::DomainDef> {
         let spec: mst_core::vm::VmSpec =
             serde_json::from_str(&c.spec_json).context("invalid VM spec")?;

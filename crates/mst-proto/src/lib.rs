@@ -19,8 +19,10 @@ pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The oldest agent protocol a controller of this build still serves.
 /// Upgrades go controllers first, then agents; agents between this and
-/// [`PROTOCOL_VERSION`] keep working meanwhile.
-pub const MIN_AGENT_PROTOCOL: u32 = 1;
+/// [`PROTOCOL_VERSION`] keep working meanwhile. 4 is what the first release
+/// (0.1.0) speaks; older revisions migrated with hosts' libvirt listening
+/// for each other, or with credentials any host had, and are refused.
+pub const MIN_AGENT_PROTOCOL: u32 = 4;
 
 /// A command's name, as agents list them among their capabilities.
 pub fn capability(cmd: &command::Cmd) -> &'static str {

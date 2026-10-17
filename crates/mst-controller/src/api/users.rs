@@ -272,7 +272,15 @@ async fn update_user(
     let password_hash = match req.password {
         Some(pw) => {
             check_password(&pw)?;
-            if is_self && user.password_hash.is_some() {
+            if is_self {
+                // An account signing in through an identity provider gets no
+                // password of its own: it would get around the provider's
+                // second factors, and outlive the person's account there.
+                if user.password_hash.is_none() {
+                    return Err(ApiError::bad_request(
+                        "this account signs in through an identity provider and has no password",
+                    ));
+                }
                 let current = req
                     .current_password
                     .as_deref()
@@ -399,10 +407,11 @@ pub struct CreateBinding {
     role: Role,
 }
 
-/// Gives a user a role at a tenant (and so its sub-tenants). Requires
-/// managing users at that tenant and being able to see the user.
+/// Gives a user a role at a tenant (and so its sub-tenants): their own
+/// tenant or one below it. Requires managing users at that tenant and being
+/// able to see the user.
 #[utoipa::path(post, path = "/role-bindings", tag = "users", request_body = CreateBinding,
-    responses((status = 201, body = BindingView), (status = 403), (status = 404), (status = 409)))]
+    responses((status = 201, body = BindingView), (status = 400), (status = 403), (status = 404), (status = 409)))]
 async fn create_binding(
     State(state): State<AppState>,
     p: Principal,
@@ -411,6 +420,17 @@ async fn create_binding(
     authorize(&state.db, &p, Perm::UserWrite, req.tenant_id).await?;
     let user = mst_db::users::get(&state.db, req.user_id).await?;
     authorize_resource(&state.db, &p, Perm::UserRead, user.tenant_id, "user").await?;
+    // Roles only at the user's own tenant or below: their account is
+    // managed there, by administrators who must not get to take over a role
+    // above or beside them by resetting its password.
+    let home = mst_db::tenants::get(&state.db, user.tenant_id).await?;
+    let at = mst_db::tenants::get(&state.db, req.tenant_id).await?;
+    if !home.path.is_ancestor_or_self_of(&at.path) {
+        return Err(ApiError::bad_request(format!(
+            "{} belongs to {}: they can hold roles there and below, not at {}",
+            user.username, home.name, at.name
+        )));
+    }
     let id = mst_db::rbac::create_binding(
         &state.db,
         req.user_id,

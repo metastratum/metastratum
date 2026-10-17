@@ -24,11 +24,16 @@ The boundaries metastratum enforces:
   groups, images, storage pools, floating IPs) must belong to, or be
   granted to, the tenant acting. Live updates (`/api/v1/events`) only carry
   changes the subscriber may see. A sub-tenant's quotas and grants never
-  exceed its parent's.
+  exceed its parent's. People hold roles only at their own tenant or below
+  it, where their account (its password, second factors, deletion) is
+  managed: no tenant's administrators manage an account holding a role
+  above or beside them.
 - **Between guests.** Each NIC's OVN port only sends from its own MAC and
   IP (port security). Ports drop everything their security groups do not
   allow, and guardrails set by ancestor tenants drop traffic no security
-  group can let through. VPCs are separate routers; the same CIDR in two
+  group can let through. Only DHCP, to the network's DHCP server alone,
+  and OVN's own load balancer health checks (by OVN's MAC address, which
+  guests cannot send from) get past them. VPCs are separate routers; the same CIDR in two
   VPCs never meets. QEMU runs each VM in its own process, confined by
   libvirt's per-VM AppArmor (or SELinux) profile.
 - **Between guests and the platform.** Consoles are reached only through
@@ -62,7 +67,10 @@ The boundaries metastratum enforces:
   sealed with the master key; backup codes are kept hashed. The second step
   of a sign-in expires after five minutes or five wrong answers, and wrong
   answers count against the account's sign-in budget. Adding or removing a
-  factor, or changing one's password, takes the current password. A tenant
+  factor, or changing one's password, takes the current password; adding
+  one ends the user's other sessions, so none opened with the password
+  alone outlives it. Accounts signing in through an identity provider
+  cannot give themselves a password. A tenant
   can require a second factor of its password accounts and those below it;
   a session without one can then only add one.
 - **Tenant domains** are bound by provider administrators only: they
@@ -85,7 +93,8 @@ The boundaries metastratum enforces:
   belong to (hosts by ID, replicas by name), and are checked against the
   database (a host's current or just-renewed certificate; a live replica).
   Hosts' certificates last 30 days and are renewed automatically; their
-  subjects are chosen by the controller, not taken from the request.
+  subjects are chosen by the controller, not taken from the request, and
+  the host names they carry can never be the controllers' own.
   Replaced and decommissioned hosts' certificates are revoked: the
   controllers refuse them, and so do the other hosts' QEMU and libvirt,
   which install the CA's revocation list.
@@ -93,14 +102,18 @@ The boundaries metastratum enforces:
   live migrations on each host's own libvirt, and only QEMU sends the VM
   over, with TLS. Each migration gets certificates of its own, from a CA
   made for it alone: the destination accepts the VM from that source
-  only, and the source sends it to that destination only. The controller reaches
+  only, and the source sends it to that destination only. The destination
+  defines the VM from the controller's description of it, never from what
+  the source sends; agents from before this are refused. The controller reaches
   OVN's northbound database over TLS with a client certificate from a CA
   that issues to controllers only; hosts reach the southbound one with
   certificates from another CA, naming their chassis, under OVN's RBAC.
   The controllers issue the OVN servers' certificates too, and warn before
   they expire.
 - **Abuse**: requests and password sign-ins are rate limited per client,
-  and failed sign-ins per account (see [operations](docs/operations.md#rate-limits)).
+  and failed sign-ins per account (a sign-in takes from the account's budget
+  before it is checked, and gives back on success, so parallel guesses
+  cannot all slip in before the first fails) (see [operations](docs/operations.md#rate-limits)).
 - **Browsers**: a Content-Security-Policy allowing scripts only from the
   controller, framing denied, `nosniff`, no referrers to other sites, and
   `Strict-Transport-Security` on requests that came over HTTPS.
@@ -135,12 +148,29 @@ A review of the whole system before calling it hardened. Fixed:
 | Nothing kept a VM from taking all of a host's disk or network bandwidth | per-VM disk (IOPS, MB/s) and network (Mbit/s each way) limits per cluster, enforced by QEMU and OVN, changed live |
 | The destination of a live migration accepted the incoming VM from any certificate the controller's CA issued: another host could send it a VM of its own instead of the source's | each migration gets a CA and certificates of its own; QEMU on each side trusts only that CA while it sets up the migration's TLS |
 | Host certificates could not be revoked | the controller's CA keeps a revocation list that hosts install for QEMU and libvirt: a renewed host's previous certificate is revoked once it uses the new one, a decommissioned host's at once |
-| For live migration, each host's libvirt accepted connections from the other hosts with full control: one compromised host could take over the rest | the controller drives migrations on each host's own libvirt; libvirt's TLS listener is closed (opened only while an older agent in the cluster still migrates peer to peer) |
+| For live migration, each host's libvirt accepted connections from the other hosts with full control: one compromised host could take over the rest | the controller drives migrations on each host's own libvirt; libvirt's TLS listener is closed |
 | API tokens carried all of their user's rights | tokens can be limited to roles at tenants |
 | Hosts' ovn-controller used the southbound database with no TLS or RBAC: any host could rewrite every host's flows | agents set up TLS with a certificate per chassis from a separate OVN CA, under OVN's RBAC (`ovn.southbound`) |
 | Unchecked whether IPv6 gets around IPv4-only networks | tested: guests reach no neighbour over IPv6, and cannot advertise themselves as router |
 | Deleting a pool, an image or a host left mounts, storage credentials (Ceph keyrings, libvirt secrets) and cached data on hosts | hosts let go of them at once, or when they reconnect; Delete also removes metastratum's data from the storage or the machine |
 | A dependency (`inout` 0.2.3) had been yanked | updated to 0.2.4 |
+
+## Second review, October 2026
+
+Independent reviewers, each on one area and without this document, read
+the code after two-factor sign-in was added. Fixed:
+
+| Finding | Fix |
+|---|---|
+| Load balancers' health checks were let past every tenant's security groups and guardrails by their source address, which tenants could choose (any range for their networks): one tenant could reach every other's VMs from an address of its own | that rule is gone: OVN lets its own health checks through by its service monitor MAC address, which guests cannot send from |
+| A host taken over could answer a migration away from it with domain XML of its own choosing (other VMs' disks, host devices) and the destination would run it | the destination defines the VM from the controller's description, also its persistent definition afterwards |
+| A host claiming an old agent protocol made every peer in its cluster open libvirt's TLS listener to all host certificates | agents older than the first release's protocol are refused, before anything they say is kept; the listener is never opened |
+| A host could name itself `mst-controller` and renew its certificate into one that agents and replicas took for the controller's | host names must be host names, never the controllers'; certificates leave out any other |
+| A session opened with the password alone, before the user's first second factor, became a full session when the factor was added | adding a factor ends the user's other sessions |
+| A tenant's administrators could reset the password or second factors of their own users who held roles above or beside the tenant, and take those roles over | roles only at the user's own tenant or below (enforced in the database too; roles held elsewhere were removed) |
+| DHCP was let past guardrails to any address: UDP 68 to 67 as a way out | to the network's DHCP server only |
+| Parallel sign-in attempts all passed the per-account limit before any of them failed | the account's budget is taken first and given back on success |
+| Accounts signing in through an identity provider could give themselves a password, getting around its MFA and off-boarding | refused |
 
 ## Known issues, and what to do about them
 

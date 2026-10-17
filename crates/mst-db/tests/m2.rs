@@ -133,9 +133,19 @@ async fn bindings_resolve_to_tenant_paths(pool: PgPool) {
     rbac::create_binding(&pool, u.id, t.acme.id, "operator", None)
         .await
         .unwrap();
-    rbac::create_binding(&pool, u.id, t.globex.id, "viewer", None)
+    rbac::create_binding(&pool, u.id, t.dev.id, "viewer", None)
         .await
         .unwrap();
+    // Only at the user's own tenant or below.
+    for elsewhere in [&t.globex, &t.root] {
+        assert!(
+            rbac::create_binding(&pool, u.id, elsewhere.id, "viewer", None)
+                .await
+                .is_err(),
+            "a role at {}",
+            elsewhere.name
+        );
+    }
     assert!(
         rbac::create_binding(&pool, u.id, t.acme.id, "operator", None)
             .await
@@ -146,7 +156,7 @@ async fn bindings_resolve_to_tenant_paths(pool: PgPool) {
     let mut grants = rbac::grants_of(&pool, u.id).await.unwrap();
     grants.sort_by_key(|(p, _)| p.to_string());
     assert!(grants.contains(&(t.acme.path.clone(), "operator".into())));
-    assert!(grants.contains(&(t.globex.path.clone(), "viewer".into())));
+    assert!(grants.contains(&(t.dev.path.clone(), "viewer".into())));
     assert_eq!(
         rbac::bindings_at(&pool, t.acme.id).await.unwrap()[0].username,
         "alice"

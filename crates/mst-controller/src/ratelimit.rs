@@ -52,27 +52,29 @@ impl<K: Hash + Eq + Clone + Display> Limiter<K> {
 
     /// Takes a token for `key`, or says how long until one is available.
     pub async fn take(&self, key: &K) -> Result<(), Duration> {
-        if let Some(r) = self.shared_bucket(key, true).await {
+        if let Some(r) = self.shared_bucket(key, Op::Take).await {
             return r;
         }
         self.take_at(key, Instant::now())
     }
 
-    /// Whether `key` has a token left, without taking it.
-    pub async fn check(&self, key: &K) -> Result<(), Duration> {
-        if let Some(r) = self.shared_bucket(key, false).await {
-            return r;
+    /// Returns a token taken for `key`: for budgets that only failures
+    /// should drain, taken before the attempt (so parallel attempts cannot
+    /// all pass a check made before any of them failed) and given back when
+    /// it succeeds.
+    pub async fn give_back(&self, key: &K) {
+        if self.shared_bucket(key, Op::GiveBack).await.is_some() {
+            return;
         }
         let now = Instant::now();
-        let buckets = self.buckets.lock().unwrap();
-        match buckets.get(key) {
-            Some(&(tokens, at)) => self.wait(self.refill(tokens, at, now)),
-            None => Ok(()),
+        let mut buckets = self.buckets.lock().unwrap();
+        if let Some((tokens, at)) = buckets.get_mut(key) {
+            (*tokens, *at) = ((self.refill(*tokens, *at, now) + 1.0).min(self.burst), now);
         }
     }
 
     /// The answer from shared storage, if there is one and it answers.
-    async fn shared_bucket(&self, key: &K, take: bool) -> Option<Result<(), Duration>> {
+    async fn shared_bucket(&self, key: &K, op: Op) -> Option<Result<(), Duration>> {
         let shared = self.shared.as_ref()?;
         // Keys may name accounts; keep those out of Redis.
         let key = format!(
@@ -80,7 +82,7 @@ impl<K: Hash + Eq + Clone + Display> Limiter<K> {
             self.name,
             mst_pki::hash_secret(&key.to_string())
         );
-        shared.bucket(&key, self.rate, self.burst, take).await
+        shared.bucket(&key, self.rate, self.burst, op).await
     }
 
     fn refill(&self, tokens: f64, at: Instant, now: Instant) -> f64 {
@@ -110,6 +112,12 @@ impl<K: Hash + Eq + Clone + Display> Limiter<K> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Op {
+    Take,
+    GiveBack,
+}
+
 /// Token buckets in Redis, shared by the replicas. Each is a hash updated
 /// atomically by a script, on Redis's clock (replicas' clocks may differ),
 /// and expires once it would have refilled.
@@ -130,13 +138,17 @@ local b = redis.call('HMGET', KEYS[1], 'tokens', 'at')
 local tokens = tonumber(b[1]) or burst
 local at = tonumber(b[2]) or now
 tokens = math.min(burst, tokens + math.max(0, now - at) * rate)
-if tokens < 1 then
+if ARGV[3] == 'give' then
+  tokens = math.min(burst, tokens + 1)
+end
+if ARGV[3] == 'take' and tokens < 1 then
   return {0, math.ceil((1 - tokens) / rate * 1000)}
 end
-if ARGV[3] == '1' then
-  redis.call('HSET', KEYS[1], 'tokens', tostring(tokens - 1), 'at', tostring(now))
-  redis.call('PEXPIRE', KEYS[1], math.ceil(burst / rate * 1000))
+if ARGV[3] == 'take' then
+  tokens = tokens - 1
 end
+redis.call('HSET', KEYS[1], 'tokens', tostring(tokens), 'at', tostring(now))
+redis.call('PEXPIRE', KEYS[1], math.ceil(burst / rate * 1000))
 return {1, 0}
 ";
 
@@ -190,14 +202,14 @@ impl Shared {
         key: &str,
         rate: f64,
         burst: f64,
-        take: bool,
+        op: Op,
     ) -> Option<Result<(), Duration>> {
         let mut conn = self.conn().await?;
         let mut invocation = self.script.key(key);
-        invocation
-            .arg(rate)
-            .arg(burst)
-            .arg(if take { "1" } else { "0" });
+        invocation.arg(rate).arg(burst).arg(match op {
+            Op::Take => "take",
+            Op::GiveBack => "give",
+        });
         let call = invocation.invoke_async::<(i64, i64)>(&mut conn);
         match tokio::time::timeout(Duration::from_secs(1), call).await {
             Ok(Ok((1, _))) => Some(Ok(())),
@@ -500,6 +512,22 @@ mod tests {
         assert!(l.take_at(&"a", t0 + Duration::from_secs(100)).is_err());
     }
 
+    #[tokio::test]
+    async fn tokens_given_back_never_exceed_the_burst() {
+        let l = Limiter::new("t", 1.0 / 60.0, 2, None);
+        assert!(l.take(&"a").await.is_ok());
+        assert!(l.take(&"a").await.is_ok());
+        assert!(l.take(&"a").await.is_err());
+        l.give_back(&"a").await;
+        assert!(l.take(&"a").await.is_ok());
+        for _ in 0..5 {
+            l.give_back(&"a").await;
+        }
+        assert!(l.take(&"a").await.is_ok());
+        assert!(l.take(&"a").await.is_ok());
+        assert!(l.take(&"a").await.is_err());
+    }
+
     /// Needs a Redis server: `MST_TEST_REDIS_URL=redis://127.0.0.1:56379`
     /// (deploy/dev/compose.yaml).
     #[tokio::test]
@@ -514,11 +542,13 @@ mod tests {
         let key = uuid::Uuid::now_v7().to_string();
         assert!(a.take(&key).await.is_ok());
         assert!(b.take(&key).await.is_ok());
-        assert!(a.check(&key).await.is_ok());
         assert!(a.take(&key).await.is_ok());
         let wait = b.take(&key).await.unwrap_err();
         assert!(wait <= Duration::from_secs(1), "{wait:?}");
-        assert!(a.check(&key).await.is_err());
+        // A token given back by one is there for the other.
+        a.give_back(&key).await;
+        assert!(b.take(&key).await.is_ok());
+        assert!(a.take(&key).await.is_err());
         // Nothing was kept in memory meanwhile.
         assert!(a.buckets.lock().unwrap().is_empty());
 

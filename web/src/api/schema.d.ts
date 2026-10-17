@@ -682,8 +682,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Gives a user a role at a tenant (and so its sub-tenants). Requires
-         *     managing users at that tenant and being able to see the user.
+         * Gives a user a role at a tenant (and so its sub-tenants): their own
+         *     tenant or one below it. Requires managing users at that tenant and being
+         *     able to see the user.
          */
         post: operations["create_binding"];
         delete?: never;
@@ -4844,6 +4845,12 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["BindingView"];
                 };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             403: {
                 headers: {

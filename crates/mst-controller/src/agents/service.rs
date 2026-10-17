@@ -33,6 +33,45 @@ fn internal(e: impl std::fmt::Display) -> Status {
     Status::internal("internal error")
 }
 
+/// Whether a name a host reports about itself may name it, in its
+/// certificate among other places: a DNS host name, not an address, and
+/// never the name the controllers' own certificates carry, which agents and
+/// replicas check theirs by. Hosts choose these names, so they must not be
+/// able to choose that one.
+fn valid_host_name(name: &str) -> bool {
+    name.len() <= 253
+        && name.parse::<std::net::IpAddr>().is_err()
+        && name.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
+        && !name.eq_ignore_ascii_case(crate::ca::SERVER_NAME)
+}
+
+/// What a host's certificate names: its name (when it is a valid one) and
+/// its address.
+fn host_sans(name: &str, address: &str) -> Vec<String> {
+    let mut sans = vec![address.to_owned()];
+    if valid_host_name(name) {
+        sans.insert(0, name.to_owned());
+    }
+    sans
+}
+
+fn check_facts(f: &HostFacts) -> Result<(), Status> {
+    if !valid_host_name(&f.hostname) || f.address.parse::<std::net::IpAddr>().is_err() {
+        return Err(Status::invalid_argument(format!(
+            "a host name ({:?}: letters, digits, hyphens and dots, not {}) and an IP address are required",
+            f.hostname,
+            crate::ca::SERVER_NAME
+        )));
+    }
+    Ok(())
+}
+
 fn facts_row(f: &HostFacts) -> mst_db::hosts::Facts<'_> {
     mst_db::hosts::Facts {
         name: &f.hostname,
@@ -74,11 +113,7 @@ impl Enrollment for EnrollmentService {
         let facts = req
             .facts
             .ok_or_else(|| Status::invalid_argument("facts are required"))?;
-        if facts.hostname.is_empty() || facts.address.parse::<std::net::IpAddr>().is_err() {
-            return Err(Status::invalid_argument(
-                "hostname and a valid address are required",
-            ));
-        }
+        check_facts(&facts)?;
         let token: mst_pki::JoinToken = req
             .token
             .parse()
@@ -95,7 +130,7 @@ impl Enrollment for EnrollmentService {
             .sign_host_csr(
                 &req.csr_pem,
                 &host_id.to_string(),
-                &[facts.hostname.clone(), facts.address.clone()],
+                &host_sans(&facts.hostname, &facts.address),
                 HOST_CERT_LIFETIME,
             )
             .map_err(|e| Status::invalid_argument(format!("invalid CSR: {e}")))?;
@@ -267,7 +302,7 @@ impl AgentControl for AgentControlService {
             .sign_host_csr(
                 &req.get_ref().csr_pem,
                 &host_id.to_string(),
-                &[host.name.clone(), host.address.clone()],
+                &host_sans(&host.name, &host.address),
                 HOST_CERT_LIFETIME,
             )
             .map_err(|e| Status::invalid_argument(format!("invalid CSR: {e}")))?;
@@ -362,7 +397,20 @@ impl AgentControl for AgentControlService {
             }))) => h,
             _ => return Err(Status::invalid_argument("expected hello")),
         };
+        // An agent too old is refused before anything it says is kept (a
+        // host claiming an old revision must not get older, weaker ways of
+        // migrating, or its peers' libvirt listening for it). 0: before
+        // versioning, revision 1.
+        let version = hello.protocol_version.max(1);
+        if version < mst_proto::MIN_AGENT_PROTOCOL {
+            return Err(Status::failed_precondition(format!(
+                "agent protocol {version} is too old; this controller needs {} or later",
+                mst_proto::MIN_AGENT_PROTOCOL
+            )));
+        }
+        // Only then what it says about itself.
         if let Some(f) = &hello.facts {
+            check_facts(f)?;
             mst_db::hosts::update_facts(&state.db, host, &facts_row(f))
                 .await
                 .map_err(|e| match e {
@@ -373,14 +421,6 @@ impl AgentControl for AgentControlService {
                 })?;
         }
 
-        // 0: an agent from before versioning, which speaks revision 1.
-        let version = hello.protocol_version.max(1);
-        if version < mst_proto::MIN_AGENT_PROTOCOL {
-            return Err(Status::failed_precondition(format!(
-                "agent protocol {version} is too old; this controller needs {} or later",
-                mst_proto::MIN_AGENT_PROTOCOL
-            )));
-        }
         let (tx, rx) = mpsc::channel(64);
         let welcome = ControllerMessage {
             msg: Some(mst_proto::controller_message::Msg::Welcome(
@@ -508,27 +548,20 @@ pub async fn libvirt_tls_policy(
     let Ok(hosts) = mst_db::hosts::list(&state.db).await else {
         return;
     };
-    let members: Vec<_> = hosts
+    // Hosts' libvirt never listens for each other: the controller drives
+    // migrations on each host's own (agents from before that are refused).
+    // Hosts that once listened, under an older controller, stop.
+    for h in hosts
         .iter()
-        .filter(|h| h.state != "decommissioned")
+        .filter(|h| h.state != "decommissioned" && h.is_live())
         .filter(|h| match cluster {
             Some(c) => h.cluster_id == Some(c),
             None => h.id == host,
         })
-        .collect();
-    let driven = crate::engine::DRIVEN_PROTOCOL as i32;
-    // A host enrolled a moment ago has not said which protocol it speaks
-    // yet: it does once its session starts, and this runs again then.
-    let listen = members
-        .iter()
-        .any(|h| h.last_seen_at.is_some() && h.agent_protocol < driven);
-    for h in members
-        .iter()
-        .filter(|h| h.is_live() && h.agent_protocol >= driven)
     {
-        let cmd = mst_proto::command::Cmd::LibvirtTls(mst_proto::LibvirtTls { listen });
+        let cmd = mst_proto::command::Cmd::LibvirtTls(mst_proto::LibvirtTls { listen: false });
         if let Err(e) = state.agents.call(h.id, cmd, Duration::from_secs(120)).await {
-            tracing::warn!(host = %h.id, listen, error = %e, "setting libvirt's TLS listener");
+            tracing::warn!(host = %h.id, error = %e, "closing libvirt's TLS listener");
         }
     }
 }
@@ -660,5 +693,37 @@ impl mst_proto::replica_control_server::ReplicaControl for ReplicaControlService
             }
         });
         Ok(Response::new(Box::pin(tunnel.from_agent)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hosts_cannot_name_themselves_as_the_controller() {
+        for ok in ["mst-host1", "mst-host1.lab.example.net", "h0"] {
+            assert!(valid_host_name(ok), "{ok}");
+        }
+        for bad in [
+            "mst-controller",
+            "MST-Controller",
+            "",
+            "10.0.0.5",
+            "::1",
+            "*.example.net",
+            "a..b",
+            "host.",
+            "-host",
+            "host_1",
+            "host name",
+        ] {
+            assert!(!valid_host_name(bad), "{bad}");
+        }
+        assert_eq!(
+            host_sans("mst-controller", "10.0.0.5"),
+            ["10.0.0.5".to_owned()]
+        );
+        assert_eq!(host_sans("h1", "10.0.0.5"), ["h1", "10.0.0.5"]);
     }
 }

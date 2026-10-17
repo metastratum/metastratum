@@ -31,8 +31,8 @@ use mst_db::migrations::Migration;
 use mst_proto::command::Cmd;
 use mst_proto::migration_step::Step;
 use mst_proto::{
-    AbortMigration, DefineVm, DeleteVolume, DomainInfo, EnsureImage, EnsureVolume, MigrateVm,
-    MigrationStats, MigrationStep, PrepareMigration, UndefineVm,
+    AbortMigration, DefineVm, DeleteVolume, DomainInfo, EnsureImage, EnsureVolume, MigrationStats,
+    MigrationStep, PrepareMigration, UndefineVm,
 };
 use serde::{Deserialize, Serialize};
 
@@ -317,54 +317,9 @@ async fn prepare(ctx: &TaskCtx, m: &Migration) -> Result<()> {
 }
 
 async fn transfer(ctx: &TaskCtx, m: &Migration, span: Span) -> Result<()> {
-    let (src, dst, vm_id) = (m.source_host_id, m.dest_host_id, m.vm_id);
-    let speaks = |h: &mst_db::hosts::Host| h.agent_protocol >= DRIVEN_PROTOCOL as i32;
-    if speaks(&mst_db::hosts::get(&ctx.state.db, src).await?)
-        && speaks(&mst_db::hosts::get(&ctx.state.db, dst).await?)
-    {
-        return transfer_driven(ctx, m, span).await;
-    }
-    // A migration started before a restart may still be going.
-    if info(ctx, src, vm_id)
-        .await
-        .context("asking the source")?
-        .job_active
-    {
-        watch(ctx, m, span, true).await?;
-    }
-    let here = info(ctx, src, vm_id).await.context("asking the source")?;
-    if !here.defined {
-        let there = info(ctx, dst, vm_id)
-            .await
-            .context("asking the destination")?;
-        if there.defined && there.power == "running" {
-            return Ok(());
-        }
-        bail!("the VM is on neither host");
-    }
-    let vm = mst_db::vms::get(&ctx.state.db, vm_id).await?;
-    let dest = mst_db::hosts::get(&ctx.state.db, dst).await?;
-    let cmd = MigrateVm {
-        vm_id: vm_id.to_string(),
-        dest_address: dest.address.clone(),
-        copy_disks: local_disks(ctx, &vm)
-            .await?
-            .into_iter()
-            .map(|(t, _, _)| t)
-            .collect(),
-    };
-    tracing::info!(vm = %vm_id, to = %dest.name, "live-migrating");
-    let call = ctx.state.agents.call(src, Cmd::MigrateVm(cmd), TRANSFER);
-    tokio::select! {
-        r = call => r.map_err(|e| anyhow!(e)).context("migrating"),
-        r = watch(ctx, m, span, false) => r.and(Err(anyhow!("the migration job ended without an answer"))),
-    }
+    transfer_driven(ctx, m, span).await
 }
 
-/// The first agent protocol with migrations the controller drives.
-pub const DRIVEN_PROTOCOL: u32 = 3;
-/// The first with TLS credentials of their own for each migration.
-const OWN_TLS_PROTOCOL: i32 = 4;
 /// How long a migration's credentials are valid: QEMU checks them when the
 /// copy starts; this only bounds a migration's wait to start.
 const OWN_TLS_LIFETIME: Duration = Duration::from_secs(86400);
@@ -498,25 +453,18 @@ async fn transfer_driven(ctx: &TaskCtx, m: &Migration, span: Span) -> Result<()>
         h.name = domain_name(&xml).context("the domain XML has no name")?;
         h.phase = "preparing".into();
         save(&h).await?;
-        // Credentials for this migration alone, when both hosts take them:
-        // the destination then accepts the VM from this source only (the
-        // CA's other certificates, other hosts' among them, open nothing),
-        // and the source sends it to this destination only.
-        let source = mst_db::hosts::get(db, src).await?;
-        let own_tls = if source.agent_protocol >= OWN_TLS_PROTOCOL
-            && dest.agent_protocol >= OWN_TLS_PROTOCOL
-        {
-            Some(mst_pki::MigrationCredentials::generate(
-                &[dest.address.clone(), dest.name.clone()],
-                &src.to_string(),
-                OWN_TLS_LIFETIME,
-            )?)
-        } else {
-            tracing::warn!(vm = %vm_id, "a host's agent predates per-migration TLS; any host certificate can send this VM in");
-            None
-        };
+        // Credentials for this migration alone: the destination accepts the
+        // VM from this source only (the CA's other certificates, other
+        // hosts' among them, open nothing), and the source sends it to this
+        // destination only.
+        let own_tls = mst_pki::MigrationCredentials::generate(
+            &[dest.address.clone(), dest.name.clone()],
+            &src.to_string(),
+            OWN_TLS_LIFETIME,
+        )?;
         let tls = |server: bool| {
-            own_tls.as_ref().map(|t| mst_proto::MigrationTls {
+            let t = &own_tls;
+            Some(mst_proto::MigrationTls {
                 ca_pem: t.ca_pem.clone(),
                 cert_pem: if server {
                     &t.server_cert_pem

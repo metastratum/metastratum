@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
@@ -204,7 +204,8 @@ async fn second_step(
     };
     let user = mst_db::users::get(&state.db, challenge.user_id).await?;
     let account = super::auth::account_key(user.tenant_id, &user.username);
-    if let Err(retry) = state.limits.login_failures.check(&account).await {
+    // Taken now, given back on success (see `auth::login`).
+    if let Err(retry) = state.limits.login_failures.take(&account).await {
         return Ok(crate::ratelimit::too_many(retry));
     }
     let method = match (&req.webauthn, req.code.as_deref()) {
@@ -217,7 +218,6 @@ async fn second_step(
         }
     };
     let Some(method) = method.filter(|_| !user.disabled) else {
-        let _ = state.limits.login_failures.take(&account).await;
         metrics::counter!("mst_logins_total", "method" => "second_factor", "outcome" => "failed")
             .increment(1);
         let entry = mst_db::audit::Entry {
@@ -234,6 +234,7 @@ async fn second_step(
         }
         return Err(wrong_answer());
     };
+    state.limits.login_failures.give_back(&account).await;
     mst_db::two_factor::delete_challenge(&state.db, &id_hash).await?;
     let headers =
         super::auth::open_session(&state, &user, &format!("password+{method}"), https).await?;
@@ -415,7 +416,7 @@ pub(super) async fn confirm_password(
     password: &str,
 ) -> ApiResult<()> {
     let account = super::auth::account_key(user.tenant_id, &user.username);
-    if state.limits.login_failures.check(&account).await.is_err() {
+    if state.limits.login_failures.take(&account).await.is_err() {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
@@ -428,13 +429,13 @@ pub(super) async fn confirm_password(
         .await
         .map_err(ApiError::internal)?;
     if !ok {
-        let _ = state.limits.login_failures.take(&account).await;
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
             "wrong_password",
             "that is not your password",
         ));
     }
+    state.limits.login_failures.give_back(&account).await;
     Ok(())
 }
 
@@ -546,15 +547,21 @@ fn valid_name(name: &str) -> ApiResult<&str> {
 }
 
 /// Adds a factor, and the first backup codes along with the first one.
+/// The user's other sessions end: one opened with the password alone (by
+/// someone who learnt it, while there was no factor to ask for) must not
+/// outlive the factor's arrival.
 async fn add_factor(
     state: &AppState,
     p: &Principal,
+    headers: &HeaderMap,
     user: &mst_db::users::User,
     kind: &str,
     name: &str,
     data: &Value,
 ) -> ApiResult<FactorAdded> {
+    let current = super::session_secret(headers).map(|s| mst_pki::hash_secret(&s));
     let mut tx = state.db.begin().await?;
+    mst_db::sessions::delete_for_user(&mut *tx, user.id, current.as_deref()).await?;
     let first = !mst_db::two_factor::has_factor(&mut *tx, user.id).await?;
     let factor = mst_db::two_factor::add(&mut *tx, user.id, kind, name, data).await?;
     let backup_codes = if first {
@@ -592,6 +599,7 @@ async fn add_factor(
 async fn add_totp(
     State(state): State<AppState>,
     p: Principal,
+    headers: HeaderMap,
     Path(id): Path<UserId>,
     Json(req): Json<AddTotp>,
 ) -> ApiResult<(StatusCode, Json<FactorAdded>)> {
@@ -613,7 +621,7 @@ async fn add_totp(
     mst_db::two_factor::delete_challenge(&state.db, &id_hash).await?;
     let mut data = challenge.data;
     data["last_step"] = step.into();
-    let added = add_factor(&state, &p, &user, "totp", name, &data).await?;
+    let added = add_factor(&state, &p, &headers, &user, "totp", name, &data).await?;
     Ok((StatusCode::CREATED, Json(added)))
 }
 
@@ -695,6 +703,7 @@ pub struct AddWebauthn {
 async fn add_webauthn(
     State(state): State<AppState>,
     p: Principal,
+    headers: HeaderMap,
     Path(id): Path<UserId>,
     Json(req): Json<AddWebauthn>,
 ) -> ApiResult<(StatusCode, Json<FactorAdded>)> {
@@ -723,7 +732,7 @@ async fn add_webauthn(
         return Err(ApiError::conflict("that key is already registered"));
     }
     mst_db::two_factor::delete_challenge(&state.db, &id_hash).await?;
-    let added = add_factor(&state, &p, &user, "webauthn", name, &json!(cred)).await?;
+    let added = add_factor(&state, &p, &headers, &user, "webauthn", name, &json!(cred)).await?;
     Ok((StatusCode::CREATED, Json(added)))
 }
 
@@ -744,6 +753,7 @@ pub struct AddYubicoOtp {
 async fn add_yubico_otp(
     State(state): State<AppState>,
     p: Principal,
+    headers: HeaderMap,
     Path(id): Path<UserId>,
     Json(req): Json<AddYubicoOtp>,
 ) -> ApiResult<(StatusCode, Json<FactorAdded>)> {
@@ -781,6 +791,7 @@ async fn add_yubico_otp(
     let added = add_factor(
         &state,
         &p,
+        &headers,
         &user,
         "yubico_otp",
         name,

@@ -173,11 +173,15 @@ async fn scenario(admin: &Api, run: &str, t: &str) -> anyhow::Result<()> {
         .post("/security-groups", json!({"tenant_id": t, "name": "web"}))
         .await?;
     let web = web["id"].as_str().unwrap().to_owned();
+    // Clients from the external network only: health checks come from an
+    // address of the members' network, so they get in by being OVN's own
+    // (its MAC address), not by any rule, and nothing else from that
+    // address would.
     admin
         .post(
             &format!("/security-groups/{web}/rules"),
             json!({"direction": "ingress", "protocol": "tcp", "port_min": 8080, "port_max": 8080,
-                   "remote_cidr": "0.0.0.0/0"}),
+                   "remote_cidr": "10.78.0.0/24"}),
         )
         .await?;
 

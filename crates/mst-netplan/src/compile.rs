@@ -27,13 +27,13 @@ use uuid::Uuid;
 use crate::model::*;
 use crate::row::{Datum, KEY, MANAGED, Row, Table};
 
+/// The port group of every VM port.
+const PG_VMS: &str = "mst_vms";
+
 pub const PRIO_DEFAULT_DROP: i64 = 1000;
 pub const PRIO_ALLOW: i64 = 1001;
 pub const PRIO_GUARDRAIL: i64 = 2000;
 pub const PRIO_DHCP: i64 = 3000;
-/// Load balancers' health checks reach members whatever their security
-/// groups and guardrails say, so members are judged by whether they answer.
-pub const PRIO_HEALTH_CHECK: i64 = 3000;
 /// QoS rules (a table of their own; one rule per port and direction).
 pub const PRIO_QOS: i64 = 100;
 
@@ -199,7 +199,6 @@ pub fn compile(m: &Model) -> Desired {
     // Load balancers: a row per protocol, on the VPC's router (traffic from
     // outside) and every one of its switches (traffic from its VMs).
     let mut lbs_by_vpc: BTreeMap<Uuid, Vec<String>> = BTreeMap::new();
-    let mut monitors: BTreeSet<Ipv4Addr> = BTreeSet::new();
     for lb in &m.load_balancers {
         if !vpcs.contains_key(&lb.vpc_id) {
             warnings.push(format!("load balancer {} is in an unknown VPC", lb.id));
@@ -266,13 +265,15 @@ pub fn compile(m: &Model) -> Desired {
                 }
             }
             // Health checks come from an address of each member's network.
+            // OVN lets them past every ACL itself (by its service monitor
+            // MAC address, which guests cannot send from), so no rule here
+            // lets anything in for them.
             let mut mappings = BTreeMap::new();
             if !checks.is_empty() {
                 for p in &members {
                     match networks.get(&p.network_id).and_then(|n| n.monitor_ip) {
                         Some(src) => {
                             mappings.insert(p.ip.to_string(), format!("{}:{src}", p.id));
-                            monitors.insert(src);
                         }
                         None => warnings.push(format!(
                             "load balancer {}: network {} has no health check address",
@@ -552,6 +553,29 @@ pub fn compile(m: &Model) -> Desired {
                 qos.push(key);
             }
         }
+        // DHCP gets through whatever security groups and guardrails say, but
+        // only to OVN's own DHCP server: broadcast, or its address (which
+        // is the gateway's) when a lease is renewed. Per switch, as each
+        // network has its own.
+        let dhcp = format!("acl/dhcp/{}", n.id);
+        b.add(
+            Table::Acl,
+            dhcp.clone(),
+            Some(n.tenant_id),
+            vec![
+                ("direction", s("from-lport")),
+                ("priority", Datum::Int(PRIO_DHCP)),
+                (
+                    "match",
+                    s(format!(
+                        "inport == @{PG_VMS} && ip4 && udp && udp.src == 68 && udp.dst == 67 \
+                         && ip4.dst == {{255.255.255.255, {}}}",
+                        n.gateway
+                    )),
+                ),
+                ("action", s("allow-related")),
+            ],
+        );
         b.add(
             Table::LogicalSwitch,
             format!("ls/{}", n.id),
@@ -559,6 +583,7 @@ pub fn compile(m: &Model) -> Desired {
             vec![
                 ("name", s(switch_name(n.id))),
                 ("ports", refs(sw_ports)),
+                ("acls", refs(vec![dhcp])),
                 ("qos_rules", refs(qos)),
                 (
                     "load_balancer",
@@ -611,7 +636,7 @@ pub fn compile(m: &Model) -> Desired {
         .collect();
 
     // Default deny for every VM port; DHCP always works.
-    let pg_vms = "mst_vms";
+    let pg_vms = PG_VMS;
     let mut acls = vec![];
     for (name, direction, prio, matcher, action) in [
         (
@@ -628,13 +653,6 @@ pub fn compile(m: &Model) -> Desired {
             format!("inport == @{pg_vms} && ip"),
             "drop",
         ),
-        (
-            "dhcp",
-            "from-lport",
-            PRIO_DHCP,
-            format!("inport == @{pg_vms} && ip4 && udp && udp.src == 68 && udp.dst == 67"),
-            "allow-related",
-        ),
     ] {
         let key = format!("acl/vms/{name}");
         acls.push(key.clone());
@@ -649,28 +667,6 @@ pub fn compile(m: &Model) -> Desired {
                 ("action", s(action)),
             ],
         );
-    }
-    if !monitors.is_empty() {
-        let key = "acl/vms/health-checks".to_owned();
-        let sources: Vec<String> = monitors.iter().map(Ipv4Addr::to_string).collect();
-        b.add(
-            Table::Acl,
-            key.clone(),
-            None,
-            vec![
-                ("direction", s("to-lport")),
-                ("priority", Datum::Int(PRIO_HEALTH_CHECK)),
-                (
-                    "match",
-                    s(format!(
-                        "outport == @{pg_vms} && ip4.src == {{{}}}",
-                        sources.join(", ")
-                    )),
-                ),
-                ("action", s("allow-related")),
-            ],
-        );
-        acls.push(key);
     }
     b.add(
         Table::PortGroup,
@@ -946,18 +942,9 @@ mod tests {
                 .refs("load_balancer")
                 .contains(&key.as_str())
         );
-        // Health checks get through, whatever else is in the way.
-        let acl = d.find("acl/vms/health-checks").expect("health check ACL");
-        assert_eq!(
-            acl.str("match"),
-            Some("outport == @mst_vms && ip4.src == {10.0.0.254}")
-        );
-        assert!(
-            d.find("pg/vms")
-                .unwrap()
-                .refs("acls")
-                .contains(&"acl/vms/health-checks")
-        );
+        // Health checks need no rule: OVN lets its own through, and one
+        // by their source address (a tenant's choosing) would let anyone in.
+        assert!(!d.rows.iter().any(|r| r.key.contains("health")));
         assert!(
             d.warnings
                 .iter()
@@ -973,7 +960,6 @@ mod tests {
             row.get("ip_port_mappings"),
             Some(&Datum::Map(BTreeMap::new()))
         );
-        assert!(d.find("acl/vms/health-checks").is_none());
     }
 
     #[test]
@@ -1070,6 +1056,29 @@ mod tests {
         // The provider's guardrail covers its grandchildren's VMs.
         let pg = d.find(&format!("pg/gr/{}", id(1))).unwrap();
         assert_eq!(pg.refs("ports").len(), 2);
+
+        // DHCP outranks guardrails too, but reaches only OVN's DHCP server:
+        // no way out past a guardrail on UDP 68 to 67.
+        let net = id(11);
+        let dhcp = d.find(&format!("acl/dhcp/{net}")).unwrap();
+        let Some(Datum::Int(p)) = dhcp.get("priority") else {
+            panic!()
+        };
+        assert!(p > g);
+        let gw = &model().networks[0].gateway;
+        assert_eq!(
+            dhcp.str("match"),
+            Some(
+                format!(
+                    "inport == @mst_vms && ip4 && udp && udp.src == 68 && udp.dst == 67 \
+                     && ip4.dst == {{255.255.255.255, {gw}}}"
+                )
+                .as_str()
+            )
+        );
+        let ls = d.find(&format!("ls/{net}")).unwrap();
+        assert_eq!(ls.refs("acls"), [format!("acl/dhcp/{net}").as_str()]);
+        assert!(d.find("acl/vms/dhcp").is_none());
     }
 
     #[test]

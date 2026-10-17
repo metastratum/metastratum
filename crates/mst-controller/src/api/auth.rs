@@ -199,7 +199,9 @@ async fn login(
             req.tenant.as_deref().unwrap_or("").trim_matches('/')
         ),
     };
-    if let Err(retry) = state.limits.login_failures.check(&account).await {
+    // Taken now and given back on success: parallel guesses cannot all
+    // pass before the first of them fails.
+    if let Err(retry) = state.limits.login_failures.take(&account).await {
         return Ok(crate::ratelimit::too_many(retry));
     }
     let user = match &tenant {
@@ -220,7 +222,6 @@ async fn login(
     let user = match user {
         Some(u) if ok && !u.disabled => u,
         other => {
-            let _ = state.limits.login_failures.take(&account).await;
             metrics::counter!("mst_logins_total", "method" => "password", "outcome" => "failed")
                 .increment(1);
             let entry = mst_db::audit::Entry {
@@ -243,6 +244,7 @@ async fn login(
         }
     };
 
+    state.limits.login_failures.give_back(&account).await;
     let factors = mst_db::two_factor::factors(&state.db, user.id).await?;
     if !factors.is_empty() {
         let second_factor =

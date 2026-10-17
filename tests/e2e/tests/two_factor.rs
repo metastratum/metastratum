@@ -243,6 +243,17 @@ async fn scenario(admin: &Api, run: &str, tenant: &str) -> anyhow::Result<()> {
             .await?;
         ids.insert(name, u["id"].as_str().unwrap().to_owned());
     }
+    // Roles only at a user's own tenant or below: whoever manages the
+    // account (resetting its password, its second factors) manages there.
+    let root = admin.get("/auth/me").await?["tenant_id"].clone();
+    let (st, body) = admin
+        .try_send(
+            Method::POST,
+            "/role-bindings",
+            Some(json!({"user_id": ids["alice"], "tenant_id": root, "role": "admin"})),
+        )
+        .await?;
+    assert_eq!(st, 400, "a role above the user's tenant: {body}");
     let tf = |name: &str| format!("/users/{}/two-factor", ids[name]);
     // Security keys need a name the browser accepts: localhost will do.
     let local = || Api::anonymous_at(&admin.base, "localhost");
@@ -273,6 +284,10 @@ async fn scenario(admin: &Api, run: &str, tenant: &str) -> anyhow::Result<()> {
         (403, Some("wrong_password")),
         "{body}"
     );
+    // A session opened with the password alone, by someone who learnt it,
+    // ends once a factor is added.
+    let eavesdropper = by_ip()?;
+    assert_eq!(password_step(&eavesdropper, "alice", run).await?.0, 204);
     let e = alice
         .post(
             &format!("{}/totp/start", tf("alice")),
@@ -302,6 +317,12 @@ async fn scenario(admin: &Api, run: &str, tenant: &str) -> anyhow::Result<()> {
     let codes: Vec<String> = serde_json::from_value(added["backup_codes"].clone())?;
     assert_eq!(codes.len(), 10, "{added}");
     assert_eq!(added["factor"]["kind"], "totp");
+    assert_eq!(eavesdropper.status_of("/auth/me").await?, 401, "signed out");
+    assert_eq!(
+        alice.status_of("/auth/me").await?,
+        200,
+        "the session adding it stays"
+    );
     // Others cannot add factors for her.
     let (st, _) = admin
         .try_send(

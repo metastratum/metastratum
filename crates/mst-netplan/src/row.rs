@@ -89,6 +89,7 @@ impl Table {
             Table::LogicalSwitch => &[
                 "name",
                 "ports",
+                "acls",
                 "qos_rules",
                 "load_balancer",
                 "external_ids",
