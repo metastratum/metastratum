@@ -42,11 +42,9 @@ impl FilePool {
     async fn snapshot_cmd(&self, op: &str, id: &str, snap: &str) -> Result<()> {
         let path = self.volume_path(id)?;
         let (p, name) = (path.to_string_lossy(), snapshot_name(snap)?);
-        run(
-            "qemu-img",
-            &["snapshot", "-q", op, &name, "-f", "qcow2", &p],
-        )
-        .await?;
+        // No `-f`: older qemu-img (8.x) does not take it here. The volumes
+        // are qcow2 files metastratum made, which is what it finds.
+        run("qemu-img", &["snapshot", "-q", op, &name, &p]).await?;
         Ok(())
     }
 
