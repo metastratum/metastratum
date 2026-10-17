@@ -183,15 +183,19 @@ async fn scenario(api: &Api, vm: &str) -> anyhow::Result<()> {
         (Some("running"), Some(1536))
     );
 
+    // Shut down from inside the guest, it is stopped as if through the API.
     // Stopped, the maximum changes too; memory set past it takes it along.
-    let t = api
-        .post(&format!("/vms/{vm}/stop?force=true"), json!({}))
+    sh(api, vm, "sudo systemctl poweroff --no-block").await?;
+    let v = api
+        .wait_vm(vm, BOOT, |v| {
+            v["status"] == "ready" && v["power"] == "stopped"
+        })
         .await?;
-    api.wait_task(t["task_id"].as_str().unwrap(), BOOT).await?;
-    api.wait_vm(vm, BOOT, |v| {
-        v["status"] == "ready" && v["power"] == "stopped"
-    })
-    .await?;
+    assert_eq!(
+        (v["desired_power"].as_str(), v["power_reason"].as_str()),
+        (Some("stopped"), Some("shutdown")),
+        "{v}"
+    );
     let (st, v) = patch(api, vm, json!({"memory_mib": 2048})).await?;
     assert_eq!(st, 200, "{v}");
     assert_eq!(

@@ -541,7 +541,7 @@ async fn scheduling_snapshot_reports_allocations_and_liveness(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]
-async fn power_observations_never_change_the_desired_state(pool: PgPool) {
+async fn power_observations_follow_stops_but_not_crashes(pool: PgPool) {
     let t = root(&pool).await;
     let h = host(&pool).await;
     let v = vm(&pool, &t, &h, "a").await;
@@ -563,7 +563,22 @@ async fn power_observations_never_change_the_desired_state(pool: PgPool) {
         .power_observed_at
         .unwrap();
 
-    // The guest shuts itself down: recorded with its reason, intent untouched.
+    // A crash: still meant to run.
+    assert!(
+        vms::observe_power(&pool, v.id, h.id, "crashed", Some("crashed"))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        vms::get(&pool, v.id).await.unwrap().desired_power,
+        "running"
+    );
+    vms::observe_power(&pool, v.id, h.id, "running", None)
+        .await
+        .unwrap();
+
+    // The guest shuts itself down: recorded with its reason, and it is now
+    // meant to be stopped.
     assert!(
         vms::observe_power(&pool, v.id, h.id, "stopped", Some("shutdown"))
             .await
@@ -574,8 +589,23 @@ async fn power_observations_never_change_the_desired_state(pool: PgPool) {
         (vm.power.as_str(), vm.power_reason.as_deref()),
         ("stopped", Some("shutdown"))
     );
-    assert_eq!(vm.desired_power, "running");
+    assert_eq!(vm.desired_power, "stopped");
     assert!(vm.power_observed_at.unwrap() >= before);
+
+    // Started through the API: a stale report of the stop (no change)
+    // leaves the new intent alone.
+    vms::set_desired_power(&pool, v.id, "running")
+        .await
+        .unwrap();
+    assert!(
+        !vms::observe_power(&pool, v.id, h.id, "stopped", Some("shutdown"))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        vms::get(&pool, v.id).await.unwrap().desired_power,
+        "running"
+    );
 
     // A changed reason alone is a change; reports for the wrong host are not.
     assert!(

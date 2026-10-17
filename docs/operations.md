@@ -333,7 +333,11 @@ operating system, configured per host (Manage → Fencing):
 
 Only once fencing is confirmed does a recovery task restart the host's VMs
 on other hosts of the cluster, for VMs whose disks are all on shared
-storage (NFS, Ceph). VMs on the host's local disks wait for it. **Without
+storage (NFS, Ceph). VMs on the host's local disks wait for it. Only VMs
+meant to run are restarted: not those stopped through the API, nor those
+shut down or powered off from inside the guest (or with `virsh` on the
+host), which count as stopped from then on. A VM that crashed is still
+meant to run. **Without
 fencing configured nothing is restarted**: a host that only lost its
 network may still be running its VMs, and starting them a second time on
 the same disks corrupts them. "Test" on the fencing form checks the BMC

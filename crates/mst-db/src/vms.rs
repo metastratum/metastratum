@@ -133,9 +133,12 @@ pub async fn set_desired_power(db: impl PgExecutor<'_>, id: VmId, power: &str) -
 }
 
 /// Records the power state a host reports, and why it changed if known.
-/// Returns whether anything changed. This is an observation only: the
-/// desired power state changes solely through the API. While a VM migrates,
-/// its source's reports (paused, then gone) say nothing about the VM; the
+/// Returns whether anything changed. A running VM shut down or powered off
+/// other than through the API (from inside the guest, say) stays stopped:
+/// it is now meant to be, as if stopped through the API, so it changes like
+/// any stopped VM and is not restarted elsewhere if its host fails. One that
+/// crashed or failed is still meant to run. While a VM migrates, its
+/// source's reports (paused, then gone) say nothing about the VM; the
 /// migration records the outcome itself.
 pub async fn observe_power(
     db: impl PgExecutor<'_>,
@@ -145,7 +148,10 @@ pub async fn observe_power(
     reason: Option<&str>,
 ) -> Result<bool> {
     let res = sqlx::query(
-        "UPDATE vms SET power = $3, power_reason = $4, power_observed_at = now(), updated_at = now()
+        "UPDATE vms SET power = $3, power_reason = $4, power_observed_at = now(), updated_at = now(),
+                desired_power = CASE WHEN power <> 'stopped' AND $3 = 'stopped'
+                                      AND $4 IN ('shutdown', 'destroyed')
+                                     THEN 'stopped' ELSE desired_power END
          WHERE id = $1 AND host_id = $2 AND status <> 'migrating'
            AND (power <> $3 OR power_reason IS DISTINCT FROM $4)",
     )
