@@ -30,22 +30,7 @@ async fn vm_lifecycle_consoles_and_network() -> anyhow::Result<()> {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs()
     );
-    let result = scenario(&api, &run).await;
-    // Remove this run's VMs even if the scenario failed half-way.
-    if let Ok(vms) = api.get("/vms").await {
-        for vm in vms.as_array().into_iter().flatten() {
-            if vm["name"].as_str().is_some_and(|n| n.starts_with(&run)) {
-                let _ = api
-                    .send(
-                        reqwest::Method::DELETE,
-                        &format!("/vms/{}", vm["id"].as_str().unwrap()),
-                        None,
-                    )
-                    .await;
-            }
-        }
-    }
-    result
+    mst_e2e::cleaned_up(&api, &run, scenario(&api, &run)).await
 }
 
 async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {

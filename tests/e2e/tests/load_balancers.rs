@@ -41,29 +41,9 @@ async fn load_balancers_spread_check_and_follow_members() -> anyhow::Result<()> 
         .unwrap()
         .to_owned();
 
-    let result = scenario(&admin, &run, &t).await;
-
-    // VMs first; deleting the tenant then removes its load balancers and
+    // Deleting the tenant (after its VMs) removes its load balancers and
     // network setup.
-    if let Ok(vms) = admin.get(&format!("/vms?tenant_id={t}")).await {
-        for vm in vms.as_array().into_iter().flatten() {
-            let (_, task) = admin
-                .try_send(
-                    Method::DELETE,
-                    &format!("/vms/{}", vm["id"].as_str().unwrap()),
-                    None,
-                )
-                .await?;
-            if let Some(task) = task["task_id"].as_str() {
-                let _ = admin.wait_task(task, Duration::from_secs(120)).await;
-            }
-        }
-    }
-    let (st, body) = admin
-        .try_send(Method::DELETE, &format!("/tenants/{t}"), None)
-        .await?;
-    assert_eq!(st, 204, "deleting the tenant: {body}");
-    result
+    mst_e2e::cleaned_up(&admin, &run, scenario(&admin, &run, &t)).await
 }
 
 async fn external_network(admin: &Api) -> anyhow::Result<String> {

@@ -35,7 +35,7 @@ async fn tenant_images_are_not_fetched_from_internal_addresses() -> anyhow::Resu
         .as_str()
         .unwrap()
         .to_owned();
-    let result = async {
+    mst_e2e::cleaned_up(&admin, &run, async {
         let clusters: Vec<_> = admin.get("/clusters").await?.as_array().unwrap().iter().map(|c| c["id"].clone()).collect();
         admin
             .send(Method::PUT, &format!("/tenants/{t}/grants"), Some(json!({"clusters": clusters, "storage_pools": []})))
@@ -60,31 +60,9 @@ async fn tenant_images_are_not_fetched_from_internal_addresses() -> anyhow::Resu
         assert!(err.contains("not a public address"), "{err}");
         let (_, task) = admin.try_send(Method::DELETE, &format!("/vms/{id}"), None).await?;
         admin.wait_task(task["task_id"].as_str().unwrap(), Duration::from_secs(60)).await?;
-        anyhow::Ok(())
-    }
-    .await;
-    if let Ok(images) = admin.get(&format!("/images?tenant_id={t}")).await {
-        for i in images
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|i| i["tenant_id"] == t.as_str())
-        {
-            let _ = admin
-                .try_send(
-                    Method::DELETE,
-                    &format!("/images/{}", i["id"].as_str().unwrap()),
-                    None,
-                )
-                .await;
-        }
-    }
-    let (st, body) = admin
-        .try_send(Method::DELETE, &format!("/tenants/{t}"), None)
-        .await?;
-    result?;
-    assert_eq!(st, 204, "{body}");
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 /// With two controller replicas (`MST_E2E_URL2`), each serves every host:
@@ -129,7 +107,7 @@ async fn every_replica_reaches_every_host() -> anyhow::Result<()> {
         )
         .await?;
     let id = vm["id"].as_str().unwrap().to_owned();
-    let result = async {
+    mst_e2e::cleaned_up(&a, &name, async {
         a.wait_vm(&id, Duration::from_secs(120), |v| {
             v["status"] == "ready" && v["power"] == "running"
         })
@@ -144,16 +122,9 @@ async fn every_replica_reaches_every_host() -> anyhow::Result<()> {
             .await?;
         b.wait_task(t["task_id"].as_str().unwrap(), Duration::from_secs(60))
             .await?;
-        anyhow::Ok(())
-    }
-    .await;
-    let (_, t) = a
-        .try_send(Method::DELETE, &format!("/vms/{id}"), None)
-        .await?;
-    if let Some(t) = t["task_id"].as_str() {
-        a.wait_task(t, Duration::from_secs(120)).await?;
-    }
-    result
+        Ok(())
+    })
+    .await
 }
 
 fn virsh(args: &[&str]) -> anyhow::Result<String> {
@@ -237,7 +208,7 @@ async fn failed_hosts_are_fenced_and_their_vms_restart_elsewhere() -> anyhow::Re
         )
         .await?;
     let id = vm["id"].as_str().unwrap().to_owned();
-    let result = async {
+    let outcome = mst_e2e::attempt(async {
         anyhow::ensure!(
             nfs.is_some(),
             "needs an NFS pool (run the storage tests first)"
@@ -300,32 +271,30 @@ async fn failed_hosts_are_fenced_and_their_vms_restart_elsewhere() -> anyhow::Re
             Some(json!({"state": "ready"})),
         )
         .await?;
-        anyhow::Ok(())
+        Ok(())
+    })
+    .await;
+    let cleanup = async {
+        api.send(
+            Method::PUT,
+            &format!("/clusters/{cluster}"),
+            Some(cluster_body(false)),
+        )
+        .await?;
+        for h in &hosts {
+            let hid = h["id"].as_str().unwrap();
+            let _ = api
+                .send(
+                    Method::PUT,
+                    &format!("/hosts/{hid}/fencing"),
+                    Some(json!({"kind": null})),
+                )
+                .await;
+        }
+        mst_e2e::clean(&api, &name).await
     }
     .await;
-    api.send(
-        Method::PUT,
-        &format!("/clusters/{cluster}"),
-        Some(cluster_body(false)),
-    )
-    .await?;
-    for h in &hosts {
-        let hid = h["id"].as_str().unwrap();
-        let _ = api
-            .send(
-                Method::PUT,
-                &format!("/hosts/{hid}/fencing"),
-                Some(json!({"kind": null})),
-            )
-            .await;
-    }
-    let (_, t) = api
-        .try_send(Method::DELETE, &format!("/vms/{id}"), None)
-        .await?;
-    if let Some(t) = t["task_id"].as_str() {
-        let _ = api.wait_task(t, Duration::from_secs(120)).await;
-    }
-    result
+    outcome.finish(cleanup)
 }
 
 /// Hosts renew their certificates (here on request) and carry on: they
@@ -388,7 +357,7 @@ async fn hosts_renew_their_certificates() -> anyhow::Result<()> {
         )
         .await?;
     let id = vm["id"].as_str().unwrap().to_owned();
-    let result = async {
+    mst_e2e::cleaned_up(&api, &name, async {
         api.wait_vm(&id, Duration::from_secs(120), |v| {
             v["status"] == "ready" && v["power"] == "running"
         })
@@ -396,14 +365,7 @@ async fn hosts_renew_their_certificates() -> anyhow::Result<()> {
         let t = api.post(&format!("/vms/{id}/migrate"), json!({})).await?;
         api.wait_task(t["task_id"].as_str().unwrap(), Duration::from_secs(300))
             .await?;
-        anyhow::Ok(())
-    }
-    .await;
-    let (_, t) = api
-        .try_send(Method::DELETE, &format!("/vms/{id}"), None)
-        .await?;
-    if let Some(t) = t["task_id"].as_str() {
-        let _ = api.wait_task(t, Duration::from_secs(120)).await;
-    }
-    result
+        Ok(())
+    })
+    .await
 }

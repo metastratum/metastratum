@@ -41,32 +41,21 @@ async fn snapshots_take_revert_and_delete() -> anyhow::Result<()> {
         }
     }
 
-    let results = futures::future::join_all(
-        variants
-            .iter()
-            .map(|(label, pool)| scenario(&api, &run, label, pool.as_deref())),
-    )
-    .await;
-
-    // Clean up: the VMs, and their snapshots with them.
-    let vms = api.get("/vms").await?;
-    for v in vms.as_array().into_iter().flatten() {
-        if !v["name"].as_str().is_some_and(|n| n.starts_with(&run)) {
-            continue;
+    // The VMs go afterwards, with their snapshots (deleting a Ceph volume
+    // with snapshots left must work too).
+    mst_e2e::cleaned_up(&api, &run, async {
+        let results = futures::future::join_all(
+            variants
+                .iter()
+                .map(|(label, pool)| scenario(&api, &run, label, pool.as_deref())),
+        )
+        .await;
+        for ((label, _), r) in variants.iter().zip(results) {
+            r.map_err(|e| e.context(format!("on {label} storage")))?;
         }
-        let id = v["id"].as_str().unwrap();
-        let (_, t) = api
-            .try_send(Method::DELETE, &format!("/vms/{id}"), None)
-            .await?;
-        if let Some(task) = t["task_id"].as_str() {
-            // Deleting a Ceph volume with snapshots left must work too.
-            api.wait_task(task, BOOT).await?;
-        }
-    }
-    for ((label, _), r) in variants.iter().zip(results) {
-        r.map_err(|e| e.context(format!("on {label} storage")))?;
-    }
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 async fn sh(api: &Api, vm: &str, cmd: &str) -> anyhow::Result<String> {

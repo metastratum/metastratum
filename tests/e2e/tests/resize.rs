@@ -39,16 +39,19 @@ async fn resize_cpus_memory_and_disks() -> anyhow::Result<()> {
         .into_iter()
         .chain(rbd.map(|id| ("rbd", Some(id))))
         .collect();
-    let results = futures::future::join_all(
-        variants
-            .iter()
-            .map(|(label, pool)| variant(&api, &run, label, pool.as_deref())),
-    )
-    .await;
-    for ((label, _), r) in variants.iter().zip(results) {
-        r.map_err(|e| e.context(format!("on {label} storage")))?;
-    }
-    Ok(())
+    mst_e2e::cleaned_up(&api, &run, async {
+        let results = futures::future::join_all(
+            variants
+                .iter()
+                .map(|(label, pool)| variant(&api, &run, label, pool.as_deref())),
+        )
+        .await;
+        for ((label, _), r) in variants.iter().zip(results) {
+            r.map_err(|e| e.context(format!("on {label} storage")))?;
+        }
+        Ok(())
+    })
+    .await
 }
 
 async fn variant(api: &Api, run: &str, label: &str, pool: Option<&str>) -> anyhow::Result<()> {
@@ -61,18 +64,8 @@ async fn variant(api: &Api, run: &str, label: &str, pool: Option<&str>) -> anyho
         )
         .await?;
     let id = vm["id"].as_str().unwrap().to_owned();
-    let result = async {
-        api.wait_task(vm["task_id"].as_str().unwrap(), BOOT).await?;
-        scenario(api, &id, pool.is_some()).await
-    }
-    .await;
-    let (_, t) = api
-        .try_send(Method::DELETE, &format!("/vms/{id}"), None)
-        .await?;
-    if let Some(task) = t["task_id"].as_str() {
-        api.wait_task(task, BOOT).await?;
-    }
-    result
+    api.wait_task(vm["task_id"].as_str().unwrap(), BOOT).await?;
+    scenario(api, &id, pool.is_some()).await
 }
 
 async fn sh(api: &Api, vm: &str, cmd: &str) -> anyhow::Result<String> {

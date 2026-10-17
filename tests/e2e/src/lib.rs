@@ -482,6 +482,149 @@ pub fn in_service(hosts: &Value) -> Vec<Value> {
         .collect()
 }
 
+/// How a test's body ended: returned, or panicked (a failed assertion).
+pub struct Outcome(std::thread::Result<Result<()>>);
+
+/// Runs a test's body, catching a panic so what it made can still be
+/// removed afterwards (see [`Outcome::finish`]).
+pub async fn attempt(body: impl std::future::Future<Output = Result<()>>) -> Outcome {
+    use futures::FutureExt;
+    Outcome(std::panic::AssertUnwindSafe(body).catch_unwind().await)
+}
+
+impl Outcome {
+    /// The test's result, after cleaning up: a panic is raised again, an
+    /// error returned; a body that passed fails if cleaning up did not, so
+    /// leftovers do not go unnoticed.
+    pub fn finish(self, cleanup: Result<()>) -> Result<()> {
+        match (self.0, cleanup) {
+            (Err(panic), cleanup) => {
+                if let Err(e) = cleanup {
+                    eprintln!("cleaning up: {e:#}");
+                }
+                std::panic::resume_unwind(panic)
+            }
+            (Ok(Err(e)), cleanup) => {
+                if let Err(c) = cleanup {
+                    eprintln!("cleaning up: {c:#}");
+                }
+                Err(e)
+            }
+            (Ok(Ok(())), cleanup) => cleanup.context("cleaning up"),
+        }
+    }
+}
+
+/// Runs a test's body, then removes what its run made ([`clean`]), however
+/// the body ended.
+pub async fn cleaned_up(
+    api: &Api,
+    run: &str,
+    body: impl std::future::Future<Output = Result<()>>,
+) -> Result<()> {
+    let outcome = attempt(body).await;
+    outcome.finish(clean(api, run).await)
+}
+
+/// Removes what a run made: VMs named after it, and its tenants (those
+/// whose slug path starts with it) with what they hold (VMs, images),
+/// deepest first. Says what it could not remove.
+pub async fn clean(api: &Api, run: &str) -> Result<()> {
+    let ours = |path: &str| path.split('/').next().is_some_and(|s| s.starts_with(run));
+    let tenants: Vec<Value> = api
+        .get("/tenants")
+        .await?
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t["slug_path"].as_str().is_some_and(ours))
+        .collect();
+    let tenant_ids: Vec<&str> = tenants.iter().filter_map(|t| t["id"].as_str()).collect();
+    let mut failed = vec![];
+
+    let vms = api.get("/vms?descendants=true").await?;
+    let vms: Vec<&Value> = vms
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|v| {
+            v["name"].as_str().is_some_and(|n| n.starts_with(run))
+                || v["tenant_id"]
+                    .as_str()
+                    .is_some_and(|t| tenant_ids.contains(&t))
+        })
+        .collect();
+    let deletions = vms.iter().map(|v| async move {
+        let id = v["id"].as_str().unwrap_or_default();
+        delete_vm(api, id)
+            .await
+            .with_context(|| format!("VM {}", v["name"]))
+    });
+    for r in futures::future::join_all(deletions).await {
+        if let Err(e) = r {
+            failed.push(format!("{e:#}"));
+        }
+    }
+
+    for t in &tenant_ids {
+        let images = api.get(&format!("/images?tenant_id={t}")).await?;
+        for i in images.as_array().into_iter().flatten() {
+            if i["tenant_id"].as_str() == Some(t) {
+                let path = format!("/images/{}", i["id"].as_str().unwrap_or_default());
+                if let Ok((st, b)) = api.try_send(reqwest::Method::DELETE, &path, None).await
+                    && st >= 300
+                    && st != 404
+                {
+                    failed.push(format!("image {}: {b}", i["name"]));
+                }
+            }
+        }
+    }
+
+    // Sub-tenants before their parents.
+    let mut by_depth: Vec<&Value> = tenants.iter().collect();
+    by_depth.sort_by_key(|t| {
+        std::cmp::Reverse(t["slug_path"].as_str().map_or(0, |p| p.split('/').count()))
+    });
+    for t in by_depth {
+        let path = format!("/tenants/{}", t["id"].as_str().unwrap_or_default());
+        match api.try_send(reqwest::Method::DELETE, &path, None).await {
+            Ok((st, _)) if st < 300 || st == 404 => {}
+            Ok((_, b)) => failed.push(format!("tenant {}: {b}", t["slug_path"])),
+            Err(e) => failed.push(format!("tenant {}: {e:#}", t["slug_path"])),
+        }
+    }
+
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        bail!("left behind: {}", failed.join("; "))
+    }
+}
+
+/// Deletes a VM and waits for it to go. A VM busy with something else (a
+/// migration, a backup) is tried again for a while.
+pub async fn delete_vm(api: &Api, id: &str) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(300);
+    loop {
+        let (st, body) = api
+            .try_send(reqwest::Method::DELETE, &format!("/vms/{id}"), None)
+            .await?;
+        match st {
+            202 => {
+                if let Some(task) = body["task_id"].as_str() {
+                    api.wait_task(task, Duration::from_secs(300)).await?;
+                }
+                return Ok(());
+            }
+            404 => return Ok(()),
+            409 if Instant::now() < deadline => tokio::time::sleep(Duration::from_secs(5)).await,
+            _ => bail!("deleting it: {st} {body}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::find;

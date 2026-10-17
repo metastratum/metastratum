@@ -32,23 +32,16 @@ async fn cpus_plug_in_and_out_while_the_vm_runs() -> anyhow::Result<()> {
         )
         .await?;
     let id = vm["id"].as_str().unwrap().to_owned();
-    assert_eq!(
-        (vm["vcpus"].as_u64(), vm["max_vcpus"].as_u64()),
-        (Some(1), Some(4)),
-        "{vm}"
-    );
-    let result = async {
+    mst_e2e::cleaned_up(&api, &name, async {
+        assert_eq!(
+            (vm["vcpus"].as_u64(), vm["max_vcpus"].as_u64()),
+            (Some(1), Some(4)),
+            "{vm}"
+        );
         api.wait_task(vm["task_id"].as_str().unwrap(), BOOT).await?;
         scenario(&api, &id).await
-    }
-    .await;
-    let (_, t) = api
-        .try_send(Method::DELETE, &format!("/vms/{id}"), None)
-        .await?;
-    if let Some(task) = t["task_id"].as_str() {
-        api.wait_task(task, BOOT).await?;
-    }
-    result
+    })
+    .await
 }
 
 async fn sh(api: &Api, vm: &str, cmd: &str) -> anyhow::Result<String> {

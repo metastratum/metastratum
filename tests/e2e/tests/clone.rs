@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use mst_e2e::{Api, Console};
 use reqwest::Method;
-use serde_json::{Value, json};
+use serde_json::json;
 
 const BOOT: Duration = Duration::from_secs(5 * 60);
 const COPY: Duration = Duration::from_secs(10 * 60);
@@ -40,35 +40,19 @@ async fn templates_and_clones() -> anyhow::Result<()> {
             None => eprintln!("no {name} pool; skipping {label} (run the storage tests first)"),
         }
     }
-    let results = futures::future::join_all(
-        variants
-            .iter()
-            .map(|(label, pool)| scenario(&api, &run, label, pool.as_deref())),
-    )
-    .await;
-
-    // Clean up: clones first, then the templates they came from.
-    let vms = api.get("/vms").await?;
-    let mut ours: Vec<&Value> = vms
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|v| v["name"].as_str().is_some_and(|n| n.starts_with(&run)))
-        .collect();
-    ours.sort_by_key(|v| v["template"].as_bool());
-    for v in ours {
-        let id = v["id"].as_str().unwrap();
-        let (_, t) = api
-            .try_send(Method::DELETE, &format!("/vms/{id}"), None)
-            .await?;
-        if let Some(task) = t["task_id"].as_str() {
-            api.wait_task(task, BOOT).await?;
+    mst_e2e::cleaned_up(&api, &run, async {
+        let results = futures::future::join_all(
+            variants
+                .iter()
+                .map(|(label, pool)| scenario(&api, &run, label, pool.as_deref())),
+        )
+        .await;
+        for ((label, _), r) in variants.iter().zip(results) {
+            r.map_err(|e| e.context(format!("on {label} storage")))?;
         }
-    }
-    for ((label, _), r) in variants.iter().zip(results) {
-        r.map_err(|e| e.context(format!("on {label} storage")))?;
-    }
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 async fn sh(api: &Api, vm: &str, cmd: &str) -> anyhow::Result<String> {

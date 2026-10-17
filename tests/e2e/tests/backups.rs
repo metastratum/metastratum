@@ -38,59 +38,51 @@ async fn backup_restore_and_schedule() -> anyhow::Result<()> {
         .await?;
     let repo = repo["id"].as_str().unwrap().to_owned();
 
-    let result = scenario(&api, &run, &repo).await;
+    let outcome = mst_e2e::attempt(scenario(&api, &run, &repo)).await;
 
-    // Clean up whatever the scenario left: schedules, VMs, backups, the
+    // Clean up whatever the scenario left: schedules, backups, VMs, the
     // repository.
-    let vms = api.get("/vms").await?;
-    let ours: Vec<String> = vms
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|v| v["name"].as_str().is_some_and(|n| n.starts_with(&run)))
-        .map(|v| v["id"].as_str().unwrap().to_owned())
-        .collect();
-    for id in &ours {
-        let _ = api
+    let cleanup = async {
+        let vms = api.get("/vms").await?;
+        for v in vms.as_array().into_iter().flatten() {
+            if v["name"].as_str().is_some_and(|n| n.starts_with(&run)) {
+                let _ = api
+                    .try_send(
+                        Method::PUT,
+                        &format!("/vms/{}/backup-schedule", v["id"].as_str().unwrap()),
+                        Some(json!({"every": null})),
+                    )
+                    .await;
+            }
+        }
+        for b in api.get("/backups").await?.as_array().into_iter().flatten() {
+            if b["repository_id"] != repo.as_str() {
+                continue;
+            }
+            let id = b["id"].as_str().unwrap();
+            if b["state"] == "running" {
+                wait_backup(&api, id, |b| b["state"] != "running").await?;
+            }
+            let (_, t) = api
+                .try_send(Method::DELETE, &format!("/backups/{id}"), None)
+                .await?;
+            if let Some(task) = t["task_id"].as_str() {
+                api.wait_task(task, COPY).await?;
+            }
+        }
+        mst_e2e::clean(&api, &run).await?;
+        let (st, body) = api
             .try_send(
-                Method::PUT,
-                &format!("/vms/{id}/backup-schedule"),
-                Some(json!({"every": null})),
+                Method::DELETE,
+                &format!("/backup-repositories/{repo}"),
+                None,
             )
-            .await;
-    }
-    for b in api.get("/backups").await?.as_array().into_iter().flatten() {
-        if b["repository_id"] != repo.as_str() {
-            continue;
-        }
-        let id = b["id"].as_str().unwrap();
-        if b["state"] == "running" {
-            wait_backup(&api, id, |b| b["state"] != "running").await?;
-        }
-        let (_, t) = api
-            .try_send(Method::DELETE, &format!("/backups/{id}"), None)
             .await?;
-        if let Some(task) = t["task_id"].as_str() {
-            api.wait_task(task, COPY).await?;
-        }
+        anyhow::ensure!(st == 204, "deleting the repository: {body}");
+        Ok(())
     }
-    for id in &ours {
-        let (_, t) = api
-            .try_send(Method::DELETE, &format!("/vms/{id}"), None)
-            .await?;
-        if let Some(task) = t["task_id"].as_str() {
-            api.wait_task_end(task, BOOT).await?;
-        }
-    }
-    let (st, body) = api
-        .try_send(
-            Method::DELETE,
-            &format!("/backup-repositories/{repo}"),
-            None,
-        )
-        .await?;
-    assert_eq!(st, 204, "deleting the repository: {body}");
-    result
+    .await;
+    outcome.finish(cleanup)
 }
 
 async fn wait_backup(api: &Api, id: &str, pred: impl Fn(&Value) -> bool) -> anyhow::Result<Value> {

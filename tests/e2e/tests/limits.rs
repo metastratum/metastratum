@@ -114,19 +114,18 @@ async fn vms_are_held_to_their_clusters_limits() -> anyhow::Result<()> {
     .await?;
     let image = api.image().await?;
     let run = format!("lim-{}", std::process::id());
-    let mut vms = vec![];
-    for n in ["a", "b"] {
-        let vm = api
-            .post(
-                "/vms",
-                json!({"name": format!("{run}-{n}"), "vcpus": 1, "memory_mib": 1024,
-                       "disk_gib": 5, "image_id": image, "password": "e2e-password"}),
-            )
-            .await?;
-        vms.push(vm["id"].as_str().unwrap().to_owned());
-    }
-
-    let result = async {
+    let outcome = mst_e2e::attempt(async {
+        let mut vms = vec![];
+        for n in ["a", "b"] {
+            let vm = api
+                .post(
+                    "/vms",
+                    json!({"name": format!("{run}-{n}"), "vcpus": 1, "memory_mib": 1024,
+                           "disk_gib": 5, "image_id": image, "password": "e2e-password"}),
+                )
+                .await?;
+            vms.push(vm["id"].as_str().unwrap().to_owned());
+        }
         for id in &vms {
             api.wait_vm(id, Duration::from_secs(180), |v| {
                 v["status"] == "ready" && v["power"] == "running"
@@ -171,16 +170,17 @@ async fn vms_are_held_to_their_clusters_limits() -> anyhow::Result<()> {
         assert!(disk_free < disk_limited / 2.0, "{disk_free}s vs {disk_limited}s");
         assert!(net_free < net_limited / 2.0, "{net_free}s vs {net_limited}s");
         anyhow::Ok(())
-    }
+    })
     .await;
 
-    for c in &clusters {
-        set_limits(&api, std::slice::from_ref(c), restore(c)).await?;
+    // The clusters' limits back as they were, and the VMs gone, however it
+    // went.
+    let cleanup = async {
+        for c in &clusters {
+            set_limits(&api, std::slice::from_ref(c), restore(c)).await?;
+        }
+        mst_e2e::clean(&api, &run).await
     }
-    for id in &vms {
-        let _ = api
-            .try_send(Method::DELETE, &format!("/vms/{id}"), None)
-            .await;
-    }
-    result
+    .await;
+    outcome.finish(cleanup)
 }

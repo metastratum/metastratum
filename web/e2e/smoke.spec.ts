@@ -5,15 +5,35 @@ test.skip(!process.env.MST_E2E_URL, 'set MST_E2E_URL to a running controller')
 // The controller's Content-Security-Policy must not block anything the UI
 // does (an inline script or a third-party resource would be refused).
 const cspViolations: string[] = []
+// VMs a test makes are named with this; whatever it left (failing before it
+// deleted them) is deleted after it.
+let vmPrefix: string | undefined
 test.beforeEach(({ page }) => {
   cspViolations.length = 0
+  vmPrefix = undefined
   page.on('console', (msg) => {
     if (msg.text().includes('Content Security Policy')) cspViolations.push(msg.text())
   })
 })
-test.afterEach(() => {
+test.afterEach(async ({ page }) => {
+  if (vmPrefix) await deleteVms(page, vmPrefix)
   expect(cspViolations).toEqual([])
 })
+
+/** Deletes the VMs named with `prefix` through the API, and waits until
+ *  they are gone. */
+async function deleteVms(page: Page, prefix: string) {
+  for (let i = 0; i < 40; i++) {
+    const res = await page.request.get('/api/v1/vms')
+    if (!res.ok()) return
+    const left = ((await res.json()) as { id: string; name: string }[]).filter((v) => v.name.startsWith(prefix))
+    if (left.length === 0) return
+    // Busy VMs (still being made, or being deleted) answer 409: again later.
+    for (const v of left) await page.request.delete(`/api/v1/vms/${v.id}`)
+    await page.waitForTimeout(5_000)
+  }
+  throw new Error(`VMs named ${prefix}… were left behind`)
+}
 
 const user = process.env.MST_E2E_USER ?? 'admin'
 const password = process.env.MST_E2E_PASSWORD ?? ''
@@ -34,6 +54,7 @@ async function signIn(page: Page) {
 
 test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
   const name = `e2e-${Date.now().toString(36)}`
+  vmPrefix = name
   await signIn(page)
 
   for (const [link, heading] of [

@@ -82,7 +82,7 @@ async fn vm_on_nfs_pool() -> anyhow::Result<()> {
         )
         .await?;
     let id = vm["id"].as_str().unwrap().to_owned();
-    let result = async {
+    mst_e2e::cleaned_up(&admin, &name, async {
         assert_eq!(vm["disks"][0]["pool_id"], pool.as_str());
         admin
             .wait_task(vm["task_id"].as_str().unwrap(), Duration::from_secs(600))
@@ -98,22 +98,16 @@ async fn vm_on_nfs_pool() -> anyhow::Result<()> {
             .await?;
         assert_eq!(rc, 0, "{out}");
         assert!(out.contains("4G"), "{out}");
+        // Deleting the VM removes its volume.
+        mst_e2e::delete_vm(&admin, &id).await?;
+        assert_eq!(
+            volumes_in(&admin, &pool).await?,
+            before,
+            "the volume is removed with the VM"
+        );
         anyhow::Ok(())
-    }
-    .await;
-
-    let (_, t) = admin
-        .send(Method::DELETE, &format!("/vms/{id}"), None)
-        .await?;
-    admin
-        .wait_task(t["task_id"].as_str().unwrap(), Duration::from_secs(120))
-        .await?;
-    assert_eq!(
-        volumes_in(&admin, &pool).await?,
-        before,
-        "the volume is removed with the VM"
-    );
-    result
+    })
+    .await
 }
 
 #[tokio::test]
@@ -141,7 +135,7 @@ async fn shared_pools_need_a_grant() -> anyhow::Result<()> {
         .await?;
     let tenant = t["id"].as_str().unwrap().to_owned();
 
-    let result = async {
+    mst_e2e::cleaned_up(&admin, &slug, async {
         let usable = |v: Value| v.as_array().unwrap().iter().map(|p| p["kind"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
         assert_eq!(usable(admin.get(&format!("/tenants/{tenant}/storage-pools")).await?), ["local"]);
         let (st, body) = admin
@@ -163,12 +157,8 @@ async fn shared_pools_need_a_grant() -> anyhow::Result<()> {
         let (st, _) = admin.try_send(Method::PUT, &format!("/tenants/{tenant}/grants"), Some(local)).await?;
         assert_eq!(st, 400);
         anyhow::Ok(())
-    }
-    .await;
-    admin
-        .send(Method::DELETE, &format!("/tenants/{tenant}"), None)
-        .await?;
-    result
+    })
+    .await
 }
 
 /// Runs when MST_E2E_RBD_KEY holds the key of the lab's `client.metastratum`
@@ -224,7 +214,7 @@ async fn vm_on_rbd_pool() -> anyhow::Result<()> {
         )
         .await?;
     let id = vm["id"].as_str().unwrap().to_owned();
-    let result = async {
+    mst_e2e::cleaned_up(&admin, &name, async {
         admin
             .wait_task(vm["task_id"].as_str().unwrap(), Duration::from_secs(900))
             .await?;
@@ -238,15 +228,9 @@ async fn vm_on_rbd_pool() -> anyhow::Result<()> {
         assert_eq!(rc, 0, "{out}");
         assert!(out.contains("5G"), "{out}");
         assert_eq!(volumes_in(&admin, &pool).await?, before + 1);
+        mst_e2e::delete_vm(&admin, &id).await?;
+        assert_eq!(volumes_in(&admin, &pool).await?, before);
         anyhow::Ok(())
-    }
-    .await;
-    let (_, t) = admin
-        .send(Method::DELETE, &format!("/vms/{id}"), None)
-        .await?;
-    admin
-        .wait_task(t["task_id"].as_str().unwrap(), Duration::from_secs(120))
-        .await?;
-    assert_eq!(volumes_in(&admin, &pool).await?, before);
-    result
+    })
+    .await
 }
