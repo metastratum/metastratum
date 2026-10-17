@@ -94,12 +94,14 @@ async function submit() {
     </header>
     <p class="intro">
       A VM’s network interface passes only what its groups allow; replies to allowed traffic always come back.
-      Guardrails set above {{ scope.tenant?.name ?? 'this tenant' }} can block traffic a group allows.
+      <template v-if="!scope.solo">
+        Guardrails set above {{ scope.tenant?.name ?? 'this tenant' }} can block traffic a group allows.
+      </template>
     </p>
     <p v-if="error" class="error-text" role="alert">{{ error }}</p>
 
     <div v-if="groups && !groups.length" class="empty-state">
-      <p>No security groups yet. Each tenant gets a default group with its first VM.</p>
+      <p>No security groups yet. {{ scope.solo ? 'A default group comes with the first VM.' : 'Each tenant gets a default group with its first VM.' }}</p>
     </div>
     <ul v-else-if="groups" class="groups">
       <li v-for="g in groups" :key="g.id" class="group">

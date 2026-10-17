@@ -85,10 +85,16 @@ async function submit() {
 </script>
 
 <template>
-  <ModalDialog :title="`Create VM in ${scope.tenant?.name ?? 'tenant'}`" @close="emit('close')">
+  <ModalDialog
+    :title="scope.solo ? 'Create VM' : `Create VM in ${scope.tenant?.name ?? 'tenant'}`"
+    @close="emit('close')"
+  >
     <p v-if="loaded && !images.length" class="body empty">
       There are no images to boot from yet.
       <RouterLink to="/images" @click="emit('close')">Add an image</RouterLink> first.
+    </p>
+    <p v-else-if="loaded && !clusters.length && scope.solo" class="body empty">
+      There is no cluster to run VMs on yet: create one and add hosts to it under Infrastructure → Clusters.
     </p>
     <p v-else-if="loaded && !clusters.length" class="body empty">
       {{ scope.tenant?.name }} hasn’t been given a cluster to run VMs on. Ask an administrator of the tenant above

@@ -45,6 +45,12 @@ export const useScope = defineStore('scope', {
     tenant(): Tenant | undefined {
       return this.byId.get(this.current)
     },
+    /**
+     * The installation is the provider alone, as far as this user can see:
+     * tenancy (pickers, quotas, guardrails, tenant columns) stays out of the
+     * way until there is a second tenant.
+     */
+    solo: (s) => s.tenants.length === 1 && !s.tenants[0]!.parent_id,
   },
   actions: {
     async load() {

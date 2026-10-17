@@ -1,9 +1,15 @@
+<script setup lang="ts">
+import { useScope } from '../stores/scope'
+
+const scope = useScope()
+</script>
+
 <template>
   <nav class="tabs" aria-label="Networking">
     <RouterLink to="/networks">VPCs</RouterLink>
     <RouterLink to="/security-groups">Security groups</RouterLink>
     <RouterLink to="/floating-ips">Floating IPs</RouterLink>
-    <RouterLink to="/guardrails">Guardrails</RouterLink>
+    <RouterLink v-if="!scope.solo" to="/guardrails">Guardrails</RouterLink>
   </nav>
 </template>
 

@@ -32,7 +32,7 @@ test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
 
   for (const [link, heading] of [
     ['Images', 'Images'],
-    ['Tenants', 'Tenants'],
+    [/^(Tenants|People)$/, /^(Tenants|People)$/],
     ['Audit', 'Audit log'],
     ['Infrastructure', 'Hosts'],
     ['Machines', 'Virtual machines'],
@@ -78,12 +78,18 @@ test('manage a sub-tenant: quotas, people, removal', async ({ page }) => {
   const id = Date.now().toString(36)
   const name = `E2E ${id}`
   await signIn(page)
-  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Tenants' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: /^(Tenants|People)$/ }).click()
 
-  // Create it under the provider.
+  // Create it under the provider: from the People page while the provider
+  // is alone, else from the tree.
   const tree = page.getByRole('navigation', { name: 'Tenants' })
-  await tree.getByRole('button').first().click()
-  await page.getByRole('button', { name: 'Add sub-tenant' }).click()
+  const alone = (await (await page.request.get('/api/v1/tenants')).json()).length === 1
+  if (alone) {
+    await page.getByRole('button', { name: 'Add tenant' }).click()
+  } else {
+    await tree.getByRole('button').first().click()
+    await page.getByRole('button', { name: 'Add sub-tenant' }).click()
+  }
   let dialog = page.getByRole('dialog')
   await dialog.getByLabel('Name').fill(name)
   // The slug is suggested from the name.
@@ -115,9 +121,10 @@ test('manage a sub-tenant: quotas, people, removal', async ({ page }) => {
 test('pages update live when things change elsewhere', async ({ page }) => {
   const id = Date.now().toString(36)
   await signIn(page)
-  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Tenants' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: /^(Tenants|People)$/ }).click()
+  await expect(page.getByRole('heading', { name: /^(Tenants|People)$/, level: 1 })).toBeVisible()
+  // With the provider alone the tree appears once the tenant below exists.
   const tree = page.getByRole('navigation', { name: 'Tenants' })
-  await expect(tree.getByRole('button').first()).toBeVisible()
 
   // Change things through the API, as another user or script would.
   const me = await (await page.request.get('/api/v1/auth/me')).json()
@@ -355,4 +362,22 @@ test('adding a host shows the agent configuration to write', async ({ page }) =>
   await expect(config).toContainText('join_token = "mstjoin.')
   await expect(config).not.toContainText('CONTROLLER')
   await dialog.getByRole('button', { name: 'Done' }).click()
+})
+
+test('with the provider alone, tenancy stays out of the way', async ({ page }) => {
+  await signIn(page)
+  const tenants = await (await page.request.get('/api/v1/tenants')).json()
+  test.skip(tenants.length > 1, 'other tenants exist')
+  // No tenant to pick, and People instead of Tenants.
+  await expect(page.getByLabel('Tenant')).toHaveCount(0)
+  const nav = page.getByRole('navigation', { name: 'Main' })
+  await nav.getByRole('link', { name: 'People' }).click()
+  await expect(page.getByRole('heading', { name: 'People', level: 1 })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Quotas' })).toHaveCount(0)
+  await expect(page.getByRole('tab', { name: 'People' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Add tenant' })).toBeVisible()
+  // No guardrails among the network pages.
+  await nav.getByRole('link', { name: 'Networks' }).click()
+  await expect(page.getByRole('link', { name: 'Security groups' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Guardrails' })).toHaveCount(0)
 })

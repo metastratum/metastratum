@@ -101,6 +101,7 @@ async function release(ip: FloatingIp) {
 
     <div v-if="ips && !ips.length" class="empty-state">
       <p v-if="externals.length">No floating IPs yet.</p>
+      <p v-else-if="scope.solo">There is no external network yet: create one under Infrastructure → External networks.</p>
       <p v-else>No external network is available to {{ scope.tenant?.name }}. Ask an administrator of the tenant above it.</p>
     </div>
     <div v-else-if="ips" class="table-wrap">

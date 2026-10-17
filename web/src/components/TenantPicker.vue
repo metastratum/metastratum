@@ -9,7 +9,7 @@ const indent = (depth: number) => (depth > top.value ? '  '.repeat(depth - top
 </script>
 
 <template>
-  <label v-if="scope.tenants.length" class="picker">
+  <label v-if="scope.tenants.length > 1" class="picker">
     <span class="label">Tenant</span>
     <select :value="scope.current" @change="scope.select(($event.target as HTMLSelectElement).value)">
       <option v-for="t in scope.tenants" :key="t.id" :value="t.id">{{ indent(t.depth) }}{{ t.name }}</option>

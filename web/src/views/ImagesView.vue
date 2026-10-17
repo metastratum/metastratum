@@ -75,7 +75,7 @@ const own = (img: Image) => img.tenant_id === scope.current
         <div class="main">
           <strong>{{ img.name }}</strong>
           <span class="tag label">{{ img.format }}</span>
-          <span v-if="img.shared" class="tag label">Shared with sub-tenants</span>
+          <span v-if="img.shared && !scope.solo" class="tag label">Shared with sub-tenants</span>
           <span v-if="!own(img)" class="tag label">From parent tenant</span>
         </div>
         <div class="url mono">{{ img.source_url }}</div>
@@ -130,7 +130,7 @@ const own = (img: Image) => img.tenant_id === scope.current
             <option value="raw">raw</option>
           </select>
         </label>
-        <label class="check">
+        <label v-if="!scope.solo" class="check">
           <input v-model="form.shared" type="checkbox" />
           Let sub-tenants use this image
         </label>

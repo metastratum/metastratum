@@ -116,7 +116,10 @@ const TITLES: Record<Dialog['kind'], string> = {
     <p v-if="error" class="error-text">{{ error }}</p>
 
     <div v-if="vpcs && !vpcs.length" class="empty-state">
-      <p>{{ scope.tenant?.name }} has no VPCs yet. One is created for the first VM, or create your own.</p>
+      <p>
+        {{ scope.solo ? 'No VPCs' : `${scope.tenant?.name} has no VPCs` }} yet. One is created for the first VM, or
+        create your own.
+      </p>
       <button v-if="canWrite" class="btn primary" @click="open({ kind: 'vpc' })">New VPC</button>
     </div>
 
@@ -183,7 +186,13 @@ const TITLES: Record<Dialog['kind'], string> = {
             </select>
             <span class="hint">
               VMs reach it (and beyond) through the VPC's address there. Floating IPs need it too.
-              <template v-if="!externals.length"> None is available to {{ scope.tenant?.name }}.</template>
+              <template v-if="!externals.length">
+                {{
+                  scope.solo
+                    ? ' There is none yet (Infrastructure → External networks).'
+                    : ` None is available to ${scope.tenant?.name}.`
+                }}
+              </template>
             </span>
           </label>
         </template>

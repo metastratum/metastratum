@@ -43,7 +43,10 @@ const hasDetails = (e: AuditEntry) =>
       <h1>Audit log</h1>
     </header>
     <p class="intro">
-      Every change and sign-in in {{ scope.tenant?.name ?? 'this tenant' }} and its sub-tenants, newest first.
+      <template v-if="scope.solo">Every change and sign-in, newest first.</template>
+      <template v-else>
+        Every change and sign-in in {{ scope.tenant?.name ?? 'this tenant' }} and its sub-tenants, newest first.
+      </template>
     </p>
 
     <p v-if="error" class="error-text">{{ error }}</p>
@@ -57,7 +60,7 @@ const hasDetails = (e: AuditEntry) =>
             <th>When</th>
             <th>Who</th>
             <th>Action</th>
-            <th>Tenant</th>
+            <th v-if="!scope.solo">Tenant</th>
             <th>Target</th>
           </tr>
         </thead>
@@ -70,7 +73,7 @@ const hasDetails = (e: AuditEntry) =>
                 <span class="mono">{{ e.action }}</span>
                 <span v-if="e.outcome !== 'success'" class="tag fail">Failed</span>
               </td>
-              <td>{{ tenantName(e.tenant_id) }}</td>
+              <td v-if="!scope.solo">{{ tenantName(e.tenant_id) }}</td>
               <td class="mono muted">
                 <template v-if="e.target_kind">{{ e.target_kind }} {{ e.target_id?.slice(0, 8) }}</template>
                 <button
@@ -86,7 +89,7 @@ const hasDetails = (e: AuditEntry) =>
               </td>
             </tr>
             <tr v-if="open === e.id" class="details">
-              <td colspan="5"><pre class="secret">{{ JSON.stringify(e.details, null, 2) }}</pre></td>
+              <td :colspan="scope.solo ? 4 : 5"><pre class="secret">{{ JSON.stringify(e.details, null, 2) }}</pre></td>
             </tr>
           </template>
         </tbody>

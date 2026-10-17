@@ -7,6 +7,7 @@ import MigrateDialog from '../components/MigrateDialog.vue'
 import StatusLed from '../components/StatusLed.vue'
 import { ago, gib, mib, powerNote, vmState } from '../state'
 import { useLiveRefresh } from '../stores/live'
+import { useScope } from '../stores/scope'
 import { useSession } from '../stores/session'
 import { taskLabel, useTasks } from '../stores/tasks'
 
@@ -16,6 +17,7 @@ const SerialConsole = defineAsyncComponent(() => import('../components/SerialCon
 
 const props = defineProps<{ id: string }>()
 const router = useRouter()
+const scope = useScope()
 const tasks = useTasks()
 
 const vm = ref<Vm | null>(null)
@@ -236,7 +238,7 @@ async function remove() {
           <h2 class="label">Identity</h2>
           <dl class="kv">
             <dt>VM ID</dt><dd><IdChip :value="vm.id" /></dd>
-            <dt>Tenant</dt><dd><IdChip :value="vm.tenant_id" /></dd>
+            <template v-if="!scope.solo"><dt>Tenant</dt><dd><IdChip :value="vm.tenant_id" /></dd></template>
             <dt>Firmware</dt><dd>{{ vm.firmware === 'uefi' ? 'UEFI' : 'BIOS' }}</dd>
             <dt>Live migration</dt>
             <dd class="migratable">

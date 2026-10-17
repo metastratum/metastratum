@@ -85,7 +85,7 @@ const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDate
   <section v-if="session.me" class="account">
     <header class="page-head">
       <h1>{{ session.me.display_name || session.me.username }}</h1>
-      <span class="muted">{{ session.me.username }} · {{ session.me.tenant_name }}</span>
+      <span class="muted">{{ session.me.username }}<template v-if="!scope.solo"> · {{ session.me.tenant_name }}</template></span>
     </header>
 
     <div class="grid">
@@ -93,11 +93,11 @@ const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDate
         <h2>Your roles</h2>
         <ul class="roles">
           <li v-for="r in session.me.roles" :key="`${r.tenant_id}${r.role}`">
-            <strong>{{ r.role }}</strong> at {{ r.tenant_name }}
-            <span class="mono muted">/{{ r.tenant }}</span>
+            <strong>{{ r.role }}</strong><template v-if="!scope.solo"> at {{ r.tenant_name }}</template>
+            <span v-if="!scope.solo" class="mono muted">/{{ r.tenant }}</span>
           </li>
         </ul>
-        <p class="muted small">A role covers the tenant and everything below it.</p>
+        <p v-if="!scope.solo" class="muted small">A role covers the tenant and everything below it.</p>
       </article>
 
       <article v-if="session.me.local" class="card">

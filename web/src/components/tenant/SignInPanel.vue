@@ -91,7 +91,7 @@ async function remove() {
   <div v-if="loaded" class="panel">
     <template v-if="!editing">
       <p class="muted lead">
-        People in {{ tenant.name }} can sign in with your organization’s identity provider (any OpenID Connect
+        People{{ scope.solo ? '' : ` in ${tenant.name}` }} can sign in with your organization’s identity provider (any OpenID Connect
         provider: Entra ID, Google, Keycloak, Okta…). Their account is created at their first sign-in, and their
         groups decide their role.
       </p>
@@ -113,7 +113,7 @@ async function remove() {
           </dd>
         </div>
       </dl>
-      <p v-else class="muted">{{ tenant.name }} signs in with passwords only.</p>
+      <p v-else class="muted">{{ scope.solo ? 'People sign in' : `${tenant.name} signs in` }} with passwords only.</p>
       <dl v-if="signIn" class="summary">
         <div>
           <dt class="label">Sign-in page</dt>

@@ -19,6 +19,17 @@ const TENANTS = [t('acme2', 'root', 'Acme Two', 'acme2'), t('dev', 'acme', 'Dev'
 describe('scope', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
+  it('is solo with the provider alone, not in a sub-tenant alone', () => {
+    const scope = useScope()
+    scope.tenants = [TENANTS[2]!]
+    expect(scope.solo).toBe(true)
+    // A sub-tenant's user sees one tenant too, but it is not the provider.
+    scope.tenants = [TENANTS[1]!]
+    expect(scope.solo).toBe(false)
+    scope.tenants = sortTree(TENANTS)
+    expect(scope.solo).toBe(false)
+  })
+
   it('orders tenants as a tree', () => {
     expect(sortTree(TENANTS).map((x) => x.id)).toEqual(['root', 'acme', 'dev', 'acme2'])
   })

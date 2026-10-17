@@ -28,7 +28,14 @@ const TABS = [
   { id: 'sign-in', label: 'Sign-in' },
 ] as const
 type Tab = (typeof TABS)[number]['id']
-const tab = ref<Tab>('quotas')
+const chosen = ref<Tab>('quotas')
+// With the provider alone there are no quotas or grants to give: people and
+// sign-in remain.
+const tabs = computed(() => (scope.solo ? TABS.filter((t) => t.id === 'people' || t.id === 'sign-in') : TABS))
+const tab = computed<Tab>({
+  get: () => (tabs.value.some((t) => t.id === chosen.value) ? chosen.value : tabs.value[0]!.id),
+  set: (t) => (chosen.value = t),
+})
 
 // Which tree rows have a later sibling, for drawing the connector lines.
 const hasNextSibling = computed(() => {
@@ -106,15 +113,22 @@ async function submit() {
 <template>
   <section>
     <header class="page-head">
-      <h1>Tenants</h1>
+      <h1>{{ scope.solo ? 'People' : 'Tenants' }}</h1>
+      <div v-if="scope.solo && selected && scope.can('tenant.write', selected.id)" class="actions">
+        <button class="btn" @click="start('create')">Add tenant</button>
+      </div>
     </header>
-    <p class="intro">
+    <p v-if="scope.solo" class="intro">
+      Who can sign in and what they may do. To give teams or customers a share of their own, with quotas and their own
+      people, add a tenant.
+    </p>
+    <p v-else class="intro">
       Each tenant’s quotas, people and resources apply to everything below it. A role at a tenant covers its
       sub-tenants too.
     </p>
 
-    <div class="layout">
-      <nav class="tree" aria-label="Tenants">
+    <div class="layout" :class="{ solo: scope.solo }">
+      <nav v-if="!scope.solo" class="tree" aria-label="Tenants">
         <ul>
           <li v-for="t in scope.tenants" :key="t.id">
             <button
@@ -133,7 +147,7 @@ async function submit() {
       </nav>
 
       <article v-if="selected" class="detail">
-        <header class="detail-head">
+        <header v-if="!scope.solo" class="detail-head">
           <div class="title">
             <h2>{{ selected.name }}</h2>
             <span class="path mono">/{{ selected.slug_path }}</span>
@@ -156,7 +170,7 @@ async function submit() {
 
         <div class="tabs" role="tablist">
           <button
-            v-for="t in TABS"
+            v-for="t in tabs"
             :key="t.id"
             type="button"
             role="tab"
@@ -174,7 +188,7 @@ async function submit() {
           <div v-else class="sign-in">
             <!-- A domain bound here or above changes where people sign in. -->
             <SignInPanel :key="`s${selected.id}:${domainsKey}`" :tenant="selected" />
-            <DomainsPanel :key="`d${selected.id}`" :tenant="selected" />
+            <DomainsPanel v-if="!scope.solo" :key="`d${selected.id}`" :tenant="selected" />
           </div>
         </div>
       </article>
@@ -229,6 +243,9 @@ async function submit() {
   grid-template-columns: 260px 1fr;
   gap: 20px;
   align-items: start;
+}
+.layout.solo {
+  grid-template-columns: 1fr;
 }
 .tree {
   position: sticky;

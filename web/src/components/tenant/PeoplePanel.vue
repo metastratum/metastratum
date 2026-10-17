@@ -125,11 +125,14 @@ async function submit() {
 
     <section>
       <header class="sub-head">
-        <h3>Roles at {{ tenant.name }}</h3>
+        <h3>{{ scope.solo ? 'Roles' : `Roles at ${tenant.name}` }}</h3>
         <button v-if="canManage" class="btn small primary" @click="openGrant">Give access</button>
       </header>
       <p class="muted note">
-        These apply here and in every sub-tenant. People with a role at a tenant above this one have access too.
+        <template v-if="scope.solo">What each person may do.</template>
+        <template v-else>
+          These apply here and in every sub-tenant. People with a role at a tenant above this one have access too.
+        </template>
       </p>
       <div v-if="bindings && bindings.length" class="table-wrap">
         <table class="data">
@@ -164,12 +167,12 @@ async function submit() {
 
     <section>
       <header class="sub-head">
-        <h3>Accounts in {{ tenant.name }}</h3>
+        <h3>{{ scope.solo ? 'Accounts' : `Accounts in ${tenant.name}` }}</h3>
         <button v-if="canManage" class="btn small" @click="open({ kind: 'add' })">Add user</button>
       </header>
       <p class="muted note">
-        People sign in to this tenant with these accounts. Accounts from an identity provider are created at their
-        first sign-in.
+        People sign in{{ scope.solo ? '' : ' to this tenant' }} with these accounts. Accounts from an identity provider
+        are created at their first sign-in.
       </p>
       <div v-if="users && users.length" class="table-wrap">
         <table class="data">

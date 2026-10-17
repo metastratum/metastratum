@@ -51,7 +51,7 @@ function created(vm: Vm) {
     </header>
 
     <div v-if="vms && !vms.length" class="empty">
-      <p>No virtual machines in {{ scope.tenant?.name ?? 'this tenant' }} yet.<template v-if="scope.can('vm.write')"> Create one from an image to get started.</template></p>
+      <p>No virtual machines{{ scope.solo ? '' : ` in ${scope.tenant?.name ?? 'this tenant'}` }} yet.<template v-if="scope.can('vm.write')"> Create one from an image to get started.</template></p>
       <button v-if="scope.can('vm.write')" class="btn primary" @click="creating = true">Create VM</button>
     </div>
 
