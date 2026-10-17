@@ -83,7 +83,7 @@ pub async fn recover(ctx: &TaskCtx) -> Result<()> {
             .collect();
         let req = mst_scheduler::Request {
             vcpus: vm.spec.0.vcpus,
-            memory_mib: vm.spec.0.memory_mib,
+            memory_mib: vm.spec.0.reserved_memory_mib(),
             clusters: cluster.map(|c| [c].into_iter().collect()),
             host: None,
         };

@@ -42,6 +42,7 @@ type vmModel struct {
 	CloneOf           types.String `tfsdk:"clone_of"`
 	Vcpus             types.Int32  `tfsdk:"vcpus"`
 	MemoryMib         types.Int64  `tfsdk:"memory_mib"`
+	MaxMemoryMib      types.Int64  `tfsdk:"max_memory_mib"`
 	DiskGib           types.Int64  `tfsdk:"disk_gib"`
 	Firmware          types.String `tfsdk:"firmware"`
 	NetworkID         types.String `tfsdk:"network_id"`
@@ -100,7 +101,15 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 				PlanModifiers: []planmodifier.Int32{int32planmodifier.UseStateForUnknown()},
 			},
 			"memory_mib": schema.Int64Attribute{
-				Description:   "Memory in MiB; required with `image_id`.",
+				Description: "Memory in MiB; required with `image_id`. Within `max_memory_mib` it changes while " +
+					"the VM runs, when the guest's balloon driver is loaded; otherwise the VM is stopped for it.",
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()},
+			},
+			"max_memory_mib": schema.Int64Attribute{
+				Description: "What `memory_mib` may grow to while the VM runs; `memory_mib` by default. " +
+					"Its host keeps this much for it, and it counts against quotas. Changing it stops the VM.",
 				Optional:      true,
 				Computed:      true,
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()},
@@ -222,6 +231,7 @@ func (m *vmModel) set(ctx context.Context, v *client.VmView, diags *diag.Diagnos
 	m.Name = types.StringValue(v.Name)
 	m.Vcpus = types.Int32Value(v.Vcpus)
 	m.MemoryMib = types.Int64Value(v.MemoryMib)
+	m.MaxMemoryMib = types.Int64Value(v.MaxMemoryMib)
 	if len(v.Disks) > 0 {
 		m.DiskGib = types.Int64Value((v.Disks[0].SizeBytes + gib - 1) / gib)
 		// Imported: what it was made from is its disk's image.
@@ -388,6 +398,7 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 			ImageId:           parseID(path.Root("image_id"), plan.ImageID, d),
 			Vcpus:             plan.Vcpus.ValueInt32(),
 			MemoryMib:         plan.MemoryMib.ValueInt64(),
+			MaxMemoryMib:      plan.MaxMemoryMib.ValueInt64Pointer(),
 			DiskGib:           plan.DiskGib.ValueInt64(),
 			Start:             &start,
 			NetworkId:         optID(path.Root("network_id"), plan.NetworkID, d),
@@ -520,6 +531,9 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 	if !plan.MemoryMib.IsUnknown() && !plan.MemoryMib.Equal(state.MemoryMib) {
 		change.MemoryMib = plan.MemoryMib.ValueInt64Pointer()
 	}
+	if !plan.MaxMemoryMib.IsUnknown() && !plan.MaxMemoryMib.Equal(state.MaxMemoryMib) {
+		change.MaxMemoryMib = plan.MaxMemoryMib.ValueInt64Pointer()
+	}
 	if !plan.Migratable.IsUnknown() && !plan.Migratable.Equal(state.Migratable) {
 		change.Migratable = plan.Migratable.ValueBoolPointer()
 	}
@@ -527,6 +541,18 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 		change.Template = plan.Template.ValueBoolPointer()
 	}
 	running := state.Running.ValueBool()
+	// Memory alone, within the maximum: tried while it runs (the guest's
+	// balloon driver must be there; if not, it is stopped for it below).
+	if running && change.MemoryMib != nil && change == (client.UpdateVm{MemoryMib: change.MemoryMib}) &&
+		*change.MemoryMib <= state.MaxMemoryMib.ValueInt64() {
+		err := r.patch(ctx, id, change)
+		if err == nil {
+			change = client.UpdateVm{}
+		} else if !client.IsConflict(err) {
+			apiError(d, "change the VM's memory", err)
+			return
+		}
+	}
 	if change != (client.UpdateVm{}) {
 		if running {
 			if err := r.power(ctx, id, false); err != nil {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, ApiError, errorText, ok, type SecurityGroup, type Task, type Vm } from '../api/client'
+import { api, ApiError, errorText, ok, type Schemas, type SecurityGroup, type Task, type Vm } from '../api/client'
 import IdChip from '../components/IdChip.vue'
 import MigrateDialog from '../components/MigrateDialog.vue'
 import ResizeDialog from '../components/ResizeDialog.vue'
@@ -25,6 +25,26 @@ const scope = useScope()
 const tasks = useTasks()
 
 const vm = ref<Vm | null>(null)
+
+// What the guest uses of its memory, from its balloon, while it runs.
+const memoryStats = ref<Schemas['MemoryView'] | null>(null)
+async function loadMemory() {
+  const v = vm.value
+  if (!v || v.power !== 'running' || document.hidden) {
+    if (v?.power !== 'running') memoryStats.value = null
+    return
+  }
+  const { data } = await api.GET('/api/v1/vms/{id}/memory', { params: { path: { id: v.id } } })
+  if (vm.value?.id === v.id) memoryStats.value = data ?? null
+}
+const guestUsed = computed(() => {
+  const m = memoryStats.value
+  return m?.driver && m.available_mib != null && m.usable_mib != null ? m.available_mib - m.usable_mib : null
+})
+let memoryTimer = 0
+onMounted(() => (memoryTimer = window.setInterval(loadMemory, 10_000)))
+onUnmounted(() => clearInterval(memoryTimer))
+watch(() => [vm.value?.id, vm.value?.power, vm.value?.memory_mib], loadMemory, { immediate: true })
 const history = ref<Task[]>([])
 const missing = ref(false)
 const tab = ref<'console' | 'serial' | 'details'>('details')
@@ -267,7 +287,17 @@ async function remove() {
       </div>
       <div><dt class="label">Host</dt><dd class="mono">{{ vm.host_name ?? '—' }}</dd></div>
       <div><dt class="label">vCPU</dt><dd class="mono">{{ vm.vcpus }}</dd></div>
-      <div><dt class="label">Memory</dt><dd class="mono">{{ mib(vm.memory_mib) }}</dd></div>
+      <div>
+        <dt class="label">Memory</dt>
+        <dd class="mono">
+          {{ mib(vm.memory_mib) }}<span v-if="vm.max_memory_mib > vm.memory_mib" class="muted" title="What it can grow to while it runs">
+            / {{ mib(vm.max_memory_mib) }}</span>
+          <span v-if="guestUsed !== null && memoryStats" class="guest" :title="`The guest uses ${mib(guestUsed)} of the ${mib(memoryStats.available_mib ?? 0)} it sees`">
+            <meter :value="guestUsed" min="0" :max="memoryStats.available_mib ?? 1" />
+            <span class="muted">{{ mib(guestUsed) }} used</span>
+          </span>
+        </dd>
+      </div>
       <div><dt class="label">Disk</dt><dd class="mono">{{ vm.disks[0] ? gib(vm.disks[0].size_bytes) : '—' }}</dd></div>
     </dl>
 
@@ -418,6 +448,17 @@ h1 {
 }
 .note {
   color: var(--muted);
+}
+.guest {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+.guest meter {
+  width: 72px;
+  height: 6px;
 }
 .facts {
   display: flex;

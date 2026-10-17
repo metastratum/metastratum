@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { api, ApiError, ok, type Image, type Schemas, type SecurityGroup, type Vm, type Vpc } from '../api/client'
 import { useScope } from '../stores/scope'
 import ModalDialog from './ModalDialog.vue'
@@ -30,6 +30,11 @@ const template = computed(() =>
 )
 const vcpus = ref(2)
 const memory = ref(2048)
+// What memory may grow to while the VM runs; 0: no more than `memory`.
+const maxMemory = ref(0)
+watch(memory, (m) => {
+  if (maxMemory.value && maxMemory.value <= m) maxMemory.value = 0
+})
 const disk = ref(10)
 const sshKey = ref('')
 const password = ref('')
@@ -94,6 +99,7 @@ async function submit() {
           image_id: imageId.value,
           vcpus: vcpus.value,
           memory_mib: memory.value,
+          max_memory_mib: maxMemory.value || null,
           disk_gib: disk.value,
           ssh_authorized_keys: sshKey.value.split('\n').map((k) => k.trim()).filter(Boolean),
           password: password.value || null,
@@ -203,6 +209,19 @@ async function submit() {
           <input v-model.number="disk" type="number" min="1" max="16384" required />
         </label>
       </div>
+      <label v-if="!template" class="field">
+        <span class="label">Memory can grow to</span>
+        <select v-model.number="maxMemory">
+          <option :value="0">No more without a restart</option>
+          <option v-for="m in [...MEMORY, 32768, 65536].filter((m) => m > memory)" :key="m" :value="m">
+            {{ m >= 1024 ? `${m / 1024} GiB` : `${m} MiB` }} while it runs
+          </option>
+        </select>
+        <span class="hint">
+          Its memory can then change while it runs, through the guest’s balloon. The host keeps this much for it, and
+          it counts against quotas.
+        </span>
+      </label>
       <label v-if="!template" class="field">
         <span class="label">Live migration</span>
         <select v-model="migratable">

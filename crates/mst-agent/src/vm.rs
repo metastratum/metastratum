@@ -143,6 +143,8 @@ pub async fn domain(
         generation: vm.generation,
         vcpus: spec.vcpus,
         memory_mib: spec.memory_mib,
+        max_memory_mib: spec.reserved_memory_mib(),
+        free_page_reporting: spec.free_page_reporting,
         firmware: match spec.firmware {
             Firmware::Bios => mst_libvirt::Firmware::Bios,
             Firmware::Uefi => mst_libvirt::Firmware::Uefi,

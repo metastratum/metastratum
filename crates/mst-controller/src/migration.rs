@@ -125,7 +125,7 @@ pub async fn plan(
     let spec = &vm.spec.0;
     let request = mst_scheduler::Request {
         vcpus: spec.vcpus,
-        memory_mib: spec.memory_mib,
+        memory_mib: spec.reserved_memory_mib(),
         clusters: Some(HashSet::from([cluster])),
         host: None,
     };
@@ -145,7 +145,16 @@ pub async fn plan(
         .find(|h| h.id == dest)
         .map(|h| h.name.clone())
         .unwrap_or_default();
-    mst_db::migrations::begin(tx, vm.id, task, source, dest, spec.vcpus, spec.memory_mib).await?;
+    mst_db::migrations::begin(
+        tx,
+        vm.id,
+        task,
+        source,
+        dest,
+        spec.vcpus,
+        spec.reserved_memory_mib(),
+    )
+    .await?;
     Ok((dest, name))
 }
 

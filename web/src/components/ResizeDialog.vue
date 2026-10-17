@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api, errorText, ok, type Vm } from '../api/client'
 import ModalDialog from './ModalDialog.vue'
 
@@ -12,9 +12,36 @@ const MEMORY = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
 const stopped = computed(
   () => props.vm.status === 'ready' && props.vm.power === 'stopped' && props.vm.desired_power === 'stopped',
 )
+// A running VM's memory changes through its balloon, within its maximum,
+// when the guest's driver reports.
+const running = computed(
+  () => props.vm.status === 'ready' && props.vm.power === 'running' && props.vm.desired_power === 'running',
+)
+const balloon = ref<boolean | null>(null)
+// Asked again while it says no: a guest still booting, or just migrated,
+// reports within seconds.
+let timer = 0
+async function checkBalloon() {
+  if (!running.value || balloon.value) return
+  const { data } = await api.GET('/api/v1/vms/{id}/memory', { params: { path: { id: props.vm.id } } })
+  balloon.value = data?.driver ?? false
+}
+onMounted(() => {
+  void checkBalloon()
+  timer = window.setInterval(checkBalloon, 3000)
+})
+onUnmounted(() => clearInterval(timer))
 const vcpus = ref(props.vm.vcpus)
 const memory = ref(props.vm.memory_mib)
-const memoryOptions = computed(() => [...new Set([...MEMORY, props.vm.memory_mib])].sort((a, b) => a - b))
+const maxMemory = ref(props.vm.max_memory_mib)
+const sizes = (extra: number[]) => [...new Set([...MEMORY, ...extra])].sort((a, b) => a - b)
+const memoryOptions = computed(() =>
+  running.value
+    ? sizes([props.vm.memory_mib, props.vm.max_memory_mib]).filter((m) => m <= props.vm.max_memory_mib)
+    : sizes([props.vm.memory_mib]),
+)
+const maxOptions = computed(() => sizes([props.vm.max_memory_mib, memory.value]).filter((m) => m >= memory.value))
+const memoryLive = computed(() => running.value && balloon.value === true)
 const current = props.vm.disks.map((d) => Math.ceil(d.size_bytes / GIB))
 const disks = ref([...current])
 
@@ -24,6 +51,7 @@ const changed = computed(
   () =>
     vcpus.value !== props.vm.vcpus ||
     memory.value !== props.vm.memory_mib ||
+    maxMemory.value !== props.vm.max_memory_mib ||
     disks.value.some((g, i) => g !== current[i]),
 )
 
@@ -34,13 +62,11 @@ async function submit() {
   busy.value = true
   let vm = props.vm
   try {
-    if (vcpus.value !== vm.vcpus || memory.value !== vm.memory_mib) {
-      vm = await ok(
-        api.PATCH('/api/v1/vms/{id}', {
-          params: { path: { id: vm.id } },
-          body: { vcpus: vcpus.value, memory_mib: memory.value },
-        }),
-      )
+    if (vcpus.value !== vm.vcpus || memory.value !== vm.memory_mib || maxMemory.value !== vm.max_memory_mib) {
+      const body = stopped.value
+        ? { vcpus: vcpus.value, memory_mib: memory.value, max_memory_mib: Math.max(maxMemory.value, memory.value) }
+        : { memory_mib: memory.value }
+      vm = await ok(api.PATCH('/api/v1/vms/{id}', { params: { path: { id: vm.id } }, body }))
     }
     for (const [i, gib] of disks.value.entries()) {
       if (gib === current[i]) continue
@@ -70,12 +96,31 @@ async function submit() {
         </label>
         <label class="field">
           <span class="label">Memory</span>
-          <select v-model.number="memory" :disabled="!stopped">
+          <select v-model.number="memory" :disabled="!stopped && !memoryLive">
             <option v-for="m in memoryOptions" :key="m" :value="m">{{ label(m) }}</option>
           </select>
         </label>
+        <label class="field">
+          <span class="label">Can grow to</span>
+          <select v-model.number="maxMemory" :disabled="!stopped">
+            <option v-for="m in maxOptions" :key="m" :value="m">{{ label(m) }}</option>
+          </select>
+        </label>
       </div>
-      <p v-if="!stopped" class="hint">Stop the VM to change its CPUs or memory.</p>
+      <p v-if="memoryLive" class="hint">
+        Memory changes at once, up to {{ label(vm.max_memory_mib) }}: the guest’s balloon gives it back or takes it.
+        Stop the VM to change its CPUs or what its memory can grow to.
+      </p>
+      <p v-else-if="running && balloon === null" class="hint">Asking the guest whether its memory can change…</p>
+      <p v-else-if="running && balloon === false" class="hint">
+        The guest’s balloon driver isn’t reporting (virtio_balloon), so its memory can’t change while it runs. Stop the
+        VM to change its CPUs or memory.
+      </p>
+      <p v-else-if="!stopped" class="hint">Stop the VM to change its CPUs or memory.</p>
+      <p v-else class="hint">
+        The host keeps what memory can grow to for the VM, and it counts against quotas; while the VM runs, its memory
+        can then change up to there without a restart.
+      </p>
       <label v-for="(d, i) in vm.disks" :key="d.volume_id" class="field">
         <span class="label">{{ i === 0 ? 'Boot disk' : `Disk ${i + 1}` }} (GiB)</span>
         <input v-model.number="disks[i]" type="number" :min="current[i]" max="16384" required />
@@ -96,7 +141,12 @@ async function submit() {
 <style scoped>
 .row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 12px;
+}
+@media (max-width: 520px) {
+  .row {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 </style>

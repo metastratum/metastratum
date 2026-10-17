@@ -15,6 +15,8 @@ fn def(uuid: &str) -> DomainDef {
         generation: 1,
         vcpus: 1,
         memory_mib: 64,
+        max_memory_mib: 64,
+        free_page_reporting: false,
         firmware: Firmware::Bios,
         disks: vec![],
         nics: vec![],

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 
 test.skip(!process.env.MST_E2E_URL, 'set MST_E2E_URL to a running controller')
 
@@ -17,6 +17,12 @@ test.afterEach(() => {
 
 const user = process.env.MST_E2E_USER ?? 'admin'
 const password = process.env.MST_E2E_PASSWORD ?? ''
+
+/** A form field by its label's own text (a label around a select also
+ *  takes the selected option into its accessible name). */
+function field(scope: Locator, label: string) {
+  return scope.locator('label.field', { has: scope.page().locator('span.label', { hasText: new RegExp(`^${label}$`) }) }).locator('select, input')
+}
 
 async function signIn(page: Page) {
   await page.goto('/vms')
@@ -44,7 +50,8 @@ test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
   await page.getByRole('button', { name: 'Create VM' }).first().click()
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('Name').fill(name)
-  await dialog.getByLabel('Memory').selectOption({ label: '1 GiB' })
+  await field(dialog, 'Memory').selectOption({ label: '1 GiB' })
+  await dialog.getByLabel('Memory can grow to').selectOption({ label: '2 GiB while it runs' })
   await dialog.getByLabel('Disk (GiB)').fill('5')
   await dialog.getByRole('button', { name: 'Create VM' }).click()
 
@@ -83,14 +90,22 @@ test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
   await page.getByRole('dialog').getByRole('button', { name: 'Delete snapshot' }).click()
   await expect(first).toHaveCount(0, { timeout: 60_000 })
 
-  // Grow its disk while it runs; CPUs and memory wait for it to stop.
+  // Grow its disk and shrink its memory (through its balloon, within what it
+  // can grow to) while it runs; CPUs wait for it to stop.
+  const memory = page.locator('.facts div', { hasText: 'Memory' }).locator('dd')
+  await expect(memory).toContainText('1 GiB / 2 GiB')
   await page.getByRole('button', { name: 'Resize' }).click()
   const resize = page.getByRole('dialog')
   await expect(resize.getByLabel('vCPUs')).toBeDisabled()
+  await expect(resize.getByLabel('Can grow to')).toBeDisabled()
+  await field(resize, 'Memory').selectOption({ label: '512 MiB' })
   await resize.getByLabel('Boot disk (GiB)').fill('6')
   await resize.getByRole('button', { name: 'Resize' }).click()
   await expect(resize).toHaveCount(0)
   await expect(page.locator('.facts div', { hasText: 'Disk' }).locator('dd')).toHaveText('6 GiB')
+  await expect(memory).toContainText('512 MiB / 2 GiB')
+  await expect(memory.locator('meter')).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText('Running', { exact: true })).toBeVisible()
 
   // Stopped, it becomes a template: never started, cloned instead.
   await page.getByRole('button', { name: 'Power off' }).click()

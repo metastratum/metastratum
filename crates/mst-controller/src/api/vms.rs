@@ -32,6 +32,7 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(cancel_migration))
         .routes(routes!(restore_backup))
         .routes(routes!(resize_disk))
+        .routes(routes!(vm_memory))
         .routes(routes!(clone_vm))
 }
 
@@ -67,7 +68,10 @@ pub struct VmView {
     active_task: Option<String>,
     error: Option<String>,
     vcpus: u32,
+    /// What it has now (its balloon's size, while it runs).
     memory_mib: u64,
+    /// What `memory_mib` may grow to without a restart.
+    max_memory_mib: u64,
     firmware: Firmware,
     /// Can live-migrate; otherwise it has its host's CPU and disk caching.
     migratable: bool,
@@ -183,6 +187,7 @@ fn view(vm: Vm, ctx: &Context) -> VmView {
         error: vm.error,
         vcpus: spec.vcpus,
         memory_mib: spec.memory_mib,
+        max_memory_mib: spec.reserved_memory_mib(),
         firmware: spec.firmware,
         migratable: spec.migratable,
         disks: spec.disks,
@@ -263,6 +268,11 @@ pub struct CreateVm {
     name: String,
     vcpus: u32,
     memory_mib: u64,
+    /// What its memory may grow to while it runs (through its balloon, for
+    /// guests with the driver); `memory_mib` by default. Its host keeps
+    /// this much for it, and it counts against the tenant's memory quota.
+    #[serde(default)]
+    max_memory_mib: Option<u64>,
     /// Size of the boot disk. Must be at least the image's size.
     disk_gib: u64,
     image_id: ImageId,
@@ -344,6 +354,7 @@ async fn restore_backup(
         name: req.name,
         vcpus: spec.vcpus,
         memory_mib: spec.memory_mib,
+        max_memory_mib: spec.max_memory_mib,
         disk_gib: disk_bytes.div_ceil(GIB),
         image_id: ImageId(uuid::Uuid::nil()),
         firmware: spec.firmware,
@@ -419,6 +430,7 @@ async fn clone_vm(
         name: req.name,
         vcpus: spec.vcpus,
         memory_mib: spec.memory_mib,
+        max_memory_mib: spec.max_memory_mib,
         disk_gib: disk_bytes.div_ceil(GIB),
         image_id: ImageId(uuid::Uuid::nil()),
         firmware: spec.firmware,
@@ -462,6 +474,7 @@ fn validate(req: &CreateVm) -> ApiResult<()> {
         ));
     }
     check_size(req.vcpus, req.memory_mib)?;
+    check_max_memory(req.memory_mib, req.max_memory_mib)?;
     if !(1..=16384).contains(&req.disk_gib) {
         return Err(ApiError::bad_request(
             "disk_gib must be between 1 and 16384",
@@ -563,7 +576,7 @@ async fn create_inner(
     let delta: mst_db::quotas::Amounts = [
         ("vms", 1),
         ("vcpus", i64::from(req.vcpus)),
-        ("memory_mib", req.memory_mib as i64),
+        ("memory_mib", reserved_memory(&req) as i64),
         ("disk_gib", req.disk_gib as i64),
     ]
     .into_iter()
@@ -655,6 +668,8 @@ async fn create_inner(
         migratable,
         vcpus: req.vcpus,
         memory_mib: req.memory_mib,
+        max_memory_mib: req.max_memory_mib.filter(|m| *m > req.memory_mib),
+        free_page_reporting: true,
         firmware: req.firmware,
         disks: disks.clone(),
         nics: vec![],
@@ -841,7 +856,7 @@ async fn place(
         .collect();
     let request = mst_scheduler::Request {
         vcpus: req.vcpus,
-        memory_mib: req.memory_mib,
+        memory_mib: reserved_memory(req),
         clusters,
         host: pin,
     };
@@ -1020,17 +1035,24 @@ pub struct UpdateVm {
     /// Virtual CPUs (1-128). Only while the VM is stopped; its host must
     /// have room for more.
     vcpus: Option<u32>,
-    /// Memory in MiB (128-4194304). Only while the VM is stopped; its host
-    /// must have room for more.
+    /// Memory in MiB (128-4194304). While the VM runs, within
+    /// `max_memory_mib`, through its balloon (the guest's virtio_balloon
+    /// driver must be loaded); otherwise while it is stopped, its host
+    /// having room for more.
     memory_mib: Option<u64>,
+    /// What memory may grow to while the VM runs. Only while it is stopped;
+    /// it counts against quotas and its host's room as its memory does.
+    max_memory_mib: Option<u64>,
     /// Make the stopped VM a template, kept to be cloned and never started,
     /// or a VM again.
     template: Option<bool>,
 }
 
-/// Changes a stopped VM's settings. Its definition on the host is updated
-/// right away; the VM picks it up when it next starts. Growing its CPUs or
-/// memory counts against the tenant's quotas.
+/// Changes a VM's settings. A running VM's memory changes at once, within
+/// its maximum; everything else only while it is stopped: its definition
+/// on the host is updated right away, and the VM picks it up when it next
+/// starts. Growing its CPUs or (maximum) memory counts against the tenant's
+/// quotas.
 #[utoipa::path(patch, path = "/vms/{id}", tag = "vms", params(("id" = VmId, Path)), request_body = UpdateVm,
     responses((status = 200, body = VmView), (status = 403), (status = 404), (status = 409), (status = 503)))]
 async fn update_vm(
@@ -1044,13 +1066,24 @@ async fn update_vm(
     let migratable = req.migratable.unwrap_or(old.migratable);
     let vcpus = req.vcpus.unwrap_or(old.vcpus);
     let memory_mib = req.memory_mib.unwrap_or(old.memory_mib);
+    // Memory set beyond the maximum (while stopped) takes the maximum along.
+    let max_memory_mib = req
+        .max_memory_mib
+        .unwrap_or_else(|| old.reserved_memory_mib().max(memory_mib));
     let template = req.template.unwrap_or(vm.template);
-    if (migratable, vcpus, memory_mib, template)
-        == (old.migratable, old.vcpus, old.memory_mib, vm.template)
+    if (migratable, vcpus, memory_mib, max_memory_mib, template)
+        == (
+            old.migratable,
+            old.vcpus,
+            old.memory_mib,
+            old.reserved_memory_mib(),
+            vm.template,
+        )
     {
         return Ok(Json(view(vm, &context(&state).await?)));
     }
     check_size(vcpus, memory_mib)?;
+    check_max_memory(memory_mib, Some(max_memory_mib))?;
     // Locked, so no power action slips in between the checks and the change.
     let mut tx = state.db.begin().await?;
     let vm = mst_db::vms::get_for_update(&mut tx, id).await?;
@@ -1058,18 +1091,36 @@ async fn update_vm(
         .await?
         .into_iter()
         .any(|(t, _)| t == id.0);
+    let host = vm
+        .host_id
+        .ok_or_else(|| ApiError::conflict("the VM is on no host"))?;
+    let running = vm.power == "running" && vm.desired_power == "running";
+    if vm.status == "ready" && !busy && running {
+        let old = &vm.spec.0;
+        if (migratable, vcpus, max_memory_mib, template)
+            != (
+                old.migratable,
+                old.vcpus,
+                old.reserved_memory_mib(),
+                vm.template,
+            )
+        {
+            return Err(ApiError::conflict(format!(
+                "stop {} first: only its memory changes while it runs",
+                vm.name
+            )));
+        }
+        return resize_memory_live(&state, &p, tx, vm, host, memory_mib).await;
+    }
     if vm.status != "ready" || busy || vm.power != "stopped" || vm.desired_power != "stopped" {
         return Err(ApiError::conflict(format!(
             "stop {} first; this can only change while it is stopped",
             vm.name
         )));
     }
-    let host = vm
-        .host_id
-        .ok_or_else(|| ApiError::conflict("the VM is on no host"))?;
     let mut spec = vm.spec.0.clone();
     let grow_cpu = i64::from(vcpus) - i64::from(spec.vcpus);
-    let grow_mem = memory_mib as i64 - spec.memory_mib as i64;
+    let grow_mem = max_memory_mib as i64 - spec.reserved_memory_mib() as i64;
     if grow_cpu > 0 || grow_mem > 0 {
         let delta: mst_db::quotas::Amounts = [("vcpus", grow_cpu), ("memory_mib", grow_mem)]
             .into_iter()
@@ -1080,6 +1131,7 @@ async fn update_vm(
     }
     spec.vcpus = vcpus;
     spec.memory_mib = memory_mib;
+    spec.max_memory_mib = (max_memory_mib > memory_mib).then_some(max_memory_mib);
     let migratable_changed = migratable != spec.migratable;
     spec.migratable = migratable;
     if migratable && migratable_changed {
@@ -1092,6 +1144,33 @@ async fn update_vm(
         mst_db::vms::set_template(&mut *tx, id, template).await?;
     }
     let generation = mst_db::vms::redefine(&mut tx, id, &spec).await?;
+    define_on_host(&state, &mut tx, &vm, host, &spec, generation).await?;
+    tx.commit().await?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(vm.tenant_id),
+        "vm.update",
+        Some(("vm", id.0)),
+        json!({"name": vm.name, "migratable": req.migratable, "vcpus": req.vcpus,
+               "memory_mib": req.memory_mib, "max_memory_mib": req.max_memory_mib,
+               "template": req.template}),
+    )
+    .await;
+    let vm = mst_db::vms::get(&state.db, id).await?;
+    Ok(Json(view(vm, &context(&state).await?)))
+}
+
+/// Updates a VM's definition on its host to `spec` (a running VM takes it
+/// up when it next starts).
+pub async fn define_on_host(
+    state: &AppState,
+    tx: &mut mst_db::sqlx::PgConnection,
+    vm: &mst_db::vms::Vm,
+    host: mst_core::ids::HostId,
+    spec: &VmSpec,
+    generation: i64,
+) -> ApiResult<()> {
     let mut pools = std::collections::BTreeMap::new();
     for d in &spec.disks {
         if let std::collections::btree_map::Entry::Vacant(e) = pools.entry(d.pool_id) {
@@ -1102,11 +1181,11 @@ async fn update_vm(
         }
     }
     let define = mst_proto::DefineVm {
-        vm_id: id.to_string(),
+        vm_id: vm.id.to_string(),
         tenant_id: vm.tenant_id.to_string(),
         name: vm.name.clone(),
         generation: generation as u64,
-        spec_json: serde_json::to_string(&spec).map_err(ApiError::internal)?,
+        spec_json: serde_json::to_string(spec).map_err(ApiError::internal)?,
         pools: pools.into_values().collect(),
         disk_limits: crate::limits::disk_limits(&state.db, host).await?,
     };
@@ -1118,20 +1197,116 @@ async fn update_vm(
             std::time::Duration::from_secs(60),
         )
         .await
-        .map_err(|e| ApiError::unavailable(format!("updating the VM on its host: {e}")))?;
+        .map_err(|e| ApiError::unavailable(format!("updating the VM on its host: {e}")))
+}
+
+/// What a running VM's balloon reports.
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct MemoryView {
+    /// What the guest has now, in MiB: the balloon's target, once reached.
+    actual_mib: u64,
+    /// The guest's balloon driver reports: its memory can change while it
+    /// runs, and the figures below are known.
+    driver: bool,
+    /// Memory the guest sees.
+    available_mib: Option<u64>,
+    /// What it could use without swapping: free, and caches it can drop.
+    usable_mib: Option<u64>,
+    /// Entirely free.
+    unused_mib: Option<u64>,
+    /// What the VM takes on its host.
+    rss_mib: Option<u64>,
+}
+
+async fn memory_of(
+    state: &AppState,
+    vm: &mst_db::vms::Vm,
+    host: mst_core::ids::HostId,
+) -> ApiResult<MemoryView> {
+    state
+        .agents
+        .query::<MemoryView>(
+            host,
+            mst_proto::command::Cmd::MemoryStats(mst_proto::MemoryStats {
+                vm_id: vm.id.to_string(),
+            }),
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .map_err(|e| {
+            ApiError::unavailable(format!("asking {}'s host about its memory: {e}", vm.name))
+        })
+}
+
+/// A running VM's memory as its guest sees and uses it, from its balloon.
+#[utoipa::path(get, path = "/vms/{id}/memory", tag = "vms", params(("id" = VmId, Path)),
+    responses((status = 200, body = MemoryView), (status = 404), (status = 409), (status = 503)))]
+async fn vm_memory(
+    State(state): State<AppState>,
+    p: Principal,
+    Path(id): Path<VmId>,
+) -> ApiResult<Json<MemoryView>> {
+    let vm = load(&state, &p, id, Perm::VmRead).await?;
+    let host = vm
+        .host_id
+        .filter(|_| vm.power == "running")
+        .ok_or_else(|| ApiError::conflict(format!("{} is not running", vm.name)))?;
+    Ok(Json(memory_of(&state, &vm, host).await?))
+}
+
+/// Gives a running VM `memory_mib` through its balloon, within its maximum
+/// (kept for it on its host and counted in quotas already).
+async fn resize_memory_live(
+    state: &AppState,
+    p: &Principal,
+    mut tx: mst_db::sqlx::Transaction<'static, mst_db::sqlx::Postgres>,
+    vm: mst_db::vms::Vm,
+    host: mst_core::ids::HostId,
+    memory_mib: u64,
+) -> ApiResult<Json<VmView>> {
+    let max = vm.spec.0.reserved_memory_mib();
+    if memory_mib > max {
+        return Err(ApiError::conflict(format!(
+            "{} can grow to {max} MiB while it runs; stop it to give it more",
+            vm.name
+        )));
+    }
+    if !memory_of(state, &vm, host).await?.driver {
+        return Err(ApiError::conflict(format!(
+            "{}'s guest has no balloon driver reporting (virtio_balloon), so its memory cannot change while it runs; stop it first",
+            vm.name
+        )));
+    }
+    state
+        .agents
+        .call(
+            host,
+            mst_proto::command::Cmd::SetMemory(mst_proto::SetMemory {
+                vm_id: vm.id.to_string(),
+                memory_mib,
+            }),
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .map_err(|e| ApiError::unavailable(format!("changing {}'s memory: {e}", vm.name)))?;
+    let mut spec = vm.spec.0.clone();
+    let from = spec.memory_mib;
+    spec.memory_mib = memory_mib;
+    spec.max_memory_mib = (max > memory_mib).then_some(max);
+    let generation = mst_db::vms::redefine(&mut tx, vm.id, &spec).await?;
+    define_on_host(state, &mut tx, &vm, host, &spec, generation).await?;
     tx.commit().await?;
     audit(
         &state.db,
-        Some(&p),
+        Some(p),
         Some(vm.tenant_id),
         "vm.update",
-        Some(("vm", id.0)),
-        json!({"name": vm.name, "migratable": req.migratable, "vcpus": req.vcpus,
-               "memory_mib": req.memory_mib, "template": req.template}),
+        Some(("vm", vm.id.0)),
+        json!({"name": vm.name, "memory_mib": memory_mib, "from": from, "live": true}),
     )
     .await;
-    let vm = mst_db::vms::get(&state.db, id).await?;
-    Ok(Json(view(vm, &context(&state).await?)))
+    let vm = mst_db::vms::get(&state.db, vm.id).await?;
+    Ok(Json(view(vm, &context(state).await?)))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1236,6 +1411,20 @@ async fn resize_disk(
     .await;
     let vm = mst_db::vms::get(&state.db, id).await?;
     Ok(Json(view(vm, &context(&state).await?)))
+}
+
+fn check_max_memory(memory_mib: u64, max: Option<u64>) -> ApiResult<()> {
+    match max {
+        Some(m) if m < memory_mib || m > 4 * 1024 * 1024 => Err(ApiError::bad_request(
+            "max_memory_mib must be at least memory_mib, and at most 4194304",
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// What a new VM's host keeps for it: its memory, or what that may grow to.
+fn reserved_memory(req: &CreateVm) -> u64 {
+    req.max_memory_mib.unwrap_or(0).max(req.memory_mib)
 }
 
 fn check_size(vcpus: u32, memory_mib: u64) -> ApiResult<()> {

@@ -201,6 +201,8 @@ message Command {
     DeleteSnapshot delete_snapshot = 38;
     ResizeDisk resize_disk = 39;
     CloneVolume clone_volume = 40;
+    SetMemory set_memory = 41;
+    MemoryStats memory_stats = 42;
   }
 }
 
@@ -448,6 +450,19 @@ message CloneVolume {
   string volume_id = 3;
   uint64 size_bytes = 4;
   string image_id = 5;
+}
+
+// Give a running VM this much memory, through its balloon (its definition
+// is updated with DefineVm).
+message SetMemory {
+  string vm_id = 1;
+  uint64 memory_mib = 2;
+}
+
+// What a running VM's balloon reports about its memory. Answers with JSON:
+// actual_mib, driver, available_mib, usable_mib, unused_mib, rss_mib.
+message MemoryStats {
+  string vm_id = 1;
 }
 
 // An image was deleted: remove its cached copy from the local pool, and from

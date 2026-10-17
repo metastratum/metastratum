@@ -94,6 +94,8 @@ async fn allocate(
         migratable: true,
         vcpus,
         memory_mib: mem,
+        max_memory_mib: None,
+        free_page_reporting: false,
         firmware: Default::default(),
         disks: vec![],
         nics: vec![],
@@ -576,4 +578,24 @@ async fn vpcs_and_snapshots_count_against_quotas(pool: PgPool) {
         .unwrap();
     let used = quotas::usage(&pool, t.acme.id).await.unwrap();
     assert_eq!((used["vpcs"], used["snapshot_gib"]), (1, 3));
+}
+
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn quotas_count_what_memory_may_grow_to(pool: PgPool) {
+    let t = tree(&pool).await;
+    let host = host(&pool).await;
+    let vm = allocate(&pool, t.dev.id, host, 1, 512, 3).await.unwrap();
+    assert_eq!(
+        quotas::usage(&pool, t.acme.id).await.unwrap()["memory_mib"],
+        512
+    );
+    sqlx::query("UPDATE vms SET spec = spec || '{\"max_memory_mib\": 2048}' WHERE id = $1")
+        .bind(vm)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        quotas::usage(&pool, t.acme.id).await.unwrap()["memory_mib"],
+        2048
+    );
 }

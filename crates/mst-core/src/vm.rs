@@ -18,7 +18,19 @@ pub enum Firmware {
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct VmSpec {
     pub vcpus: u32,
+    /// The memory the guest has: what it boots with, and what the balloon
+    /// gives it while it runs.
     pub memory_mib: u64,
+    /// What `memory_mib` may grow to while the VM runs (through its
+    /// balloon, for guests with the driver); `memory_mib` when unset. What
+    /// hosts' capacity and quotas count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_memory_mib: Option<u64>,
+    /// The guest hands memory it does not use back to the host (virtio-balloon
+    /// free page reporting). For VMs defined since it existed: it changes the
+    /// device, so a running VM keeps what it started with until it restarts.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub free_page_reporting: bool,
     #[serde(default)]
     pub firmware: Firmware,
     /// Boot disk first.
@@ -36,6 +48,14 @@ pub struct VmSpec {
     /// to the host. VMs from before this setting existed could migrate.
     #[serde(default = "yes")]
     pub migratable: bool,
+}
+
+impl VmSpec {
+    /// The most memory the VM can have without a restart: what is reserved
+    /// for it on its host, and counted against its tenant's quota.
+    pub fn reserved_memory_mib(&self) -> u64 {
+        self.max_memory_mib.unwrap_or(0).max(self.memory_mib)
+    }
 }
 
 fn yes() -> bool {

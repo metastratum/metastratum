@@ -5,7 +5,8 @@
   <metadata>
     <mst:vm xmlns:mst='urn:metastratum:vm:1' id='0199f0a2-7b3c-7d00-8000-000000000001' tenant='0199f0a2-7b3c-7d00-8000-0000000000aa' generation='3'/>
   </metadata>
-  <memory unit='MiB'>2048</memory>
+  <memory unit='MiB'>4096</memory>
+  <currentMemory unit='MiB'>2048</currentMemory>
   <vcpu placement='static'>2</vcpu>
   <os firmware='efi'>
     <firmware>
@@ -77,6 +78,8 @@
     <rng model='virtio'>
       <backend model='random'>/dev/urandom</backend>
     </rng>
-    <memballoon model='virtio'/>
+    <memballoon model='virtio' freePageReporting='on'>
+      <stats period='10'/>
+    </memballoon>
   </devices>
 </domain>

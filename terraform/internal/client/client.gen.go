@@ -100,7 +100,12 @@ type AcceptedVmView struct {
 	HostId        *HostId `json:"host_id,omitempty"`
 	HostName      *string `json:"host_name,omitempty"`
 	Id            VmId    `json:"id"`
-	MemoryMib     int64   `json:"memory_mib"`
+
+	// MaxMemoryMib What `memory_mib` may grow to without a restart.
+	MaxMemoryMib int64 `json:"max_memory_mib"`
+
+	// MemoryMib What it has now (its balloon's size, while it runs).
+	MemoryMib int64 `json:"memory_mib"`
 
 	// Migratable Can live-migrate; otherwise it has its host's CPU and disk caching.
 	Migratable bool           `json:"migratable"`
@@ -540,10 +545,15 @@ type CreateVm struct {
 	ClusterId *ClusterId `json:"cluster_id,omitempty"`
 
 	// DiskGib Size of the boot disk. Must be at least the image's size.
-	DiskGib   int64     `json:"disk_gib"`
-	Firmware  *Firmware `json:"firmware,omitempty"`
-	ImageId   ImageId   `json:"image_id"`
-	MemoryMib int64     `json:"memory_mib"`
+	DiskGib  int64     `json:"disk_gib"`
+	Firmware *Firmware `json:"firmware,omitempty"`
+	ImageId  ImageId   `json:"image_id"`
+
+	// MaxMemoryMib What its memory may grow to while it runs (through its balloon, for
+	// guests with the driver); `memory_mib` by default. Its host keeps
+	// this much for it, and it counts against the tenant's memory quota.
+	MaxMemoryMib *int64 `json:"max_memory_mib,omitempty"`
+	MemoryMib    int64  `json:"memory_mib"`
 
 	// Migratable Whether the VM may live-migrate to other hosts of its cluster. If
 	// not, it gets its host's full CPU feature set and disks use the host's
@@ -902,6 +912,28 @@ type MemberView struct {
 	NicId  NicId  `json:"nic_id"`
 	VmId   VmId   `json:"vm_id"`
 	VmName string `json:"vm_name"`
+}
+
+// MemoryView What a running VM's balloon reports.
+type MemoryView struct {
+	// ActualMib What the guest has now, in MiB: the balloon's target, once reached.
+	ActualMib int64 `json:"actual_mib"`
+
+	// AvailableMib Memory the guest sees.
+	AvailableMib *int64 `json:"available_mib,omitempty"`
+
+	// Driver The guest's balloon driver reports: its memory can change while it
+	// runs, and the figures below are known.
+	Driver bool `json:"driver"`
+
+	// RssMib What the VM takes on its host.
+	RssMib *int64 `json:"rss_mib,omitempty"`
+
+	// UnusedMib Entirely free.
+	UnusedMib *int64 `json:"unused_mib,omitempty"`
+
+	// UsableMib What it could use without swapping: free, and caches it can drop.
+	UsableMib *int64 `json:"usable_mib,omitempty"`
 }
 
 // MigrateVm defines model for MigrateVm.
@@ -1501,8 +1533,14 @@ type UpdateUser struct {
 
 // UpdateVm defines model for UpdateVm.
 type UpdateVm struct {
-	// MemoryMib Memory in MiB (128-4194304). Only while the VM is stopped; its host
-	// must have room for more.
+	// MaxMemoryMib What memory may grow to while the VM runs. Only while it is stopped;
+	// it counts against quotas and its host's room as its memory does.
+	MaxMemoryMib *int64 `json:"max_memory_mib,omitempty"`
+
+	// MemoryMib Memory in MiB (128-4194304). While the VM runs, within
+	// `max_memory_mib`, through its balloon (the guest's virtio_balloon
+	// driver must be loaded); otherwise while it is stopped, its host
+	// having room for more.
 	MemoryMib *int64 `json:"memory_mib,omitempty"`
 
 	// Migratable Allow live migration (the cluster's CPU model, no host disk cache) or
@@ -1613,7 +1651,12 @@ type VmView struct {
 	HostId        *HostId `json:"host_id,omitempty"`
 	HostName      *string `json:"host_name,omitempty"`
 	Id            VmId    `json:"id"`
-	MemoryMib     int64   `json:"memory_mib"`
+
+	// MaxMemoryMib What `memory_mib` may grow to without a restart.
+	MaxMemoryMib int64 `json:"max_memory_mib"`
+
+	// MemoryMib What it has now (its balloon's size, while it runs).
+	MemoryMib int64 `json:"memory_mib"`
 
 	// Migratable Can live-migrate; otherwise it has its host's CPU and disk caching.
 	Migratable bool           `json:"migratable"`
@@ -2862,18 +2905,22 @@ type ClientInterface interface {
 	// GetVm performs a GET /api/v1/vms/{id} (the `GetVm` operationId) request.
 	GetVm(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// UpdateVmWithBody Changes a stopped VM's settings. Its definition on the host is updated
-	// right away; the VM picks it up when it next starts. Growing its CPUs or
-	// memory counts against the tenant's quotas.
+	// UpdateVmWithBody Changes a VM's settings. A running VM's memory changes at once, within
+	// its maximum; everything else only while it is stopped: its definition
+	// on the host is updated right away, and the VM picks it up when it next
+	// starts. Growing its CPUs or (maximum) memory counts against the tenant's
+	// quotas.
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with PATCH /api/v1/vms/{id} (the `UpdateVm` operationId).
 	UpdateVmWithBody(ctx context.Context, id VmId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// UpdateVm Changes a stopped VM's settings. Its definition on the host is updated
-	// right away; the VM picks it up when it next starts. Growing its CPUs or
-	// memory counts against the tenant's quotas.
+	// UpdateVm Changes a VM's settings. A running VM's memory changes at once, within
+	// its maximum; everything else only while it is stopped: its definition
+	// on the host is updated right away, and the VM picks it up when it next
+	// starts. Growing its CPUs or (maximum) memory counts against the tenant's
+	// quotas.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -2972,6 +3019,11 @@ type ClientInterface interface {
 	//
 	// Corresponds with POST /api/v1/vms/{id}/disks/{index}/resize (the `ResizeDisk` operationId).
 	ResizeDisk(ctx context.Context, id VmId, index int, body ResizeDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// VmMemory A running VM's memory as its guest sees and uses it, from its balloon.
+	//
+	// Corresponds with GET /api/v1/vms/{id}/memory (the `VmMemory` operationId).
+	VmMemory(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// MigrateVmWithBody Live-migrates a running VM to another host of its cluster, without
 	// stopping it. Disks on shared storage stay put; local disks are copied.
@@ -5457,9 +5509,11 @@ func (c *Client) GetVm(ctx context.Context, id VmId, reqEditors ...RequestEditor
 	return c.Client.Do(req)
 }
 
-// UpdateVmWithBody Changes a stopped VM's settings. Its definition on the host is updated
-// right away; the VM picks it up when it next starts. Growing its CPUs or
-// memory counts against the tenant's quotas.
+// UpdateVmWithBody Changes a VM's settings. A running VM's memory changes at once, within
+// its maximum; everything else only while it is stopped: its definition
+// on the host is updated right away, and the VM picks it up when it next
+// starts. Growing its CPUs or (maximum) memory counts against the tenant's
+// quotas.
 //
 // Takes any type of body and a specified content type.
 //
@@ -5476,9 +5530,11 @@ func (c *Client) UpdateVmWithBody(ctx context.Context, id VmId, contentType stri
 	return c.Client.Do(req)
 }
 
-// UpdateVm Changes a stopped VM's settings. Its definition on the host is updated
-// right away; the VM picks it up when it next starts. Growing its CPUs or
-// memory counts against the tenant's quotas.
+// UpdateVm Changes a VM's settings. A running VM's memory changes at once, within
+// its maximum; everything else only while it is stopped: its definition
+// on the host is updated right away, and the VM picks it up when it next
+// starts. Growing its CPUs or (maximum) memory counts against the tenant's
+// quotas.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -5688,6 +5744,21 @@ func (c *Client) ResizeDiskWithBody(ctx context.Context, id VmId, index int, con
 // Corresponds with POST /api/v1/vms/{id}/disks/{index}/resize (the `ResizeDisk` operationId).
 func (c *Client) ResizeDisk(ctx context.Context, id VmId, index int, body ResizeDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewResizeDiskRequest(c.Server, id, index, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// VmMemory A running VM's memory as its guest sees and uses it, from its balloon.
+//
+// Corresponds with GET /api/v1/vms/{id}/memory (the `VmMemory` operationId).
+func (c *Client) VmMemory(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVmMemoryRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -11114,6 +11185,40 @@ func NewResizeDiskRequestWithBody(server string, id VmId, index int, contentType
 	return req, nil
 }
 
+// NewVmMemoryRequest constructs an http.Request for the VmMemory method
+func NewVmMemoryRequest(server string, id VmId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/vms/%s/memory", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewMigrateVmRequest calls the generic MigrateVm builder with application/json body
 func NewMigrateVmRequest(server string, id VmId, body MigrateVmJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -12723,18 +12828,22 @@ type ClientWithResponsesInterface interface {
 	// Returns a wrapper object for the known response body format(s).
 	GetVmWithResponse(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*GetVmResponse, error)
 
-	// UpdateVmWithBodyWithResponse Changes a stopped VM's settings. Its definition on the host is updated
-	// right away; the VM picks it up when it next starts. Growing its CPUs or
-	// memory counts against the tenant's quotas.
+	// UpdateVmWithBodyWithResponse Changes a VM's settings. A running VM's memory changes at once, within
+	// its maximum; everything else only while it is stopped: its definition
+	// on the host is updated right away, and the VM picks it up when it next
+	// starts. Growing its CPUs or (maximum) memory counts against the tenant's
+	// quotas.
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with PATCH /api/v1/vms/{id} (the `UpdateVm` operationId).
 	UpdateVmWithBodyWithResponse(ctx context.Context, id VmId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateVmResponse, error)
 
-	// UpdateVmWithResponse Changes a stopped VM's settings. Its definition on the host is updated
-	// right away; the VM picks it up when it next starts. Growing its CPUs or
-	// memory counts against the tenant's quotas.
+	// UpdateVmWithResponse Changes a VM's settings. A running VM's memory changes at once, within
+	// its maximum; everything else only while it is stopped: its definition
+	// on the host is updated right away, and the VM picks it up when it next
+	// starts. Growing its CPUs or (maximum) memory counts against the tenant's
+	// quotas.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -12837,6 +12946,13 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with POST /api/v1/vms/{id}/disks/{index}/resize (the `ResizeDisk` operationId).
 	ResizeDiskWithResponse(ctx context.Context, id VmId, index int, body ResizeDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*ResizeDiskResponse, error)
+
+	// VmMemoryWithResponse A running VM's memory as its guest sees and uses it, from its balloon.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/vms/{id}/memory (the `VmMemory` operationId).
+	VmMemoryWithResponse(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*VmMemoryResponse, error)
 
 	// MigrateVmWithBodyWithResponse Live-migrates a running VM to another host of its cluster, without
 	// stopping it. Disks on shared storage stay put; local disks are copied.
@@ -17802,6 +17918,47 @@ func (r ResizeDiskResponse) ContentType() string {
 	return ""
 }
 
+type VmMemoryResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *MemoryView
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r VmMemoryResponse) GetJSON200() *MemoryView {
+	return r.JSON200
+}
+
+// GetBody returns the raw response body bytes
+func (r VmMemoryResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r VmMemoryResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r VmMemoryResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r VmMemoryResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type MigrateVmResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -20268,9 +20425,11 @@ func (c *ClientWithResponses) GetVmWithResponse(ctx context.Context, id VmId, re
 	return ParseGetVmResponse(rsp)
 }
 
-// UpdateVmWithBodyWithResponse Changes a stopped VM's settings. Its definition on the host is updated
-// right away; the VM picks it up when it next starts. Growing its CPUs or
-// memory counts against the tenant's quotas.
+// UpdateVmWithBodyWithResponse Changes a VM's settings. A running VM's memory changes at once, within
+// its maximum; everything else only while it is stopped: its definition
+// on the host is updated right away, and the VM picks it up when it next
+// starts. Growing its CPUs or (maximum) memory counts against the tenant's
+// quotas.
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -20283,9 +20442,11 @@ func (c *ClientWithResponses) UpdateVmWithBodyWithResponse(ctx context.Context, 
 	return ParseUpdateVmResponse(rsp)
 }
 
-// UpdateVmWithResponse Changes a stopped VM's settings. Its definition on the host is updated
-// right away; the VM picks it up when it next starts. Growing its CPUs or
-// memory counts against the tenant's quotas.
+// UpdateVmWithResponse Changes a VM's settings. A running VM's memory changes at once, within
+// its maximum; everything else only while it is stopped: its definition
+// on the host is updated right away, and the VM picks it up when it next
+// starts. Growing its CPUs or (maximum) memory counts against the tenant's
+// quotas.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -20459,6 +20620,19 @@ func (c *ClientWithResponses) ResizeDiskWithResponse(ctx context.Context, id VmI
 		return nil, err
 	}
 	return ParseResizeDiskResponse(rsp)
+}
+
+// VmMemoryWithResponse A running VM's memory as its guest sees and uses it, from its balloon.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /api/v1/vms/{id}/memory (the `VmMemory` operationId).
+func (c *ClientWithResponses) VmMemoryWithResponse(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*VmMemoryResponse, error) {
+	rsp, err := c.VmMemory(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVmMemoryResponse(rsp)
 }
 
 // MigrateVmWithBodyWithResponse Live-migrates a running VM to another host of its cluster, without
@@ -24107,6 +24281,41 @@ func ParseResizeDiskResponse(rsp *http.Response) (*ResizeDiskResponse, error) {
 
 	case rsp.StatusCode == 400:
 		break // No content-type
+
+	case rsp.StatusCode == 404:
+		break // No content-type
+
+	case rsp.StatusCode == 409:
+		break // No content-type
+
+	case rsp.StatusCode == 503:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseVmMemoryResponse parses an HTTP response from a VmMemoryWithResponse call
+func ParseVmMemoryResponse(rsp *http.Response) (*VmMemoryResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &VmMemoryResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest MemoryView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
 
 	case rsp.StatusCode == 404:
 		break // No content-type

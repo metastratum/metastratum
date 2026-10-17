@@ -1438,9 +1438,11 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Changes a stopped VM's settings. Its definition on the host is updated
-         *     right away; the VM picks it up when it next starts. Growing its CPUs or
-         *     memory counts against the tenant's quotas.
+         * Changes a VM's settings. A running VM's memory changes at once, within
+         *     its maximum; everything else only while it is stopped: its definition
+         *     on the host is updated right away, and the VM picks it up when it next
+         *     starts. Growing its CPUs or (maximum) memory counts against the tenant's
+         *     quotas.
          */
         patch: operations["update_vm"];
         trace?: never;
@@ -1544,6 +1546,23 @@ export interface paths {
          *     storage cannot grow while the VM has snapshots.
          */
         post: operations["resize_disk"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/memory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A running VM's memory as its guest sees and uses it, from its balloon. */
+        get: operations["vm_memory"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1735,7 +1754,15 @@ export interface components {
             host_id?: components["schemas"]["HostId"] | null;
             host_name?: string | null;
             id: components["schemas"]["VmId"];
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description What `memory_mib` may grow to without a restart.
+             */
+            max_memory_mib: number;
+            /**
+             * Format: int64
+             * @description What it has now (its balloon's size, while it runs).
+             */
             memory_mib: number;
             /** @description Can live-migrate; otherwise it has its host's CPU and disk caching. */
             migratable: boolean;
@@ -2084,6 +2111,13 @@ export interface components {
             disk_gib: number;
             firmware?: components["schemas"]["Firmware"];
             image_id: components["schemas"]["ImageId"];
+            /**
+             * Format: int64
+             * @description What its memory may grow to while it runs (through its balloon, for
+             *     guests with the driver); `memory_mib` by default. Its host keeps
+             *     this much for it, and it counts against the tenant's memory quota.
+             */
+            max_memory_mib?: number | null;
             /** Format: int64 */
             memory_mib: number;
             /**
@@ -2407,6 +2441,39 @@ export interface components {
             nic_id: components["schemas"]["NicId"];
             vm_id: components["schemas"]["VmId"];
             vm_name: string;
+        };
+        /** @description What a running VM's balloon reports. */
+        MemoryView: {
+            /**
+             * Format: int64
+             * @description What the guest has now, in MiB: the balloon's target, once reached.
+             */
+            actual_mib: number;
+            /**
+             * Format: int64
+             * @description Memory the guest sees.
+             */
+            available_mib?: number | null;
+            /**
+             * @description The guest's balloon driver reports: its memory can change while it
+             *     runs, and the figures below are known.
+             */
+            driver: boolean;
+            /**
+             * Format: int64
+             * @description What the VM takes on its host.
+             */
+            rss_mib?: number | null;
+            /**
+             * Format: int64
+             * @description Entirely free.
+             */
+            unused_mib?: number | null;
+            /**
+             * Format: int64
+             * @description What it could use without swapping: free, and caches it can drop.
+             */
+            usable_mib?: number | null;
         };
         MigrateVm: {
             host_id?: components["schemas"]["HostId"] | null;
@@ -2917,8 +2984,16 @@ export interface components {
         UpdateVm: {
             /**
              * Format: int64
-             * @description Memory in MiB (128-4194304). Only while the VM is stopped; its host
-             *     must have room for more.
+             * @description What memory may grow to while the VM runs. Only while it is stopped;
+             *     it counts against quotas and its host's room as its memory does.
+             */
+            max_memory_mib?: number | null;
+            /**
+             * Format: int64
+             * @description Memory in MiB (128-4194304). While the VM runs, within
+             *     `max_memory_mib`, through its balloon (the guest's virtio_balloon
+             *     driver must be loaded); otherwise while it is stopped, its host
+             *     having room for more.
              */
             memory_mib?: number | null;
             /**
@@ -3026,7 +3101,15 @@ export interface components {
             host_id?: components["schemas"]["HostId"] | null;
             host_name?: string | null;
             id: components["schemas"]["VmId"];
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description What `memory_mib` may grow to without a restart.
+             */
+            max_memory_mib: number;
+            /**
+             * Format: int64
+             * @description What it has now (its balloon's size, while it runs).
+             */
             memory_mib: number;
             /** @description Can live-migrate; otherwise it has its host's CPU and disk caching. */
             migratable: boolean;
@@ -7234,6 +7317,45 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    vm_memory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryView"];
+                };
             };
             404: {
                 headers: {

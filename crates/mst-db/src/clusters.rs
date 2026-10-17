@@ -168,7 +168,7 @@ pub async fn candidates_locked(db: &mut PgConnection) -> Result<Vec<Candidate>> 
                 (SELECT coalesce(sum((v.spec->>'vcpus')::bigint), 0)::bigint FROM vms v WHERE v.host_id = h.id)
                   + (SELECT coalesce(sum(m.vcpus), 0)::bigint FROM migrations m WHERE m.dest_host_id = h.id)
                     AS used_vcpus,
-                (SELECT coalesce(sum((v.spec->>'memory_mib')::bigint), 0)::bigint FROM vms v WHERE v.host_id = h.id)
+                (SELECT coalesce(sum(greatest((v.spec->>'memory_mib')::bigint, coalesce((v.spec->>'max_memory_mib')::bigint, 0))), 0)::bigint FROM vms v WHERE v.host_id = h.id)
                   + (SELECT coalesce(sum(m.memory_mib), 0)::bigint FROM migrations m WHERE m.dest_host_id = h.id)
                     AS used_memory_mib
          FROM hosts h LEFT JOIN clusters c ON c.id = h.cluster_id

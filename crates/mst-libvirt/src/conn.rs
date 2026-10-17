@@ -699,6 +699,37 @@ impl Libvirt {
 
     /// Changes the throttling of a domain's disks, now (if it runs) and in
     /// its definition. 0 lifts a limit.
+    /// Sets a running domain's memory: its balloon inflates or deflates to
+    /// leave the guest `mib`, if the guest's driver plays along. Only the
+    /// live domain; its definition is the caller's to update.
+    pub async fn set_memory(&self, uuid: &str, mib: u64) -> Result<()> {
+        const AFFECT_LIVE: u32 = 1;
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        c.domain_set_memory_flags(&DomainSetMemoryFlagsArgs {
+            dom,
+            memory: mib * 1024,
+            flags: AFFECT_LIVE,
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// What a running domain's balloon says about its memory.
+    pub async fn memory_stats(&self, uuid: &str) -> Result<MemoryStats> {
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        let stats = c
+            .domain_memory_stats(&DomainMemoryStatsArgs {
+                dom,
+                max_stats: 16,
+                flags: 0,
+            })
+            .await?
+            .stats;
+        Ok(MemoryStats::from_tags(stats.iter().map(|s| (s.tag, s.val))))
+    }
+
     pub async fn set_disk_limits(
         &self,
         uuid: &str,
@@ -1063,6 +1094,82 @@ mod tests {
                 power: Power::Running,
                 reason: None
             }
+        );
+    }
+}
+
+/// A running guest's memory as its balloon reports it, in MiB.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MemoryStats {
+    /// What the guest has now: the balloon's target, once reached.
+    pub actual_mib: u64,
+    /// Whether the guest's balloon driver reports (so it can be resized
+    /// while running); without it only `actual_mib` and `rss_mib` are known.
+    pub driver: bool,
+    /// Memory the guest sees (its MemTotal).
+    pub available_mib: Option<u64>,
+    /// What it could use without swapping (free, plus caches it can drop).
+    pub usable_mib: Option<u64>,
+    /// Entirely free.
+    pub unused_mib: Option<u64>,
+    /// What the VM takes on its host.
+    pub rss_mib: Option<u64>,
+}
+
+impl MemoryStats {
+    /// From libvirt's `virDomainMemoryStatTags` and values (KiB).
+    pub fn from_tags(stats: impl Iterator<Item = (i32, u64)>) -> Self {
+        const UNUSED: i32 = 4;
+        const AVAILABLE: i32 = 5;
+        const ACTUAL: i32 = 6;
+        const RSS: i32 = 7;
+        const USABLE: i32 = 8;
+        const LAST_UPDATE: i32 = 9;
+        let mut m = Self::default();
+        for (tag, val) in stats {
+            let mib = val / 1024;
+            match tag {
+                ACTUAL => m.actual_mib = mib,
+                AVAILABLE => m.available_mib = Some(mib),
+                USABLE => m.usable_mib = Some(mib),
+                UNUSED => m.unused_mib = Some(mib),
+                RSS => m.rss_mib = Some(mib),
+                LAST_UPDATE => m.driver = val > 0,
+                _ => {}
+            }
+        }
+        m.driver |= m.available_mib.is_some();
+        m
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+
+    #[test]
+    fn balloon_driver_shows_in_the_stats() {
+        // Without the guest's driver: what QEMU knows alone.
+        let none = MemoryStats::from_tags([(6, 1 << 20), (7, 900 << 10)].into_iter());
+        assert_eq!(
+            (none.actual_mib, none.driver, none.rss_mib),
+            (1024, false, Some(900))
+        );
+        // With it: the guest's own view.
+        let with = MemoryStats::from_tags(
+            [
+                (6, 1 << 20),
+                (5, 1000 << 10),
+                (8, 600 << 10),
+                (4, 400 << 10),
+                (9, 1_760_000_000),
+            ]
+            .into_iter(),
+        );
+        assert!(with.driver);
+        assert_eq!(
+            (with.available_mib, with.usable_mib, with.unused_mib),
+            (Some(1000), Some(600), Some(400))
         );
     }
 }

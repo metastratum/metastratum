@@ -196,6 +196,18 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
 
 pub async fn start(ctx: &TaskCtx) -> Result<()> {
     let vm = mst_db::vms::get(&ctx.state.db, target(ctx)?).await?;
+    if !vm.spec.0.free_page_reporting {
+        // Starting afresh: the balloon can now hand the guest's free memory
+        // back (it changes the device, which a running VM keeps as it was).
+        let mut spec = vm.spec.0.clone();
+        spec.free_page_reporting = true;
+        let mut tx = ctx.state.db.begin().await?;
+        let generation = mst_db::vms::redefine(&mut tx, vm.id, &spec).await?;
+        crate::api::define_on_host(&ctx.state, &mut tx, &vm, host_of(&vm)?, &spec, generation)
+            .await
+            .map_err(|e| anyhow!("{}", e.message))?;
+        tx.commit().await?;
+    }
     call(
         ctx,
         host_of(&vm)?,

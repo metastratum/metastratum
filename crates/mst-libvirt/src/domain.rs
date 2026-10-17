@@ -68,7 +68,12 @@ pub struct DomainDef {
     pub title: String,
     pub generation: u64,
     pub vcpus: u32,
+    /// What the guest has now (its balloon's size).
     pub memory_mib: u64,
+    /// What it may grow to without a restart.
+    pub max_memory_mib: u64,
+    /// The guest hands free memory back (virtio-balloon free page reporting).
+    pub free_page_reporting: bool,
     pub firmware: Firmware,
     pub disks: Vec<Disk>,
     pub nics: Vec<Nic>,
@@ -200,7 +205,16 @@ impl DomainDef {
                         .attr("generation", self.generation),
                 ),
             )
-            .child(El::new("memory").attr("unit", "MiB").text(self.memory_mib))
+            .child(
+                El::new("memory")
+                    .attr("unit", "MiB")
+                    .text(self.max_memory_mib.max(self.memory_mib)),
+            )
+            .child(
+                El::new("currentMemory")
+                    .attr("unit", "MiB")
+                    .text(self.memory_mib),
+            )
             .child(El::new("vcpu").attr("placement", "static").text(self.vcpus))
             .child(os)
             .child(
@@ -261,7 +275,17 @@ impl DomainDef {
                                 .text("/dev/urandom"),
                         ),
                     )
-                    .child(El::new("memballoon").attr("model", "virtio")),
+                    .child({
+                        // Statistics every 10 seconds tell how much the guest
+                        // uses, and whether its balloon driver is there.
+                        let balloon = El::new("memballoon").attr("model", "virtio");
+                        let balloon = if self.free_page_reporting {
+                            balloon.attr("freePageReporting", "on")
+                        } else {
+                            balloon
+                        };
+                        balloon.child(El::new("stats").attr("period", "10"))
+                    }),
             )
             .render()
     }
@@ -324,6 +348,8 @@ mod tests {
             generation: 3,
             vcpus: 2,
             memory_mib: 2048,
+            max_memory_mib: 4096,
+            free_page_reporting: true,
             firmware: Firmware::Uefi,
             disks: vec![
                 Disk {

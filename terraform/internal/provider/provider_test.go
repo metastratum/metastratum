@@ -107,6 +107,7 @@ resource "metastratum_vm" "web" {
   image_id           = data.metastratum_image.debian.id
   vcpus              = 1
   memory_mib         = %[5]d
+  max_memory_mib     = 1024
   disk_gib           = %[4]d
   network_id         = metastratum_network.web.id
   security_group_ids = [metastratum_security_group.web.id]
@@ -140,13 +141,15 @@ resource "metastratum_load_balancer" "web" {
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue("metastratum_vm.web", tfjsonpath.New("running"), knownvalue.Bool(true)),
 					statecheck.ExpectKnownValue("metastratum_vm.web", tfjsonpath.New("disk_gib"), knownvalue.Int64Exact(3)),
+					statecheck.ExpectKnownValue("metastratum_vm.web", tfjsonpath.New("max_memory_mib"), knownvalue.Int64Exact(1024)),
 					statecheck.ExpectKnownValue("metastratum_load_balancer.web", tfjsonpath.New("listener").AtSliceIndex(0).AtMapKey("target_port"), knownvalue.Int32Exact(8080)),
 				},
 			},
 			{
-				// In place: the disk grows, memory changes (stopping the VM
-				// for it), the load balancer and floating IP change; the
-				// rule is replaced.
+				// In place: the disk grows, memory changes within its
+				// maximum (while it runs, once the guest's balloon reports;
+				// stopped for it before), the load balancer and floating IP
+				// change; the rule is replaced.
 				Config: config(4, 768, 8081, false, false),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{

@@ -27,6 +27,7 @@ pub use auth::hash_password;
 pub use backups::{queue_delete as queue_backup_delete, repository_pool, start as start_backup};
 pub use snapshots::check_idle as check_disks_idle;
 pub use storage_pools::agent_pool;
+pub use vms::define_on_host;
 
 use axum::Router;
 use axum::extract::FromRequestParts;

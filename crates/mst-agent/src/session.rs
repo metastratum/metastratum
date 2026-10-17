@@ -367,6 +367,21 @@ impl Agent {
                 let pool = self.pool(c.pool.as_ref()).await?;
                 pool.delete_volume(&c.volume_id).await?;
             }
+            Cmd::SetMemory(c) => {
+                tracing::info!(vm = %c.vm_id, memory_mib = c.memory_mib, "setting memory");
+                self.lv.set_memory(&c.vm_id, c.memory_mib).await?;
+            }
+            Cmd::MemoryStats(c) => {
+                let m = self.lv.memory_stats(&c.vm_id).await?;
+                return Ok(serde_json::to_string(&serde_json::json!({
+                    "actual_mib": m.actual_mib,
+                    "driver": m.driver,
+                    "available_mib": m.available_mib,
+                    "usable_mib": m.usable_mib,
+                    "unused_mib": m.unused_mib,
+                    "rss_mib": m.rss_mib,
+                }))?);
+            }
             Cmd::DefineVm(c) => {
                 let def = self.domain_def(&c).await?;
                 self.lv.define(def.to_xml()).await?;

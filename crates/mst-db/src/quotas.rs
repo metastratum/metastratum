@@ -45,7 +45,7 @@ pub async fn usage(db: impl PgExecutor<'_>, tenant_id: TenantId) -> Result<Amoun
          SELECT
            (SELECT count(*) FROM vms WHERE tenant_id IN (SELECT id FROM sub)),
            (SELECT coalesce(sum((spec->>'vcpus')::bigint), 0)::bigint FROM vms WHERE tenant_id IN (SELECT id FROM sub)),
-           (SELECT coalesce(sum((spec->>'memory_mib')::bigint), 0)::bigint FROM vms WHERE tenant_id IN (SELECT id FROM sub)),
+           (SELECT coalesce(sum(greatest((spec->>'memory_mib')::bigint, coalesce((spec->>'max_memory_mib')::bigint, 0))), 0)::bigint FROM vms WHERE tenant_id IN (SELECT id FROM sub)),
            (SELECT coalesce(sum(size_bytes), 0)::bigint FROM volumes WHERE tenant_id IN (SELECT id FROM sub)),
            (SELECT count(*) FROM external_ips WHERE kind = 'floating' AND tenant_id IN (SELECT id FROM sub)),
            (SELECT coalesce(sum(size_bytes), 0)::bigint FROM backups WHERE state <> 'failed' AND tenant_id IN (SELECT id FROM sub)),

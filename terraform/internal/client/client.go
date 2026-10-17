@@ -52,6 +52,13 @@ func IsNotFound(err error) bool {
 	return ok && e.Status == http.StatusNotFound
 }
 
+// IsConflict says whether err is the API refusing a change in the
+// resource's current state (409).
+func IsConflict(err error) bool {
+	e, ok := err.(*Error)
+	return ok && e.Status == http.StatusConflict
+}
+
 // Check turns an unexpected status into an *Error with the API's message.
 func Check(status int, body []byte, want ...int) error {
 	for _, w := range want {
