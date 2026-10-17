@@ -217,3 +217,12 @@ pub async fn resolve_token(db: impl PgExecutor<'_>, token_hash: &str) -> Result<
     .fetch_optional(db)
     .await?)
 }
+
+/// How many API tokens never expire.
+pub async fn tokens_without_expiry(db: impl PgExecutor<'_>) -> Result<i64> {
+    Ok(
+        sqlx::query_scalar("SELECT count(*) FROM api_tokens WHERE expires_at IS NULL")
+            .fetch_one(db)
+            .await?,
+    )
+}

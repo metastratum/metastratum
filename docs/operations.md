@@ -117,6 +117,25 @@ gets a change first, serialized by a database lock. Watching hosts for
 failure (below) runs on one replica at a time, the leader, chosen with a
 Postgres advisory lock that is released when its session ends.
 
+### Checking an installation
+
+`mst-controller doctor` looks at a running installation against the
+deployment checklist in [SECURITY.md](../SECURITY.md#deployment-checklist):
+
+- the configuration and master key readable by the controller alone;
+- the API on a loopback or private address behind a trusted HTTPS proxy,
+  Redis with several controllers, metrics on a private address;
+- PostgreSQL over TLS with its certificate checked;
+- both OVN databases over TLS, with certificates from metastratum's CAs that
+  are not about to expire, and no plain listeners left on the OVN nodes;
+- hosts connected with current agents, fencing on every host of clusters
+  with high availability, per-VM limits on clusters, API tokens that expire.
+
+Each finding says how to fix it. It exits 0 when everything checked is in
+order, 1 with warnings and 2 with failures, so it can run from monitoring
+too. Run it on a controller (it reads the same configuration) after setting
+up, and after changes.
+
 ## PostgreSQL
 
 metastratum needs one writable PostgreSQL database (tested with 17 and 18),

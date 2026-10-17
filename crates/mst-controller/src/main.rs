@@ -7,6 +7,7 @@ mod ca;
 mod cleanup;
 mod config;
 mod crl;
+mod doctor;
 mod engine;
 mod error;
 mod events;
@@ -72,6 +73,10 @@ enum Cmd {
         #[arg(long)]
         cluster: Option<String>,
     },
+    /// Check this installation against the deployment checklist in
+    /// SECURITY.md and say what to fix. Exits 0 when all is in order, 1 with
+    /// warnings, 2 with failures.
+    Doctor,
     /// Print the OpenAPI document.
     Openapi,
     /// Print a new random master key, for the configuration's master_key_file.
@@ -133,6 +138,15 @@ async fn main() -> anyhow::Result<()> {
 
     match args.cmd {
         Cmd::Serve => serve(db, &cfg).await,
+        Cmd::Doctor => {
+            let report = doctor::run(&cfg, &args.config, &db).await?;
+            print!("{}", report.render());
+            std::process::exit(match report.worst() {
+                doctor::Level::Ok => 0,
+                doctor::Level::Warn => 1,
+                doctor::Level::Fail => 2,
+            });
+        }
         Cmd::Bootstrap {
             admin_user,
             admin_password,

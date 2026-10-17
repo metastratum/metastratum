@@ -199,7 +199,9 @@ A review of the whole system before calling it hardened. Fixed:
 
 ## Deployment checklist
 
-What metastratum offers but leaves to the deployment to switch on:
+What metastratum offers but leaves to the deployment to switch on.
+`mst-controller doctor` checks most of it on a running installation and
+says what to fix:
 
 - HTTPS in front of the controllers, with `X-Forwarded-Proto` from a proxy
   in `api.trusted_proxies`; the API listening on a private address.
