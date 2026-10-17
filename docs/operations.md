@@ -331,6 +331,51 @@ repair it and power it on; its agent reconnects by itself, and removes the
 domains of VMs that were restarted elsewhere. Then Manage → Save puts it
 back in service.
 
+## Backups
+
+A backup is a copy of a VM's disks, kept in a **backup repository** apart
+from the storage the VM runs on. It outlives the VM: restoring it makes a
+new VM, also after the original is deleted.
+
+Repositories are NFS exports (Infrastructure → Backups). Hosts mount them
+as they do NFS storage pools, so every host needs to reach the export, and
+it needs `no_root_squash`: libvirt writes and owns the files as root. Each
+backup is a directory, `backups/<backup id>/`, with a qcow2 file per disk;
+only metastratum's own directories are touched. Grant a repository to the
+tenants that may use it (Grants on a tenant); in a single-tenant
+installation, repositories are there for everyone.
+
+Back a VM up from its page (Details → Backups), or give it a schedule:
+daily or weekly, keeping the last so many. The leader starts scheduled
+backups, and deletes those beyond what the schedule keeps; backups taken by
+hand are kept until deleted. A VM is backed up one backup at a time, and
+not while it migrates.
+
+- A **running** VM is backed up as it was when the backup started, while
+  it carries on (libvirt's backup job). If the VM runs the QEMU guest agent
+  (`qemu-guest-agent`), its file systems are frozen for that moment, and the
+  backup is **consistent**. Without it, the backup is **crash-consistent**:
+  the disks as after a sudden power loss, which journaling file systems and
+  databases recover from, but anything still in the guest's memory is
+  missing.
+- A **stopped** VM's disks are copied as they are, and its backup is
+  consistent.
+
+Backups count against the `backup_gib` quota with their disks' full size.
+What they take in the repository is usually less (shown with each backup):
+only the disks' data is copied, not their empty space.
+
+Restoring a backup creates a new VM with the backup's disks, CPUs and
+memory, on a new network interface (a backup can be restored more than
+once, and its original may still be running), in the same tenant. It boots
+as a new instance: cloud-init sets up its network, host keys and the
+password or SSH keys given when restoring; the disks keep everything else.
+The restored VM's disks are full copies, not linked to the image the
+original was made from.
+
+Deleting a repository needs it empty: delete its backups first. Hosts then
+unmount it; its files stay on the export.
+
 ## Upgrades
 
 Controllers and agents say which protocol revision they speak and which

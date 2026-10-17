@@ -4,6 +4,7 @@
     <RouterLink to="/clusters">Clusters</RouterLink>
     <RouterLink to="/storage">Storage</RouterLink>
     <RouterLink to="/external-networks">External networks</RouterLink>
+    <RouterLink to="/backup-repositories">Backups</RouterLink>
   </nav>
 </template>
 

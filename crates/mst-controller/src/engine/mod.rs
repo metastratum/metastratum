@@ -5,7 +5,9 @@
 //! lease lapses and another replica resumes the task. Handlers are therefore
 //! written as sequences of idempotent steps.
 
+mod backup;
 mod migrate;
+pub use backup::schedule as backup_schedule;
 pub use migrate::DRIVEN_PROTOCOL;
 mod recover;
 mod vm;
@@ -114,6 +116,8 @@ async fn execute(state: AppState, task: Task) {
         "vm.migrate" => migrate::migrate(&ctx).await,
         "host.evacuate" => migrate::evacuate(&ctx).await,
         "host.recover" => recover::recover(&ctx).await,
+        "backup.create" => backup::create(&ctx).await,
+        "backup.delete" => backup::delete(&ctx).await,
         other => Err(anyhow::anyhow!("unknown task kind {other}")),
     };
     renew.abort();

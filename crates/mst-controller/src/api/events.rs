@@ -111,7 +111,7 @@ fn visible(p: &Principal, root: Option<&TenantPath>, c: &Change) -> bool {
         // VM state shown to tenants depends on their host being reachable;
         // host IDs are already part of what they see of their VMs.
         ("host", _) => true,
-        ("cluster" | "storage_pool" | "external_network", _) => {
+        ("cluster" | "storage_pool" | "external_network" | "backup_repository", _) => {
             root.is_some_and(|r| p.can(Perm::InfraRead, r))
         }
         ("vpc" | "network" | "security_group" | "external_ip", Some(t)) => {
@@ -124,7 +124,7 @@ fn visible(p: &Principal, root: Option<&TenantPath>, c: &Change) -> bool {
                     t.is_ancestor_or_self_of(&b.tenant) && b.role.allows(Perm::NetworkRead)
                 })
         }
-        ("vm", Some(t)) => p.can(Perm::VmRead, t),
+        ("vm" | "backup", Some(t)) => p.can(Perm::VmRead, t),
         ("task", Some(t)) => p.can(Perm::TaskRead, t),
         ("tenant", Some(t)) => p.can(Perm::TenantRead, t),
         // Images may be shared with sub-tenants.
@@ -182,5 +182,7 @@ mod tests {
         assert!(visible(&p, None, &change("host", None)));
         assert!(!visible(&p, Some(&root), &change("cluster", None)));
         assert!(!visible(&p, None, &change("vm", None)));
+        assert!(visible(&p, None, &change("backup", Some(&dev))));
+        assert!(!visible(&p, None, &change("backup", Some(&other))));
     }
 }

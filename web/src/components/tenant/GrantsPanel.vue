@@ -7,10 +7,15 @@ const props = defineProps<{ tenant: Tenant; parent?: Tenant }>()
 const scope = useScope()
 
 type Usable = { id: string; name: string; kind?: string }
-type Offer = { clusters: Usable[]; pools: Usable[]; externals: Usable[] }
+type Offer = { clusters: Usable[]; pools: Usable[]; externals: Usable[]; repos: Usable[] }
 const offered = ref<Offer | null>(null)
 const usable = ref<Offer | null>(null)
-const picked = ref<Required<Schemas['Grants']>>({ clusters: [], storage_pools: [], external_networks: [] })
+const picked = ref<Required<Schemas['Grants']>>({
+  clusters: [],
+  storage_pools: [],
+  external_networks: [],
+  backup_repositories: [],
+})
 const error = ref('')
 const saved = ref(false)
 const busy = ref(false)
@@ -18,13 +23,14 @@ const busy = ref(false)
 const editable = computed(() => !!props.parent && scope.can('grant.write', props.parent.id))
 
 async function usableAt(id: string) {
-  const [clusters, pools, externals] = await Promise.all([
+  const [clusters, pools, externals, repos] = await Promise.all([
     ok(api.GET('/api/v1/tenants/{id}/clusters', { params: { path: { id } } })),
     ok(api.GET('/api/v1/tenants/{id}/storage-pools', { params: { path: { id } } })),
     ok(api.GET('/api/v1/tenants/{id}/external-networks', { params: { path: { id } } })),
+    ok(api.GET('/api/v1/tenants/{id}/backup-repositories', { params: { path: { id } } })),
   ])
   // Local storage is on every host and needs no grant.
-  return { clusters, pools: pools.filter((p) => p.kind !== 'local'), externals }
+  return { clusters, pools: pools.filter((p) => p.kind !== 'local'), externals, repos }
 }
 
 onMounted(async () => {
@@ -37,6 +43,7 @@ onMounted(async () => {
         ok(api.GET('/api/v1/tenants/{id}/grants', { params: { path: { id } } })).then((g) => ({
           ...g,
           external_networks: g.external_networks ?? [],
+          backup_repositories: g.backup_repositories ?? [],
         })),
       ])
     }
@@ -53,7 +60,11 @@ async function save() {
     const g = await ok(
       api.PUT('/api/v1/tenants/{id}/grants', { params: { path: { id: props.tenant.id } }, body: picked.value }),
     )
-    picked.value = { ...g, external_networks: g.external_networks ?? [] }
+    picked.value = {
+      ...g,
+      external_networks: g.external_networks ?? [],
+      backup_repositories: g.backup_repositories ?? [],
+    }
     usable.value = await usableAt(props.tenant.id)
     saved.value = true
   } catch (e) {
@@ -69,7 +80,7 @@ async function save() {
     <p class="muted lead">
       <template v-if="!tenant.parent_id">The provider can use every cluster and storage pool.</template>
       <template v-else>
-        Where {{ tenant.name }} can run VMs and keep their disks. A tenant can only be given what
+        Where {{ tenant.name }} can run VMs and keep their disks and backups. A tenant can only be given what
         {{ parent?.name ?? 'the tenant above' }} has, and taking something away also takes it from the tenants
         below.
       </template>
@@ -102,6 +113,14 @@ async function save() {
         <p v-if="!offered.externals.length" class="muted">{{ parent.name }} has no external networks to give.</p>
         <p class="muted hint">For routing VPCs out, and floating IPs.</p>
       </fieldset>
+      <fieldset>
+        <legend class="label">Backup repositories</legend>
+        <label v-for="r in offered.repos" :key="r.id" class="check">
+          <input v-model="picked.backup_repositories" type="checkbox" :value="r.id" />
+          {{ r.name }}
+        </label>
+        <p v-if="!offered.repos.length" class="muted">{{ parent.name }} has no backup repositories to give.</p>
+      </fieldset>
       <footer>
         <span v-if="saved" class="muted" role="status">Saved.</span>
         <button class="btn primary" :disabled="busy">Save</button>
@@ -128,6 +147,13 @@ async function save() {
         <dd>
           <span v-for="e in usable.externals" :key="e.id" class="item">{{ e.name }}</span>
           <span v-if="!usable.externals.length" class="muted">None — VMs reach only each other.</span>
+        </dd>
+      </div>
+      <div>
+        <dt class="label">Backup repositories</dt>
+        <dd>
+          <span v-for="r in usable.repos" :key="r.id" class="item">{{ r.name }}</span>
+          <span v-if="!usable.repos.length" class="muted">None — VMs can’t be backed up.</span>
         </dd>
       </div>
     </dl>

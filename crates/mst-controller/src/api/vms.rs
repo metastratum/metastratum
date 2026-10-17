@@ -5,8 +5,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use mst_core::ids::{
-    ClusterId, ExternalIpId, HostId, ImageId, LOCAL_POOL, NetworkId, NicId, SecurityGroupId,
-    StoragePoolId, TaskId, TenantId, VmId, VolumeId,
+    BackupId, ClusterId, ExternalIpId, HostId, ImageId, LOCAL_POOL, NetworkId, NicId,
+    SecurityGroupId, StoragePoolId, TaskId, TenantId, VmId, VolumeId,
 };
 use mst_core::vm::{CloudInit, DiskSpec, Firmware, NicSpec, VmSpec, mac_for};
 use mst_db::vms::Vm;
@@ -30,6 +30,7 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(set_nic_groups))
         .routes(routes!(migrate_vm))
         .routes(routes!(cancel_migration))
+        .routes(routes!(restore_backup))
 }
 
 const GIB: u64 = 1 << 30;
@@ -295,6 +296,79 @@ pub struct CreateVm {
     migratable: Option<bool>,
 }
 
+#[derive(Deserialize, ToSchema)]
+pub struct RestoreBackup {
+    /// Name of the new VM.
+    name: String,
+    /// Start it once restored (default true).
+    start: Option<bool>,
+    /// Cluster to place it in; any the tenant may use otherwise.
+    cluster_id: Option<ClusterId>,
+    /// Pool for its disks; local storage on its host by default.
+    storage_pool_id: Option<StoragePoolId>,
+    /// Network to connect it to; the tenant's default network otherwise.
+    network_id: Option<NetworkId>,
+    /// Security groups for its NIC; the tenant's `default` group otherwise.
+    security_group_ids: Option<Vec<SecurityGroupId>>,
+    /// SSH keys for the image's default user, as when creating a VM.
+    #[serde(default)]
+    ssh_authorized_keys: Vec<String>,
+    /// A new console password for the image's default user.
+    password: Option<String>,
+}
+
+/// Restores a backup as a new VM in the backup's tenant: the backed-up VM's
+/// CPUs, memory, firmware and disks, on a new NIC. It boots as a new
+/// instance, so cloud-init sets up its network again; the disks keep
+/// everything else. The backup stays.
+#[utoipa::path(post, path = "/backups/{id}/restore", tag = "backups", params(("id" = BackupId, Path)),
+    request_body = RestoreBackup,
+    responses((status = 202, body = Accepted<VmView>), (status = 403), (status = 404),
+        (status = 409, description = "The backup is not complete")))]
+async fn restore_backup(
+    State(state): State<AppState>,
+    p: Principal,
+    Path(id): Path<BackupId>,
+    Json(req): Json<RestoreBackup>,
+) -> ApiResult<(StatusCode, Json<Accepted<VmView>>)> {
+    let backup = mst_db::backups::get(&state.db, id).await?;
+    authorize_resource(&state.db, &p, Perm::VmWrite, backup.tenant_id, "backup").await?;
+    if backup.state != "ready" {
+        return Err(ApiError::conflict("the backup is not complete"));
+    }
+    let spec = &backup.spec.0;
+    let disk_bytes: u64 = spec.disks.iter().map(|d| d.size_bytes).sum();
+    let create = CreateVm {
+        tenant_id: Some(backup.tenant_id),
+        name: req.name,
+        vcpus: spec.vcpus,
+        memory_mib: spec.memory_mib,
+        disk_gib: disk_bytes.div_ceil(GIB),
+        image_id: ImageId(uuid::Uuid::nil()),
+        firmware: spec.firmware,
+        ssh_authorized_keys: req.ssh_authorized_keys,
+        password: req.password,
+        user_data: None,
+        start: req.start,
+        cluster_id: req.cluster_id,
+        storage_pool_id: req.storage_pool_id,
+        network_id: req.network_id,
+        security_group_ids: req.security_group_ids,
+        migratable: None,
+    };
+    let out = create_inner(state.clone(), p.clone(), create, Some(&backup)).await?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(backup.tenant_id),
+        "backup.restore",
+        Some(("backup", backup.id.0)),
+        json!({"vm_name": backup.vm_name}),
+    )
+    .await;
+    Ok(out)
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct Accepted<T: ToSchema> {
     task_id: TaskId,
@@ -381,10 +455,21 @@ async fn create_vm(
     p: Principal,
     Json(req): Json<CreateVm>,
 ) -> ApiResult<(StatusCode, Json<Accepted<VmView>>)> {
+    create_inner(state, p, req, None).await
+}
+
+/// Creates a VM: from an image, or with `backup`'s disks restored in place
+/// of one.
+async fn create_inner(
+    state: AppState,
+    p: Principal,
+    req: CreateVm,
+    backup: Option<&mst_db::backups::Backup>,
+) -> ApiResult<(StatusCode, Json<Accepted<VmView>>)> {
     validate(&req)?;
     let tenant = req.tenant_id.unwrap_or(p.tenant_id);
     authorize(&state.db, &p, Perm::VmWrite, tenant).await?;
-    if !mst_db::images::is_usable_by(&state.db, req.image_id, tenant).await? {
+    if backup.is_none() && !mst_db::images::is_usable_by(&state.db, req.image_id, tenant).await? {
         return Err(ApiError::not_found("image"));
     }
     let pool =
@@ -424,12 +509,32 @@ async fn create_vm(
     };
 
     let vm_id = VmId::new();
-    let volume_id = VolumeId::new();
-    let disk = DiskSpec {
-        volume_id,
-        pool_id: pool.id,
-        size_bytes: req.disk_gib * GIB,
-        image_id: Some(req.image_id),
+    let disks: Vec<DiskSpec> = match backup {
+        None => vec![DiskSpec {
+            volume_id: VolumeId::new(),
+            pool_id: pool.id,
+            size_bytes: req.disk_gib * GIB,
+            image_id: Some(req.image_id),
+            restored_from: None,
+        }],
+        // Every disk the backup has, at its size, in the chosen pool.
+        Some(b) => b
+            .spec
+            .0
+            .disks
+            .iter()
+            .enumerate()
+            .map(|(i, d)| DiskSpec {
+                volume_id: VolumeId::new(),
+                pool_id: pool.id,
+                size_bytes: d.size_bytes,
+                image_id: None,
+                restored_from: Some(mst_core::vm::RestoredFrom {
+                    backup_id: b.id,
+                    index: i as u32,
+                }),
+            })
+            .collect(),
     };
     // A VM whose cluster is a single host has nowhere to migrate to; let it
     // use everything the host offers instead.
@@ -453,7 +558,7 @@ async fn create_vm(
         vcpus: req.vcpus,
         memory_mib: req.memory_mib,
         firmware: req.firmware,
-        disks: vec![disk.clone()],
+        disks: disks.clone(),
         nics: vec![],
         cloud_init: Some(CloudInit {
             hostname: req.name.clone(),
@@ -481,20 +586,22 @@ async fn create_vm(
         },
     )
     .await?;
-    mst_db::vms::create_volume(
-        &mut *tx,
-        &mst_db::vms::Volume {
-            id: volume_id,
-            tenant_id: tenant,
-            vm_id: Some(vm_id),
-            // Only local volumes are tied to a host.
-            host_id: (pool.kind == "local").then_some(host.id),
-            pool_id: pool.id,
-            size_bytes: disk.size_bytes as i64,
-            image_id: Some(req.image_id),
-        },
-    )
-    .await?;
+    for disk in &disks {
+        mst_db::vms::create_volume(
+            &mut *tx,
+            &mst_db::vms::Volume {
+                id: disk.volume_id,
+                tenant_id: tenant,
+                vm_id: Some(vm_id),
+                // Only local volumes are tied to a host.
+                host_id: (pool.kind == "local").then_some(host.id),
+                pool_id: pool.id,
+                size_bytes: disk.size_bytes as i64,
+                image_id: disk.image_id,
+            },
+        )
+        .await?;
+    }
     let nic_id = NicId::new();
     let nic =
         mst_db::networks::create_nic(&mut tx, nic_id, vm_id, network.id, &mac_for(nic_id)).await?;
@@ -516,7 +623,8 @@ async fn create_vm(
         Some(tenant),
         "vm.create",
         Some(("vm", vm_id.0)),
-        json!({"name": req.name, "vcpus": req.vcpus, "memory_mib": req.memory_mib, "disk_gib": req.disk_gib, "host": host.name}),
+        json!({"name": req.name, "vcpus": req.vcpus, "memory_mib": req.memory_mib, "disk_gib": req.disk_gib, "host": host.name,
+               "restored_from": backup.map(|b| b.id)}),
     )
     .await;
     let vm = mst_db::vms::get(&state.db, vm_id).await?;
@@ -761,6 +869,11 @@ async fn delete_vm(
     if vm.status == "migrating" {
         return Err(ApiError::conflict(
             "VM is being migrated; cancel the migration first",
+        ));
+    }
+    if mst_db::backups::running_for(&state.db, id).await? {
+        return Err(ApiError::conflict(
+            "a backup of the VM is being taken; delete it once that is done",
         ));
     }
     let mut tx = state.db.begin().await?;

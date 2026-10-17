@@ -193,6 +193,9 @@ message Command {
     RemovePool remove_pool = 30;
     DeleteImage delete_image = 31;
     Decommission decommission = 32;
+    BackupVm backup_vm = 33;
+    RestoreVolume restore_volume = 34;
+    DeleteBackup delete_backup = 35;
   }
 }
 
@@ -356,6 +359,43 @@ message LibvirtTls {
 message RemovePool {
   Pool pool = 1;
   bool remove_data = 2;
+}
+
+// Back up a VM's disks into a repository (an NFS pool the host mounts), as
+// `backups/<backup_id>/<index>.qcow2`. A running VM is backed up live with
+// libvirt's backup job, its file systems frozen for the start when its guest
+// agent answers; a stopped one by copying its volumes. Returns JSON
+// {"stored_bytes": n}. Asked again, it waits for a backup in progress, and
+// answers for one already taken.
+message BackupVm {
+  string vm_id = 1;
+  string backup_id = 2;
+  Pool repository = 3;
+  repeated BackupDisk disks = 4;
+}
+
+message BackupDisk {
+  // Its place among the VM's disks: vda is 0.
+  uint32 index = 1;
+  string volume_id = 2;
+  Pool pool = 3;
+}
+
+// Create a volume from one of a backup's disks. An existing volume is left
+// alone.
+message RestoreVolume {
+  string volume_id = 1;
+  uint64 size_bytes = 2;
+  Pool pool = 3;
+  Pool repository = 4;
+  string backup_id = 5;
+  uint32 index = 6;
+}
+
+// Remove a backup's files from its repository.
+message DeleteBackup {
+  Pool repository = 1;
+  string backup_id = 2;
 }
 
 // An image was deleted: remove its cached copy from the local pool, and from

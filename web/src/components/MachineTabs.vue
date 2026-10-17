@@ -1,0 +1,34 @@
+<template>
+  <nav class="tabs" aria-label="Machines">
+    <RouterLink to="/vms">Machines</RouterLink>
+    <RouterLink to="/backups">Backups</RouterLink>
+  </nav>
+</template>
+
+<style scoped>
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 20px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--rule);
+}
+a {
+  padding: 8px 12px;
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font: 500 12px var(--font-label);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-decoration: none;
+  white-space: nowrap;
+}
+a:hover {
+  color: var(--ink);
+}
+a.router-link-active {
+  border-bottom-color: var(--tape);
+  color: var(--ink);
+}
+</style>

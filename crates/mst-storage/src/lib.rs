@@ -76,6 +76,28 @@ pub(crate) async fn run(tool: &'static str, args: &[&str]) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
+/// Converts `src` to `dest` (written under a temporary name, then renamed).
+pub(crate) async fn convert(
+    src: &Path,
+    src_format: &str,
+    dest: &Path,
+    dest_format: &str,
+) -> Result<()> {
+    let tmp = dest.with_extension(format!("{}.part", random_suffix()));
+    let (s, t) = (src.to_string_lossy(), tmp.to_string_lossy());
+    let result = run(
+        "qemu-img",
+        &["convert", "-q", "-f", src_format, "-O", dest_format, &s, &t],
+    )
+    .await;
+    if let Err(e) = result {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e);
+    }
+    tokio::fs::rename(&tmp, dest).await?;
+    Ok(())
+}
+
 pub(crate) async fn img_info(path: &Path, format: Option<&str>) -> Result<ImgInfo> {
     let p = path.to_string_lossy();
     let mut args = vec!["info", "--output=json"];
@@ -101,6 +123,34 @@ impl FilePool {
             root: root.into(),
             image_locks: Arc::default(),
         }
+    }
+
+    /// The pool's directory (a backup repository keeps `backups/` here).
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Writes a copy of a volume to `dest` as a qcow2 file of its own, with
+    /// its image's data in it.
+    pub async fn export_volume(&self, id: &str, dest: &Path) -> Result<()> {
+        convert(&self.volume_path(id)?, "qcow2", dest, "qcow2").await
+    }
+
+    /// Creates a volume from a qcow2 file (a backup's disk), of at least
+    /// `size` bytes. An existing volume is left alone.
+    pub async fn import_volume(&self, id: &str, size: u64, src: &Path) -> Result<()> {
+        let dest = self.volume_path(id)?;
+        if tokio::fs::try_exists(&dest).await? {
+            return Ok(());
+        }
+        let tmp = dest.with_extension(format!("{}.tmp", random_suffix()));
+        convert(src, "qcow2", &tmp, "qcow2").await?;
+        if size > img_info(&tmp, Some("qcow2")).await?.virtual_size {
+            let (t, sz) = (tmp.to_string_lossy().into_owned(), size.to_string());
+            run("qemu-img", &["resize", "-q", "-f", "qcow2", &t, &sz]).await?;
+        }
+        tokio::fs::rename(&tmp, &dest).await?;
+        Ok(())
     }
 
     pub async fn init(&self) -> Result<()> {
@@ -399,6 +449,22 @@ mod tests {
             Err(Error::MissingImage(_))
         ));
         pool.ensure_volume("blank", 1 << 30, None).await.unwrap();
+
+        // A backup of vol1 stands on its own, and restores larger.
+        let backup = root.join("vol1-backup.qcow2");
+        pool.export_volume("vol1", &backup).await.unwrap();
+        let info = img_info(&backup, Some("qcow2")).await.unwrap();
+        assert_eq!((info.virtual_size, info.backing_filename), (2 << 30, None));
+        pool.import_volume("restored", 3 << 30, &backup)
+            .await
+            .unwrap();
+        pool.import_volume("restored", 3 << 30, &backup)
+            .await
+            .unwrap();
+        assert_eq!(
+            pool.volume_info("restored").await.unwrap(),
+            ("qcow2".into(), 3 << 30)
+        );
 
         pool.delete_volume("vol1").await.unwrap();
         pool.delete_volume("vol1").await.unwrap();

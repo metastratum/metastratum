@@ -555,3 +555,78 @@ async fn host_certificates_are_retired_and_revoked(pool: PgPool) {
         "decommissioned"
     );
 }
+
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn backup_schedules_are_due_and_pruned(pool: PgPool) {
+    use mst_db::backups;
+    let t = root(&pool).await;
+    let h = host(&pool).await;
+    let v = vm(&pool, &t, &h, "web-1").await;
+    let config = serde_json::json!({"server": "nfs1", "export": "/backups"});
+    let repo = backups::create_repository(&pool, "nfs1", "nfs", &config)
+        .await
+        .unwrap();
+    let due = |pool: PgPool| async move {
+        backups::due(&pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|s| s.vm_id)
+            .collect::<Vec<_>>()
+    };
+    assert!(due(pool.clone()).await.is_empty(), "no schedule yet");
+    backups::set_schedule(&pool, v.id, Some(("daily", 2, repo)))
+        .await
+        .unwrap();
+    assert_eq!(due(pool.clone()).await, [v.id]);
+
+    // Not while one runs, nor within a day of the last.
+    let take = |scheduled| {
+        let (pool, spec) = (pool.clone(), v.spec.0.clone());
+        async move {
+            backups::create(&pool, t.id, v.id, "web-1", repo, scheduled, &spec, 1 << 30)
+                .await
+                .unwrap()
+        }
+    };
+    let first = take(true).await;
+    assert!(backups::running_for(&pool, v.id).await.unwrap());
+    assert!(due(pool.clone()).await.is_empty(), "one is running");
+    backups::finish(&pool, first, 1 << 20, true).await.unwrap();
+    assert!(due(pool.clone()).await.is_empty(), "taken today");
+    let age = |id: mst_core::ids::BackupId, days: i32| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "UPDATE backups SET created_at = now() - make_interval(days => $2) WHERE id = $1",
+            )
+            .bind(id)
+            .bind(days)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    age(first, 3).await;
+    assert_eq!(due(pool.clone()).await, [v.id], "a day has passed");
+
+    // Beyond the newest two scheduled ones, the oldest go; manual ones stay.
+    let second = take(true).await;
+    backups::finish(&pool, second, 1, true).await.unwrap();
+    age(second, 2).await;
+    let third = take(true).await;
+    backups::finish(&pool, third, 1, false).await.unwrap();
+    let manual = take(false).await;
+    backups::finish(&pool, manual, 1, true).await.unwrap();
+    age(manual, 9).await;
+    assert_eq!(backups::beyond_keep(&pool, v.id, 2).await.unwrap(), [first]);
+
+    // A repository with backups stays; its last one gone, so do schedules.
+    let mut conn = pool.acquire().await.unwrap();
+    assert!(!backups::delete_repository(&mut conn, repo).await.unwrap());
+    for id in [first, second, third, manual] {
+        backups::delete(&pool, id).await.unwrap();
+    }
+    assert!(backups::delete_repository(&mut conn, repo).await.unwrap());
+    assert!(backups::schedule_of(&pool, v.id).await.unwrap().is_none());
+}

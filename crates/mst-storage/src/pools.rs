@@ -66,6 +66,22 @@ impl Pool {
         }
     }
 
+    /// Writes a copy of a volume to `dest` as a qcow2 file of its own.
+    pub async fn export_volume(&self, id: &str, dest: &Path) -> Result<()> {
+        match self {
+            Pool::File(p) => p.export_volume(id, dest).await,
+            Pool::Rbd(p) => p.export_volume(id, dest).await,
+        }
+    }
+
+    /// Creates a volume from a qcow2 file, of at least `size` bytes.
+    pub async fn import_volume(&self, id: &str, size: u64, src: &Path) -> Result<()> {
+        match self {
+            Pool::File(p) => p.import_volume(id, size, src).await,
+            Pool::Rbd(p) => p.import_volume(id, size, src).await,
+        }
+    }
+
     pub async fn delete_image(&self, id: &str) -> Result<()> {
         match self {
             Pool::File(p) => p.delete_image(id).await,

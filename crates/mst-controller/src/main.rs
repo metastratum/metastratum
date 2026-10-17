@@ -327,10 +327,16 @@ async fn serve(db: mst_db::sqlx::PgPool, cfg: &config::Config) -> anyhow::Result
     tokio::spawn(state.events.clone().listen(db.clone()));
     tokio::spawn(state.events.clone().watch_hosts(db.clone()));
     tokio::spawn(state.net.clone().run());
-    // Host failure handling runs on one replica at a time.
+    // Host failure handling and backup schedules run on one replica at a
+    // time.
     tokio::spawn({
         let state = state.clone();
-        ha::lead(db.clone(), move || ha::monitor(state.clone()))
+        ha::lead(db.clone(), move || {
+            let state = state.clone();
+            async move {
+                tokio::join!(ha::monitor(state.clone()), engine::backup_schedule(state));
+            }
+        })
     });
 
     let tls = ServerTlsConfig::new()

@@ -73,6 +73,18 @@ pub struct DiskSpec {
     /// Image the volume was cloned from, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_id: Option<ImageId>,
+    /// The backup disk the volume was restored from, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restored_from: Option<RestoredFrom>,
+}
+
+/// One of a backup's disks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct RestoredFrom {
+    pub backup_id: crate::ids::BackupId,
+    /// Its place among the VM's disks (vda is 0).
+    pub index: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

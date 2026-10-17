@@ -283,6 +283,45 @@ impl RbdPool {
         }
     }
 
+    /// Writes a copy of a volume to `dest` as a qcow2 file, by way of a raw
+    /// export beside it.
+    pub async fn export_volume(&self, id: &str, dest: &Path) -> Result<()> {
+        let vol = self.spec(&Self::volume_name(id)?);
+        let raw = dest.with_extension(format!("{}.raw", random_suffix()));
+        let raw_s = raw.to_string_lossy().into_owned();
+        let result = async {
+            self.rbd(&["export", "--no-progress", &vol, &raw_s]).await?;
+            crate::convert(&raw, "raw", dest, "qcow2").await
+        }
+        .await;
+        let _ = tokio::fs::remove_file(&raw).await;
+        result
+    }
+
+    /// Creates a volume from a qcow2 file (a backup's disk), of at least
+    /// `size` bytes, by way of a raw file beside it. An existing volume is
+    /// left alone.
+    pub async fn import_volume(&self, id: &str, size: u64, src: &Path) -> Result<()> {
+        let vol = self.spec(&Self::volume_name(id)?);
+        if self.exists(&vol).await? {
+            return Ok(());
+        }
+        let raw = src.with_extension(format!("{}.raw", random_suffix()));
+        let raw_s = raw.to_string_lossy().into_owned();
+        let result = async {
+            crate::convert(src, "qcow2", &raw, "raw").await?;
+            self.rbd(&["import", "--no-progress", &raw_s, &vol]).await?;
+            if size > self.size_of(&vol).await? {
+                let mib = size.div_ceil(1 << 20).to_string();
+                self.rbd(&["resize", "--size", &mib, &vol]).await?;
+            }
+            Ok(())
+        }
+        .await;
+        let _ = tokio::fs::remove_file(&raw).await;
+        result
+    }
+
     /// Size and existence of a volume, for checks and tests.
     pub async fn volume_size(&self, id: &str) -> Result<Option<u64>> {
         let vol = self.spec(&Self::volume_name(id)?);

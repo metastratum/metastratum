@@ -7,7 +7,8 @@ use mst_core::ids::{HostId, VmId};
 use mst_db::vms::Vm;
 use mst_proto::command::Cmd;
 use mst_proto::{
-    DefineVm, DeleteVolume, EnsureImage, EnsureVolume, RebootVm, StartVm, StopVm, UndefineVm,
+    DefineVm, DeleteVolume, EnsureImage, EnsureVolume, RebootVm, RestoreVolume, StartVm, StopVm,
+    UndefineVm,
 };
 
 use super::TaskCtx;
@@ -15,6 +16,8 @@ use super::TaskCtx;
 const QUICK: Duration = Duration::from_secs(60);
 /// Image downloads can be large.
 const SLOW: Duration = Duration::from_secs(30 * 60);
+/// So can disks restored from backups.
+const RESTORE: Duration = Duration::from_secs(12 * 3600);
 
 fn target(ctx: &TaskCtx) -> Result<VmId> {
     ctx.task
@@ -102,19 +105,35 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
 
     ctx.step("volumes", 0.6).await;
     for disk in &spec.disks {
-        call(
-            ctx,
-            host,
-            Cmd::EnsureVolume(EnsureVolume {
-                volume_id: disk.volume_id.to_string(),
-                size_bytes: disk.size_bytes,
-                image_id: disk.image_id.map(|i| i.to_string()).unwrap_or_default(),
-                pool: Some(pools[&disk.pool_id].clone()),
-            }),
-            QUICK,
-        )
-        .await
-        .context("creating volume")?;
+        let pool = Some(pools[&disk.pool_id].clone());
+        let (cmd, timeout) = match disk.restored_from {
+            // A copy of a backup's disk, which takes as long as its size.
+            Some(from) => {
+                let backup = mst_db::backups::get(db, from.backup_id).await?;
+                let repo = mst_db::backups::get_repository(db, backup.repository_id).await?;
+                let cmd = Cmd::RestoreVolume(RestoreVolume {
+                    volume_id: disk.volume_id.to_string(),
+                    size_bytes: disk.size_bytes,
+                    pool,
+                    repository: Some(crate::api::repository_pool(&repo)),
+                    backup_id: from.backup_id.to_string(),
+                    index: from.index,
+                });
+                (cmd, RESTORE)
+            }
+            None => {
+                let cmd = Cmd::EnsureVolume(EnsureVolume {
+                    volume_id: disk.volume_id.to_string(),
+                    size_bytes: disk.size_bytes,
+                    image_id: disk.image_id.map(|i| i.to_string()).unwrap_or_default(),
+                    pool,
+                });
+                (cmd, QUICK)
+            }
+        };
+        call(ctx, host, cmd, timeout)
+            .await
+            .context("creating volume")?;
     }
 
     ctx.step("define", 0.8).await;

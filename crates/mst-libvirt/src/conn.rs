@@ -164,6 +164,19 @@ pub struct JobStats {
     pub dirty_pages_per_s: u64,
     /// The pause at the switch-over, once known.
     pub downtime_ms: Option<u64>,
+    /// What the job does (virDomainJobOperation: 9 is a backup), when told.
+    pub operation: Option<i32>,
+}
+
+/// virDomainJobOperation of a backup.
+pub const JOB_OPERATION_BACKUP: i32 = 9;
+
+/// How the domain's last job ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompletedJob {
+    pub ok: bool,
+    pub operation: Option<i32>,
+    pub error: Option<String>,
 }
 
 /// What [`Libvirt::watch`] reports.
@@ -712,6 +725,11 @@ impl Libvirt {
             ..JobStats::default()
         };
         for p in r.params {
+            if let ("operation", TypedParamValue::VirTypedParamInt(op)) =
+                (p.field.as_str(), &p.value)
+            {
+                st.operation = Some(*op);
+            }
             let TypedParamValue::VirTypedParamUllong(v) = p.value else {
                 continue;
             };
@@ -727,6 +745,86 @@ impl Libvirt {
             }
         }
         Ok(st)
+    }
+
+    /// How the domain's last job ended, if libvirt still knows.
+    pub async fn completed_job(&self, uuid: &str) -> Result<Option<CompletedJob>> {
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        // VIR_DOMAIN_JOB_STATS_COMPLETED
+        let r = c
+            .domain_get_job_stats(&DomainGetJobStatsArgs { dom, flags: 1 })
+            .await?;
+        // virDomainJobType: COMPLETED or FAILED.
+        let ok = match r.r#type {
+            3 => true,
+            4 => false,
+            _ => return Ok(None),
+        };
+        let mut job = CompletedJob {
+            ok,
+            operation: None,
+            error: None,
+        };
+        for p in r.params {
+            match (p.field.as_str(), p.value) {
+                ("operation", TypedParamValue::VirTypedParamInt(op)) => job.operation = Some(op),
+                ("errmsg", TypedParamValue::VirTypedParamString(e)) => job.error = Some(e),
+                _ => {}
+            }
+        }
+        Ok(Some(job))
+    }
+
+    /// Starts a backup job (push mode) described by `xml` (`<domainbackup>`).
+    pub async fn backup_begin(&self, uuid: &str, xml: String) -> Result<()> {
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        c.domain_backup_begin(&DomainBackupBeginArgs {
+            dom,
+            backup_xml: xml,
+            checkpoint_xml: None,
+            flags: 0,
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Freezes the guest's file systems through its agent; returns how many.
+    pub async fn fs_freeze(&self, uuid: &str) -> Result<u32> {
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        let r = c
+            .domain_fsfreeze(&DomainFsfreezeArgs {
+                dom,
+                mountpoints: vec![],
+                flags: 0,
+            })
+            .await?;
+        Ok(r.filesystems.max(0) as u32)
+    }
+
+    pub async fn fs_thaw(&self, uuid: &str) -> Result<()> {
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        c.domain_fsthaw(&DomainFsthawArgs {
+            dom,
+            mountpoints: vec![],
+            flags: 0,
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// The target names of the domain's disks (`vda`, `sda`, ...).
+    pub async fn disk_targets(&self, uuid: &str) -> Result<Vec<String>> {
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        let xml = c
+            .domain_get_xml_desc(&DomainGetXmlDescArgs { dom, flags: 0 })
+            .await?
+            .xml;
+        Ok(crate::xml::disk_targets(&xml))
     }
 
     /// Aborts the domain's current job. A migration then fails and the domain

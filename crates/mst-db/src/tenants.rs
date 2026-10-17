@@ -154,19 +154,25 @@ pub async fn rename(db: impl PgExecutor<'_>, id: TenantId, name: &str) -> Result
 /// What still lives in a tenant (not its subtree), as `(kind, count)` for
 /// kinds with a non-zero count. Tenants must be empty to be deleted.
 pub async fn contents(db: impl PgExecutor<'_>, id: TenantId) -> Result<Vec<(String, i64)>> {
-    let row: (i64, i64, i64) = sqlx::query_as(
+    let row: (i64, i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM tenants WHERE parent_id = $1),
                 (SELECT count(*) FROM vms WHERE tenant_id = $1),
-                (SELECT count(*) FROM images WHERE tenant_id = $1)",
+                (SELECT count(*) FROM images WHERE tenant_id = $1),
+                (SELECT count(*) FROM backups WHERE tenant_id = $1)",
     )
     .bind(id)
     .fetch_one(db)
     .await?;
-    Ok([("sub-tenants", row.0), ("VMs", row.1), ("images", row.2)]
-        .into_iter()
-        .filter(|(_, n)| *n > 0)
-        .map(|(k, n)| (k.to_owned(), n))
-        .collect())
+    Ok([
+        ("sub-tenants", row.0),
+        ("VMs", row.1),
+        ("images", row.2),
+        ("backups", row.3),
+    ]
+    .into_iter()
+    .filter(|(_, n)| *n > 0)
+    .map(|(k, n)| (k.to_owned(), n))
+    .collect())
 }
 
 /// Deletes a tenant with its users, role bindings, quotas, grants and network

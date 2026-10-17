@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, ok, type Vm } from '../api/client'
 import CreateVmDialog from '../components/CreateVmDialog.vue'
+import MachineTabs from '../components/MachineTabs.vue'
 import StatusLed from '../components/StatusLed.vue'
 import { ago, mib, vmState } from '../state'
 import { useLiveRefresh } from '../stores/live'
@@ -44,6 +45,7 @@ function created(vm: Vm) {
 
 <template>
   <section>
+    <MachineTabs />
     <header class="head">
       <h1>Virtual machines</h1>
       <span v-if="vms" class="count mono">{{ vms.length }}</span>

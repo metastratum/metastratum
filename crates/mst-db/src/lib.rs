@@ -4,6 +4,7 @@
 //! compose them inside a single transaction.
 
 pub mod audit;
+pub mod backups;
 pub mod clusters;
 pub mod console;
 pub mod external;

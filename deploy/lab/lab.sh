@@ -148,8 +148,8 @@ runcmd:
   - [sh, -c, "pg=$(ls -d /etc/postgresql/*/main); echo \"listen_addresses = '*'\" >> $pg/postgresql.conf; echo 'host all all 10.77.0.0/24 scram-sha-256' >> $pg/pg_hba.conf; systemctl restart postgresql"]
   - [ovn-nbctl, set-connection, "ptcp:6641"]
   - [ovn-sbctl, set-connection, "ptcp:6642"]
-  - [mkdir, -p, /srv/nfs/metastratum]
-  - [sh, -c, "echo '/srv/nfs/metastratum 10.77.0.0/24(rw,sync,no_subtree_check,no_root_squash)' > /etc/exports && exportfs -ra"]
+  - [mkdir, -p, /srv/nfs/metastratum, /srv/nfs/backups]
+  - [sh, -c, "printf '%s\\n' '/srv/nfs/metastratum 10.77.0.0/24(rw,sync,no_subtree_check,no_root_squash)' '/srv/nfs/backups 10.77.0.0/24(rw,sync,no_subtree_check,no_root_squash)' > /etc/exports && exportfs -ra"]
 EOF
   else
     cat <<EOF

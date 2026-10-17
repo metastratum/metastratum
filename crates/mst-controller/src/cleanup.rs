@@ -15,10 +15,17 @@ use crate::state::AppState;
 /// What exists, for agents to let go of the rest.
 pub async fn inventory(db: &mst_db::sqlx::PgPool) -> anyhow::Result<mst_proto::Inventory> {
     Ok(mst_proto::Inventory {
+        // Backup repositories are mounted like shared pools, and kept.
         pool_ids: mst_db::storage_pools::list(db)
             .await?
             .into_iter()
             .map(|p| p.id.to_string())
+            .chain(
+                mst_db::backups::list_repositories(db)
+                    .await?
+                    .into_iter()
+                    .map(|r| r.id.to_string()),
+            )
             .collect(),
         image_ids: mst_db::images::all_ids(db)
             .await?

@@ -191,6 +191,12 @@ A review of the whole system before calling it hardened. Fixed:
   ratios alone.
   *Mitigation:* set disk and network limits on each cluster
   ([operations](docs/operations.md#limits)), and keep overcommit modest.
+- **Backups are stored as they are.** A backup repository holds every
+  backed-up VM's disks, unencrypted, for every tenant using it; NFS checks
+  only the client's address, and the export needs `no_root_squash`.
+  *Mitigation:* export repositories to the hosts' management addresses
+  only, on a network guests and tenants cannot reach, and give tenants that
+  must not share storage repositories of their own.
 - **Networking is IPv4 only.** Port security, security groups and
   guardrails are written for IPv4; guests' IPv6 is dropped (tested), not
   filtered.
@@ -216,6 +222,7 @@ says what to fix:
 - A management network for hosts and controllers that guests and tenants
   cannot reach; migration ports (49152-49215) open between hosts only;
   `metrics_listen` on a private address.
+- Backup repositories exported to the hosts only.
 - Fencing on every host of clusters with high availability.
 - Per-VM limits on clusters.
 - Sign-in through identity providers with multi-factor authentication;

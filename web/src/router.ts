@@ -8,6 +8,7 @@ export const router = createRouter({
     { path: '/', redirect: '/vms' },
     { path: '/vms', name: 'vms', component: () => import('./views/VmListView.vue') },
     { path: '/vms/:id', name: 'vm', component: () => import('./views/VmDetailView.vue'), props: true },
+    { path: '/backups', name: 'backups', component: () => import('./views/BackupsView.vue'), meta: { machines: true } },
     { path: '/images', name: 'images', component: () => import('./views/ImagesView.vue') },
     { path: '/tenants/:id?', name: 'tenants', component: () => import('./views/TenantsView.vue'), props: true },
     { path: '/networks', name: 'networks', component: () => import('./views/VpcsView.vue'), meta: { net: true } },
@@ -21,6 +22,7 @@ export const router = createRouter({
     { path: '/hosts', name: 'hosts', component: () => import('./views/HostsView.vue'), meta: { provider: true, infra: true } },
     { path: '/clusters', name: 'clusters', component: () => import('./views/ClustersView.vue'), meta: { provider: true, infra: true } },
     { path: '/storage', name: 'storage', component: () => import('./views/StorageView.vue'), meta: { provider: true, infra: true } },
+    { path: '/backup-repositories', name: 'backup-repositories', component: () => import('./views/BackupRepositoriesView.vue'), meta: { provider: true, infra: true } },
     { path: '/:rest(.*)*', name: 'missing', component: () => import('./views/NotFoundView.vue') },
   ],
 })

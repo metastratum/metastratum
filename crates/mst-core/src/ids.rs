@@ -71,6 +71,8 @@ id_type!(
     SecurityGroupId,
     SecurityRuleId,
     PolicyId,
+    BackupId,
+    BackupRepositoryId,
 );
 
 /// The built-in pool of host-local storage.

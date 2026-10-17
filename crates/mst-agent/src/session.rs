@@ -303,7 +303,7 @@ impl Agent {
     }
 
     /// Prepares the pool a command refers to.
-    async fn pool(&self, spec: Option<&mst_proto::Pool>) -> Result<mst_storage::Pool> {
+    pub(crate) async fn pool(&self, spec: Option<&mst_proto::Pool>) -> Result<mst_storage::Pool> {
         let spec = pool_spec(spec.context("command does not name a storage pool")?)?;
         let pool = self.pools.get(&spec).await?;
         // QEMU authenticates to Ceph with a libvirt secret; the pool ID
@@ -473,6 +473,9 @@ impl Agent {
                 let spec = pool_spec(c.pool.as_ref().context("no pool named")?)?;
                 return crate::cleanup::remove_pool(self, spec, c.remove_data).await;
             }
+            Cmd::BackupVm(c) => return crate::backup::backup(self, &c).await,
+            Cmd::RestoreVolume(c) => crate::backup::restore(self, &c).await?,
+            Cmd::DeleteBackup(c) => crate::backup::delete(self, &c).await?,
             Cmd::DeleteImage(c) => {
                 let shared = c.pools.iter().map(pool_spec).collect::<Result<Vec<_>>>()?;
                 crate::cleanup::delete_image(self, &c.image_id, &shared).await?;

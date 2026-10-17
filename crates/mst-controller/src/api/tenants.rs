@@ -415,6 +415,9 @@ pub struct Grants {
     /// Networks the tenant's VPCs may route to and take floating IPs from.
     #[serde(default)]
     external_networks: Vec<Uuid>,
+    /// Repositories the tenant may keep backups in.
+    #[serde(default)]
+    backup_repositories: Vec<Uuid>,
 }
 
 #[utoipa::path(get, path = "/tenants/{id}/grants", tag = "tenants", params(("id" = TenantId, Path)),
@@ -429,10 +432,12 @@ async fn get_grants(
         clusters: mst_db::grants::list(&state.db, id, "cluster").await?,
         storage_pools: mst_db::grants::list(&state.db, id, "storage_pool").await?,
         external_networks: mst_db::grants::list(&state.db, id, "external_network").await?,
+        backup_repositories: mst_db::grants::list(&state.db, id, "backup_repository").await?,
     }))
 }
 
-/// Replaces the clusters and storage pools a tenant may use. Each must be
+/// Replaces the clusters, storage pools, external networks and backup
+/// repositories a tenant may use. Each must be
 /// usable by the parent; revoking one also revokes it from sub-tenants.
 #[utoipa::path(put, path = "/tenants/{id}/grants", tag = "tenants", params(("id" = TenantId, Path)), request_body = Grants,
     responses((status = 200, body = Grants), (status = 400), (status = 403)))]
@@ -458,10 +463,14 @@ async fn set_grants(
     for e in &req.external_networks {
         mst_db::external::get(&state.db, mst_core::ids::ExternalNetworkId(*e)).await?;
     }
+    for r in &req.backup_repositories {
+        mst_db::backups::get_repository(&state.db, mst_core::ids::BackupRepositoryId(*r)).await?;
+    }
     let mut tx = state.db.begin().await?;
     mst_db::grants::set(&mut tx, id, "cluster", &req.clusters).await?;
     mst_db::grants::set(&mut tx, id, "storage_pool", &req.storage_pools).await?;
     mst_db::grants::set(&mut tx, id, "external_network", &req.external_networks).await?;
+    mst_db::grants::set(&mut tx, id, "backup_repository", &req.backup_repositories).await?;
     tx.commit().await?;
     audit(
         &state.db,

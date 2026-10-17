@@ -142,6 +142,103 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/backup-repositories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every backup repository. */
+        get: operations["list_repositories"];
+        put?: never;
+        /**
+         * Adds a backup repository: an NFS export the hosts mount, apart from the
+         *     storage VMs run on, so backups survive losing that.
+         */
+        post: operations["create_repository"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup-repositories/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Removes a repository that holds no backups. Hosts unmount it; the files
+         *     on the server stay. Schedules that used it stop.
+         */
+        delete: operations["delete_repository"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Backups, newest first, including those of VMs that are gone. */
+        get: operations["list_backups"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backups/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_backup"];
+        put?: never;
+        post?: never;
+        /** Deletes a backup and its files. */
+        delete: operations["delete_backup"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backups/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restores a backup as a new VM in the backup's tenant: the backed-up VM's
+         *     CPUs, memory, firmware and disks, on a new NIC. It boots as a new
+         *     instance, so cloud-init sets up its network again; the disks keep
+         *     everything else. The backup stays.
+         */
+        post: operations["restore_backup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clusters": {
         parameters: {
             query?: never;
@@ -722,6 +819,23 @@ export interface paths {
         patch: operations["update_tenant"];
         trace?: never;
     };
+    "/api/v1/tenants/{id}/backup-repositories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The repositories a tenant may keep backups in. */
+        get: operations["usable_repositories"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tenants/{id}/clusters": {
         parameters: {
             query?: never;
@@ -806,7 +920,8 @@ export interface paths {
         };
         get: operations["get_grants"];
         /**
-         * Replaces the clusters and storage pools a tenant may use. Each must be
+         * Replaces the clusters, storage pools, external networks and backup
+         *     repositories a tenant may use. Each must be
          *     usable by the parent; revoking one also revokes it from sub-tenants.
          */
         put: operations["set_grants"];
@@ -1050,6 +1165,50 @@ export interface paths {
         patch: operations["update_vm"];
         trace?: never;
     };
+    "/api/v1/vms/{id}/backup-schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Sets a VM's backup schedule. The first scheduled backup follows within a
+         *     minute or so; each later one when the last is a day (or a week) old.
+         *     Beyond `keep`, the oldest scheduled backups are deleted; backups taken
+         *     by hand are kept until deleted.
+         */
+        put: operations["set_schedule"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/backups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A VM's backups and backup schedule. */
+        get: operations["vm_backups"];
+        put?: never;
+        /**
+         * Starts a backup of a VM, running or stopped. A running VM's backup is of
+         *     the moment it starts, with its file systems frozen then if its guest
+         *     agent answers; the VM carries on meanwhile.
+         */
+        post: operations["create_backup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/vms/{id}/console": {
         parameters: {
             query?: never;
@@ -1288,6 +1447,51 @@ export interface components {
             /** @description Name of the tenant's identity provider, if it has one. */
             oidc?: string | null;
         };
+        BackupAccepted: components["schemas"]["BackupView"] & {
+            task_id: components["schemas"]["TaskId"];
+        };
+        /** Format: uuid */
+        BackupId: string;
+        /** Format: uuid */
+        BackupRepositoryId: string;
+        BackupView: {
+            /** Format: date-time */
+            completed_at?: string | null;
+            /**
+             * @description Whether its file systems were consistent: the VM was stopped, or its
+             *     guest agent (qemu-guest-agent) froze them. Otherwise it is as after a
+             *     crash, which journaling file systems recover from.
+             */
+            consistent?: boolean | null;
+            /** Format: date-time */
+            created_at: string;
+            /** @description Each disk's size. */
+            disks: number[];
+            error?: string | null;
+            id: components["schemas"]["BackupId"];
+            /** Format: int64 */
+            memory_mib: number;
+            repository_id: components["schemas"]["BackupRepositoryId"];
+            /** @description Taken by the VM's schedule (which also deletes it in time). */
+            scheduled: boolean;
+            /**
+             * Format: int64
+             * @description What it counts against quotas: its disks' sizes added up.
+             */
+            size_bytes: number;
+            /** @description `running`, `ready` or `failed`. */
+            state: string;
+            /**
+             * Format: int64
+             * @description What it takes up in the repository.
+             */
+            stored_bytes?: number | null;
+            tenant_id: components["schemas"]["TenantId"];
+            /** Format: int32 */
+            vcpus: number;
+            vm_id?: components["schemas"]["VmId"] | null;
+            vm_name: string;
+        };
         BindDomain: {
             /**
              * @description Host name people reach the controllers at for this tenant, e.g.
@@ -1362,6 +1566,9 @@ export interface components {
             /** @description Single-use; valid for 30 seconds. */
             ticket: string;
         };
+        CreateBackup: {
+            repository_id?: components["schemas"]["BackupRepositoryId"] | null;
+        };
         CreateBinding: {
             role: string;
             tenant_id: components["schemas"]["TenantId"];
@@ -1406,6 +1613,17 @@ export interface components {
             gateway?: string | null;
             name: string;
             vpc_id: components["schemas"]["VpcId"];
+        };
+        CreateRepository: {
+            export: string;
+            name: string;
+            /** @description Mount options (default `vers=4.2,hard,noatime`). */
+            options?: string | null;
+            /**
+             * @description The NFS server, and the export backups go in. Hosts mount it, and
+             *     QEMU writes the backups as root: export it with `no_root_squash`.
+             */
+            server: string;
         };
         CreateTenant: {
             name: string;
@@ -1499,6 +1717,9 @@ export interface components {
             /** @description What is left to do by hand. */
             notes: string[];
         };
+        DeleteAccepted: {
+            task_id: components["schemas"]["TaskId"];
+        };
         DiskSpec: {
             image_id?: components["schemas"]["ImageId"] | null;
             /**
@@ -1506,6 +1727,7 @@ export interface components {
              *     used local storage.
              */
             pool_id?: components["schemas"]["StoragePoolId"];
+            restored_from?: components["schemas"]["RestoredFrom"] | null;
             /** Format: int64 */
             size_bytes: number;
             volume_id: components["schemas"]["VolumeId"];
@@ -1566,6 +1788,8 @@ export interface components {
             vm_name?: string | null;
         };
         Grants: {
+            /** @description Repositories the tenant may keep backups in. */
+            backup_repositories?: string[];
             clusters: string[];
             /** @description Networks the tenant's VPCs may route to and take floating IPs from. */
             external_networks?: string[];
@@ -1815,6 +2039,40 @@ export interface components {
                 [key: string]: number;
             };
         };
+        RepositoryView: {
+            /** Format: date-time */
+            created_at: string;
+            export: string;
+            id: components["schemas"]["BackupRepositoryId"];
+            /** @description `nfs`. */
+            kind: string;
+            name: string;
+            server: string;
+        };
+        RestoreBackup: {
+            cluster_id?: components["schemas"]["ClusterId"] | null;
+            /** @description Name of the new VM. */
+            name: string;
+            network_id?: components["schemas"]["NetworkId"] | null;
+            /** @description A new console password for the image's default user. */
+            password?: string | null;
+            /** @description Security groups for its NIC; the tenant's `default` group otherwise. */
+            security_group_ids?: components["schemas"]["SecurityGroupId"][] | null;
+            /** @description SSH keys for the image's default user, as when creating a VM. */
+            ssh_authorized_keys?: string[];
+            /** @description Start it once restored (default true). */
+            start?: boolean | null;
+            storage_pool_id?: components["schemas"]["StoragePoolId"] | null;
+        };
+        /** @description One of a backup's disks. */
+        RestoredFrom: {
+            backup_id: components["schemas"]["BackupId"];
+            /**
+             * Format: int32
+             * @description Its place among the VM's disks (vda is 0).
+             */
+            index: number;
+        };
         RoleAt: {
             role: string;
             /** @description Slug path of the tenant (empty for the root). */
@@ -1856,6 +2114,16 @@ export interface components {
             remote_group_id?: components["schemas"]["SecurityGroupId"] | null;
             remote_group_name?: string | null;
         };
+        ScheduleView: {
+            /** @description `daily` or `weekly`. */
+            every: string;
+            /**
+             * Format: int32
+             * @description How many of its scheduled backups to keep; older ones are deleted.
+             */
+            keep: number;
+            repository_id: components["schemas"]["BackupRepositoryId"];
+        };
         /** Format: uuid */
         SecurityGroupId: string;
         SecurityGroupView: {
@@ -1878,6 +2146,16 @@ export interface components {
         };
         /** Format: uuid */
         SecurityRuleId: string;
+        SetSchedule: {
+            /** @description `daily` or `weekly`; null stops scheduled backups (those taken stay). */
+            every?: string | null;
+            /**
+             * Format: int32
+             * @description How many scheduled backups to keep (default 7).
+             */
+            keep?: number | null;
+            repository_id?: components["schemas"]["BackupRepositoryId"] | null;
+        };
         SignInView: {
             /** @description The domain both are at, if one is bound to the tenant or above it. */
             domain?: string | null;
@@ -2040,6 +2318,10 @@ export interface components {
             kind: string;
             name: string;
         };
+        UsableRepository: {
+            id: components["schemas"]["BackupRepositoryId"];
+            name: string;
+        };
         /** Format: uuid */
         UserId: string;
         UserView: {
@@ -2053,6 +2335,11 @@ export interface components {
             local: boolean;
             tenant_id: components["schemas"]["TenantId"];
             username: string;
+        };
+        VmBackups: {
+            /** @description Newest first. */
+            backups: components["schemas"]["BackupView"][];
+            schedule?: components["schemas"]["ScheduleView"] | null;
         };
         /** Format: uuid */
         VmId: string;
@@ -2343,6 +2630,240 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SiteView"];
                 };
+            };
+        };
+    };
+    list_repositories: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepositoryView"][];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_repository: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRepository"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepositoryView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_repository: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["BackupRepositoryId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Backups are left */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_backups: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Backups of this tenant and its sub-tenants; every tenant the caller
+                 *     may see by default.
+                 */
+                tenant_id?: components["schemas"]["TenantId"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupView"][];
+                };
+            };
+        };
+    };
+    get_backup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["BackupId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_backup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["BackupId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteAccepted"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description It is being taken, or restored */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    restore_backup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["BackupId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestoreBackup"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Accepted_VmView"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The backup is not complete */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -4063,6 +4584,33 @@ export interface operations {
             };
         };
     };
+    usable_repositories: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsableRepository"][];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     usable_clusters: {
         parameters: {
             query?: never;
@@ -4975,6 +5523,114 @@ export interface operations {
                 content?: never;
             };
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_schedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetSchedule"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmBackups"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    vm_backups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmBackups"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_backup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateBackup"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupAccepted"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The VM is busy, or over quota */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

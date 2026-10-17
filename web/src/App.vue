@@ -45,7 +45,7 @@ async function signOut() {
         <span class="tape">metastratum</span>
       </RouterLink>
       <nav aria-label="Main">
-        <RouterLink to="/vms">Machines</RouterLink>
+        <RouterLink to="/vms" :class="{ 'router-link-active': $route.meta.machines }">Machines</RouterLink>
         <RouterLink to="/images">Images</RouterLink>
         <RouterLink to="/networks" :class="{ 'router-link-active': $route.meta.net }">Networks</RouterLink>
         <RouterLink to="/tenants">{{ scope.solo ? 'People' : 'Tenants' }}</RouterLink>

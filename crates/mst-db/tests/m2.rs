@@ -396,6 +396,15 @@ async fn grants_flow_down_and_revocations_cascade(pool: PgPool) {
         grants::list(&pool, t.acme.id, "cluster").await.unwrap(),
         vec![c2]
     );
+
+    // Every kind can be granted (the table's constraint agrees).
+    let mut tx = pool.begin().await.unwrap();
+    for kind in grants::KINDS {
+        grants::set(&mut tx, t.globex.id, kind, &[c1])
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
 }
 
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]

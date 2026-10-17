@@ -35,6 +35,10 @@ pub async fn plan(
     if vm.status != "ready" {
         return refuse(format!("{} is busy ({})", vm.name, vm.status));
     }
+    // A backup reads the VM's disks where they are.
+    if mst_db::backups::running_for(&mut *tx, vm.id).await? {
+        return refuse(format!("a backup of {} is being taken", vm.name));
+    }
     if !vm.spec.0.migratable {
         return refuse(format!(
             "{} is not migratable: it uses its host's full CPU and disk caching",

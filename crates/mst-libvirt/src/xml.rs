@@ -93,8 +93,50 @@ pub fn escape(s: &str) -> String {
     out
 }
 
+/// The `dev` of each `<disk>`'s `<target>` in a domain's XML, in order.
+pub fn disk_targets(xml: &str) -> Vec<String> {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut out = Vec::new();
+    let mut in_disk = 0usize;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) if e.local_name().as_ref() == "disk" => in_disk += 1,
+            Ok(Event::End(e)) if e.local_name().as_ref() == "disk" => {
+                in_disk = in_disk.saturating_sub(1)
+            }
+            Ok(Event::Start(e) | Event::Empty(e))
+                if in_disk > 0 && e.local_name().as_ref() == "target" =>
+            {
+                if let Some(dev) = e
+                    .attributes()
+                    .flatten()
+                    .find(|a| a.key.as_ref() == "dev")
+                    .and_then(|a| a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok())
+                {
+                    out.push(dev.into_owned());
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return out,
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn disk_targets_skip_other_targets() {
+        let xml = r#"<domain><devices>
+            <disk type='file' device='disk'><source file='/a'/><target dev='vda' bus='virtio'/></disk>
+            <disk type='network' device='disk'><source protocol='rbd' name='p/v'/><target dev="vdb" bus="virtio"/></disk>
+            <serial type='pty'><target port='0'/></serial>
+            <disk type='file' device='cdrom'><target dev='sda' bus='sata'/><readonly/></disk>
+            <channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>
+          </devices></domain>"#;
+        assert_eq!(super::disk_targets(xml), ["vda", "vdb", "sda"]);
+    }
+
     use super::*;
 
     #[test]

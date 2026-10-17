@@ -10,6 +10,8 @@ controllers with PostgreSQL behind them, and an agent on each host.
   network bandwidth.
 - **Live migration** between hosts, on shared storage (NFS, Ceph RBD) or
   local disks. Putting a host in maintenance moves its VMs elsewhere.
+- **Backups** of running and stopped VMs to NFS, taken by hand or on a
+  schedule, and restored as new VMs.
 - **Networks**: private networks with routers, floating IPs and outbound
   NAT, and security groups, on OVN.
 - **Tenants** for teams or customers, each with quotas, roles, optionally
@@ -27,7 +29,8 @@ metastratum is in development and has no release yet.
 - [Getting started](docs/getting-started.md): packages, the first
   controller and the first host
 - [Running metastratum](docs/operations.md): controllers in several places,
-  PostgreSQL and OVN underneath, host failure, upgrades, monitoring
+  PostgreSQL and OVN underneath, host failure, backups, upgrades,
+  monitoring
 - [Security](SECURITY.md): the security model, and what the last review
   found
 
@@ -105,7 +108,7 @@ npm run api     # regenerate the typed API client after changing the REST API
 
 | VM | Address | Role |
 |---|---|---|
-| `mst-ctl` | 10.77.0.10 | Postgres, OVN central (NB/SB, northd), NFS export, single-node Ceph |
+| `mst-ctl` | 10.77.0.10 | Postgres, OVN central (NB/SB, northd), NFS exports (storage, backups), single-node Ceph |
 | `mst-host1..3` | 10.77.0.11–13 | Hypervisors: libvirt/QEMU, OVS, ovn-controller |
 
 It needs about 25 GiB of RAM, 14 vCPUs and roughly 15 GB of disk in
@@ -288,7 +291,10 @@ certificates and migrate with the new ones. With a second replica in
 freezes a lab host, waits for it to be fenced and its VM restarted on
 another, then starts the host again and returns it to service. Cluster
 limits are checked from inside guests: a disk write and a transfer between
-two VMs run at the limits' pace, and speed up once they are lifted. `MST_E2E_DEBUG=1` prints
+two VMs run at the limits' pace, and speed up once they are lifted. Backups
+are taken of a running and a stopped VM into the lab's backup export, by hand
+and on a schedule, and restored as new VMs that find a file written before
+the backup; they outlive their VM. `MST_E2E_DEBUG=1` prints
 console traffic. The browser suite does the VM lifecycle and tenant
 management through the UI with Playwright, using your installed Chrome.
 

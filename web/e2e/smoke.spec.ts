@@ -381,3 +381,27 @@ test('with the provider alone, tenancy stays out of the way', async ({ page }) =
   await expect(page.getByRole('link', { name: 'Security groups' })).toBeVisible()
   await expect(page.getByRole('link', { name: 'Guardrails' })).toHaveCount(0)
 })
+
+test('backup repositories, and the backups page', async ({ page }) => {
+  const id = Date.now().toString(36)
+  await signIn(page)
+  await page.goto('/backup-repositories')
+  await page.getByRole('button', { name: 'Add repository' }).first().click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('Name').fill(`e2e-${id}`)
+  await dialog.getByLabel('NFS server').fill('10.77.0.10')
+  await dialog.getByLabel('Export').fill('/srv/nfs/backups')
+  await dialog.getByRole('button', { name: 'Add repository' }).click()
+  const row = page.getByRole('row').filter({ hasText: `e2e-${id}` })
+  await expect(row).toContainText('10.77.0.10:/srv/nfs/backups')
+
+  // Backups sit beside the machines.
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Machines' }).click()
+  await page.getByRole('navigation', { name: 'Machines' }).getByRole('link', { name: 'Backups' }).click()
+  await expect(page.getByRole('heading', { name: 'Backups', level: 1 })).toBeVisible()
+
+  await page.goto('/backup-repositories')
+  await row.getByRole('button', { name: 'Delete' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete' }).click()
+  await expect(row).toHaveCount(0)
+})
