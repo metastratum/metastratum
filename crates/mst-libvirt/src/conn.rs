@@ -315,10 +315,27 @@ impl Libvirt {
     pub async fn destroy(&self, uuid: &str) -> Result<()> {
         let c = self.client().await?;
         let dom = self.lookup(&c, uuid).await?;
-        if self.power_of(&c, &dom).await? != Power::Stopped {
-            c.domain_destroy(&DomainDestroyArgs { dom }).await?;
+        self.power_off(&c, &dom).await
+    }
+
+    /// Powers the domain off unless it is off already, also when it stops
+    /// meanwhile (shut down, or killed with a restarting libvirt).
+    async fn power_off(&self, c: &Client, dom: &NonnullDomain) -> Result<()> {
+        if self.power_of(c, dom).await? == Power::Stopped {
+            return Ok(());
         }
-        Ok(())
+        match c
+            .domain_destroy(&DomainDestroyArgs { dom: dom.clone() })
+            .await
+        {
+            Err(e)
+                if e.code() == Some(err::OPERATION_INVALID)
+                    && self.power_of(c, dom).await? == Power::Stopped =>
+            {
+                Ok(())
+            }
+            r => Ok(r?),
+        }
     }
 
     pub async fn reboot(&self, uuid: &str) -> Result<()> {
@@ -337,10 +354,7 @@ impl Libvirt {
             Err(Error::NoDomain(_)) => return Ok(()),
             Err(e) => return Err(e),
         };
-        if self.power_of(&c, &dom).await? != Power::Stopped {
-            c.domain_destroy(&DomainDestroyArgs { dom: dom.clone() })
-                .await?;
-        }
+        self.power_off(&c, &dom).await?;
         let basic = UNDEFINE_MANAGED_SAVE | UNDEFINE_SNAPSHOTS_METADATA;
         let full = basic | UNDEFINE_NVRAM | UNDEFINE_CHECKPOINTS_METADATA;
         match c

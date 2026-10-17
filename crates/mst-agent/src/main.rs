@@ -111,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
         },
         changes: tokio::sync::Mutex::new(lv.watch()),
         libvirt_tls: tokio::sync::watch::Sender::new(None),
+        consoles: Default::default(),
     });
     // VMs' files are root's and their own QEMU's only (made so since; older
     // ones are tightened here), and libvirt should confine each QEMU.

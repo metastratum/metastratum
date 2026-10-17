@@ -57,6 +57,8 @@ pub struct Agent {
     /// Whether libvirt should listen for TLS connections, as the controller
     /// last asked (see `apply_libvirt_tls`).
     pub libvirt_tls: tokio::sync::watch::Sender<Option<bool>>,
+    /// Console sessions, by VM.
+    pub consoles: Arc<console::Open>,
 }
 
 fn power(p: Power) -> PowerState {
@@ -411,6 +413,7 @@ impl Agent {
                 };
                 self.lv.migrate(&c.vm_id, &to).await?;
                 tracing::info!(vm = %c.vm_id, to = %c.dest_address, "migrated");
+                self.consoles.close(&c.vm_id).await;
                 // The domain is gone from here; say so at once.
                 let _ = self.full_sync(tx).await;
             }
@@ -436,6 +439,10 @@ impl Agent {
                     },
                 };
                 tracing::info!(vm = %c.vm_id, step = ?which, cancelled = c.cancelled, "migration step");
+                // Confirmed, the source's domain goes away: its consoles first.
+                if which == Step::Confirm && !c.cancelled {
+                    self.consoles.close(&c.vm_id).await;
+                }
                 let to = mst_libvirt::MigrateTo {
                     address: &c.dest_address,
                     copy_disks: &c.copy_disks,
@@ -607,6 +614,7 @@ impl Agent {
             }
             Cmd::StopVm(c) => {
                 if c.force {
+                    self.consoles.close(&c.vm_id).await;
                     self.lv.destroy(&c.vm_id).await?
                 } else {
                     self.lv.shutdown(&c.vm_id).await?
@@ -615,6 +623,7 @@ impl Agent {
             }
             Cmd::RebootVm(c) => self.lv.reboot(&c.vm_id).await?,
             Cmd::UndefineVm(c) => {
+                self.consoles.close(&c.vm_id).await;
                 self.lv.undefine(&c.vm_id).await?;
                 let _ = tokio::fs::remove_file(self.files.seed_path(&c.vm_id)).await;
                 tracing::info!(vm = %c.vm_id, "domain removed");
@@ -624,7 +633,7 @@ impl Agent {
                     ConsoleKind::try_from(c.kind).map_err(|_| anyhow!("unknown console kind"))?;
                 let source = console::open(&self.lv, &c.vm_id, kind).await?;
                 let (vm_id, session) = (c.vm_id, c.session_id);
-                tokio::spawn(async move {
+                self.consoles.spawn(vm_id.clone(), async move {
                     tracing::info!(vm = %vm_id, ?kind, "console session started");
                     if let Err(e) = console::relay(client, session, source).await {
                         tracing::warn!(vm = %vm_id, error = %format!("{e:#}"), "console session failed");
