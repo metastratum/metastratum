@@ -9,11 +9,13 @@
 mod fetch;
 mod pools;
 mod rbd;
+mod snapshots;
 
 pub use fetch::{FetchPolicy, PublicOnly, check_url, is_public};
 
 pub use pools::{Pool, PoolSpec, Pools};
 pub use rbd::RbdPool;
+pub use snapshots::snapshot_name;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -465,6 +467,37 @@ mod tests {
             pool.volume_info("restored").await.unwrap(),
             ("qcow2".into(), 3 << 30)
         );
+
+        // A snapshot puts the volume back as it was.
+        let blank = pool.volume_path("blank").unwrap();
+        let io = |cmd: &str| {
+            let (cmd, path) = (cmd.to_owned(), blank.to_string_lossy().into_owned());
+            async move {
+                run("qemu-io", &["-f", "qcow2", "-c", &cmd, &path])
+                    .await
+                    .map(|out| String::from_utf8_lossy(&out).into_owned())
+            }
+        };
+        let snap = "0199f0a2-7b3c-7d00-8000-0000000000a1";
+        pool.create_snapshot("blank", snap).await.unwrap();
+        pool.create_snapshot("blank", snap).await.unwrap();
+        assert_eq!(
+            pool.snapshots("blank").await.unwrap(),
+            [format!("mst-{snap}")]
+        );
+        io("write -P 0xab 0 64k").await.unwrap();
+        assert!(
+            io("read -P 0xab 0 64k")
+                .await
+                .unwrap()
+                .contains("read 65536")
+        );
+        pool.revert_snapshot("blank", snap).await.unwrap();
+        assert!(io("read -P 0 0 64k").await.unwrap().contains("read 65536"));
+        pool.delete_snapshot("blank", snap).await.unwrap();
+        pool.delete_snapshot("blank", snap).await.unwrap();
+        assert!(pool.snapshots("blank").await.unwrap().is_empty());
+        assert!(pool.create_snapshot("blank", "../x").await.is_err());
 
         pool.delete_volume("vol1").await.unwrap();
         pool.delete_volume("vol1").await.unwrap();

@@ -23,6 +23,7 @@ export type Policy = Schemas['PolicyView']
 export type ExternalNetwork = Schemas['ExternalNetworkView']
 export type Backup = Schemas['BackupView']
 export type BackupRepository = Schemas['RepositoryView']
+export type Snapshot = Schemas['SnapshotView']
 
 /** Raised for any non-2xx API response, carrying the server's message. */
 export class ApiError extends Error {

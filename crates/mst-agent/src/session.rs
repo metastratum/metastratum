@@ -476,6 +476,9 @@ impl Agent {
             Cmd::BackupVm(c) => return crate::backup::backup(self, &c).await,
             Cmd::RestoreVolume(c) => crate::backup::restore(self, &c).await?,
             Cmd::DeleteBackup(c) => crate::backup::delete(self, &c).await?,
+            Cmd::SnapshotVm(c) => return crate::snapshot::snapshot(self, &c).await,
+            Cmd::RevertSnapshot(c) => crate::snapshot::revert(self, &c).await?,
+            Cmd::DeleteSnapshot(c) => crate::snapshot::delete(self, &c).await?,
             Cmd::DeleteImage(c) => {
                 let shared = c.pools.iter().map(pool_spec).collect::<Result<Vec<_>>>()?;
                 crate::cleanup::delete_image(self, &c.image_id, &shared).await?;

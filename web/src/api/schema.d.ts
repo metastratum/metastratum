@@ -713,6 +713,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/snapshots/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Deletes a snapshot, keeping the VM's disks as they are. */
+        delete: operations["delete_snapshot"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/snapshots/{id}/revert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Puts a stopped VM's disks back as they were in a snapshot. What was
+         *     written since is lost; the VM's other snapshots stay.
+         */
+        post: operations["revert_snapshot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/storage-pools": {
         parameters: {
             query?: never;
@@ -1299,6 +1336,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/vms/{id}/snapshots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A VM's snapshots, oldest first. */
+        get: operations["vm_snapshots"];
+        put?: never;
+        /**
+         * Takes a snapshot of a VM's disks, running or stopped. A running VM's
+         *     disks are all taken at the same moment, with its file systems frozen
+         *     then if its guest agent answers.
+         */
+        post: operations["create_snapshot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/vms/{id}/start": {
         parameters: {
             query?: never;
@@ -1624,6 +1683,10 @@ export interface components {
              *     QEMU writes the backups as root: export it with `no_root_squash`.
              */
             server: string;
+        };
+        CreateSnapshot: {
+            /** @description Unique among the VM's snapshots; the date and time (UTC) by default. */
+            name?: string | null;
         };
         CreateTenant: {
             name: string;
@@ -2183,6 +2246,32 @@ export interface components {
              *     bound to none, and sign-ins start from the provider.
              */
             tenant_name?: string | null;
+        };
+        SnapshotAccepted: components["schemas"]["SnapshotView"] & {
+            task_id: components["schemas"]["TaskId"];
+        };
+        /** Format: uuid */
+        SnapshotId: string;
+        SnapshotTask: {
+            task_id: components["schemas"]["TaskId"];
+        };
+        SnapshotView: {
+            /**
+             * @description Whether its file systems were consistent: the VM was stopped, or its
+             *     guest agent (qemu-guest-agent) froze them. Otherwise it is as after a
+             *     crash, which journaling file systems recover from.
+             */
+            consistent?: boolean | null;
+            /** Format: date-time */
+            created_at: string;
+            /** @description Why it failed to be taken, or why the last revert or deletion did. */
+            error?: string | null;
+            id: components["schemas"]["SnapshotId"];
+            name: string;
+            /** @description `creating`, `ready`, `reverting`, `deleting` or `failed`. */
+            state: string;
+            tenant_id: components["schemas"]["TenantId"];
+            vm_id: components["schemas"]["VmId"];
         };
         /** Format: uuid */
         StoragePoolId: string;
@@ -4215,6 +4304,74 @@ export interface operations {
             };
         };
     };
+    delete_snapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["SnapshotId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnapshotTask"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The VM is busy */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revert_snapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["SnapshotId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnapshotTask"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The VM is running or busy, or the snapshot is not ready */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_pools: {
         parameters: {
             query?: never;
@@ -5817,6 +5974,77 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["TaskRef"];
                 };
+            };
+        };
+    };
+    vm_snapshots: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnapshotView"][];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_snapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSnapshot"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnapshotAccepted"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The VM is busy, or has as many snapshots as it may */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

@@ -54,6 +54,12 @@ const LABELS: Record<string, string> = {
   'vm.delete': 'Delete VM',
   'vm.migrate': 'Migrate VM',
   'host.evacuate': 'Evacuate host',
+  'host.recover': 'Recover host',
+  'backup.create': 'Back up',
+  'backup.delete': 'Delete backup',
+  'snapshot.create': 'Take snapshot',
+  'snapshot.revert': 'Revert to snapshot',
+  'snapshot.delete': 'Delete snapshot',
 }
 
 export function taskLabel(t: Task): string {

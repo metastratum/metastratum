@@ -83,7 +83,12 @@ async fn take(ctx: &TaskCtx, backup: &mst_db::backups::Backup) -> Result<Taken> 
 
 /// Sends a command, waiting out a moment without the host's agent (a
 /// reconnect); commands sent here are idempotent.
-async fn send(state: &AppState, host: HostId, cmd: Cmd, timeout: Duration) -> Result<String> {
+pub(super) async fn send(
+    state: &AppState,
+    host: HostId,
+    cmd: Cmd,
+    timeout: Duration,
+) -> Result<String> {
     use crate::agents::AgentError;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     loop {

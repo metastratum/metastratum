@@ -97,7 +97,7 @@ impl RbdPool {
             .collect()
     }
 
-    async fn rbd(&self, args: &[&str]) -> Result<Vec<u8>> {
+    pub(crate) async fn rbd(&self, args: &[&str]) -> Result<Vec<u8>> {
         let keyring = self.keyring.to_string_lossy();
         let mons = self.monitors.join(",");
         let mut all = vec![
@@ -121,7 +121,7 @@ impl RbdPool {
         }
     }
 
-    fn spec(&self, name: &str) -> String {
+    pub(crate) fn spec(&self, name: &str) -> String {
         format!("{}/{}", self.pool, name)
     }
 
@@ -277,6 +277,11 @@ impl RbdPool {
 
     pub async fn delete_volume(&self, id: &str) -> Result<()> {
         let vol = self.spec(&Self::volume_name(id)?);
+        // Its snapshots go with it (`rbd rm` refuses an image that has any).
+        match self.rbd(&["snap", "purge", "--no-progress", &vol]).await {
+            Err(Error::Tool { stderr, .. }) if stderr.contains("No such file") => return Ok(()),
+            r => r.map(|_| ())?,
+        }
         match self.rbd(&["rm", "--no-progress", &vol]).await {
             Err(Error::Tool { stderr, .. }) if stderr.contains("No such file") => Ok(()),
             r => r.map(|_| ()),

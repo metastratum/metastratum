@@ -73,6 +73,7 @@ id_type!(
     PolicyId,
     BackupId,
     BackupRepositoryId,
+    SnapshotId,
 );
 
 /// The built-in pool of host-local storage.

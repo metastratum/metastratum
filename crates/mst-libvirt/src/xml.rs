@@ -123,8 +123,75 @@ pub fn disk_targets(xml: &str) -> Vec<String> {
     }
 }
 
+/// A running domain's disks: each target with its source's index, which
+/// names the QEMU block nodes libvirt made for it (`libvirt-<index>-format`,
+/// and `libvirt-<index>-storage` below it, or alone for raw disks that need
+/// no format layer). Disks without a source (an empty CD-ROM drive) are
+/// left out.
+pub fn disk_sources(xml: &str) -> Vec<(String, u32)> {
+    use quick_xml::events::Event;
+    let attr = |e: &quick_xml::events::BytesStart<'_>, name: &str| {
+        e.attributes()
+            .flatten()
+            .find(|a| a.key.as_ref() == name)
+            .and_then(|a| a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok())
+            .map(|v| v.into_owned())
+    };
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut out = Vec::new();
+    // Inside a disk: its target and its (top) source's index. The first
+    // source is the disk's own; backing stores nest their own sources.
+    let mut disk: Option<(Option<String>, Option<String>)> = None;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) if e.local_name().as_ref() == "disk" => disk = Some((None, None)),
+            Ok(Event::End(e)) if e.local_name().as_ref() == "disk" => {
+                if let Some((Some(target), Some(index))) = disk.take()
+                    && let Ok(index) = index.parse()
+                {
+                    out.push((target, index));
+                }
+            }
+            Ok(Event::Start(e) | Event::Empty(e)) if disk.is_some() => {
+                let Some((target, index)) = disk.as_mut() else {
+                    continue;
+                };
+                match e.local_name().as_ref() {
+                    "target" if target.is_none() => *target = attr(&e, "dev"),
+                    "source" if index.is_none() => *index = attr(&e, "index"),
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return out,
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn disk_sources_index_the_top_source() {
+        let xml = r#"<domain><devices>
+            <disk type='file' device='disk'><driver name='qemu' type='qcow2'/>
+              <source file='/v/a.qcow2' index='3'/>
+              <backingStore type='file' index='4'><format type='qcow2'/><source file='/i/b.qcow2'/></backingStore>
+              <target dev='vda' bus='virtio'/><alias name='virtio-disk0'/></disk>
+            <disk type='network' device='disk'><source protocol='rbd' name='p/v' index='2'><host name='m'/></source>
+              <target dev='vdb' bus='virtio'/></disk>
+            <disk type='file' device='cdrom'><source file='/s.iso' index='1'/><target dev='sda' bus='sata'/><readonly/></disk>
+            <disk type='file' device='cdrom'><target dev='sdb' bus='sata'/></disk>
+          </devices></domain>"#;
+        assert_eq!(
+            super::disk_sources(xml),
+            [
+                ("vda".to_owned(), 3),
+                ("vdb".to_owned(), 2),
+                ("sda".to_owned(), 1)
+            ]
+        );
+    }
+
     #[test]
     fn disk_targets_skip_other_targets() {
         let xml = r#"<domain><devices>

@@ -630,3 +630,93 @@ async fn backup_schedules_are_due_and_pruned(pool: PgPool) {
     assert!(backups::delete_repository(&mut conn, repo).await.unwrap());
     assert!(backups::schedule_of(&pool, v.id).await.unwrap().is_none());
 }
+
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn snapshots_are_unique_per_vm_and_mark_it_busy(pool: PgPool) {
+    use mst_db::snapshots;
+    let t = root(&pool).await;
+    let h = host(&pool).await;
+    let v = vm(&pool, &t, &h, "web-1").await;
+    let id = snapshots::create(&pool, t.id, v.id, "before", &v.spec.0)
+        .await
+        .unwrap();
+    assert!(
+        snapshots::create(&pool, t.id, v.id, "before", &v.spec.0)
+            .await
+            .is_err(),
+        "names are unique per VM"
+    );
+    assert_eq!(
+        snapshots::busy(&pool, v.id).await.unwrap().as_deref(),
+        Some("creating")
+    );
+    snapshots::set_state(&pool, id, "ready", Some(false), None)
+        .await
+        .unwrap();
+    assert_eq!(snapshots::busy(&pool, v.id).await.unwrap(), None);
+    // A later state change keeps what was found when it was taken.
+    snapshots::set_state(&pool, id, "ready", None, Some("revert failed"))
+        .await
+        .unwrap();
+    let s = snapshots::get(&pool, id).await.unwrap();
+    assert_eq!(
+        (s.consistent, s.error.as_deref()),
+        (Some(false), Some("revert failed"))
+    );
+    assert_eq!(snapshots::count(&pool, v.id).await.unwrap(), 1);
+
+    // They go with their VM.
+    sqlx::query("DELETE FROM vms WHERE id = $1")
+        .bind(v.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(snapshots::get(&pool, id).await.is_err());
+}
+
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn migrations_under_way_are_listed(pool: PgPool) {
+    use mst_db::{migrations, tasks};
+    let t = root(&pool).await;
+    let h = host(&pool).await;
+    let v = vm(&pool, &t, &h, "web-1").await;
+    let task = tasks::enqueue(
+        &pool,
+        tasks::NewTask {
+            tenant_id: t.id,
+            kind: "vm.migrate",
+            target: Some(("vm", v.id.0)),
+            params: serde_json::json!({}),
+            created_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    let facts = hosts::Facts {
+        name: "mst-host2",
+        address: "10.77.0.12",
+        ovn_chassis: "mst-host2",
+        cpu_count: 4,
+        memory_mib: 6000,
+        cpu_model: "x86_64",
+        kvm: true,
+        libvirt_version: "11.3.0",
+        agent_version: "0.1.0",
+        physical_networks: &[],
+        cpu_json: "",
+        migration_ready: false,
+    };
+    let dest = hosts::create(&pool, HostId::new(), &facts, "fp2", Utc::now(), "01")
+        .await
+        .unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    migrations::begin(&mut conn, v.id, task.id, h.id, dest.id, 1, 512)
+        .await
+        .unwrap();
+    let all = migrations::list(&pool).await.unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(
+        (all[0].vm_id, all[0].handoff.0.clone()),
+        (v.id, serde_json::json!({}))
+    );
+}

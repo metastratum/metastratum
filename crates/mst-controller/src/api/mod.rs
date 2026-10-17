@@ -12,6 +12,7 @@ mod hosts;
 mod images;
 mod oidc;
 mod security;
+mod snapshots;
 mod storage_pools;
 mod tasks;
 mod tenants;
@@ -22,6 +23,7 @@ mod vpcs;
 
 pub use auth::hash_password;
 pub use backups::{queue_delete as queue_backup_delete, repository_pool, start as start_backup};
+pub use snapshots::check_idle as check_disks_idle;
 pub use storage_pools::agent_pool;
 
 use axum::Router;
@@ -43,7 +45,7 @@ pub const SESSION_COOKIE: &str = "mst_session";
     tags(
         (name = "auth"), (name = "tenants"), (name = "users"), (name = "vms"), (name = "images"),
         (name = "hosts"), (name = "tasks"), (name = "audit"), (name = "events"), (name = "networks"),
-        (name = "backups"),
+        (name = "backups"), (name = "snapshots"),
     )
 )]
 struct ApiDoc;
@@ -54,6 +56,7 @@ fn api() -> OpenApiRouter<AppState> {
         .merge(oidc::routes())
         .merge(vms::routes())
         .merge(backups::routes())
+        .merge(snapshots::routes())
         .merge(console::routes())
         .merge(images::routes())
         .merge(hosts::routes())

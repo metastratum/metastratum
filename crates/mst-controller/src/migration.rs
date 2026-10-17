@@ -35,9 +35,24 @@ pub async fn plan(
     if vm.status != "ready" {
         return refuse(format!("{} is busy ({})", vm.name, vm.status));
     }
-    // A backup reads the VM's disks where they are.
-    if mst_db::backups::running_for(&mut *tx, vm.id).await? {
-        return refuse(format!("a backup of {} is being taken", vm.name));
+    // A backup or a snapshot works on the VM's disks where they are.
+    if let Err(e) = crate::api::check_disks_idle(&mut *tx, vm.id).await {
+        return refuse(format!("{}: {}", vm.name, e.message));
+    }
+    // A block migration copies a local disk's data, not its snapshots.
+    if vm
+        .spec
+        .0
+        .disks
+        .iter()
+        .any(|d| d.pool_id == mst_core::ids::LOCAL_POOL)
+        && mst_db::snapshots::count(&mut *tx, vm.id).await? > 0
+    {
+        return refuse(format!(
+            "{} has snapshots on its host's local disk, which would not move with it; \
+             delete them first",
+            vm.name
+        ));
     }
     if !vm.spec.0.migratable {
         return refuse(format!(

@@ -28,6 +28,60 @@ pub mod protocol {
     include!(concat!(env!("OUT_DIR"), "/remote_protocol.rs"));
 }
 
+/// The one procedure of libvirt's QEMU program metastratum needs
+/// (`qemu_protocol.x`, written out by hand).
+pub mod qemu {
+    use crate::protocol::NonnullDomain;
+    use crate::xdr::{self, Xdr};
+
+    /// `QEMU_PROC_DOMAIN_MONITOR_COMMAND`.
+    pub const PROC_DOMAIN_MONITOR_COMMAND: i32 = 1;
+    /// `REMOTE_STRING_MAX`.
+    const STRING_MAX: usize = 4_194_304;
+
+    /// Passes a QMP command to the domain's QEMU, as `virsh
+    /// qemu-monitor-command` does. libvirt marks the domain as tainted.
+    pub struct DomainMonitorCommandArgs {
+        pub dom: NonnullDomain,
+        pub cmd: String,
+        pub flags: i32,
+    }
+
+    impl Xdr for DomainMonitorCommandArgs {
+        fn encode(&self, w: &mut Vec<u8>) -> xdr::Result<()> {
+            self.dom.encode(w)?;
+            xdr::put_string(w, &self.cmd, STRING_MAX)?;
+            xdr::put_i32(w, self.flags);
+            Ok(())
+        }
+
+        fn decode(r: &mut xdr::Reader<'_>) -> xdr::Result<Self> {
+            Ok(Self {
+                dom: NonnullDomain::decode(r)?,
+                cmd: xdr::get_string(r, STRING_MAX)?,
+                flags: xdr::get_i32(r)?,
+            })
+        }
+    }
+
+    /// QEMU's reply, as JSON.
+    pub struct DomainMonitorCommandRet {
+        pub result: String,
+    }
+
+    impl Xdr for DomainMonitorCommandRet {
+        fn encode(&self, w: &mut Vec<u8>) -> xdr::Result<()> {
+            xdr::put_string(w, &self.result, STRING_MAX)
+        }
+
+        fn decode(r: &mut xdr::Reader<'_>) -> xdr::Result<Self> {
+            Ok(Self {
+                result: xdr::get_string(r, STRING_MAX)?,
+            })
+        }
+    }
+}
+
 pub use client::{Client, Event, Stream, StreamRx, StreamTx};
 
 /// libvirt error codes (`virErrorNumber`) callers commonly match on.

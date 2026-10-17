@@ -56,7 +56,7 @@ fn disk_file(dir: &Path, index: u32) -> PathBuf {
     dir.join(format!("{index}.qcow2"))
 }
 
-fn target_of(index: u32) -> String {
+pub(crate) fn target_of(index: u32) -> String {
     // As the VM's domain names its disks: vda, vdb, ...
     format!("vd{}", (b'a' + index as u8) as char)
 }

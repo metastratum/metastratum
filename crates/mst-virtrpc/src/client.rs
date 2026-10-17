@@ -29,6 +29,9 @@ use crate::{Error, Result};
 
 pub const REMOTE_PROGRAM: u32 = 0x2000_8086;
 pub const REMOTE_VERSION: u32 = 1;
+/// libvirt's QEMU-specific procedures (`qemu_protocol.x`).
+pub const QEMU_PROGRAM: u32 = 0x2000_8087;
+pub const QEMU_VERSION: u32 = 1;
 const KEEPALIVE_PROGRAM: u32 = 0x6b65_6570;
 const KEEPALIVE_PING: i32 = 1;
 const KEEPALIVE_PONG: i32 = 2;
@@ -240,7 +243,7 @@ async fn read_loop(shared: Arc<Shared>) -> Result<()> {
                 };
                 shared.send(&frame(pong, &[])).await?;
             }
-            (REMOTE_PROGRAM, msg_type::REPLY | msg_type::REPLY_WITH_FDS) => {
+            (REMOTE_PROGRAM | QEMU_PROGRAM, msg_type::REPLY | msg_type::REPLY_WITH_FDS) => {
                 let waiter = shared.state.lock().unwrap().pending.remove(&h.serial);
                 if let Some(waiter) = waiter {
                     let reply = match h.status {
@@ -367,6 +370,18 @@ impl Client {
     }
 
     async fn call_raw<A: Xdr>(&self, proc: i32, serial: u32, args: &A) -> Result<Reply> {
+        self.call_in(REMOTE_PROGRAM, REMOTE_VERSION, proc, serial, args)
+            .await
+    }
+
+    async fn call_in<A: Xdr>(
+        &self,
+        prog: u32,
+        vers: u32,
+        proc: i32,
+        serial: u32,
+        args: &A,
+    ) -> Result<Reply> {
         let body = xdr::to_bytes(args)?;
         let (tx, rx) = oneshot::channel();
         {
@@ -377,8 +392,8 @@ impl Client {
             st.pending.insert(serial, tx);
         }
         let header = Header {
-            prog: REMOTE_PROGRAM,
-            vers: REMOTE_VERSION,
+            prog,
+            vers,
             proc,
             kind: msg_type::CALL,
             serial,
@@ -400,6 +415,14 @@ impl Client {
     /// Calls a procedure and decodes its reply.
     pub async fn call<A: Xdr, R: Xdr>(&self, proc: i32, args: &A) -> Result<R> {
         let reply = self.call_raw(proc, self.next_serial(), args).await?;
+        Ok(xdr::from_bytes(&reply.body)?)
+    }
+
+    /// Calls one of libvirt's QEMU-specific procedures.
+    pub async fn call_qemu<A: Xdr, R: Xdr>(&self, proc: i32, args: &A) -> Result<R> {
+        let reply = self
+            .call_in(QEMU_PROGRAM, QEMU_VERSION, proc, self.next_serial(), args)
+            .await?;
         Ok(xdr::from_bytes(&reply.body)?)
     }
 

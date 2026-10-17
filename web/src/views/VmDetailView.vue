@@ -6,6 +6,7 @@ import IdChip from '../components/IdChip.vue'
 import MigrateDialog from '../components/MigrateDialog.vue'
 import StatusLed from '../components/StatusLed.vue'
 import VmBackups from '../components/VmBackups.vue'
+import VmSnapshots from '../components/VmSnapshots.vue'
 import { ago, gib, mib, powerNote, vmState } from '../state'
 import { useLiveRefresh } from '../stores/live'
 import { useScope } from '../stores/scope'
@@ -297,6 +298,7 @@ async function remove() {
             <dt>Volume</dt><dd><IdChip :value="d.volume_id" short /></dd>
           </dl>
         </section>
+        <VmSnapshots :vm="vm" />
         <VmBackups :vm="vm" />
         <section>
           <h2 class="label">Recent activity</h2>

@@ -124,7 +124,7 @@ fn visible(p: &Principal, root: Option<&TenantPath>, c: &Change) -> bool {
                     t.is_ancestor_or_self_of(&b.tenant) && b.role.allows(Perm::NetworkRead)
                 })
         }
-        ("vm" | "backup", Some(t)) => p.can(Perm::VmRead, t),
+        ("vm" | "backup" | "snapshot", Some(t)) => p.can(Perm::VmRead, t),
         ("task", Some(t)) => p.can(Perm::TaskRead, t),
         ("tenant", Some(t)) => p.can(Perm::TenantRead, t),
         // Images may be shared with sub-tenants.

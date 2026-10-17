@@ -9,6 +9,7 @@ mod enroll;
 mod facts;
 mod ovn;
 mod session;
+mod snapshot;
 mod tls;
 mod vm;
 

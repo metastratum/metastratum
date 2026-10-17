@@ -58,6 +58,15 @@ pub async fn begin(
     Ok(())
 }
 
+/// Every migration under way.
+pub async fn list(db: impl PgExecutor<'_>) -> Result<Vec<Migration>> {
+    Ok(
+        sqlx::query_as(concat!("SELECT ", columns!(), " FROM migrations"))
+            .fetch_all(db)
+            .await?,
+    )
+}
+
 pub async fn get(db: impl PgExecutor<'_>, vm: VmId) -> Result<Option<Migration>> {
     Ok(sqlx::query_as(concat!(
         "SELECT ",

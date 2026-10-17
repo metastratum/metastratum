@@ -440,10 +440,8 @@ pub async fn start(
     let spec = &vm.spec.0;
     let size: u64 = spec.disks.iter().map(|d| d.size_bytes).sum();
     let mut tx = state.db.begin().await?;
-    // One at a time per VM.
-    if mst_db::backups::running_for(&mut *tx, vm.id).await? {
-        return Err(ApiError::conflict("a backup of this VM is being taken"));
-    }
+    // One at a time per VM, and not while a snapshot is worked on.
+    super::snapshots::check_idle(&mut tx, vm.id).await?;
     let delta = [("backup_gib".to_owned(), size.div_ceil(1 << 30) as i64)]
         .into_iter()
         .collect();

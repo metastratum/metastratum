@@ -196,6 +196,9 @@ message Command {
     BackupVm backup_vm = 33;
     RestoreVolume restore_volume = 34;
     DeleteBackup delete_backup = 35;
+    SnapshotVm snapshot_vm = 36;
+    RevertSnapshot revert_snapshot = 37;
+    DeleteSnapshot delete_snapshot = 38;
   }
 }
 
@@ -396,6 +399,29 @@ message RestoreVolume {
 message DeleteBackup {
   Pool repository = 1;
   string backup_id = 2;
+}
+
+// Take a snapshot of a VM's disks, all at the same moment, in the disks
+// themselves; with its guest's file systems frozen if its agent answers.
+// Answers {"consistent": bool}. Taking one that exists answers as well.
+message SnapshotVm {
+  string vm_id = 1;
+  string snapshot_id = 2;
+  repeated BackupDisk disks = 3;
+}
+
+// Put a stopped VM's disks back as they were in a snapshot.
+message RevertSnapshot {
+  string vm_id = 1;
+  string snapshot_id = 2;
+  repeated BackupDisk disks = 3;
+}
+
+// Remove a snapshot from a VM's disks; one already gone is fine.
+message DeleteSnapshot {
+  string vm_id = 1;
+  string snapshot_id = 2;
+  repeated BackupDisk disks = 3;
 }
 
 // An image was deleted: remove its cached copy from the local pool, and from

@@ -68,6 +68,21 @@ test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
   await expect(host).not.toHaveText(before, { timeout: 3 * 60_000 })
   await expect(page.getByText('Running', { exact: true })).toBeVisible({ timeout: 60_000 })
 
+  // A snapshot of the running VM; reverting asks for it to be stopped.
+  const snapshots = page.locator('section.snapshots')
+  await snapshots.getByRole('button', { name: 'Take snapshot' }).click()
+  await snapshots.getByLabel('Name').fill('first')
+  await snapshots.getByRole('button', { name: 'Take', exact: true }).click()
+  const first = snapshots.getByRole('listitem').filter({ hasText: 'first' })
+  await expect(first.getByText('Crash-consistent')).toBeVisible({ timeout: 60_000 })
+  await first.getByRole('button', { name: 'Revert…' }).click()
+  await expect(page.getByRole('dialog')).toContainText('only a stopped VM can be reverted')
+  await expect(page.getByRole('dialog').getByRole('button', { name: 'Revert' })).toBeDisabled()
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click()
+  await first.getByRole('button', { name: 'Delete…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete snapshot' }).click()
+  await expect(first).toHaveCount(0, { timeout: 60_000 })
+
   await page.getByRole('button', { name: 'Delete VM' }).click()
   await page.getByRole('button', { name: `Delete ${name} and its disk` }).click()
   await expect(page.getByRole('heading', { name: 'Virtual machines' })).toBeVisible()

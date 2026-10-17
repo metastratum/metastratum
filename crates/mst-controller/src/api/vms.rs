@@ -141,11 +141,7 @@ async fn context(state: &AppState) -> ApiResult<Context> {
         mst_db::sqlx::query_as("SELECT id, name FROM networks")
             .fetch_all(&state.db)
             .await?;
-    let migrations: Vec<mst_db::migrations::Migration> = mst_db::sqlx::query_as(
-        "SELECT vm_id, task_id, source_host_id, dest_host_id, state, cancel_requested, started_at FROM migrations",
-    )
-    .fetch_all(&state.db)
-    .await?;
+    let migrations = mst_db::migrations::list(&state.db).await?;
     Ok(Context {
         migrations: migrations.into_iter().map(|m| (m.vm_id, m)).collect(),
         networks: networks.into_iter().collect(),
@@ -795,7 +791,13 @@ async fn power_action(
     }
     let mut tx = state.db.begin().await?;
     if let Some(d) = desired {
+        // Locks the VM: a revert that started meanwhile is seen below.
         mst_db::vms::set_desired_power(&mut *tx, id, d).await?;
+    }
+    if mst_db::snapshots::busy(&mut *tx, id).await?.as_deref() == Some("reverting") {
+        return Err(ApiError::conflict(
+            "the VM is being reverted to a snapshot; start it once that is done",
+        ));
     }
     let task_id = enqueue(&mut tx, p, vm.tenant_id, kind, id, params.clone()).await?;
     tx.commit().await?;
@@ -871,10 +873,11 @@ async fn delete_vm(
             "VM is being migrated; cancel the migration first",
         ));
     }
-    if mst_db::backups::running_for(&state.db, id).await? {
-        return Err(ApiError::conflict(
-            "a backup of the VM is being taken; delete it once that is done",
-        ));
+    if let Err(e) = super::snapshots::check_idle(&mut *state.db.acquire().await?, id).await {
+        return Err(ApiError::conflict(format!(
+            "{}; delete the VM once that is done",
+            e.message
+        )));
     }
     let mut tx = state.db.begin().await?;
     mst_db::vms::set_status(&mut *tx, id, "deleting", None).await?;

@@ -18,6 +18,7 @@ export type Kind =
   | 'network_policy'
   | 'external_network'
   | 'backup'
+  | 'snapshot'
   | 'backup_repository'
 const KINDS: Kind[] = [
   'vm',
@@ -34,6 +35,7 @@ const KINDS: Kind[] = [
   'network_policy',
   'external_network',
   'backup',
+  'snapshot',
   'backup_repository',
 ]
 

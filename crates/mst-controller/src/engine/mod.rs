@@ -7,10 +7,12 @@
 
 mod backup;
 mod migrate;
+mod recover;
+mod snapshot;
+mod vm;
+
 pub use backup::schedule as backup_schedule;
 pub use migrate::DRIVEN_PROTOCOL;
-mod recover;
-mod vm;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -118,6 +120,9 @@ async fn execute(state: AppState, task: Task) {
         "host.recover" => recover::recover(&ctx).await,
         "backup.create" => backup::create(&ctx).await,
         "backup.delete" => backup::delete(&ctx).await,
+        "snapshot.create" => snapshot::create(&ctx).await,
+        "snapshot.revert" => snapshot::revert(&ctx).await,
+        "snapshot.delete" => snapshot::delete(&ctx).await,
         other => Err(anyhow::anyhow!("unknown task kind {other}")),
     };
     renew.abort();

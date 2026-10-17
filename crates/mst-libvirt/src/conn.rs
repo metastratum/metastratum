@@ -790,6 +790,28 @@ impl Libvirt {
         Ok(())
     }
 
+    /// Sends a QMP command (JSON) to the domain's QEMU and returns its reply
+    /// (JSON, with `return` or `error`). For what libvirt has no API for;
+    /// libvirt marks the domain as tainted (`custom-monitor`).
+    pub async fn qemu_monitor(&self, uuid: &str, cmd: &str) -> Result<String> {
+        use mst_virtrpc::qemu::{
+            DomainMonitorCommandArgs, DomainMonitorCommandRet, PROC_DOMAIN_MONITOR_COMMAND,
+        };
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        let r: DomainMonitorCommandRet = c
+            .call_qemu(
+                PROC_DOMAIN_MONITOR_COMMAND,
+                &DomainMonitorCommandArgs {
+                    dom,
+                    cmd: cmd.to_owned(),
+                    flags: 0,
+                },
+            )
+            .await?;
+        Ok(r.result)
+    }
+
     /// Freezes the guest's file systems through its agent; returns how many.
     pub async fn fs_freeze(&self, uuid: &str) -> Result<u32> {
         let c = self.client().await?;
@@ -825,6 +847,18 @@ impl Libvirt {
             .await?
             .xml;
         Ok(crate::xml::disk_targets(&xml))
+    }
+
+    /// A running domain's disks, each target with its source's index (see
+    /// [`crate::xml::disk_sources`]).
+    pub async fn disk_sources(&self, uuid: &str) -> Result<Vec<(String, u32)>> {
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        let xml = c
+            .domain_get_xml_desc(&DomainGetXmlDescArgs { dom, flags: 0 })
+            .await?
+            .xml;
+        Ok(crate::xml::disk_sources(&xml))
     }
 
     /// Aborts the domain's current job. A migration then fails and the domain
