@@ -1,9 +1,28 @@
 # metastratum
 
-A KVM-based virtual machine management platform: multiple hypervisor hosts,
-OVN-backed virtual networks with ACLs, live migration, nested multi-tenancy and
-a web UI with a virtual console. Controllers run as several replicas; hosts
-that fail are fenced and their VMs restarted elsewhere.
+metastratum turns a group of Linux servers into a private cloud for virtual
+machines, with a web UI and an API. It is built on the components the big
+platforms use, KVM, libvirt and OVN, and aims to be easy to run: one or more
+controllers with PostgreSQL behind them, and an agent on each host.
+
+- **Virtual machines** from cloud images, configured with cloud-init, with a
+  graphical and a serial console in the browser and limits on disk and
+  network bandwidth.
+- **Live migration** between hosts, on shared storage (NFS, Ceph RBD) or
+  local disks. Putting a host in maintenance moves its VMs elsewhere.
+- **Networks**: private networks with routers, floating IPs and outbound
+  NAT, and security groups, on OVN.
+- **Tenants** for teams or customers, each with quotas, roles, optionally
+  its own identity provider (OpenID Connect) and its own sign-in address.
+  Tenants can have sub-tenants.
+- **High availability**: controllers run as several replicas, and when a
+  host fails, its VMs on shared storage restart on other hosts once it is
+  fenced.
+- **Security** built in: mutual TLS between controllers and hosts,
+  short-lived host certificates with revocation, secrets sealed in the
+  database.
+
+metastratum is in development and has no release yet.
 
 - [Running metastratum](docs/operations.md): controllers in several places,
   PostgreSQL and OVN underneath, host failure, upgrades, monitoring
@@ -16,6 +35,8 @@ that fail are fenced and their VMs restarted elsewhere.
 |---|---|
 | `crates/mst-core` | Shared domain types (IDs, tenant paths, VM specs) |
 | `crates/mst-db` | Postgres repositories |
+| `crates/mst-authz` | Permissions: built-in roles inherited down the tenant tree |
+| `crates/mst-scheduler` | VM placement: filters and weighers over host capacity |
 | `crates/mst-pki` | Internal CA, certificate issuance, join tokens |
 | `crates/mst-proto` | gRPC protocol between controller and agents (`proto/agent.proto`) |
 | `crates/mst-virtrpc` | Native async client for libvirt's RPC protocol, generated from `remote_protocol.x` |
@@ -29,7 +50,7 @@ that fail are fenced and their VMs restarted elsewhere.
 | `web/` | Web UI (Vue 3 + TypeScript) |
 | `tests/e2e` | End-to-end tests against a running controller and lab |
 | `migrations/` | SQL migrations (sqlx) |
-| `deploy/dev` | Local dev dependencies (Postgres, Dex as a test identity provider) |
+| `deploy/dev` | Local dev dependencies (Postgres, Redis, Dex as a test identity provider) |
 | `deploy/systemd` | Units for the controller and the agent |
 | `docs/` | Operating metastratum |
 | `deploy/lab` | Nested-KVM lab: 1 control VM + 3 hypervisor VMs |
@@ -43,7 +64,7 @@ tests need Postgres, which `deploy/dev/compose.yaml` provides in Docker:
 ```sh
 sudo pacman -S --needed rustup protobuf docker   # Arch; Debian: protobuf-compiler
 rustup target add x86_64-unknown-linux-musl
-docker compose -p metastratum -f deploy/dev/compose.yaml up -d
+docker compose -f deploy/dev/compose.yaml up -d
 export DATABASE_URL=postgres://metastratum:metastratum@127.0.0.1:55432/metastratum
 cargo test
 ```
