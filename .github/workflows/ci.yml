@@ -81,3 +81,22 @@ jobs:
         with:
           name: packages
           path: target/packages/
+
+  terraform:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: terraform/go.mod
+          cache-dependency-path: terraform/go.sum
+      # The client must match the controller's OpenAPI document.
+      - run: go generate ./... && git diff --exit-code -- internal/client/client.gen.go
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./... && go test ./... && go build .

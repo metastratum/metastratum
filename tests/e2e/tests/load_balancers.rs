@@ -181,6 +181,16 @@ async fn scenario(admin: &Api, run: &str, t: &str) -> anyhow::Result<()> {
         )
         .await?;
 
+    // Each can be read on its own (as Terraform does).
+    for (path, id) in [
+        ("vpcs", &vpc),
+        ("networks", &net),
+        ("security-groups", &web),
+    ] {
+        let one = admin.get(&format!("/{path}/{id}")).await?;
+        assert_eq!(one["id"].as_str(), Some(id.as_str()), "{path}: {one}");
+    }
+
     let mut vms = vec![];
     for (name, groups) in [
         ("w1", vec![&default, &web]),

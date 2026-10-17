@@ -381,6 +381,10 @@ async fn scenario(admin: &Api, run: &str, p: &str, c: &str) -> anyhow::Result<()
         )
         .await?;
     let addr = format!("{}:22", fip["ip"].as_str().unwrap());
+    let one = cid
+        .get(&format!("/floating-ips/{}", fip["id"].as_str().unwrap()))
+        .await?;
+    assert_eq!(one["nic_id"].as_str(), Some(nic), "{one}");
     let set_groups = |groups: Vec<String>| {
         let cid = cid.clone();
         let path = format!("/vms/{a2_id}/nics/{nic}/security-groups");

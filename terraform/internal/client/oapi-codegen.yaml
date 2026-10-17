@@ -1,0 +1,7 @@
+# The API client, generated from the controller's OpenAPI document
+# (`go generate ./...`; CI checks it is current).
+package: client
+generate:
+  models: true
+  client: true
+output: client.gen.go

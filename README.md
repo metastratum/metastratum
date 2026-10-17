@@ -35,6 +35,8 @@ metastratum is in development and has no release yet.
   templates, snapshots and backups, upgrades, monitoring
 - [Security](SECURITY.md): the security model, and what the last review
   found
+- [Terraform provider](terraform/README.md): VMs, networks and load
+  balancers as code
 
 ## Layout
 
@@ -55,6 +57,7 @@ metastratum is in development and has no release yet.
 | `crates/mst-agent` | Host agent: drives libvirt, storage and consoles on each hypervisor |
 | `crates/mstctl` | Admin CLI (placeholder) |
 | `web/` | Web UI (Vue 3 + TypeScript) |
+| `terraform/` | Terraform provider (Go), with an API client generated from the OpenAPI document |
 | `tests/e2e` | End-to-end tests against a running controller and lab |
 | `migrations/` | SQL migrations (sqlx) |
 | `deploy/dev` | Local dev dependencies (Postgres, Redis, Dex as a test identity provider) |

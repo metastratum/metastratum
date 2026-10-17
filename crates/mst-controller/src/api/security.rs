@@ -22,7 +22,7 @@ use crate::state::AppState;
 pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list_groups, create_group))
-        .routes(routes!(update_group, delete_group))
+        .routes(routes!(get_group, update_group, delete_group))
         .routes(routes!(add_rule))
         .routes(routes!(delete_rule))
         .routes(routes!(list_policies, create_policy))
@@ -197,6 +197,25 @@ async fn group_views(
             created_at: g.created_at,
         })
         .collect())
+}
+
+#[utoipa::path(get, path = "/security-groups/{id}", tag = "networks", params(("id" = SecurityGroupId, Path)),
+    responses((status = 200, body = SecurityGroupView), (status = 404)))]
+async fn get_group(
+    State(state): State<AppState>,
+    p: Principal,
+    Path(id): Path<SecurityGroupId>,
+) -> ApiResult<Json<SecurityGroupView>> {
+    let g = mst_db::netsec::get_group(&state.db, id).await?;
+    authorize_resource(
+        &state.db,
+        &p,
+        Perm::NetworkRead,
+        g.tenant_id,
+        "security group",
+    )
+    .await?;
+    Ok(Json(group_views(&state, vec![g]).await?.remove(0)))
 }
 
 #[utoipa::path(get, path = "/security-groups", tag = "networks", params(ListQuery),

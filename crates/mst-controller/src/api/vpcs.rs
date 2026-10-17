@@ -20,9 +20,9 @@ use crate::state::AppState;
 pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list_vpcs, create_vpc))
-        .routes(routes!(update_vpc, delete_vpc))
+        .routes(routes!(get_vpc, update_vpc, delete_vpc))
         .routes(routes!(list_networks, create_network))
-        .routes(routes!(delete_network))
+        .routes(routes!(get_network, delete_network))
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -121,6 +121,34 @@ async fn vpc_views(state: &AppState, vpcs: Vec<mst_db::networks::Vpc>) -> ApiRes
         });
     }
     Ok(out)
+}
+
+#[utoipa::path(get, path = "/vpcs/{id}", tag = "networks", params(("id" = VpcId, Path)),
+    responses((status = 200, body = VpcView), (status = 404)))]
+async fn get_vpc(
+    State(state): State<AppState>,
+    p: Principal,
+    Path(id): Path<VpcId>,
+) -> ApiResult<Json<VpcView>> {
+    let vpc = mst_db::networks::get_vpc(&state.db, id).await?;
+    authorize_resource(&state.db, &p, Perm::NetworkRead, vpc.tenant_id, "VPC").await?;
+    Ok(Json(vpc_views(&state, vec![vpc]).await?.remove(0)))
+}
+
+#[utoipa::path(get, path = "/networks/{id}", tag = "networks", params(("id" = NetworkId, Path)),
+    responses((status = 200, body = NetworkView), (status = 404)))]
+async fn get_network(
+    State(state): State<AppState>,
+    p: Principal,
+    Path(id): Path<NetworkId>,
+) -> ApiResult<Json<NetworkView>> {
+    let n = mst_db::networks::get(&state.db, id).await?;
+    authorize_resource(&state.db, &p, Perm::NetworkRead, n.tenant_id, "network").await?;
+    let counts: HashMap<_, _> = mst_db::networks::port_counts(&state.db)
+        .await?
+        .into_iter()
+        .collect();
+    Ok(Json(network_views(vec![n], &counts).remove(0)))
 }
 
 #[utoipa::path(get, path = "/vpcs", tag = "networks", params(ListQuery), responses((status = 200, body = Vec<VpcView>)))]

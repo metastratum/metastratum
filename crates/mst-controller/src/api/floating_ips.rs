@@ -20,7 +20,11 @@ use crate::state::AppState;
 pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list_floating_ips, allocate_floating_ip))
-        .routes(routes!(update_floating_ip, release_floating_ip))
+        .routes(routes!(
+            get_floating_ip,
+            update_floating_ip,
+            release_floating_ip
+        ))
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -93,6 +97,28 @@ async fn list_floating_ips(
     authorize(&state.db, &p, Perm::NetworkRead, tenant).await?;
     let ips = mst_db::external::floating_ips(&state.db, tenant, q.descendants).await?;
     Ok(Json(views(&state, ips).await?))
+}
+
+#[utoipa::path(get, path = "/floating-ips/{id}", tag = "networks", params(("id" = ExternalIpId, Path)),
+    responses((status = 200, body = FloatingIpView), (status = 404)))]
+async fn get_floating_ip(
+    State(state): State<AppState>,
+    p: Principal,
+    Path(id): Path<ExternalIpId>,
+) -> ApiResult<Json<FloatingIpView>> {
+    let ip = mst_db::external::get_ip(&state.db, id).await?;
+    if ip.kind != "floating" {
+        return Err(ApiError::not_found("floating IP"));
+    }
+    authorize_resource(
+        &state.db,
+        &p,
+        Perm::NetworkRead,
+        ip.tenant_id,
+        "floating IP",
+    )
+    .await?;
+    Ok(Json(views(&state, vec![ip]).await?.remove(0)))
 }
 
 #[derive(Deserialize, ToSchema)]

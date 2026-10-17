@@ -7,3 +7,5 @@
 .env
 .claude/scheduled_tasks.lock
 deploy/dev/master.key
+/terraform/internal/client/openapi.json
+/terraform/terraform-provider-metastratum
