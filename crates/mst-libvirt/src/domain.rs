@@ -67,7 +67,13 @@ pub struct DomainDef {
     /// Human-readable name, shown as the domain title.
     pub title: String,
     pub generation: u64,
+    /// Virtual CPUs plugged in.
     pub vcpus: u32,
+    /// What may be plugged in without a restart.
+    pub max_vcpus: u32,
+    /// CPUs are plugged in and out while it runs: all but the first are
+    /// pluggable ones (see [`DomainDef::vcpus_layout`]).
+    pub vcpu_hotplug: bool,
     /// What the guest has now (its balloon's size).
     pub memory_mib: u64,
     /// What it may grow to without a restart.
@@ -99,6 +105,34 @@ impl DomainDef {
     /// not, so the name is derived from the UUID.
     pub fn name(&self) -> String {
         domain_name(&self.uuid)
+    }
+
+    /// Whether CPUs can be plugged in while the VM runs.
+    fn hotplug(&self) -> bool {
+        self.vcpu_hotplug && self.max_vcpus > 1
+    }
+
+    /// With room to grow, every CPU but the first is a pluggable one, the
+    /// first `vcpus` of them plugged in, in order. A VM started so and one
+    /// that had CPUs plugged in since are alike (libvirt plugs in the next
+    /// and takes out the last), so a VM migrates to a destination defined
+    /// from its spec.
+    fn vcpus_layout(&self) -> Option<El> {
+        if !self.hotplug() {
+            return None;
+        }
+        let mut el = El::new("vcpus");
+        for id in 0..self.max_vcpus.max(self.vcpus) {
+            let mut v = El::new("vcpu")
+                .attr("id", id)
+                .attr("enabled", if id < self.vcpus { "yes" } else { "no" })
+                .attr("hotpluggable", if id == 0 { "no" } else { "yes" });
+            if id < self.vcpus {
+                v = v.attr("order", id + 1);
+            }
+            el = el.child(v);
+        }
+        Some(el)
     }
 
     pub fn to_xml(&self) -> String {
@@ -215,7 +249,18 @@ impl DomainDef {
                     .attr("unit", "MiB")
                     .text(self.memory_mib),
             )
-            .child(El::new("vcpu").attr("placement", "static").text(self.vcpus))
+            .child({
+                // With room to grow: `current` plugged in, the rest ready
+                // to be (as before when there is none).
+                let vcpu = El::new("vcpu").attr("placement", "static");
+                if self.hotplug() {
+                    vcpu.attr("current", self.vcpus)
+                        .text(self.max_vcpus.max(self.vcpus))
+                } else {
+                    vcpu.text(self.vcpus)
+                }
+            })
+            .children(self.vcpus_layout())
             .child(os)
             .child(
                 El::new("features")
@@ -347,6 +392,8 @@ mod tests {
             title: "web <1> & co".into(),
             generation: 3,
             vcpus: 2,
+            max_vcpus: 4,
+            vcpu_hotplug: true,
             memory_mib: 2048,
             max_memory_mib: 4096,
             free_page_reporting: true,

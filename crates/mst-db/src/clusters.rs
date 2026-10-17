@@ -165,7 +165,7 @@ pub async fn candidates_locked(db: &mut PgConnection) -> Result<Vec<Candidate>> 
                 coalesce(c.cpu_overcommit, 1) AS cpu_overcommit,
                 coalesce(c.memory_overcommit, 1) AS memory_overcommit,
                 -- VMs on the host, plus those migrating to it.
-                (SELECT coalesce(sum((v.spec->>'vcpus')::bigint), 0)::bigint FROM vms v WHERE v.host_id = h.id)
+                (SELECT coalesce(sum(greatest((v.spec->>'vcpus')::bigint, coalesce((v.spec->>'max_vcpus')::bigint, 0))), 0)::bigint FROM vms v WHERE v.host_id = h.id)
                   + (SELECT coalesce(sum(m.vcpus), 0)::bigint FROM migrations m WHERE m.dest_host_id = h.id)
                     AS used_vcpus,
                 (SELECT coalesce(sum(greatest((v.spec->>'memory_mib')::bigint, coalesce((v.spec->>'max_memory_mib')::bigint, 0))), 0)::bigint FROM vms v WHERE v.host_id = h.id)

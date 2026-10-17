@@ -14,6 +14,8 @@ fn def(uuid: &str) -> DomainDef {
         title: "mst-libvirt lifecycle test".into(),
         generation: 1,
         vcpus: 1,
+        max_vcpus: 1,
+        vcpu_hotplug: false,
         memory_mib: 64,
         max_memory_mib: 64,
         free_page_reporting: false,

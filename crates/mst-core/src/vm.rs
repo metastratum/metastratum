@@ -17,7 +17,14 @@ pub enum Firmware {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct VmSpec {
+    /// The virtual CPUs the guest has (plugged in, while it runs).
     pub vcpus: u32,
+    /// What `vcpus` may grow to while the VM runs (CPUs plugged in, and out
+    /// again). Unset: none are, and it has `vcpus`. Once set it stays while
+    /// the VM runs, also when all are plugged in: its CPUs are laid out for
+    /// plugging. What hosts' capacity and quotas count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_vcpus: Option<u32>,
     /// The memory the guest has: what it boots with, and what the balloon
     /// gives it while it runs.
     pub memory_mib: u64,
@@ -55,6 +62,12 @@ impl VmSpec {
     /// for it on its host, and counted against its tenant's quota.
     pub fn reserved_memory_mib(&self) -> u64 {
         self.max_memory_mib.unwrap_or(0).max(self.memory_mib)
+    }
+
+    /// The most virtual CPUs the VM can have without a restart: what its
+    /// host keeps for it, and what counts against its tenant's quota.
+    pub fn reserved_vcpus(&self) -> u32 {
+        self.max_vcpus.unwrap_or(0).max(self.vcpus)
     }
 }
 

@@ -286,7 +286,13 @@ async function remove() {
         <dt class="label">Floating IP</dt><dd class="mono">{{ vm.nics[0].floating_ip }}</dd>
       </div>
       <div><dt class="label">Host</dt><dd class="mono">{{ vm.host_name ?? '—' }}</dd></div>
-      <div><dt class="label">vCPU</dt><dd class="mono">{{ vm.vcpus }}</dd></div>
+      <div>
+        <dt class="label">vCPU</dt>
+        <dd class="mono">
+          {{ vm.vcpus }}<span v-if="vm.max_vcpus > vm.vcpus" class="muted" title="What it can grow to while it runs">
+            / {{ vm.max_vcpus }}</span>
+        </dd>
+      </div>
       <div>
         <dt class="label">Memory</dt>
         <dd class="mono">

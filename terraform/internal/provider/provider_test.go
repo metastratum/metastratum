@@ -106,6 +106,7 @@ resource "metastratum_vm" "web" {
   name               = "%[1]s-web"
   image_id           = data.metastratum_image.debian.id
   vcpus              = 1
+  max_vcpus          = 2
   memory_mib         = %[5]d
   max_memory_mib     = 1024
   disk_gib           = %[4]d
@@ -142,6 +143,7 @@ resource "metastratum_load_balancer" "web" {
 					statecheck.ExpectKnownValue("metastratum_vm.web", tfjsonpath.New("running"), knownvalue.Bool(true)),
 					statecheck.ExpectKnownValue("metastratum_vm.web", tfjsonpath.New("disk_gib"), knownvalue.Int64Exact(3)),
 					statecheck.ExpectKnownValue("metastratum_vm.web", tfjsonpath.New("max_memory_mib"), knownvalue.Int64Exact(1024)),
+					statecheck.ExpectKnownValue("metastratum_vm.web", tfjsonpath.New("max_vcpus"), knownvalue.Int32Exact(2)),
 					statecheck.ExpectKnownValue("metastratum_load_balancer.web", tfjsonpath.New("listener").AtSliceIndex(0).AtMapKey("target_port"), knownvalue.Int32Exact(8080)),
 				},
 			},

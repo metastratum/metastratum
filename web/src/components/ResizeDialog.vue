@@ -32,6 +32,8 @@ onMounted(() => {
 })
 onUnmounted(() => clearInterval(timer))
 const vcpus = ref(props.vm.vcpus)
+const maxVcpus = ref(props.vm.max_vcpus)
+const vcpusLive = computed(() => running.value && props.vm.cpu_hotplug)
 const memory = ref(props.vm.memory_mib)
 const maxMemory = ref(props.vm.max_memory_mib)
 const sizes = (extra: number[]) => [...new Set([...MEMORY, ...extra])].sort((a, b) => a - b)
@@ -42,6 +44,10 @@ const memoryOptions = computed(() =>
 )
 const maxOptions = computed(() => sizes([props.vm.max_memory_mib, memory.value]).filter((m) => m >= memory.value))
 const memoryLive = computed(() => running.value && balloon.value === true)
+const vcpuMax = computed(() => (stopped.value ? 128 : props.vm.max_vcpus))
+const maxVcpuOptions = computed(() =>
+  [...new Set([2, 4, 8, 16, 32, 64, 128, props.vm.max_vcpus, vcpus.value])].filter((n) => n >= vcpus.value).sort((a, b) => a - b),
+)
 const current = props.vm.disks.map((d) => Math.ceil(d.size_bytes / GIB))
 const disks = ref([...current])
 
@@ -50,6 +56,7 @@ const busy = ref(false)
 const changed = computed(
   () =>
     vcpus.value !== props.vm.vcpus ||
+    maxVcpus.value !== props.vm.max_vcpus ||
     memory.value !== props.vm.memory_mib ||
     maxMemory.value !== props.vm.max_memory_mib ||
     disks.value.some((g, i) => g !== current[i]),
@@ -62,10 +69,20 @@ async function submit() {
   busy.value = true
   let vm = props.vm
   try {
-    if (vcpus.value !== vm.vcpus || memory.value !== vm.memory_mib || maxMemory.value !== vm.max_memory_mib) {
+    if (
+      vcpus.value !== vm.vcpus ||
+      maxVcpus.value !== vm.max_vcpus ||
+      memory.value !== vm.memory_mib ||
+      maxMemory.value !== vm.max_memory_mib
+    ) {
       const body = stopped.value
-        ? { vcpus: vcpus.value, memory_mib: memory.value, max_memory_mib: Math.max(maxMemory.value, memory.value) }
-        : { memory_mib: memory.value }
+        ? {
+            vcpus: vcpus.value,
+            max_vcpus: Math.max(maxVcpus.value, vcpus.value),
+            memory_mib: memory.value,
+            max_memory_mib: Math.max(maxMemory.value, memory.value),
+          }
+        : { vcpus: vcpus.value, memory_mib: memory.value }
       vm = await ok(api.PATCH('/api/v1/vms/{id}', { params: { path: { id: vm.id } }, body }))
     }
     for (const [i, gib] of disks.value.entries()) {
@@ -92,7 +109,13 @@ async function submit() {
       <div class="row">
         <label class="field">
           <span class="label">vCPUs</span>
-          <input v-model.number="vcpus" type="number" min="1" max="128" required :disabled="!stopped" />
+          <input v-model.number="vcpus" type="number" min="1" :max="vcpuMax" required :disabled="!stopped && !vcpusLive" />
+        </label>
+        <label class="field">
+          <span class="label">CPUs can grow to</span>
+          <select v-model.number="maxVcpus" :disabled="!stopped">
+            <option v-for="n in maxVcpuOptions" :key="n" :value="n">{{ n }}</option>
+          </select>
         </label>
         <label class="field">
           <span class="label">Memory</span>
@@ -101,25 +124,28 @@ async function submit() {
           </select>
         </label>
         <label class="field">
-          <span class="label">Can grow to</span>
+          <span class="label">Memory can grow to</span>
           <select v-model.number="maxMemory" :disabled="!stopped">
             <option v-for="m in maxOptions" :key="m" :value="m">{{ label(m) }}</option>
           </select>
         </label>
       </div>
+      <p v-if="vcpusLive" class="hint">
+        CPUs are plugged in or out at once, up to {{ vm.max_vcpus }}.
+      </p>
       <p v-if="memoryLive" class="hint">
         Memory changes at once, up to {{ label(vm.max_memory_mib) }}: the guest’s balloon gives it back or takes it.
-        Stop the VM to change its CPUs or what its memory can grow to.
+        Stop the VM to change what they can grow to.
       </p>
       <p v-else-if="running && balloon === null" class="hint">Asking the guest whether its memory can change…</p>
       <p v-else-if="running && balloon === false" class="hint">
         The guest’s balloon driver isn’t reporting (virtio_balloon), so its memory can’t change while it runs. Stop the
-        VM to change its CPUs or memory.
+        VM to change it.
       </p>
-      <p v-else-if="!stopped" class="hint">Stop the VM to change its CPUs or memory.</p>
-      <p v-else class="hint">
-        The host keeps what memory can grow to for the VM, and it counts against quotas; while the VM runs, its memory
-        can then change up to there without a restart.
+      <p v-else-if="!stopped && !vcpusLive" class="hint">Stop the VM to change its CPUs or memory.</p>
+      <p v-else-if="stopped" class="hint">
+        The host keeps what CPUs and memory can grow to for the VM, and that counts against quotas; while the VM runs,
+        they can then change up to there without a restart.
       </p>
       <label v-for="(d, i) in vm.disks" :key="d.volume_id" class="field">
         <span class="label">{{ i === 0 ? 'Boot disk' : `Disk ${i + 1}` }} (GiB)</span>
@@ -141,12 +167,7 @@ async function submit() {
 <style scoped>
 .row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: 1fr 1fr;
   gap: 12px;
-}
-@media (max-width: 520px) {
-  .row {
-    grid-template-columns: 1fr 1fr;
-  }
 }
 </style>

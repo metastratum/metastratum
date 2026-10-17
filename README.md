@@ -7,8 +7,8 @@ controllers with PostgreSQL behind them, and an agent on each host.
 
 - **Virtual machines** from cloud images, configured with cloud-init, with a
   graphical and a serial console in the browser, limits on disk and
-  network bandwidth, and more CPUs, memory or disk when they need it
-  (memory while they run, through their balloon).
+  network bandwidth, and more CPUs, memory or disk when they need it,
+  also while they run (CPUs plugged in, memory through their balloon).
   Clone them, or keep templates to make new ones from.
 - **Live migration** between hosts, on shared storage (NFS, Ceph RBD) or
   local disks. Putting a host in maintenance moves its VMs elsewhere.

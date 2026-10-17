@@ -44,7 +44,7 @@ pub async fn usage(db: impl PgExecutor<'_>, tenant_id: TenantId) -> Result<Amoun
         "WITH sub AS (SELECT id FROM tenants WHERE path <@ (SELECT path FROM tenants WHERE id = $1))
          SELECT
            (SELECT count(*) FROM vms WHERE tenant_id IN (SELECT id FROM sub)),
-           (SELECT coalesce(sum((spec->>'vcpus')::bigint), 0)::bigint FROM vms WHERE tenant_id IN (SELECT id FROM sub)),
+           (SELECT coalesce(sum(greatest((spec->>'vcpus')::bigint, coalesce((spec->>'max_vcpus')::bigint, 0))), 0)::bigint FROM vms WHERE tenant_id IN (SELECT id FROM sub)),
            (SELECT coalesce(sum(greatest((spec->>'memory_mib')::bigint, coalesce((spec->>'max_memory_mib')::bigint, 0))), 0)::bigint FROM vms WHERE tenant_id IN (SELECT id FROM sub)),
            (SELECT coalesce(sum(size_bytes), 0)::bigint FROM volumes WHERE tenant_id IN (SELECT id FROM sub)),
            (SELECT count(*) FROM external_ips WHERE kind = 'floating' AND tenant_id IN (SELECT id FROM sub)),

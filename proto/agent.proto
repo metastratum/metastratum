@@ -203,6 +203,7 @@ message Command {
     CloneVolume clone_volume = 40;
     SetMemory set_memory = 41;
     MemoryStats memory_stats = 42;
+    SetVcpus set_vcpus = 43;
   }
 }
 
@@ -457,6 +458,13 @@ message CloneVolume {
 message SetMemory {
   string vm_id = 1;
   uint64 memory_mib = 2;
+}
+
+// Plug virtual CPUs into a running VM, or out of it, until it has this many
+// (its definition is updated with DefineVm).
+message SetVcpus {
+  string vm_id = 1;
+  uint32 vcpus = 2;
 }
 
 // What a running VM's balloon reports about its memory. Answers with JSON:

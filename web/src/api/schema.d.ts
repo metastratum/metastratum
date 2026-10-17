@@ -1736,6 +1736,11 @@ export interface components {
         Accepted_VmView: {
             /** @description Kind of the task in flight for this VM, e.g. `vm.start`. */
             active_task?: string | null;
+            /**
+             * @description CPUs are plugged in and out while it runs (it has a maximum), up to
+             *     `max_vcpus` and down to one.
+             */
+            cpu_hotplug: boolean;
             /** Format: date-time */
             created_at: string;
             /**
@@ -1759,6 +1764,11 @@ export interface components {
              * @description What `memory_mib` may grow to without a restart.
              */
             max_memory_mib: number;
+            /**
+             * Format: int32
+             * @description What `vcpus` may grow to without a restart.
+             */
+            max_vcpus: number;
             /**
              * Format: int64
              * @description What it has now (its balloon's size, while it runs).
@@ -1792,7 +1802,10 @@ export interface components {
             tenant_id: components["schemas"]["TenantId"];
             /** Format: date-time */
             updated_at: string;
-            /** Format: int32 */
+            /**
+             * Format: int32
+             * @description Virtual CPUs plugged in.
+             */
             vcpus: number;
         } & {
             task_id: components["schemas"]["TaskId"];
@@ -2118,6 +2131,13 @@ export interface components {
              *     this much for it, and it counts against the tenant's memory quota.
              */
             max_memory_mib?: number | null;
+            /**
+             * Format: int32
+             * @description What its virtual CPUs may grow to while it runs (plugged in, and out
+             *     again); `vcpus` by default. Its host keeps this many for it, and they
+             *     count against the tenant's vCPU quota.
+             */
+            max_vcpus?: number | null;
             /** Format: int64 */
             memory_mib: number;
             /**
@@ -2989,6 +3009,12 @@ export interface components {
              */
             max_memory_mib?: number | null;
             /**
+             * Format: int32
+             * @description What vCPUs may grow to while the VM runs. Only while it is stopped;
+             *     it counts against quotas and its host's room as its vCPUs do.
+             */
+            max_vcpus?: number | null;
+            /**
              * Format: int64
              * @description Memory in MiB (128-4194304). While the VM runs, within
              *     `max_memory_mib`, through its balloon (the guest's virtio_balloon
@@ -3009,8 +3035,9 @@ export interface components {
             template?: boolean | null;
             /**
              * Format: int32
-             * @description Virtual CPUs (1-128). Only while the VM is stopped; its host must
-             *     have room for more.
+             * @description Virtual CPUs (1-128). While the VM runs, within `max_vcpus`
+             *     (plugged in or out); otherwise while it is stopped, its host having
+             *     room for more.
              */
             vcpus?: number | null;
         };
@@ -3083,6 +3110,11 @@ export interface components {
         VmView: {
             /** @description Kind of the task in flight for this VM, e.g. `vm.start`. */
             active_task?: string | null;
+            /**
+             * @description CPUs are plugged in and out while it runs (it has a maximum), up to
+             *     `max_vcpus` and down to one.
+             */
+            cpu_hotplug: boolean;
             /** Format: date-time */
             created_at: string;
             /**
@@ -3106,6 +3138,11 @@ export interface components {
              * @description What `memory_mib` may grow to without a restart.
              */
             max_memory_mib: number;
+            /**
+             * Format: int32
+             * @description What `vcpus` may grow to without a restart.
+             */
+            max_vcpus: number;
             /**
              * Format: int64
              * @description What it has now (its balloon's size, while it runs).
@@ -3139,7 +3176,10 @@ export interface components {
             tenant_id: components["schemas"]["TenantId"];
             /** Format: date-time */
             updated_at: string;
-            /** Format: int32 */
+            /**
+             * Format: int32
+             * @description Virtual CPUs plugged in.
+             */
             vcpus: number;
         };
         /** Format: uuid */

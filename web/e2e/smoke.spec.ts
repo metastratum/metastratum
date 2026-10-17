@@ -51,6 +51,7 @@ test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('Name').fill(name)
   await field(dialog, 'Memory').selectOption({ label: '1 GiB' })
+  await dialog.getByLabel('CPUs can grow to').selectOption({ label: '4 vCPUs while it runs' })
   await dialog.getByLabel('Memory can grow to').selectOption({ label: '2 GiB while it runs' })
   await dialog.getByLabel('Disk (GiB)').fill('5')
   await dialog.getByRole('button', { name: 'Create VM' }).click()
@@ -90,20 +91,25 @@ test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
   await page.getByRole('dialog').getByRole('button', { name: 'Delete snapshot' }).click()
   await expect(first).toHaveCount(0, { timeout: 60_000 })
 
-  // Grow its disk and shrink its memory (through its balloon, within what it
-  // can grow to) while it runs; CPUs wait for it to stop.
+  // While it runs: its disk grows, a CPU is plugged in and memory shrinks
+  // (through its balloon), within what they can grow to; that waits for it
+  // to stop.
   const memory = page.locator('.facts div', { hasText: 'Memory' }).locator('dd')
+  const cpus = page.locator('.facts div', { hasText: 'vCPU' }).locator('dd')
   await expect(memory).toContainText('1 GiB / 2 GiB')
+  await expect(cpus).toHaveText('2 / 4')
   await page.getByRole('button', { name: 'Resize' }).click()
   const resize = page.getByRole('dialog')
-  await expect(resize.getByLabel('vCPUs')).toBeDisabled()
-  await expect(resize.getByLabel('Can grow to')).toBeDisabled()
+  await expect(resize.getByLabel('CPUs can grow to')).toBeDisabled()
+  await expect(resize.getByLabel('Memory can grow to')).toBeDisabled()
+  await field(resize, 'vCPUs').fill('3')
   await field(resize, 'Memory').selectOption({ label: '512 MiB' })
   await resize.getByLabel('Boot disk (GiB)').fill('6')
   await resize.getByRole('button', { name: 'Resize' }).click()
   await expect(resize).toHaveCount(0)
   await expect(page.locator('.facts div', { hasText: 'Disk' }).locator('dd')).toHaveText('6 GiB')
   await expect(memory).toContainText('512 MiB / 2 GiB')
+  await expect(cpus).toHaveText('3 / 4')
   await expect(memory.locator('meter')).toBeVisible({ timeout: 30_000 })
   await expect(page.getByText('Running', { exact: true })).toBeVisible()
 

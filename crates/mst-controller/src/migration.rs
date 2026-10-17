@@ -124,7 +124,7 @@ pub async fn plan(
     }
     let spec = &vm.spec.0;
     let request = mst_scheduler::Request {
-        vcpus: spec.vcpus,
+        vcpus: spec.reserved_vcpus(),
         memory_mib: spec.reserved_memory_mib(),
         clusters: Some(HashSet::from([cluster])),
         host: None,
@@ -151,7 +151,7 @@ pub async fn plan(
         task,
         source,
         dest,
-        spec.vcpus,
+        spec.reserved_vcpus(),
         spec.reserved_memory_mib(),
     )
     .await?;

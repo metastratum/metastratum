@@ -7,7 +7,13 @@
   </metadata>
   <memory unit='MiB'>4096</memory>
   <currentMemory unit='MiB'>2048</currentMemory>
-  <vcpu placement='static'>2</vcpu>
+  <vcpu placement='static' current='2'>4</vcpu>
+  <vcpus>
+    <vcpu id='0' enabled='yes' hotpluggable='no' order='1'/>
+    <vcpu id='1' enabled='yes' hotpluggable='yes' order='2'/>
+    <vcpu id='2' enabled='no' hotpluggable='yes'/>
+    <vcpu id='3' enabled='no' hotpluggable='yes'/>
+  </vcpus>
   <os firmware='efi'>
     <firmware>
       <feature enabled='no' name='secure-boot'/>

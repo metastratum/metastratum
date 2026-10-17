@@ -84,7 +84,11 @@ func (e TaskState) Valid() bool {
 // AcceptedVmView defines model for Accepted_VmView.
 type AcceptedVmView struct {
 	// ActiveTask Kind of the task in flight for this VM, e.g. `vm.start`.
-	ActiveTask *string   `json:"active_task,omitempty"`
+	ActiveTask *string `json:"active_task,omitempty"`
+
+	// CpuHotplug CPUs are plugged in and out while it runs (it has a maximum), up to
+	// `max_vcpus` and down to one.
+	CpuHotplug bool      `json:"cpu_hotplug"`
 	CreatedAt  time.Time `json:"created_at"`
 
 	// DesiredPower The power state last requested through the API: `running` or
@@ -103,6 +107,9 @@ type AcceptedVmView struct {
 
 	// MaxMemoryMib What `memory_mib` may grow to without a restart.
 	MaxMemoryMib int64 `json:"max_memory_mib"`
+
+	// MaxVcpus What `vcpus` may grow to without a restart.
+	MaxVcpus int32 `json:"max_vcpus"`
 
 	// MemoryMib What it has now (its balloon's size, while it runs).
 	MemoryMib int64 `json:"memory_mib"`
@@ -133,7 +140,9 @@ type AcceptedVmView struct {
 	Template  bool      `json:"template"`
 	TenantId  TenantId  `json:"tenant_id"`
 	UpdatedAt time.Time `json:"updated_at"`
-	Vcpus     int32     `json:"vcpus"`
+
+	// Vcpus Virtual CPUs plugged in.
+	Vcpus int32 `json:"vcpus"`
 }
 
 // AddTotp defines model for AddTotp.
@@ -553,7 +562,12 @@ type CreateVm struct {
 	// guests with the driver); `memory_mib` by default. Its host keeps
 	// this much for it, and it counts against the tenant's memory quota.
 	MaxMemoryMib *int64 `json:"max_memory_mib,omitempty"`
-	MemoryMib    int64  `json:"memory_mib"`
+
+	// MaxVcpus What its virtual CPUs may grow to while it runs (plugged in, and out
+	// again); `vcpus` by default. Its host keeps this many for it, and they
+	// count against the tenant's vCPU quota.
+	MaxVcpus  *int32 `json:"max_vcpus,omitempty"`
+	MemoryMib int64  `json:"memory_mib"`
 
 	// Migratable Whether the VM may live-migrate to other hosts of its cluster. If
 	// not, it gets its host's full CPU feature set and disks use the host's
@@ -1537,6 +1551,10 @@ type UpdateVm struct {
 	// it counts against quotas and its host's room as its memory does.
 	MaxMemoryMib *int64 `json:"max_memory_mib,omitempty"`
 
+	// MaxVcpus What vCPUs may grow to while the VM runs. Only while it is stopped;
+	// it counts against quotas and its host's room as its vCPUs do.
+	MaxVcpus *int32 `json:"max_vcpus,omitempty"`
+
 	// MemoryMib Memory in MiB (128-4194304). While the VM runs, within
 	// `max_memory_mib`, through its balloon (the guest's virtio_balloon
 	// driver must be loaded); otherwise while it is stopped, its host
@@ -1552,8 +1570,9 @@ type UpdateVm struct {
 	// or a VM again.
 	Template *bool `json:"template,omitempty"`
 
-	// Vcpus Virtual CPUs (1-128). Only while the VM is stopped; its host must
-	// have room for more.
+	// Vcpus Virtual CPUs (1-128). While the VM runs, within `max_vcpus`
+	// (plugged in or out); otherwise while it is stopped, its host having
+	// room for more.
 	Vcpus *int32 `json:"vcpus,omitempty"`
 }
 
@@ -1635,7 +1654,11 @@ type VmLimits struct {
 // VmView defines model for VmView.
 type VmView struct {
 	// ActiveTask Kind of the task in flight for this VM, e.g. `vm.start`.
-	ActiveTask *string   `json:"active_task,omitempty"`
+	ActiveTask *string `json:"active_task,omitempty"`
+
+	// CpuHotplug CPUs are plugged in and out while it runs (it has a maximum), up to
+	// `max_vcpus` and down to one.
+	CpuHotplug bool      `json:"cpu_hotplug"`
 	CreatedAt  time.Time `json:"created_at"`
 
 	// DesiredPower The power state last requested through the API: `running` or
@@ -1654,6 +1677,9 @@ type VmView struct {
 
 	// MaxMemoryMib What `memory_mib` may grow to without a restart.
 	MaxMemoryMib int64 `json:"max_memory_mib"`
+
+	// MaxVcpus What `vcpus` may grow to without a restart.
+	MaxVcpus int32 `json:"max_vcpus"`
 
 	// MemoryMib What it has now (its balloon's size, while it runs).
 	MemoryMib int64 `json:"memory_mib"`
@@ -1683,7 +1709,9 @@ type VmView struct {
 	Template  bool      `json:"template"`
 	TenantId  TenantId  `json:"tenant_id"`
 	UpdatedAt time.Time `json:"updated_at"`
-	Vcpus     int32     `json:"vcpus"`
+
+	// Vcpus Virtual CPUs plugged in.
+	Vcpus int32 `json:"vcpus"`
 }
 
 // VolumeId defines model for VolumeId.

@@ -368,8 +368,8 @@ address gets through). Load balancers count against the tenant's
 
 ## Resizing
 
-Resize a VM from its page (Resize). CPUs, and memory beyond what it may
-grow to while running (below), change while it is stopped, and only as far
+Resize a VM from its page (Resize). CPUs and memory beyond what they may
+grow to while it runs (below) change while it is stopped, and only as far
 as its host has room within the cluster's overcommit; it gets them at its
 next start. Disks only grow, running or
 not: a running guest sees the larger disk at once, and cloud images grow
@@ -379,18 +379,31 @@ qcow2 disks (local and NFS storage) cannot grow while they hold
 snapshots, so delete the VM's snapshots first; Ceph disks can. What grows
 counts against the tenant's quotas.
 
-### Memory while a VM runs
+### CPUs and memory while a VM runs
 
-A VM can be given room for its memory to grow ("Memory can grow to" when
-it is made, or Resize while it is stopped). Its memory then changes while
-it runs, anywhere up to there, through its virtio balloon: the guest gives
-memory back, or gets it, at once and without a restart. That needs the
-guest's balloon driver (`virtio_balloon`, in every common Linux kernel and
-in the virtio drivers for Windows); the VM page shows whether it reports,
-and what the guest uses of its memory. The host keeps the maximum for the
-VM, and the maximum counts against the tenant's `memory_mib` quota, so
-growing within it never fails for want of room. Raising the maximum
-itself needs the VM stopped.
+A VM can be given room to grow ("CPUs can grow to" and "Memory can grow
+to" when it is made, or Resize while it is stopped). Its CPUs and memory
+then change while it runs, anywhere up to there, at once and without a
+restart:
+
+- **CPUs** are plugged in and out. Linux leaves CPUs plugged in while it
+  runs offline until told otherwise; VMs made with metastratum's own
+  cloud-init get a udev rule that brings them online as they arrive.
+  With user data of your own, add it yourself:
+
+  ```
+  # /etc/udev/rules.d/80-metastratum-cpu-hotplug.rules
+  SUBSYSTEM=="cpu", ACTION=="add", TEST=="online", ATTR{online}=="0", ATTR{online}="1"
+  ```
+
+- **Memory** goes through the VM's virtio balloon: the guest gives it back,
+  or gets it. That needs the guest's balloon driver (`virtio_balloon`, in
+  every common Linux kernel and in the virtio drivers for Windows); the VM
+  page shows whether it reports, and what the guest uses of its memory.
+
+The host keeps the maximums for the VM, and they count against the
+tenant's `vcpus` and `memory_mib` quotas, so growing within them never
+fails for want of room. Raising a maximum itself needs the VM stopped.
 
 Guests also hand memory they do not use back to their host as they free
 it (free page reporting), so a host's actual use stays below what it keeps

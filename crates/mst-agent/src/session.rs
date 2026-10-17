@@ -371,6 +371,10 @@ impl Agent {
                 tracing::info!(vm = %c.vm_id, memory_mib = c.memory_mib, "setting memory");
                 self.lv.set_memory(&c.vm_id, c.memory_mib).await?;
             }
+            Cmd::SetVcpus(c) => {
+                tracing::info!(vm = %c.vm_id, vcpus = c.vcpus, "setting virtual CPUs");
+                self.lv.set_vcpus(&c.vm_id, c.vcpus).await?;
+            }
             Cmd::MemoryStats(c) => {
                 let m = self.lv.memory_stats(&c.vm_id).await?;
                 return Ok(serde_json::to_string(&serde_json::json!({

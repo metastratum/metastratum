@@ -41,6 +41,7 @@ type vmModel struct {
 	ImageID           types.String `tfsdk:"image_id"`
 	CloneOf           types.String `tfsdk:"clone_of"`
 	Vcpus             types.Int32  `tfsdk:"vcpus"`
+	MaxVcpus          types.Int32  `tfsdk:"max_vcpus"`
 	MemoryMib         types.Int64  `tfsdk:"memory_mib"`
 	MaxMemoryMib      types.Int64  `tfsdk:"max_memory_mib"`
 	DiskGib           types.Int64  `tfsdk:"disk_gib"`
@@ -95,7 +96,14 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 				PlanModifiers: replace,
 			},
 			"vcpus": schema.Int32Attribute{
-				Description:   "Virtual CPUs; required with `image_id`.",
+				Description:   "Virtual CPUs; required with `image_id`. Within `max_vcpus` they change while the VM runs.",
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.Int32{int32planmodifier.UseStateForUnknown()},
+			},
+			"max_vcpus": schema.Int32Attribute{
+				Description: "What `vcpus` may grow to while the VM runs (plugged in, and out); `vcpus` by default. " +
+					"Its host keeps this many for it, and they count against quotas. Changing it stops the VM.",
 				Optional:      true,
 				Computed:      true,
 				PlanModifiers: []planmodifier.Int32{int32planmodifier.UseStateForUnknown()},
@@ -230,6 +238,7 @@ func (m *vmModel) set(ctx context.Context, v *client.VmView, diags *diag.Diagnos
 	m.TenantID = idValue(v.TenantId)
 	m.Name = types.StringValue(v.Name)
 	m.Vcpus = types.Int32Value(v.Vcpus)
+	m.MaxVcpus = types.Int32Value(int32(v.MaxVcpus))
 	m.MemoryMib = types.Int64Value(v.MemoryMib)
 	m.MaxMemoryMib = types.Int64Value(v.MaxMemoryMib)
 	if len(v.Disks) > 0 {
@@ -397,6 +406,7 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 			TenantId:          r.tenant(plan.TenantID, d),
 			ImageId:           parseID(path.Root("image_id"), plan.ImageID, d),
 			Vcpus:             plan.Vcpus.ValueInt32(),
+			MaxVcpus:          plan.MaxVcpus.ValueInt32Pointer(),
 			MemoryMib:         plan.MemoryMib.ValueInt64(),
 			MaxMemoryMib:      plan.MaxMemoryMib.ValueInt64Pointer(),
 			DiskGib:           plan.DiskGib.ValueInt64(),
@@ -531,6 +541,9 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 	if !plan.MemoryMib.IsUnknown() && !plan.MemoryMib.Equal(state.MemoryMib) {
 		change.MemoryMib = plan.MemoryMib.ValueInt64Pointer()
 	}
+	if !plan.MaxVcpus.IsUnknown() && !plan.MaxVcpus.Equal(state.MaxVcpus) {
+		change.MaxVcpus = plan.MaxVcpus.ValueInt32Pointer()
+	}
 	if !plan.MaxMemoryMib.IsUnknown() && !plan.MaxMemoryMib.Equal(state.MaxMemoryMib) {
 		change.MaxMemoryMib = plan.MaxMemoryMib.ValueInt64Pointer()
 	}
@@ -541,10 +554,13 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 		change.Template = plan.Template.ValueBoolPointer()
 	}
 	running := state.Running.ValueBool()
-	// Memory alone, within the maximum: tried while it runs (the guest's
-	// balloon driver must be there; if not, it is stopped for it below).
-	if running && change.MemoryMib != nil && change == (client.UpdateVm{MemoryMib: change.MemoryMib}) &&
-		*change.MemoryMib <= state.MaxMemoryMib.ValueInt64() {
+	// CPUs and memory alone, within their maximums: tried while it runs
+	// (CPUs must be laid out for plugging, and memory needs the guest's
+	// balloon driver; if not, it is stopped for them below).
+	cpusFit := change.Vcpus == nil || *change.Vcpus <= state.MaxVcpus.ValueInt32()
+	memoryFits := change.MemoryMib == nil || *change.MemoryMib <= state.MaxMemoryMib.ValueInt64()
+	if running && change != (client.UpdateVm{}) && cpusFit && memoryFits &&
+		change == (client.UpdateVm{Vcpus: change.Vcpus, MemoryMib: change.MemoryMib}) {
 		err := r.patch(ctx, id, change)
 		if err == nil {
 			change = client.UpdateVm{}

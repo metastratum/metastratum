@@ -67,7 +67,13 @@ pub struct VmView {
     /// Kind of the task in flight for this VM, e.g. `vm.start`.
     active_task: Option<String>,
     error: Option<String>,
+    /// Virtual CPUs plugged in.
     vcpus: u32,
+    /// What `vcpus` may grow to without a restart.
+    max_vcpus: u32,
+    /// CPUs are plugged in and out while it runs (it has a maximum), up to
+    /// `max_vcpus` and down to one.
+    cpu_hotplug: bool,
     /// What it has now (its balloon's size, while it runs).
     memory_mib: u64,
     /// What `memory_mib` may grow to without a restart.
@@ -186,6 +192,8 @@ fn view(vm: Vm, ctx: &Context) -> VmView {
         active_task: ctx.tasks.get(&vm.id.0).cloned(),
         error: vm.error,
         vcpus: spec.vcpus,
+        max_vcpus: spec.reserved_vcpus(),
+        cpu_hotplug: spec.max_vcpus.is_some(),
         memory_mib: spec.memory_mib,
         max_memory_mib: spec.reserved_memory_mib(),
         firmware: spec.firmware,
@@ -267,6 +275,11 @@ pub struct CreateVm {
     /// DNS-style label, unique within the tenant.
     name: String,
     vcpus: u32,
+    /// What its virtual CPUs may grow to while it runs (plugged in, and out
+    /// again); `vcpus` by default. Its host keeps this many for it, and they
+    /// count against the tenant's vCPU quota.
+    #[serde(default)]
+    max_vcpus: Option<u32>,
     memory_mib: u64,
     /// What its memory may grow to while it runs (through its balloon, for
     /// guests with the driver); `memory_mib` by default. Its host keeps
@@ -353,6 +366,7 @@ async fn restore_backup(
         tenant_id: Some(backup.tenant_id),
         name: req.name,
         vcpus: spec.vcpus,
+        max_vcpus: spec.max_vcpus,
         memory_mib: spec.memory_mib,
         max_memory_mib: spec.max_memory_mib,
         disk_gib: disk_bytes.div_ceil(GIB),
@@ -429,6 +443,7 @@ async fn clone_vm(
         tenant_id: Some(source.tenant_id),
         name: req.name,
         vcpus: spec.vcpus,
+        max_vcpus: spec.max_vcpus,
         memory_mib: spec.memory_mib,
         max_memory_mib: spec.max_memory_mib,
         disk_gib: disk_bytes.div_ceil(GIB),
@@ -474,6 +489,7 @@ fn validate(req: &CreateVm) -> ApiResult<()> {
         ));
     }
     check_size(req.vcpus, req.memory_mib)?;
+    check_max_vcpus(req.vcpus, req.max_vcpus)?;
     check_max_memory(req.memory_mib, req.max_memory_mib)?;
     if !(1..=16384).contains(&req.disk_gib) {
         return Err(ApiError::bad_request(
@@ -504,6 +520,9 @@ fn sha512_crypt(password: &str, salt: &[u8; 12]) -> ApiResult<String> {
 /// Builds `#cloud-config` user data from the convenience fields. The password
 /// is hashed here, so the plain text never reaches the database, the host or
 /// the guest's disk.
+/// A udev rule that brings CPUs plugged into a running guest online.
+pub const CPU_HOTPLUG_RULE: &str = "SUBSYSTEM==\"cpu\", ACTION==\"add\", TEST==\"online\", ATTR{online}==\"0\", ATTR{online}=\"1\"\n";
+
 fn user_data(req: &CreateVm) -> ApiResult<String> {
     let mut doc = serde_json::Map::new();
     if !req.ssh_authorized_keys.is_empty() {
@@ -513,6 +532,13 @@ fn user_data(req: &CreateVm) -> ApiResult<String> {
         doc.insert("password".into(), json!(hash_console_password(pw)?));
         doc.insert("chpasswd".into(), json!({"expire": false}));
     }
+    // Linux leaves CPUs plugged in while it runs offline; this brings them
+    // online as they arrive.
+    doc.insert(
+        "write_files".into(),
+        json!([{"path": "/etc/udev/rules.d/80-metastratum-cpu-hotplug.rules",
+                "content": CPU_HOTPLUG_RULE, "permissions": "0644"}]),
+    );
     // JSON is valid YAML, so this needs no YAML serializer.
     Ok(format!(
         "#cloud-config\n{}\n",
@@ -575,7 +601,7 @@ async fn create_inner(
     let host = place(&state, &mut tx, tenant, &req, &pool, pin).await?;
     let delta: mst_db::quotas::Amounts = [
         ("vms", 1),
-        ("vcpus", i64::from(req.vcpus)),
+        ("vcpus", i64::from(reserved_vcpus(&req))),
         ("memory_mib", reserved_memory(&req) as i64),
         ("disk_gib", req.disk_gib as i64),
     ]
@@ -667,6 +693,7 @@ async fn create_inner(
         cpu: None,
         migratable,
         vcpus: req.vcpus,
+        max_vcpus: req.max_vcpus.filter(|m| *m > req.vcpus),
         memory_mib: req.memory_mib,
         max_memory_mib: req.max_memory_mib.filter(|m| *m > req.memory_mib),
         free_page_reporting: true,
@@ -855,7 +882,7 @@ async fn place(
         })
         .collect();
     let request = mst_scheduler::Request {
-        vcpus: req.vcpus,
+        vcpus: reserved_vcpus(req),
         memory_mib: reserved_memory(req),
         clusters,
         host: pin,
@@ -1032,9 +1059,13 @@ pub struct UpdateVm {
     /// not (the host's full CPU, host disk cache). Only while the VM is
     /// stopped; it applies from the next start.
     migratable: Option<bool>,
-    /// Virtual CPUs (1-128). Only while the VM is stopped; its host must
-    /// have room for more.
+    /// Virtual CPUs (1-128). While the VM runs, within `max_vcpus`
+    /// (plugged in or out); otherwise while it is stopped, its host having
+    /// room for more.
     vcpus: Option<u32>,
+    /// What vCPUs may grow to while the VM runs. Only while it is stopped;
+    /// it counts against quotas and its host's room as its vCPUs do.
+    max_vcpus: Option<u32>,
     /// Memory in MiB (128-4194304). While the VM runs, within
     /// `max_memory_mib`, through its balloon (the guest's virtio_balloon
     /// driver must be loaded); otherwise while it is stopped, its host
@@ -1066,23 +1097,33 @@ async fn update_vm(
     let migratable = req.migratable.unwrap_or(old.migratable);
     let vcpus = req.vcpus.unwrap_or(old.vcpus);
     let memory_mib = req.memory_mib.unwrap_or(old.memory_mib);
-    // Memory set beyond the maximum (while stopped) takes the maximum along.
+    // Set beyond the maximum (while stopped), the maximum comes along.
+    let max_vcpus = req
+        .max_vcpus
+        .unwrap_or_else(|| old.reserved_vcpus().max(vcpus));
     let max_memory_mib = req
         .max_memory_mib
         .unwrap_or_else(|| old.reserved_memory_mib().max(memory_mib));
     let template = req.template.unwrap_or(vm.template);
-    if (migratable, vcpus, memory_mib, max_memory_mib, template)
-        == (
-            old.migratable,
-            old.vcpus,
-            old.memory_mib,
-            old.reserved_memory_mib(),
-            vm.template,
-        )
-    {
+    if (
+        migratable,
+        vcpus,
+        max_vcpus,
+        memory_mib,
+        max_memory_mib,
+        template,
+    ) == (
+        old.migratable,
+        old.vcpus,
+        old.reserved_vcpus(),
+        old.memory_mib,
+        old.reserved_memory_mib(),
+        vm.template,
+    ) {
         return Ok(Json(view(vm, &context(&state).await?)));
     }
     check_size(vcpus, memory_mib)?;
+    check_max_vcpus(vcpus, Some(max_vcpus))?;
     check_max_memory(memory_mib, Some(max_memory_mib))?;
     // Locked, so no power action slips in between the checks and the change.
     let mut tx = state.db.begin().await?;
@@ -1097,20 +1138,20 @@ async fn update_vm(
     let running = vm.power == "running" && vm.desired_power == "running";
     if vm.status == "ready" && !busy && running {
         let old = &vm.spec.0;
-        if (migratable, vcpus, max_memory_mib, template)
+        if (migratable, max_vcpus, max_memory_mib, template)
             != (
                 old.migratable,
-                old.vcpus,
+                old.reserved_vcpus(),
                 old.reserved_memory_mib(),
                 vm.template,
             )
         {
             return Err(ApiError::conflict(format!(
-                "stop {} first: only its memory changes while it runs",
+                "stop {} first: only its CPUs and memory change while it runs, within what they may grow to",
                 vm.name
             )));
         }
-        return resize_memory_live(&state, &p, tx, vm, host, memory_mib).await;
+        return resize_live(&state, &p, tx, vm, host, vcpus, memory_mib).await;
     }
     if vm.status != "ready" || busy || vm.power != "stopped" || vm.desired_power != "stopped" {
         return Err(ApiError::conflict(format!(
@@ -1119,7 +1160,7 @@ async fn update_vm(
         )));
     }
     let mut spec = vm.spec.0.clone();
-    let grow_cpu = i64::from(vcpus) - i64::from(spec.vcpus);
+    let grow_cpu = i64::from(max_vcpus) - i64::from(spec.reserved_vcpus());
     let grow_mem = max_memory_mib as i64 - spec.reserved_memory_mib() as i64;
     if grow_cpu > 0 || grow_mem > 0 {
         let delta: mst_db::quotas::Amounts = [("vcpus", grow_cpu), ("memory_mib", grow_mem)]
@@ -1130,6 +1171,7 @@ async fn update_vm(
         host_has_room(&mut tx, host, grow_cpu, grow_mem).await?;
     }
     spec.vcpus = vcpus;
+    spec.max_vcpus = (max_vcpus > vcpus).then_some(max_vcpus);
     spec.memory_mib = memory_mib;
     spec.max_memory_mib = (max_memory_mib > memory_mib).then_some(max_memory_mib);
     let migratable_changed = migratable != spec.migratable;
@@ -1153,8 +1195,8 @@ async fn update_vm(
         "vm.update",
         Some(("vm", id.0)),
         json!({"name": vm.name, "migratable": req.migratable, "vcpus": req.vcpus,
-               "memory_mib": req.memory_mib, "max_memory_mib": req.max_memory_mib,
-               "template": req.template}),
+               "max_vcpus": req.max_vcpus, "memory_mib": req.memory_mib,
+               "max_memory_mib": req.max_memory_mib, "template": req.template}),
     )
     .await;
     let vm = mst_db::vms::get(&state.db, id).await?;
@@ -1254,45 +1296,75 @@ async fn vm_memory(
     Ok(Json(memory_of(&state, &vm, host).await?))
 }
 
-/// Gives a running VM `memory_mib` through its balloon, within its maximum
-/// (kept for it on its host and counted in quotas already).
-async fn resize_memory_live(
+/// Gives a running VM `vcpus` (plugged in or out) and `memory_mib` (through
+/// its balloon), each within its maximum: kept for it on its host and
+/// counted in quotas already.
+async fn resize_live(
     state: &AppState,
     p: &Principal,
     mut tx: mst_db::sqlx::Transaction<'static, mst_db::sqlx::Postgres>,
     vm: mst_db::vms::Vm,
     host: mst_core::ids::HostId,
+    vcpus: u32,
     memory_mib: u64,
 ) -> ApiResult<Json<VmView>> {
-    let max = vm.spec.0.reserved_memory_mib();
-    if memory_mib > max {
+    let old = vm.spec.0.clone();
+    let (max_vcpus, max_memory) = (old.reserved_vcpus(), old.reserved_memory_mib());
+    if vcpus > max_vcpus {
         return Err(ApiError::conflict(format!(
-            "{} can grow to {max} MiB while it runs; stop it to give it more",
+            "{} can have {max_vcpus} vCPUs while it runs; stop it to give it more",
             vm.name
         )));
     }
-    if !memory_of(state, &vm, host).await?.driver {
+    if memory_mib > max_memory {
+        return Err(ApiError::conflict(format!(
+            "{} can grow to {max_memory} MiB while it runs; stop it to give it more",
+            vm.name
+        )));
+    }
+    if vcpus != old.vcpus && old.max_vcpus.is_none() {
+        return Err(ApiError::conflict(format!(
+            "{}'s CPUs are not laid out for plugging; stop it to change them (or give it room to grow)",
+            vm.name
+        )));
+    }
+    if memory_mib != old.memory_mib && !memory_of(state, &vm, host).await?.driver {
         return Err(ApiError::conflict(format!(
             "{}'s guest has no balloon driver reporting (virtio_balloon), so its memory cannot change while it runs; stop it first",
             vm.name
         )));
     }
-    state
-        .agents
-        .call(
-            host,
-            mst_proto::command::Cmd::SetMemory(mst_proto::SetMemory {
-                vm_id: vm.id.to_string(),
-                memory_mib,
-            }),
-            std::time::Duration::from_secs(30),
-        )
-        .await
-        .map_err(|e| ApiError::unavailable(format!("changing {}'s memory: {e}", vm.name)))?;
-    let mut spec = vm.spec.0.clone();
-    let from = spec.memory_mib;
+    let call = |cmd, what: &'static str| {
+        let name = vm.name.clone();
+        async move {
+            state
+                .agents
+                .call(host, cmd, std::time::Duration::from_secs(60))
+                .await
+                .map_err(|e| ApiError::unavailable(format!("changing {name}'s {what}: {e}")))
+        }
+    };
+    if vcpus != old.vcpus {
+        let cmd = mst_proto::command::Cmd::SetVcpus(mst_proto::SetVcpus {
+            vm_id: vm.id.to_string(),
+            vcpus,
+        });
+        call(cmd, "CPUs").await?;
+    }
+    if memory_mib != old.memory_mib {
+        let cmd = mst_proto::command::Cmd::SetMemory(mst_proto::SetMemory {
+            vm_id: vm.id.to_string(),
+            memory_mib,
+        });
+        call(cmd, "memory").await?;
+    }
+    let mut spec = old.clone();
+    spec.vcpus = vcpus;
+    // Kept, also with all plugged in: the running VM's CPUs stay laid out
+    // for plugging, and its definition (where it migrates to) with them.
+    spec.max_vcpus = old.max_vcpus;
     spec.memory_mib = memory_mib;
-    spec.max_memory_mib = (max > memory_mib).then_some(max);
+    spec.max_memory_mib = (max_memory > memory_mib).then_some(max_memory);
     let generation = mst_db::vms::redefine(&mut tx, vm.id, &spec).await?;
     define_on_host(state, &mut tx, &vm, host, &spec, generation).await?;
     tx.commit().await?;
@@ -1302,7 +1374,8 @@ async fn resize_memory_live(
         Some(vm.tenant_id),
         "vm.update",
         Some(("vm", vm.id.0)),
-        json!({"name": vm.name, "memory_mib": memory_mib, "from": from, "live": true}),
+        json!({"name": vm.name, "vcpus": vcpus, "memory_mib": memory_mib,
+               "from": {"vcpus": old.vcpus, "memory_mib": old.memory_mib}, "live": true}),
     )
     .await;
     let vm = mst_db::vms::get(&state.db, vm.id).await?;
@@ -1420,6 +1493,20 @@ fn check_max_memory(memory_mib: u64, max: Option<u64>) -> ApiResult<()> {
         )),
         _ => Ok(()),
     }
+}
+
+fn check_max_vcpus(vcpus: u32, max: Option<u32>) -> ApiResult<()> {
+    match max {
+        Some(m) if m < vcpus || m > 128 => Err(ApiError::bad_request(
+            "max_vcpus must be at least vcpus, and at most 128",
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// What a new VM's host keeps for it: its CPUs, or what they may grow to.
+fn reserved_vcpus(req: &CreateVm) -> u32 {
+    req.max_vcpus.unwrap_or(0).max(req.vcpus)
 }
 
 /// What a new VM's host keeps for it: its memory, or what that may grow to.

@@ -30,7 +30,11 @@ const template = computed(() =>
 )
 const vcpus = ref(2)
 const memory = ref(2048)
-// What memory may grow to while the VM runs; 0: no more than `memory`.
+// What CPUs and memory may grow to while the VM runs; 0: no more.
+const maxVcpus = ref(0)
+watch(vcpus, (n) => {
+  if (maxVcpus.value && maxVcpus.value <= n) maxVcpus.value = 0
+})
 const maxMemory = ref(0)
 watch(memory, (m) => {
   if (maxMemory.value && maxMemory.value <= m) maxMemory.value = 0
@@ -98,6 +102,7 @@ async function submit() {
           name: name.value,
           image_id: imageId.value,
           vcpus: vcpus.value,
+          max_vcpus: maxVcpus.value || null,
           memory_mib: memory.value,
           max_memory_mib: maxMemory.value || null,
           disk_gib: disk.value,
@@ -210,6 +215,15 @@ async function submit() {
         </label>
       </div>
       <label v-if="!template" class="field">
+        <span class="label">CPUs can grow to</span>
+        <select v-model.number="maxVcpus">
+          <option :value="0">No more without a restart</option>
+          <option v-for="n in [2, 4, 8, 16, 32].filter((n) => n > vcpus)" :key="n" :value="n">
+            {{ n }} vCPUs while it runs
+          </option>
+        </select>
+      </label>
+      <label v-if="!template" class="field">
         <span class="label">Memory can grow to</span>
         <select v-model.number="maxMemory">
           <option :value="0">No more without a restart</option>
@@ -218,8 +232,8 @@ async function submit() {
           </option>
         </select>
         <span class="hint">
-          Its memory can then change while it runs, through the guest’s balloon. The host keeps this much for it, and
-          it counts against quotas.
+          CPUs are then plugged in and out, and memory changes through the guest’s balloon, while it runs. The host
+          keeps the most for it, and that counts against quotas.
         </span>
       </label>
       <label v-if="!template" class="field">

@@ -715,6 +715,22 @@ impl Libvirt {
         Ok(())
     }
 
+    /// Plugs virtual CPUs into a running domain, or out of it, until it has
+    /// `vcpus`. Only the live domain; its definition is the caller's to
+    /// update.
+    pub async fn set_vcpus(&self, uuid: &str, vcpus: u32) -> Result<()> {
+        const AFFECT_LIVE: u32 = 1;
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        c.domain_set_vcpus_flags(&DomainSetVcpusFlagsArgs {
+            dom,
+            nvcpus: vcpus,
+            flags: AFFECT_LIVE,
+        })
+        .await?;
+        Ok(())
+    }
+
     /// What a running domain's balloon says about its memory.
     pub async fn memory_stats(&self, uuid: &str) -> Result<MemoryStats> {
         let c = self.client().await?;

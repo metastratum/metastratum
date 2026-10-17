@@ -142,6 +142,8 @@ pub async fn domain(
         title: vm.name.clone(),
         generation: vm.generation,
         vcpus: spec.vcpus,
+        max_vcpus: spec.reserved_vcpus(),
+        vcpu_hotplug: spec.max_vcpus.is_some(),
         memory_mib: spec.memory_mib,
         max_memory_mib: spec.reserved_memory_mib(),
         free_page_reporting: spec.free_page_reporting,
