@@ -1853,6 +1853,11 @@ export interface components {
              *     `max_vcpus` and down to one.
              */
             cpu_hotplug: boolean;
+            /**
+             * @description The CPU model the guest sees: its cluster's (a model all its hosts
+             *     run), or none for the host's CPU as is (a VM that does not migrate).
+             */
+            cpu_model?: string | null;
             /** Format: date-time */
             created_at: string;
             /**
@@ -2476,6 +2481,11 @@ export interface components {
             agent_version: string;
             /** Format: int64 */
             allocated_memory_mib: number;
+            /**
+             * @description VMs of its cluster whose CPU (model) has what this host's lacks:
+             *     they do not migrate or restart here.
+             */
+            cannot_run: string[];
             /** Format: date-time */
             cert_expires_at: string;
             cluster_id?: components["schemas"]["ClusterId"] | null;
@@ -2489,6 +2499,11 @@ export interface components {
             /** Format: int32 */
             cpu_count: number;
             cpu_model: string;
+            /**
+             * @description Its CPU's vendor, once its features are worked out (what VMs it runs
+             *     is known from then on).
+             */
+            cpu_vendor?: string | null;
             /**
              * @description `redfish` or `libvirt` when the host can be fenced (powered off when
              *     it fails, so its VMs can restart elsewhere).
@@ -3193,6 +3208,12 @@ export interface components {
         };
         UpdateVm: {
             /**
+             * @description Fit its CPU model to its cluster's hosts as they are now, so it can
+             *     run (migrate, restart) on all of them: it may see fewer CPU features
+             *     from its next start. Only while it is stopped, and may migrate.
+             */
+            fit_cpu?: boolean;
+            /**
              * @description The guest hands memory it frees back to its host. Only while it is
              *     stopped; it applies from the next start.
              */
@@ -3310,6 +3331,11 @@ export interface components {
              *     `max_vcpus` and down to one.
              */
             cpu_hotplug: boolean;
+            /**
+             * @description The CPU model the guest sees: its cluster's (a model all its hosts
+             *     run), or none for the host's CPU as is (a VM that does not migrate).
+             */
+            cpu_model?: string | null;
             /** Format: date-time */
             created_at: string;
             /**

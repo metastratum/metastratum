@@ -66,6 +66,12 @@ pub struct HostView {
     /// accept it. Until then the accepted values hold.
     #[schema(value_type = Option<Object>)]
     pending_facts: Option<serde_json::Value>,
+    /// Its CPU's vendor, once its features are worked out (what VMs it runs
+    /// is known from then on).
+    cpu_vendor: Option<String>,
+    /// VMs of its cluster whose CPU (model) has what this host's lacks:
+    /// they do not migrate or restart here.
+    cannot_run: Vec<String>,
 }
 
 #[utoipa::path(get, path = "/hosts", tag = "hosts", responses((status = 200, body = Vec<HostView>), (status = 403)))]
@@ -77,7 +83,29 @@ async fn list_hosts(State(state): State<AppState>, p: Principal) -> ApiResult<Js
         .map(|c| (c.id, c.name))
         .collect();
     let mut out = vec![];
-    for h in mst_db::hosts::list(&state.db).await? {
+    let hosts = mst_db::hosts::list(&state.db).await?;
+    let all = mst_db::vms::all(&state.db).await?;
+    let cluster_of = |id: Option<HostId>| {
+        hosts
+            .iter()
+            .find(|h| Some(h.id) == id)
+            .and_then(|h| h.cluster_id)
+    };
+    for h in hosts.clone() {
+        let cannot_run: Vec<String> = all
+            .iter()
+            .filter(|v| {
+                v.host_id != Some(h.id)
+                    && h.cluster_id.is_some()
+                    && cluster_of(v.host_id) == h.cluster_id
+            })
+            .filter(|v| {
+                crate::cpu::needs(v, &hosts)
+                    .and_then(|n| crate::cpu::lacking(&h, &n))
+                    .is_some_and(|l| !l.is_empty())
+            })
+            .map(|v| v.name.clone())
+            .collect();
         let vms = mst_db::vms::list_on_host(&state.db, h.id).await?;
         out.push(HostView {
             cluster_name: h.cluster_id.and_then(|c| clusters.get(&c).cloned()),
@@ -105,6 +133,8 @@ async fn list_hosts(State(state): State<AppState>, p: Principal) -> ApiResult<Js
             cert_expires_at: h.cert_expires_at,
             last_seen_at: h.last_seen_at,
             pending_facts: h.pending_facts,
+            cpu_vendor: h.cpu_vendor,
+            cannot_run,
         });
     }
     Ok(Json(out))
@@ -220,6 +250,23 @@ async fn update_host(
     if let Some(cluster) = req.cluster_id {
         if let Some(c) = cluster {
             mst_db::clusters::get(&state.db, c).await?;
+            // VMs do not move between AMD and Intel CPUs: a cluster is
+            // where they move, so it has hosts of one vendor.
+            if let Some(vendor) = &host.cpu_vendor {
+                let other = mst_db::hosts::list(&state.db).await?.into_iter().find(|o| {
+                    o.id != id
+                        && o.cluster_id == Some(c)
+                        && o.cpu_vendor.as_ref().is_some_and(|v| v != vendor)
+                });
+                if let Some(o) = other {
+                    return Err(ApiError::conflict(format!(
+                        "{} has a {vendor} CPU, {} (in that cluster) a {} one: VMs do not move between them; use a cluster of its own",
+                        host.name,
+                        o.name,
+                        o.cpu_vendor.as_deref().unwrap_or("different")
+                    )));
+                }
+            }
         }
         if cluster != host.cluster_id && !mst_db::vms::list_on_host(&state.db, id).await?.is_empty()
         {

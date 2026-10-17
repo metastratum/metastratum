@@ -154,11 +154,7 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
     // A CPU model every host of the cluster runs, so the VM can migrate
     // anywhere in it. Kept in the spec: the VM keeps it for life.
     let mut spec = spec.clone();
-    let mut changed = false;
-    if spec.migratable && spec.cpu.is_none() {
-        spec.cpu = crate::migration::baseline_cpu(&ctx.state, host).await;
-        changed |= spec.cpu.is_some();
-    }
+    let mut changed = fit_cpu(ctx, vm.id, host, &mut spec).await;
     // Disks plug in while it runs, where its host's agent does that.
     if spec.disk_hotplug.is_none() && mst_db::hosts::agent_supports(db, host, "attach_disk").await?
     {
@@ -202,21 +198,58 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
     Ok(())
 }
 
+/// Gives a VM that may migrate and has no CPU model its cluster's: what
+/// every host of it runs. Where there is none (hosts of two vendors, say),
+/// the VM may not migrate: it gets its host's CPU as is, and says so.
+/// Returns whether the spec changed.
+async fn fit_cpu(ctx: &TaskCtx, vm: VmId, host: HostId, spec: &mut mst_core::vm::VmSpec) -> bool {
+    if !spec.migratable || spec.cpu.is_some() {
+        return false;
+    }
+    match crate::migration::baseline_cpu(&ctx.state, host).await {
+        Some(cpu) => {
+            // What it needs of hosts, to place and move it by.
+            let needs = crate::cpu::expand(&ctx.state, host, &cpu)
+                .await
+                .ok()
+                .flatten();
+            let _ = mst_db::vms::set_cpu_features(
+                &ctx.state.db,
+                vm,
+                needs.as_ref().map(|n| n.features.as_slice()),
+            )
+            .await;
+            spec.cpu = Some(cpu);
+        }
+        None => {
+            tracing::warn!(%vm, "no CPU model all hosts of the cluster run (CPU vendors differ?): the VM gets its host's CPU and does not migrate");
+            spec.migratable = false;
+        }
+    }
+    true
+}
+
 pub async fn start(ctx: &TaskCtx) -> Result<()> {
     let vm = mst_db::vms::get(&ctx.state.db, target(ctx)?).await?;
     // Starting afresh, the VM gets devices a running VM keeps as it was
     // started with: a balloon that hands the guest's free memory back, and
     // a controller for disks to plug in (where its host's agent does). Only
     // from stopped: one running (asked to start again) keeps its devices.
+    // And a CPU model all hosts of its cluster run, if it may migrate and
+    // has none (fitted anew, or from before models).
     let stopped = vm.power == "stopped" || vm.power == "missing";
     let hotplug = stopped
         && vm.spec.0.disk_hotplug.is_none()
         && mst_db::hosts::agent_supports(&ctx.state.db, host_of(&vm)?, "attach_disk").await?;
-    if (stopped && vm.spec.0.free_page_reporting.is_none()) || hotplug {
+    let unfitted = stopped && vm.spec.0.migratable && vm.spec.0.cpu.is_none();
+    if (stopped && vm.spec.0.free_page_reporting.is_none()) || hotplug || unfitted {
         let mut spec = vm.spec.0.clone();
         spec.free_page_reporting.get_or_insert(true);
         if hotplug {
             spec.disk_hotplug = Some(true);
+        }
+        if unfitted {
+            fit_cpu(ctx, vm.id, host_of(&vm)?, &mut spec).await;
         }
         let mut tx = ctx.state.db.begin().await?;
         let generation = mst_db::vms::redefine(&mut tx, vm.id, &spec).await?;

@@ -25,14 +25,31 @@ pub struct Vm {
     pub updated_at: DateTime<Utc>,
     /// Kept to be cloned; it never starts.
     pub template: bool,
+    /// Every feature its CPU model has, once worked out (see
+    /// `mst_controller::cpu`).
+    pub cpu_features: Option<Vec<String>>,
 }
 
 macro_rules! vm_columns {
     () => {
         "id, tenant_id, name, host_id, spec, generation, status, desired_power, power, power_reason, \
          power_observed_at, error, \
-         created_by, created_at, updated_at, template"
+         created_by, created_at, updated_at, template, cpu_features"
     };
+}
+
+/// Records the features the VM's CPU model has (`None`: to work out again).
+pub async fn set_cpu_features(
+    db: impl PgExecutor<'_>,
+    id: VmId,
+    features: Option<&[String]>,
+) -> Result<()> {
+    sqlx::query("UPDATE vms SET cpu_features = $2 WHERE id = $1")
+        .bind(id)
+        .bind(features)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 pub struct NewVm<'a> {
@@ -95,6 +112,15 @@ pub async fn list(
     .bind(descendants)
     .fetch_all(db)
     .await?)
+}
+
+/// Every VM, of every tenant.
+pub async fn all(db: impl PgExecutor<'_>) -> Result<Vec<Vm>> {
+    Ok(
+        sqlx::query_as(concat!("SELECT ", vm_columns!(), " FROM vms ORDER BY id"))
+            .fetch_all(db)
+            .await?,
+    )
 }
 
 pub async fn list_on_host(db: impl PgExecutor<'_>, host_id: HostId) -> Result<Vec<Vm>> {

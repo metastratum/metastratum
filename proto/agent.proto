@@ -310,6 +310,9 @@ message UndefineVm {
 // keeping only features that survive migration. Returns a CpuSpec.
 message BaselineCpu {
   repeated string cpus_json = 1;
+  // Every feature of the result listed (the model's own too), to compare
+  // CPUs by: the answer then says "expanded": true.
+  bool expand = 2;
 }
 
 // On a migration's destination: set up what the VM needs besides its

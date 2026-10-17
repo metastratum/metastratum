@@ -819,6 +819,9 @@ mod tests {
             last_seen_at: None,
             created_at: Utc::now(),
             pending_facts: None,
+            cpu_vendor: None,
+            cpu_features: None,
+            cpu_features_of: None,
         }
     }
 

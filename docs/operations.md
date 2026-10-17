@@ -299,6 +299,27 @@ from every host and every shared pool. Hosts that are down at the time
 clean up when they reconnect. The outcome is in the audit log
 (`storage_pool.cleanup`, `image.cleanup`).
 
+### CPUs and clusters
+
+A cluster is where VMs move between hosts, so its hosts should have CPUs
+of one vendor: VMs do not move between AMD and Intel (a host is not moved
+into a cluster of the other vendor). A VM that may migrate gets a CPU
+model every host of its cluster runs as it is made: libvirt's baseline
+of their CPUs, without features that keep a VM from migrating. It keeps
+that model for life. Where there is none (CPUs of both vendors), the VM is
+made non-migratable and gets its host's CPU, rather than a model that
+only seems to move.
+
+The controller knows each host's CPU and each VM's model as lists of
+features, and moves and restarts a VM only on hosts that have every
+feature of its model (a VM with its host's CPU: every feature of that
+host). A host that joins with less (an older CPU) runs the VMs made after
+it joined; Infrastructure shows which VMs of its cluster it cannot run.
+Fit those to the cluster (Details → CPU → Fit to cluster, while stopped):
+they get the model all hosts run now, from their next start, and may see
+fewer CPU features. VMs from before CPU models get theirs at their next
+start from stopped.
+
 ### Limits
 
 VMs on one host share its disks and network; VMs on shared storage share

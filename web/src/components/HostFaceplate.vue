@@ -41,6 +41,13 @@ const usedPct = computed(() => Math.min(100, (props.host.allocated_memory_mib / 
       >
         Changes waiting
       </span>
+      <span
+        v-if="!retired && host.cannot_run.length"
+        class="tag stray"
+        :title="`Its CPU lacks features these VMs of its cluster use, so they do not move here: ${host.cannot_run.join(', ')}. Fit their CPU to the cluster (Details) to change that.`"
+      >
+        {{ host.cannot_run.length }} VM{{ host.cannot_run.length === 1 ? '' : 's' }} can’t run here
+      </span>
       <span v-if="!retired" class="tag" :class="{ stray: !host.cluster_name }">{{ host.cluster_name ?? 'No cluster' }}</span>
       <button v-if="!retired" type="button" class="btn small manage" @click="emit('manage')">Manage</button>
       <dl class="specs mono">

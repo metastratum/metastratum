@@ -92,6 +92,16 @@ pub async fn plan(
     } else {
         None
     };
+    // Its CPU: hosts that lack what its model (or its host's CPU) has do
+    // not run it.
+    let full = mst_db::hosts::list(&mut *tx).await?;
+    let needs = crate::cpu::needs(vm, &full);
+    let lacks = |id: HostId| -> Vec<String> {
+        match (&needs, full.iter().find(|h| h.id == id)) {
+            (Some(n), Some(h)) => crate::cpu::lacking(h, n).unwrap_or_default(),
+            _ => vec![],
+        }
+    };
     // Migration-specific requirements; the scheduler checks the rest.
     let mut rejected = vec![];
     let candidates: Vec<mst_scheduler::Host> = hosts
@@ -111,6 +121,13 @@ pub async fn plan(
                 rejected.push(format!(
                     "{}: its agent is older than the VM's disks (upgrade it)",
                     h.name
+                ));
+                false
+            } else if let lacking @ [_, ..] = lacks(h.id).as_slice() {
+                rejected.push(format!(
+                    "{}: its CPU lacks what the VM's has ({})",
+                    h.name,
+                    crate::cpu::describe(lacking)
                 ));
                 false
             } else {
@@ -200,7 +217,10 @@ pub async fn baseline_cpu(state: &AppState, host: HostId) -> Option<mst_core::vm
         tracing::warn!(%host, "no host reported its CPU model; the VM gets the host's CPU");
         return None;
     }
-    let cmd = mst_proto::command::Cmd::BaselineCpu(mst_proto::BaselineCpu { cpus_json: cpus });
+    let cmd = mst_proto::command::Cmd::BaselineCpu(mst_proto::BaselineCpu {
+        cpus_json: cpus,
+        expand: false,
+    });
     match state
         .agents
         .query(host, cmd, std::time::Duration::from_secs(60))

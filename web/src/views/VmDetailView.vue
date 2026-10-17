@@ -95,6 +95,17 @@ async function setFreePageReporting(on: boolean) {
     switching.value = false
   }
 }
+async function fitCpu() {
+  actionError.value = ''
+  switching.value = true
+  try {
+    vm.value = await ok(api.PATCH('/api/v1/vms/{id}', { params: { path: { id: props.id } }, body: { fit_cpu: true } }))
+  } catch (e) {
+    actionError.value = errorText(e)
+  } finally {
+    switching.value = false
+  }
+}
 async function setMigratable(on: boolean) {
   actionError.value = ''
   switching.value = true
@@ -377,6 +388,23 @@ async function remove() {
                 @click="setMigratable(!vm.migratable)"
               >
                 {{ switching ? 'Changing…' : vm.migratable ? 'Turn off' : 'Allow' }}
+              </button>
+            </dd>
+            <dt>CPU</dt>
+            <dd class="migratable">
+              {{ vm.cpu_model ?? 'Its host’s, as is' }}
+              <button
+                v-if="vm.migratable"
+                class="btn small"
+                :disabled="!stopped || switching"
+                :title="
+                  stopped
+                    ? 'A CPU model every host of its cluster runs now, from its next start: it may see fewer CPU features'
+                    : 'Stop the VM to change this'
+                "
+                @click="fitCpu"
+              >
+                Fit to cluster
               </button>
             </dd>
             <dt>Free memory</dt>

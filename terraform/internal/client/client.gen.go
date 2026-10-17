@@ -88,8 +88,12 @@ type AcceptedVmView struct {
 
 	// CpuHotplug CPUs are plugged in and out while it runs (it has a maximum), up to
 	// `max_vcpus` and down to one.
-	CpuHotplug bool      `json:"cpu_hotplug"`
-	CreatedAt  time.Time `json:"created_at"`
+	CpuHotplug bool `json:"cpu_hotplug"`
+
+	// CpuModel The CPU model the guest sees: its cluster's (a model all its hosts
+	// run), or none for the host's CPU as is (a VM that does not migrate).
+	CpuModel  *string   `json:"cpu_model,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 
 	// DesiredPower The power state last requested through the API: `running` or
 	// `stopped`. Never changed by what happens on the host.
@@ -843,12 +847,16 @@ type HostId = openapi_types.UUID
 
 // HostView defines model for HostView.
 type HostView struct {
-	Address            string     `json:"address"`
-	AgentVersion       string     `json:"agent_version"`
-	AllocatedMemoryMib int64      `json:"allocated_memory_mib"`
-	CertExpiresAt      time.Time  `json:"cert_expires_at"`
-	ClusterId          *ClusterId `json:"cluster_id,omitempty"`
-	ClusterName        *string    `json:"cluster_name,omitempty"`
+	Address            string `json:"address"`
+	AgentVersion       string `json:"agent_version"`
+	AllocatedMemoryMib int64  `json:"allocated_memory_mib"`
+
+	// CannotRun VMs of its cluster whose CPU (model) has what this host's lacks:
+	// they do not migrate or restart here.
+	CannotRun     []string   `json:"cannot_run"`
+	CertExpiresAt time.Time  `json:"cert_expires_at"`
+	ClusterId     *ClusterId `json:"cluster_id,omitempty"`
+	ClusterName   *string    `json:"cluster_name,omitempty"`
 
 	// Connected Whether the host's agent has a live session (and heartbeated recently).
 	Connected      bool       `json:"connected"`
@@ -858,6 +866,10 @@ type HostView struct {
 	Controller *string `json:"controller,omitempty"`
 	CpuCount   int32   `json:"cpu_count"`
 	CpuModel   string  `json:"cpu_model"`
+
+	// CpuVendor Its CPU's vendor, once its features are worked out (what VMs it runs
+	// is known from then on).
+	CpuVendor *string `json:"cpu_vendor,omitempty"`
 
 	// FenceKind `redfish` or `libvirt` when the host can be fenced (powered off when
 	// it fails, so its VMs can restart elsewhere).
@@ -1661,6 +1673,11 @@ type UpdateUser struct {
 
 // UpdateVm defines model for UpdateVm.
 type UpdateVm struct {
+	// FitCpu Fit its CPU model to its cluster's hosts as they are now, so it can
+	// run (migrate, restart) on all of them: it may see fewer CPU features
+	// from its next start. Only while it is stopped, and may migrate.
+	FitCpu *bool `json:"fit_cpu,omitempty"`
+
 	// FreePageReporting The guest hands memory it frees back to its host. Only while it is
 	// stopped; it applies from the next start.
 	FreePageReporting *bool `json:"free_page_reporting,omitempty"`
@@ -1776,8 +1793,12 @@ type VmView struct {
 
 	// CpuHotplug CPUs are plugged in and out while it runs (it has a maximum), up to
 	// `max_vcpus` and down to one.
-	CpuHotplug bool      `json:"cpu_hotplug"`
-	CreatedAt  time.Time `json:"created_at"`
+	CpuHotplug bool `json:"cpu_hotplug"`
+
+	// CpuModel The CPU model the guest sees: its cluster's (a model all its hosts
+	// run), or none for the host's CPU as is (a VM that does not migrate).
+	CpuModel  *string   `json:"cpu_model,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 
 	// DesiredPower The power state last requested through the API: `running` or
 	// `stopped`. Never changed by what happens on the host.

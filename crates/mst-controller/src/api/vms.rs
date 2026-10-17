@@ -83,6 +83,9 @@ pub struct VmView {
     firmware: Firmware,
     /// Can live-migrate; otherwise it has its host's CPU and disk caching.
     migratable: bool,
+    /// The CPU model the guest sees: its cluster's (a model all its hosts
+    /// run), or none for the host's CPU as is (a VM that does not migrate).
+    cpu_model: Option<String>,
     disks: Vec<DiskSpec>,
     nics: Vec<NicView>,
     /// The live migration in progress, if any.
@@ -201,6 +204,7 @@ fn view(vm: Vm, ctx: &Context) -> VmView {
         free_page_reporting: spec.reports_free_pages(),
         firmware: spec.firmware,
         migratable: spec.migratable,
+        cpu_model: spec.cpu.as_ref().map(|c| c.model.clone()),
         disks: spec.disks,
         nics: spec
             .nics
@@ -1158,6 +1162,11 @@ pub struct UpdateVm {
     /// Make the stopped VM a template, kept to be cloned and never started,
     /// or a VM again.
     template: Option<bool>,
+    /// Fit its CPU model to its cluster's hosts as they are now, so it can
+    /// run (migrate, restart) on all of them: it may see fewer CPU features
+    /// from its next start. Only while it is stopped, and may migrate.
+    #[serde(default)]
+    fit_cpu: bool,
 }
 
 /// Changes a VM's settings. A running VM's memory changes at once, within
@@ -1187,23 +1196,30 @@ async fn update_vm(
         .unwrap_or_else(|| old.reserved_memory_mib().max(memory_mib));
     let template = req.template.unwrap_or(vm.template);
     let reporting = req.free_page_reporting.unwrap_or(old.reports_free_pages());
-    if (
-        migratable,
-        vcpus,
-        max_vcpus,
-        memory_mib,
-        max_memory_mib,
-        template,
-        reporting,
-    ) == (
-        old.migratable,
-        old.vcpus,
-        old.reserved_vcpus(),
-        old.memory_mib,
-        old.reserved_memory_mib(),
-        vm.template,
-        old.reports_free_pages(),
-    ) {
+    if req.fit_cpu && !migratable {
+        return Err(ApiError::bad_request(
+            "the VM does not migrate: it has its host's CPU as is",
+        ));
+    }
+    if !req.fit_cpu
+        && (
+            migratable,
+            vcpus,
+            max_vcpus,
+            memory_mib,
+            max_memory_mib,
+            template,
+            reporting,
+        ) == (
+            old.migratable,
+            old.vcpus,
+            old.reserved_vcpus(),
+            old.memory_mib,
+            old.reserved_memory_mib(),
+            vm.template,
+            old.reports_free_pages(),
+        )
+    {
         return Ok(Json(view(vm, &context(&state).await?)));
     }
     check_size(vcpus, memory_mib)?;
@@ -1222,14 +1238,15 @@ async fn update_vm(
     let running = vm.power == "running" && vm.desired_power == "running";
     if vm.status == "ready" && !busy && running {
         let old = &vm.spec.0;
-        if (migratable, max_vcpus, max_memory_mib, template, reporting)
-            != (
-                old.migratable,
-                old.reserved_vcpus(),
-                old.reserved_memory_mib(),
-                vm.template,
-                old.reports_free_pages(),
-            )
+        if req.fit_cpu
+            || (migratable, max_vcpus, max_memory_mib, template, reporting)
+                != (
+                    old.migratable,
+                    old.reserved_vcpus(),
+                    old.reserved_memory_mib(),
+                    vm.template,
+                    old.reports_free_pages(),
+                )
         {
             return Err(ApiError::conflict(format!(
                 "stop {} first: only its CPUs and memory change while it runs, within what they may grow to",
@@ -1264,7 +1281,8 @@ async fn update_vm(
     }
     let migratable_changed = migratable != spec.migratable;
     spec.migratable = migratable;
-    if migratable && migratable_changed {
+    let fitted = migratable && (migratable_changed || req.fit_cpu);
+    if fitted {
         // The cluster's CPU model as it is now.
         spec.cpu = Some(crate::migration::baseline_cpu(&state, host).await.ok_or_else(|| {
             ApiError::unavailable("could not determine a CPU model the VM's cluster shares; is its host connected?")
@@ -1274,8 +1292,17 @@ async fn update_vm(
         mst_db::vms::set_template(&mut *tx, id, template).await?;
     }
     let generation = mst_db::vms::redefine(&mut tx, id, &spec).await?;
+    if fitted {
+        // Worked out anew (below, or in the background).
+        mst_db::vms::set_cpu_features(&mut *tx, id, None).await?;
+    }
     define_on_host(&state, &mut tx, &vm, host, &spec, generation).await?;
     tx.commit().await?;
+    if let (true, Some(cpu)) = (fitted, &spec.cpu)
+        && let Ok(Some(needs)) = crate::cpu::expand(&state, host, cpu).await
+    {
+        mst_db::vms::set_cpu_features(&state.db, id, Some(&needs.features)).await?;
+    }
     audit(
         &state.db,
         Some(&p),
@@ -1285,7 +1312,7 @@ async fn update_vm(
         json!({"name": vm.name, "migratable": req.migratable, "vcpus": req.vcpus,
                "max_vcpus": req.max_vcpus, "memory_mib": req.memory_mib,
                "max_memory_mib": req.max_memory_mib, "template": req.template,
-               "free_page_reporting": req.free_page_reporting}),
+               "free_page_reporting": req.free_page_reporting, "fit_cpu": req.fit_cpu}),
     )
     .await;
     let vm = mst_db::vms::get(&state.db, id).await?;

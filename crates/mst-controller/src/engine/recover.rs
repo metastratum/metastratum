@@ -70,10 +70,18 @@ pub async fn recover(ctx: &TaskCtx) -> Result<()> {
         } else {
             None
         };
+        // Hosts whose CPU lacks what the VM's has do not run it.
+        let full = mst_db::hosts::list(&mut *tx).await?;
+        let needs = crate::cpu::needs(&vm, &full);
+        let runs = |id: mst_core::ids::HostId| match (&needs, full.iter().find(|h| h.id == id)) {
+            (Some(n), Some(h)) => crate::cpu::lacking(h, n).is_none_or(|l| l.is_empty()),
+            _ => true,
+        };
         let hosts: Vec<mst_scheduler::Host> = candidates
             .iter()
             .filter(|c| c.id != host)
             .filter(|c| pluggable.as_ref().is_none_or(|p| p.contains(&c.id)))
+            .filter(|c| runs(c.id))
             .map(|c| mst_scheduler::Host {
                 id: c.id,
                 name: c.name.clone(),

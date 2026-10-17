@@ -34,6 +34,11 @@ pub struct Host {
     /// Facts the host reported that wait for an administrator to accept
     /// them (see [`update_facts`]): the reported values, by field.
     pub pending_facts: Option<serde_json::Value>,
+    /// Its CPU's vendor and every feature it offers VMs, once worked out,
+    /// and the CPU description (`cpu_json`) they were worked out from.
+    pub cpu_vendor: Option<String>,
+    pub cpu_features: Option<Vec<String>>,
+    pub cpu_features_of: Option<String>,
 }
 
 impl Host {
@@ -51,7 +56,7 @@ macro_rules! host_columns {
     () => {
         "id, name, host(address) AS address, state, cpu_count, memory_mib, cpu_model, kvm, \
          libvirt_version, ovn_chassis, agent_version, cert_fingerprint, cert_expires_at, \
-         cluster_id, connected_to, last_seen_at, created_at, physical_networks, cpu_json, migration_ready, fence_kind, connected_since, agent_protocol, pending_facts"
+         cluster_id, connected_to, last_seen_at, created_at, physical_networks, cpu_json, migration_ready, fence_kind, connected_since, agent_protocol, pending_facts, cpu_vendor, cpu_features, cpu_features_of"
     };
 }
 
@@ -466,4 +471,24 @@ pub async fn supporting(
             .into_iter()
             .collect(),
     )
+}
+
+/// Records the host's CPU vendor and features, worked out from `of`.
+pub async fn set_cpu_features(
+    db: impl PgExecutor<'_>,
+    id: HostId,
+    vendor: Option<&str>,
+    features: &[String],
+    of: &str,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE hosts SET cpu_vendor = $2, cpu_features = $3, cpu_features_of = $4 WHERE id = $1",
+    )
+    .bind(id)
+    .bind(vendor)
+    .bind(features)
+    .bind(of)
+    .execute(db)
+    .await?;
+    Ok(())
 }

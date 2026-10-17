@@ -665,10 +665,14 @@ impl Agent {
                     .context("invalid CPU model")?;
                 let base = self
                     .lv
-                    .baseline_cpu(&cpus)
+                    .baseline_cpu(&cpus, c.expand)
                     .await?
                     .context("libvirt found no common CPU model")?;
-                return Ok(serde_json::to_string(&vm::cpu_spec(base))?);
+                let mut answer = serde_json::to_value(vm::cpu_spec(base))?;
+                if c.expand {
+                    answer["expanded"] = true.into();
+                }
+                return Ok(answer.to_string());
             }
             Cmd::StartVm(c) => {
                 self.lv.start(&c.vm_id).await?;

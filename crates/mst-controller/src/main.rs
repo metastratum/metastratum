@@ -6,6 +6,7 @@ mod authz;
 mod ca;
 mod cleanup;
 mod config;
+mod cpu;
 mod crl;
 mod doctor;
 mod engine;
@@ -390,7 +391,8 @@ async fn serve(db: mst_db::sqlx::PgPool, cfg: &config::Config) -> anyhow::Result
                     ha::monitor(state.clone()),
                     engine::backup_schedule(state.clone()),
                     port_watch::watch(state.clone(), southbound),
-                    engine::sweep_disks(state),
+                    engine::sweep_disks(state.clone()),
+                    cpu::learn(state),
                 );
             }
         })

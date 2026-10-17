@@ -245,7 +245,9 @@ listen on the network. QEMU sends the VM from host to host over TLS, with
 the host certificate (signed by the controller's CA) that the agent
 installs where QEMU looks for it (`/etc/pki/qemu`). Hosts without it show
 "No migration" and are not chosen as destinations. VMs get their cluster's
-baseline CPU model, so they run on, and migrate between, any of its hosts.
+baseline CPU model, so they run on, and migrate between, any of its hosts;
+they are moved only to hosts whose CPU has every feature of their model
+(see CPUs and clusters in docs/operations.md).
 A VM can instead be created non-migratable: it then gets its host's full CPU
 and disks use the host's page cache, and it stays on its host (evacuation
 leaves it there). That is the default when the VM's cluster has a single

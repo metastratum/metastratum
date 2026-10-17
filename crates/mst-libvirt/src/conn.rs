@@ -570,11 +570,15 @@ impl Libvirt {
 
     /// The most capable CPU all of `cpus` can run, limited to features that
     /// survive migration.
+    /// The CPU model every one of `cpus` runs, without features that keep
+    /// a VM from migrating; with every feature listed when `expand`.
     pub async fn baseline_cpu(
         &self,
         cpus: &[crate::cpu::CpuModel],
+        expand: bool,
     ) -> Result<Option<crate::cpu::CpuModel>> {
         const BASELINE_MIGRATABLE: u32 = 2;
+        const BASELINE_EXPAND_FEATURES: u32 = 1;
         let r = self
             .client()
             .await?
@@ -584,7 +588,7 @@ impl Libvirt {
                 machine: None,
                 virttype: Some("kvm".into()),
                 xml_cp_us: cpus.iter().map(crate::cpu::CpuModel::to_xml).collect(),
-                flags: BASELINE_MIGRATABLE,
+                flags: BASELINE_MIGRATABLE | if expand { BASELINE_EXPAND_FEATURES } else { 0 },
             })
             .await?;
         Ok(crate::cpu::parse_cpu(&r.cpu))
