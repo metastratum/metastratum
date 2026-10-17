@@ -5,6 +5,7 @@ import InfraTabs from '../components/InfraTabs.vue'
 import ModalDialog from '../components/ModalDialog.vue'
 import SplitButton from '../components/SplitButton.vue'
 import TypeToConfirm from '../components/TypeToConfirm.vue'
+import { shortId } from '../state'
 import { useLiveRefresh } from '../stores/live'
 
 const pools = ref<Pool[] | null>(null)
@@ -20,7 +21,7 @@ async function load() {
 onMounted(load)
 useLiveRefresh(['storage_pool', 'cluster'], load)
 
-const clusterName = (id: string) => clusters.value.find((c) => c.id === id)?.name ?? id.slice(0, 8)
+const clusterName = (id: string) => clusters.value.find((c) => c.id === id)?.name ?? shortId(id)
 type Config = Record<string, unknown>
 const cfg = (p: Pool) => (p.config ?? {}) as Config
 

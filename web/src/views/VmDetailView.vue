@@ -9,7 +9,7 @@ import CloneDialog from '../components/CloneDialog.vue'
 import StatusLed from '../components/StatusLed.vue'
 import VmBackups from '../components/VmBackups.vue'
 import VmSnapshots from '../components/VmSnapshots.vue'
-import { ago, gib, mib, powerNote, vmState } from '../state'
+import { ago, gib, mib, powerNote, shortId, vmState } from '../state'
 import { useLiveRefresh } from '../stores/live'
 import { useScope } from '../stores/scope'
 import { useSession } from '../stores/session'
@@ -141,7 +141,7 @@ watch(
     )
   },
 )
-const groupName = (id: string) => groups.value.find((g) => g.id === id)?.name ?? id.slice(0, 8)
+const groupName = (id: string) => groups.value.find((g) => g.id === id)?.name ?? shortId(id)
 function editNic(n: Vm['nics'][number]) {
   nicError.value = ''
   nicGroups.value = [...n.security_group_ids]
@@ -390,7 +390,7 @@ async function remove() {
           <dl v-for="n in vm.nics" :key="n.id" class="kv">
             <dt>Address</dt><dd class="mono">{{ n.ip }}</dd>
             <dt>Network</dt>
-            <dd><RouterLink to="/networks">{{ n.network_name ?? n.network_id.slice(0, 8) }}</RouterLink></dd>
+            <dd><RouterLink to="/networks">{{ n.network_name ?? shortId(n.network_id) }}</RouterLink></dd>
             <dt>Floating IP</dt>
             <dd class="mono">
               <RouterLink v-if="n.floating_ip" to="/floating-ips">{{ n.floating_ip }}</RouterLink>

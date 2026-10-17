@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { shortId } from '../state'
 
 const props = defineProps<{ value: string; short?: boolean }>()
 const copied = ref(false)
@@ -13,7 +14,7 @@ async function copy() {
 
 <template>
   <button type="button" class="chip mono" :title="copied ? 'Copied' : `Copy ${value}`" @click.stop="copy">
-    {{ copied ? 'copied' : short ? value.slice(0, 8) : value }}
+    {{ copied ? 'copied' : short ? shortId(value) : value }}
   </button>
 </template>
 

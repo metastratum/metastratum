@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import StatusLed from './components/StatusLed.vue'
-import { mib, powerNote, ruleText, vmState } from './state'
+import { mib, powerNote, ruleText, shortId, vmState } from './state'
 
 const vm = (status: string, power: string, extra: Partial<{ active_task: string | null; host_connected: boolean }> = {}) => ({
   status,
@@ -86,5 +86,14 @@ describe('ruleText', () => {
       'All traffic from members of default',
     )
     expect(ruleText({ direction: 'ingress', protocol: 'icmp', remote_cidr: '192.0.2.7/32' })).toBe('ICMP from 192.0.2.7')
+  })
+})
+
+describe('shortId', () => {
+  it('keeps the random end of a UUIDv7, which tells IDs made together apart', () => {
+    const a = '01a14a88-8fb7-77ea-bd5a-754d60d29ccc'
+    const b = '01a14a88-9c02-7a10-8e3f-0b6a5c71e4d2'
+    expect(shortId(a)).toBe('…60d29ccc')
+    expect(shortId(a)).not.toBe(shortId(b))
   })
 })

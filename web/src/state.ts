@@ -87,6 +87,13 @@ export function gib(bytes: number): string {
   return `${Math.round((bytes / 2 ** 30) * 10) / 10} GiB`
 }
 
+/** An ID shortened for display. IDs are UUIDv7: they begin with their
+ *  creation time, so IDs made in the same minute share their first digits;
+ *  their last digits are random. */
+export function shortId(id: string): string {
+  return `…${id.slice(-8)}`
+}
+
 export function mib(n: number): string {
   return n >= 1024 ? `${Math.round((n / 1024) * 10) / 10} GiB` : `${n} MiB`
 }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { api, errorText, ok, type AuditEntry } from '../api/client'
+import { shortId } from '../state'
 import { useScope } from '../stores/scope'
 
 const scope = useScope()
@@ -75,7 +76,7 @@ const hasDetails = (e: AuditEntry) =>
               </td>
               <td v-if="!scope.solo">{{ tenantName(e.tenant_id) }}</td>
               <td class="mono muted">
-                <template v-if="e.target_kind">{{ e.target_kind }} {{ e.target_id?.slice(0, 8) }}</template>
+                <template v-if="e.target_kind">{{ e.target_kind }} {{ e.target_id && shortId(e.target_id) }}</template>
                 <button
                   v-if="hasDetails(e)"
                   type="button"
