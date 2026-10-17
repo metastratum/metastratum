@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 
 // The dev server proxies the API (including console WebSockets) to a
-// controller started with `mst-controller serve --listen 127.0.0.1:18080`.
+// controller on 127.0.0.1:18080 (deploy/dev/controller.toml).
 const controller = process.env.MST_API ?? 'http://127.0.0.1:18080'
 
 export default defineConfig({

@@ -5,6 +5,7 @@ mod api;
 mod authz;
 mod ca;
 mod cleanup;
+mod config;
 mod crl;
 mod engine;
 mod error;
@@ -44,14 +45,9 @@ use crate::state::{AppState, Inner};
 #[derive(Parser)]
 #[command(version, about)]
 struct Args {
-    /// Postgres connection URL.
-    #[arg(long, env = "DATABASE_URL", global = true)]
-    database_url: Option<String>,
-    /// File holding the master key that seals secrets in the database (the
-    /// CA key, storage keys, identity provider secrets). Create one with
-    /// `mst-controller gen-master-key`; keep it out of the database's backups.
-    #[arg(long, global = true, env = "MST_MASTER_KEY_FILE")]
-    master_key_file: Option<PathBuf>,
+    /// The configuration file (see deploy/config/controller.toml).
+    #[arg(long, global = true, env = "MST_CONFIG", default_value = config::DEFAULT_PATH)]
+    config: PathBuf,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -59,7 +55,7 @@ struct Args {
 #[derive(Subcommand)]
 enum Cmd {
     /// Run the controller.
-    Serve(Box<ServeArgs>),
+    Serve,
     /// Create the provider tenant and its first administrator.
     Bootstrap {
         #[arg(long, default_value = "admin")]
@@ -78,7 +74,7 @@ enum Cmd {
     },
     /// Print the OpenAPI document.
     Openapi,
-    /// Print a new random master key, for --master-key-file.
+    /// Print a new random master key, for the configuration's master_key_file.
     GenMasterKey,
     /// Write what an OVN central node needs for TLS: certificates for its
     /// northbound and southbound databases from the controller's CAs, the
@@ -107,63 +103,6 @@ enum Cmd {
     },
 }
 
-#[derive(clap::Args)]
-struct ServeArgs {
-    /// Address for the HTTP API and web UI.
-    #[arg(long, env = "MST_LISTEN", default_value = "127.0.0.1:8080")]
-    listen: SocketAddr,
-    /// Address for the agent endpoint (gRPC over mutual TLS).
-    #[arg(long, env = "MST_AGENT_LISTEN", default_value = "0.0.0.0:8443")]
-    agent_listen: SocketAddr,
-    /// Address other controller replicas reach this one's agent endpoint on,
-    /// to forward commands for agents connected here. Defaults to the agent
-    /// listen address, or the first agent name with its port.
-    #[arg(long, env = "MST_PEER_ADDRESS")]
-    peer_address: Option<String>,
-    /// Extra DNS names / IPs for the agent endpoint certificate.
-    #[arg(long, env = "MST_AGENT_NAMES", value_delimiter = ',')]
-    agent_names: Vec<String>,
-    /// OVN northbound database, e.g. ssl:10.0.0.10:6641. For a clustered
-    /// database, list its servers comma-separated; the leader is used. Over
-    /// ssl:, the controller presents a certificate from its own OVN
-    /// northbound CA, and trusts servers with one from it: see
-    /// `ovn-certificate`.
-    #[arg(long, env = "MST_OVN_NB")]
-    ovn_nb: String,
-    /// OVN southbound database for hosts' ovn-controller, over TLS, e.g.
-    /// ssl:10.0.0.31:6642,ssl:10.0.0.32:6642. Agents then get certificates
-    /// for it from the controller's OVN CA, named after their chassis (for
-    /// OVN's RBAC), and point ovn-controller at it. The southbound servers
-    /// need certificates from that CA too: see `ovn-certificate`.
-    #[arg(long, env = "MST_OVN_SB")]
-    ovn_sb: Option<String>,
-    /// Built web UI to serve at `/`.
-    #[arg(long, env = "MST_WEB_DIR")]
-    web_dir: Option<PathBuf>,
-    /// Address to serve Prometheus metrics on (`/metrics`), e.g.
-    /// 127.0.0.1:9180. Kept off the API address: metrics name hosts and
-    /// count resources across tenants.
-    #[arg(long, env = "MST_METRICS_LISTEN")]
-    metrics_listen: Option<SocketAddr>,
-    /// Redis to keep rate limits in, shared by all replicas, e.g.
-    /// rediss://:password@redis.example.net:6380. Without it each replica
-    /// limits on its own.
-    #[arg(long, env = "MST_REDIS_URL", hide_env_values = true)]
-    redis_url: Option<String>,
-    /// Load balancers in front of the API (addresses or CIDRs). Their
-    /// X-Forwarded-For header gives the client's address for rate limits;
-    /// X-Forwarded-Proto: https marks the session cookie Secure and turns on
-    /// Strict-Transport-Security; X-Forwarded-Host, if they set it, is the
-    /// host in the OIDC redirect URI (else the request's Host).
-    #[arg(long, env = "MST_TRUSTED_PROXIES", value_delimiter = ',')]
-    trusted_proxies: Vec<ratelimit::Cidr>,
-    /// Identity provider issuer URLs that sub-tenants may use although they
-    /// are on internal addresses (other tenants' providers must be public;
-    /// the provider tenant's may be anywhere).
-    #[arg(long, env = "MST_TRUSTED_OIDC_ISSUERS", value_delimiter = ',')]
-    trusted_oidc_issuers: Vec<String>,
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -183,21 +122,17 @@ async fn main() -> anyhow::Result<()> {
         println!("{}", mst_pki::Sealer::generate_key());
         return Ok(());
     }
+    let cfg = config::Config::load(&args.config)?;
     // Before anything reads a secret (every remaining command uses the CA).
-    secrets::init(args.master_key_file.as_deref().context(
-        "--master-key-file or MST_MASTER_KEY_FILE is required (see `mst-controller gen-master-key`)",
-    )?)?;
+    secrets::init(&cfg.master_key_file)?;
 
-    let url = args
-        .database_url
-        .context("--database-url or DATABASE_URL is required")?;
-    let db = mst_db::connect(&url, 16)
+    let db = mst_db::connect(&cfg.database_url, 16)
         .await
         .context("connecting to postgres")?;
     mst_db::migrate(&db).await.context("running migrations")?;
 
     match args.cmd {
-        Cmd::Serve(s) => serve(db, *s).await,
+        Cmd::Serve => serve(db, &cfg).await,
         Cmd::Bootstrap {
             admin_user,
             admin_password,
@@ -291,27 +226,22 @@ async fn bootstrap(db: mst_db::sqlx::PgPool, user: &str, password: &str) -> anyh
     Ok(())
 }
 
-async fn serve(db: mst_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> {
+async fn serve(db: mst_db::sqlx::PgPool, cfg: &config::Config) -> anyhow::Result<()> {
     let recorder = metrics::install()?;
     secrets::seal_existing(&db)
         .await
         .context("sealing stored secrets")?;
     let ca = ca::load_or_create(&db).await?;
     let ovn_ca = ca::load_or_create_ovn(&db).await?;
-    if let Some(sb) = &args.ovn_sb
-        && sb.split(',').any(|r| !r.trim().starts_with("ssl:"))
-    {
-        anyhow::bail!("--ovn-sb takes ssl: remotes only: OVN's RBAC works over TLS");
-    }
-    let (cert_chain, key) = ca::server_identity(&ca, &args.agent_names)?;
+    let (cert_chain, key) = ca::server_identity(&ca)?;
     let ca_pem = ca.cert_pem().to_owned();
     let replica = format!("{}-{}", hostname(), uuid::Uuid::now_v7().simple());
     // The northbound database over TLS: with a client certificate this
     // replica issues itself from the northbound CA, and renews.
     let ovn_nb_ca = std::sync::Arc::new(ca::load_or_create_ovn_nb(&db).await?);
-    let nb_tls = args.ovn_nb.contains("ssl:");
+    let nb_tls = cfg.northbound().contains("ssl:");
     let nb = std::sync::Arc::new(mst_ovsdb::Northbound::new(
-        &args.ovn_nb,
+        &cfg.northbound(),
         if nb_tls {
             Some(ovn_tls::nb_client(&ovn_nb_ca)?)
         } else {
@@ -324,47 +254,34 @@ async fn serve(db: mst_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> 
     tokio::spawn(ovn_tls::watch_servers(
         nb.remotes().to_vec(),
         ovn_nb_ca.cert_pem().to_owned(),
-        args.ovn_sb
-            .iter()
-            .flat_map(|s| s.split(','))
-            .map(|r| r.trim().to_owned())
-            .collect(),
+        cfg.ovn.southbound.clone(),
         ovn_ca.cert_pem().to_owned(),
     ));
     let state = AppState::new(Inner {
         db: db.clone(),
         ca,
         ovn_ca,
-        ovn_sb_remote: args.ovn_sb.clone().unwrap_or_default(),
+        ovn_sb_remote: cfg.southbound().unwrap_or_default(),
         agents: Agents::default(),
         net: net::Reconciler::new(db.clone(), nb),
         replica: replica.clone(),
         events: events::Hub::default(),
         limits: ratelimit::Limits::new(
-            args.redis_url
+            cfg.api
+                .redis_url
                 .as_deref()
                 .map(ratelimit::Shared::new)
                 .transpose()
-                .context("--redis-url")?,
+                .context("api.redis_url")?,
         ),
-        trusted_proxies: args.trusted_proxies.clone(),
-        trusted_oidc_issuers: args.trusted_oidc_issuers.clone(),
+        trusted_proxies: cfg.api.trusted_proxies.clone(),
+        trusted_oidc_issuers: cfg.api.trusted_oidc_issuers.clone(),
     });
     tracing::info!(%replica, fingerprint = %state.ca.fingerprint(), "controller starting");
 
     // Other replicas forward commands for agents connected here, and this
     // one forwards to them, authenticated by replica certificates.
-    let peer_address = match &args.peer_address {
-        Some(a) => a.clone(),
-        None if !args.agent_listen.ip().is_unspecified() => args.agent_listen.to_string(),
-        None => format!(
-            "{}:{}",
-            args.agent_names.first().context(
-                "--peer-address is needed when the agent endpoint listens on all addresses"
-            )?,
-            args.agent_listen.port()
-        ),
-    };
+    let peer_address = cfg.peer_address(&hostname());
     let (replica_cert, replica_key) = state.ca.issue_client(
         &format!("{}{replica}", agents::peers::REPLICA_CN_PREFIX),
         Duration::from_secs(365 * 86400),
@@ -416,12 +333,12 @@ async fn serve(db: mst_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> 
         .add_service(ReplicaControlServer::new(agents::ReplicaControlService(
             state.clone(),
         )))
-        .serve_with_shutdown(args.agent_listen, shutdown());
-    tracing::info!(addr = %args.agent_listen, "agent endpoint listening");
+        .serve_with_shutdown(cfg.agents.listen, shutdown());
+    tracing::info!(addr = %cfg.agents.listen, "agent endpoint listening");
 
     let (api, _) = api::router();
     let mut app = Router::new().route("/healthz", get(healthz)).merge(api);
-    if let Some(dir) = &args.web_dir {
+    if let Some(dir) = &cfg.web_dir {
         // Client-side routes fall back to the SPA entry point.
         app = app
             .fallback_service(ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html"))));
@@ -438,8 +355,8 @@ async fn serve(db: mst_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> 
         ))
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
-    let listener = tokio::net::TcpListener::bind(args.listen).await?;
-    tracing::info!(addr = %args.listen, "HTTP API listening");
+    let listener = tokio::net::TcpListener::bind(cfg.api.listen).await?;
+    tracing::info!(addr = %cfg.api.listen, "HTTP API listening");
     let http = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -447,7 +364,7 @@ async fn serve(db: mst_db::sqlx::PgPool, args: ServeArgs) -> anyhow::Result<()> 
     .with_graceful_shutdown(shutdown());
 
     let metrics_server = async {
-        let Some(addr) = args.metrics_listen else {
+        let Some(addr) = cfg.metrics_listen else {
             return anyhow::Ok(());
         };
         let app = Router::new()

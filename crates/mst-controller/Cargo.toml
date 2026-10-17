@@ -38,6 +38,7 @@ sha-crypt = { version = "0.6", features = ["getrandom"] }
 thiserror.workspace = true
 tokio-stream.workspace = true
 tokio.workspace = true
+toml.workspace = true
 tonic.workspace = true
 tower-http = { workspace = true, features = ["fs", "trace"] }
 tracing-subscriber.workspace = true

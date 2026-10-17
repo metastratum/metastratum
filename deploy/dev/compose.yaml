@@ -13,7 +13,7 @@ services:
       - "127.0.0.1:55432:5432"
     volumes:
       - pgdata:/var/lib/postgresql
-  # Shared rate limits between controller replicas (--redis-url
+  # Shared rate limits between controller replicas (api.redis_url =
   # redis://127.0.0.1:56379).
   redis:
     image: redis:8.2

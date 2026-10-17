@@ -179,26 +179,26 @@ The controller runs on your machine and is reachable by the lab hosts as
 `10.77.0.1`, the host side of the lab network. It uses the local dev Postgres
 and the lab's OVN.
 
+`deploy/dev/controller.toml` configures the controller for that; every
+command reads it through `MST_CONFIG`:
+
 ```sh
-export DATABASE_URL=postgres://metastratum:metastratum@127.0.0.1:55432/metastratum
 cargo build -p mst-controller
 (cd web && npm run build)
+export MST_CONFIG=deploy/dev/controller.toml
 # Secrets in the database (the CA key, storage keys, identity provider
-# secrets) are sealed with a master key kept outside it.
-mkdir -p ~/.config/metastratum
-(umask 077; target/debug/mst-controller gen-master-key > ~/.config/metastratum/master.key)
-export MST_MASTER_KEY_FILE=~/.config/metastratum/master.key
+# secrets) are sealed with a master key kept outside it, beside the file.
+(umask 077; target/debug/mst-controller gen-master-key > deploy/dev/master.key)
 MST_ADMIN_PASSWORD='choose-a-long-password' target/debug/mst-controller bootstrap
-target/debug/mst-controller serve --listen 127.0.0.1:18080 \
-  --agent-listen 10.77.0.1:8443 --agent-names 10.77.0.1 \
-  --ovn-nb tcp:10.77.0.10:6641 --web-dir web/dist
+target/debug/mst-controller serve
 ```
 
 Whoever reaches OVN's databases can rewrite every tenant's network and every
 host's flows, so beyond trying things out, use TLS. Write the certificates
-for `mst-ctl`, install them, and restart the controller with
-`--ovn-nb ssl:10.77.0.10:6641 --ovn-sb ssl:10.77.0.10:6642`; the agents then
-switch their hosts over:
+for `mst-ctl`, install them, and switch `ovn` in the configuration to
+`northbound = ["ssl:10.77.0.10:6641"]` and
+`southbound = ["ssl:10.77.0.10:6642"]`; after a restart the agents switch
+their hosts over:
 
 ```sh
 target/debug/mst-controller ovn-certificate --name mst-ctl --address 10.77.0.10 \
@@ -211,7 +211,7 @@ it runs on any distribution; hosts that are not enrolled yet get a fresh join
 token:
 
 ```sh
-DATABASE_URL=... deploy/lab/agent.sh
+deploy/lab/agent.sh   # with MST_CONFIG set, as above
 ```
 
 Live migrations are driven by the controller, step by step on each host's
@@ -227,12 +227,11 @@ leaves it there). That is the default when the VM's cluster has a single
 host. The setting can be changed while the VM is stopped and applies from
 its next start.
 
-Add `--metrics-listen 127.0.0.1:9180` for Prometheus metrics, and run a
-second replica beside it (another `--listen` and `--agent-listen`, the same
-database and master key) to try out several controllers; give the agents
-both endpoints, comma-separated, in `MST_CONTROLLER`. Tenants' identity
-providers must be on public addresses; to try Dex (below) in a sub-tenant,
-add `--trusted-oidc-issuers http://127.0.0.1:5556/dex`.
+Set `metrics_listen = "127.0.0.1:9180"` for Prometheus metrics. To try out
+several controllers, run a second one beside it from a copy of the file
+with other `api.listen` and `agents.listen` ports (the same database and
+master key), and give the agents both endpoints:
+`MST_CONTROLLER=https://10.77.0.1:8443,https://10.77.0.1:8444 deploy/lab/agent.sh`.
 
 Open http://127.0.0.1:18080 and sign in as `admin`. Add an image (for example
 `https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2`)

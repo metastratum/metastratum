@@ -253,7 +253,7 @@ cmd_up() {
   for line in "${VMS[@]}"; do create_vm "$line"; done
   wait_ready
   cmd_ceph
-  log "lab is up. DATABASE_URL=postgres://metastratum:metastratum@10.77.0.10/metastratum"
+  log "lab is up. Its database: postgres://metastratum:metastratum@10.77.0.10/metastratum"
 }
 
 CEPH_MEM_MIB=7168
@@ -335,8 +335,8 @@ SH
 # writes for an OVN central node. Create it first with
 #   mst-controller ovn-certificate --name mst-ctl --address 10.77.0.10 \
 #     --out-dir deploy/lab/.state/ovn-central
-# then run the controllers with --ovn-nb ssl:10.77.0.10:6641 and
-# --ovn-sb ssl:10.77.0.10:6642.
+# then give the controllers ssl:10.77.0.10:6641 and ssl:10.77.0.10:6642 as
+# their ovn.northbound and ovn.southbound.
 cmd_ovn_tls() {
   local dir="$STATE/ovn-central" f
   [[ -x $dir/setup.sh ]] || die "$dir/setup.sh is missing; see the comment above cmd_ovn_tls"
@@ -346,7 +346,7 @@ cmd_ovn_tls() {
     ssh_vm mst-ctl "umask 077; cat > /tmp/ovn-central/$(basename "$f")" < "$f"
   done
   ssh_vm mst-ctl 'sudo sh /tmp/ovn-central/setup.sh; rm -rf /tmp/ovn-central'
-  log "controller flags: --ovn-nb ssl:10.77.0.10:6641 --ovn-sb ssl:10.77.0.10:6642"
+  log 'controller settings: [ovn] northbound = ["ssl:10.77.0.10:6641"], southbound = ["ssl:10.77.0.10:6642"]'
 }
 
 

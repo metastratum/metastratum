@@ -2,6 +2,7 @@
 //! local storage, and keeps a session open to the controller.
 
 mod cleanup;
+mod config;
 mod console;
 mod enroll;
 mod facts;
@@ -10,7 +11,6 @@ mod session;
 mod tls;
 mod vm;
 
-use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -31,36 +31,9 @@ const VERSION: &str = concat!(
 #[derive(Parser)]
 #[command(version = VERSION, about)]
 struct Args {
-    /// Controller agent endpoints; with several (comma-separated), the agent
-    /// moves to the next when one is unreachable.
-    #[arg(long, env = "MST_CONTROLLER", value_delimiter = ',', required = true)]
-    controller: Vec<String>,
-    /// Join token; only needed for the first start.
-    #[arg(long, env = "MST_JOIN_TOKEN")]
-    join_token: Option<String>,
-    /// Address the controller and other hosts reach this host on. Detected
-    /// from the route to the controller by default.
-    #[arg(long, env = "MST_ADDRESS")]
-    address: Option<IpAddr>,
-    /// Agent identity (key, certificates).
-    #[arg(
-        long,
-        env = "MST_STATE_DIR",
-        default_value = "/var/lib/metastratum-agent"
-    )]
-    state_dir: PathBuf,
-    /// VM data: images, volumes, cloud-init seeds.
-    #[arg(long, env = "MST_DATA_DIR", default_value = "/var/lib/metastratum")]
-    data_dir: PathBuf,
-    /// Largest image the host downloads, in GiB.
-    #[arg(long, env = "MST_IMAGE_MAX_GIB", default_value_t = 64)]
-    image_max_gib: u64,
-    #[arg(long, env = "MST_LIBVIRT_URI", default_value = "qemu:///system")]
-    libvirt_uri: String,
-    /// libvirt daemon socket. Defaults to virtqemud's, or libvirtd's on
-    /// monolithic installs.
-    #[arg(long, env = "MST_LIBVIRT_SOCKET")]
-    libvirt_socket: Option<PathBuf>,
+    /// The configuration file (see deploy/config/agent.toml).
+    #[arg(long, env = "MST_CONFIG", default_value = config::DEFAULT_PATH)]
+    config: PathBuf,
 }
 
 #[tokio::main]
@@ -71,32 +44,34 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let args = Args::parse();
     tracing::info!(version = VERSION, "mst-agent starting");
+    let cfg = config::Config::load(&args.config)?;
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let socket = args
+    let socket = cfg
         .libvirt_socket
         .clone()
         .unwrap_or_else(mst_libvirt::system_socket);
-    let lv = Libvirt::new(socket, &args.libvirt_uri);
-    let address = match args.address {
+    let lv = Libvirt::new(socket, &cfg.libvirt_uri);
+    let address = match cfg.address {
         Some(a) => a,
-        None => facts::detect_address(&args.controller[0])?,
+        None => facts::detect_address(&cfg.controllers[0])?,
     };
     let facts = facts::gather(&lv, address).await?;
     if !facts.kvm {
         tracing::warn!("/dev/kvm is missing; this host cannot run VMs");
     }
 
-    let identity = match enroll::HostIdentity::load(&args.state_dir)? {
+    let identity = match enroll::HostIdentity::load(&cfg.state_dir)? {
         Some(id) => id,
         None => {
-            let Some(token) = &args.join_token else {
+            let Some(token) = &cfg.join_token else {
                 bail!(
-                    "host is not enrolled; pass --join-token (from `mst-controller join-token` or the UI)"
+                    "host is not enrolled; set join_token in {} (from `mst-controller join-token` or the UI)",
+                    args.config.display()
                 );
             };
             let id =
-                enroll::enroll(&args.controller[0], token, facts.clone(), &args.state_dir).await?;
+                enroll::enroll(&cfg.controllers[0], token, facts.clone(), &cfg.state_dir).await?;
             tracing::info!(host = %id.host_id, "enrolled");
             id
         }
@@ -114,22 +89,22 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!(error = %format!("{e:#}"), "restricting libvirt's TLS clients to hosts");
     }
 
-    let pools = Pools::new(&args.data_dir);
+    let pools = Pools::new(&cfg.data_dir);
     let agent = Arc::new(session::Agent {
-        controllers: args.controller,
+        controllers: cfg.controllers,
         current: std::sync::atomic::AtomicUsize::new(0),
         identity: std::sync::RwLock::new(identity),
-        state_dir: args.state_dir.clone(),
+        state_dir: cfg.state_dir.clone(),
         reconnect: std::sync::Arc::default(),
         in_flight: Default::default(),
         facts,
         lv: lv.clone(),
         pools,
-        max_image_bytes: args.image_max_gib << 30,
+        max_image_bytes: cfg.image_max_gib << 30,
         ovn_sb_remote: Default::default(),
         qemu_tls: Default::default(),
         files: vm::VmFiles {
-            cloud_init_dir: args.data_dir.join("cloud-init"),
+            cloud_init_dir: cfg.data_dir.join("cloud-init"),
         },
         changes: tokio::sync::Mutex::new(lv.watch()),
         libvirt_tls: tokio::sync::watch::Sender::new(None),

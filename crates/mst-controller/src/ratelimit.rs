@@ -1,6 +1,6 @@
 //! Rate limiting and response hardening for the HTTP API.
 //!
-//! Limits are token buckets. With `--redis-url` they are kept in Redis and
+//! Limits are token buckets. With `api.redis_url` they are kept in Redis and
 //! shared by all controller replicas, so a client's budget is the same
 //! whichever replica it reaches, and survives restarts. Without it, or
 //! while Redis cannot be reached, each replica keeps its own in memory:
@@ -236,7 +236,8 @@ impl Limits {
 
 /// Networks whose `X-Forwarded-For`, `X-Forwarded-Proto` and
 /// `X-Forwarded-Host` are believed (the load balancers).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(try_from = "String")]
 pub struct Cidr {
     net: IpAddr,
     len: u8,
@@ -259,6 +260,14 @@ impl FromStr for Cidr {
             return Err(format!("prefix length too long in {s}"));
         }
         Ok(Self { net, len })
+    }
+}
+
+impl TryFrom<String> for Cidr {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, String> {
+        s.parse()
     }
 }
 

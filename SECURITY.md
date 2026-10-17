@@ -113,7 +113,7 @@ A review of the whole system before calling it hardened. Fixed:
 |---|---|
 | Tenant image URLs could make hosts fetch from the management network and serve the response back as a disk; qcow2 images could name backing or external data files on the host | public addresses only, no file references, size and resource limits |
 | Secrets (the CA key among them) were stored in plain text in the database | sealed under a master key |
-| A sub-tenant admin could point their identity provider at an internal address and read the controller's errors, probing the management network | sub-tenants' providers, and the endpoints their discovery documents name, must be public; the provider tenant's, and issuers listed in `--trusted-oidc-issuers`, may be internal |
+| A sub-tenant admin could point their identity provider at an internal address and read the controller's errors, probing the management network | sub-tenants' providers, and the endpoints their discovery documents name, must be public; the provider tenant's, and issuers listed in `api.trusted_oidc_issuers`, may be internal |
 | The OVN northbound database was reachable over plain TCP only: anyone on the management network could rewrite all tenant networks | TLS with client certificates, and clustered databases |
 | Replica certificates were accepted for their whole year, also after the replica was gone | only live replicas' certificates are accepted |
 | No limit on sign-in attempts | rate limits per client and per account, shared by replicas through Redis |
@@ -126,7 +126,7 @@ A review of the whole system before calling it hardened. Fixed:
 | Host certificates could not be revoked | the controller's CA keeps a revocation list that hosts install for QEMU and libvirt: a renewed host's previous certificate is revoked once it uses the new one, a decommissioned host's at once |
 | For live migration, each host's libvirt accepted connections from the other hosts with full control: one compromised host could take over the rest | the controller drives migrations on each host's own libvirt; libvirt's TLS listener is closed (opened only while an older agent in the cluster still migrates peer to peer) |
 | API tokens carried all of their user's rights | tokens can be limited to roles at tenants |
-| Hosts' ovn-controller used the southbound database with no TLS or RBAC: any host could rewrite every host's flows | agents set up TLS with a certificate per chassis from a separate OVN CA, under OVN's RBAC (`--ovn-sb`) |
+| Hosts' ovn-controller used the southbound database with no TLS or RBAC: any host could rewrite every host's flows | agents set up TLS with a certificate per chassis from a separate OVN CA, under OVN's RBAC (`ovn.southbound`) |
 | Unchecked whether IPv6 gets around IPv4-only networks | tested: guests reach no neighbour over IPv6, and cannot advertise themselves as router |
 | Deleting a pool, an image or a host left mounts, storage credentials (Ceph keyrings, libvirt secrets) and cached data on hosts | hosts let go of them at once, or when they reconnect; Delete also removes metastratum's data from the storage or the machine |
 | A dependency (`inout` 0.2.3) had been yanked | updated to 0.2.4 |
@@ -139,13 +139,13 @@ A review of the whole system before calling it hardened. Fixed:
   cannot impose it on OVN.
   *Mitigation:* install a bundle from `mst-controller ovn-certificate` on
   each OVN central node, which switches both databases to TLS, and run the
-  controllers with `--ovn-nb ssl:...` and `--ovn-sb ssl:...`; remove any
+  controllers with `ssl:` servers in `ovn.northbound` and `ovn.southbound`; remove any
   plain listeners left ([operations](docs/operations.md#ovn)).
 - **The controller serves plain HTTP.** Sessions and passwords would cross
   the network in clear text.
   *Mitigation:* put a TLS-terminating proxy in front of it, listen on
   localhost or a private address only, list the proxy in
-  `--trusted-proxies` and have it set `X-Forwarded-Proto` (then cookies are
+  `api.trusted_proxies` and have it set `X-Forwarded-Proto` (then cookies are
   `Secure`, HSTS is on and OIDC redirect URIs use `https`).
 - **A compromised controller compromises everything.** It holds the master
   key, both CAs and the database credentials, and drives every host.
@@ -162,7 +162,7 @@ A review of the whole system before calling it hardened. Fixed:
   Give automation scoped API tokens that expire.
 - **Rate limits are per controller without Redis.** N controllers allow N
   times the sign-in attempts, and a restart resets them.
-  *Mitigation:* share them through Redis (`--redis-url`, `rediss://` for
+  *Mitigation:* share them through Redis (`api.redis_url`, `rediss://` for
   TLS).
 - **A host may be able to disrupt a migration it is not part of.** It
   cannot send a VM in: the destination accepts only the source's one-off
@@ -202,18 +202,18 @@ A review of the whole system before calling it hardened. Fixed:
 What metastratum offers but leaves to the deployment to switch on:
 
 - HTTPS in front of the controllers, with `X-Forwarded-Proto` from a proxy
-  in `--trusted-proxies`; the API listening on a private address.
+  in `api.trusted_proxies`; the API listening on a private address.
 - TLS for OVN's databases: a bundle from `ovn-certificate` on each OVN
-  central node, `--ovn-nb ssl:...` and `--ovn-sb ssl:...`, and no plain
+  central node, `ssl:` servers in `ovn.northbound` and `ovn.southbound`, and no plain
   listeners left.
-- `--redis-url` with more than one controller.
+- `api.redis_url` with more than one controller.
 - The master key and other keys as systemd credentials; the master key out
   of the database's backups.
 - PostgreSQL over TLS (`sslmode=verify-full`), reachable by the
   controllers only.
 - A management network for hosts and controllers that guests and tenants
   cannot reach; migration ports (49152-49215) open between hosts only;
-  `--metrics-listen` on a private address.
+  `metrics_listen` on a private address.
 - Fencing on every host of clusters with high availability.
 - Per-VM limits on clusters.
 - Sign-in through identity providers with multi-factor authentication;

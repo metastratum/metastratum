@@ -1,4 +1,4 @@
-//! Prometheus metrics, served at `/metrics` on `--metrics-listen`.
+//! Prometheus metrics, served at `/metrics` on `metrics_listen`.
 //!
 //! Two kinds:
 //!

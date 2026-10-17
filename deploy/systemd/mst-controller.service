@@ -5,18 +5,15 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-# DATABASE_URL, MST_MASTER_KEY_FILE, MST_OVN_NB, MST_LISTEN, ... (see
-# `mst-controller serve --help`). Keep this file and the master key readable
-# by root only.
-EnvironmentFile=/etc/metastratum/controller.env
-ExecStart=/usr/local/bin/mst-controller serve
+# The settings (see deploy/config/controller.toml) and the master key beside
+# them are passed in as credentials, readable by this service only. Keep
+# both readable by root only on disk.
+LoadCredential=controller.toml:/etc/metastratum/controller.toml
+LoadCredential=master.key:/etc/metastratum/master.key
+ExecStart=/usr/local/bin/mst-controller --config %d/controller.toml serve
 Restart=always
 RestartSec=5
 DynamicUser=yes
-# The master key, OVN client key and so on are passed in as credentials,
-# readable by this service only, e.g.:
-#   LoadCredential=master.key:/etc/metastratum/master.key
-#   Environment=MST_MASTER_KEY_FILE=%d/master.key
 # Fencing hosts that are VMs on this machine (libvirt fencing) needs its
 # libvirt socket:
 #   SupplementaryGroups=libvirt

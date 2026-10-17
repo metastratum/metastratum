@@ -1,0 +1,59 @@
+# metastratum controller configuration: /etc/metastratum/controller.toml
+# (another file with `mst-controller --config FILE` or MST_CONFIG=FILE).
+#
+# Only database_url and ovn.northbound are required; the rest shows the
+# defaults or examples, commented out. Unknown settings are refused. Paths
+# are relative to this file. It holds the database password: keep it
+# readable by the controller only.
+
+# PostgreSQL, shared by all controllers.
+database_url = "postgres://metastratum:secret@db.example.net/metastratum?sslmode=verify-full"
+
+# The key sealing secrets in the database (CA keys, storage keys, identity
+# provider secrets). Create it with `mst-controller gen-master-key`; every
+# controller needs the same one, and the database's backups must not.
+#master_key_file = "master.key"
+
+# The built web UI, served at /. Default: /usr/share/metastratum/web, if
+# it is there.
+#web_dir = "/usr/share/metastratum/web"
+
+# Prometheus metrics at /metrics. Off by default; keep it off the API's
+# address, as metrics name hosts and count every tenant's resources.
+#metrics_listen = "10.0.0.21:9180"
+
+[api]
+# The HTTP API and web UI. Put an HTTPS proxy in front of it.
+#listen = "127.0.0.1:8080"
+
+# The proxies' addresses or networks. Their X-Forwarded-For gives clients'
+# addresses for rate limits, X-Forwarded-Proto: https makes cookies Secure
+# and turns on HSTS, and X-Forwarded-Host names the site (else Host does).
+#trusted_proxies = ["10.0.0.5", "10.0.1.0/24"]
+
+# Identity provider issuers sub-tenants may use although they are on
+# internal addresses (sub-tenants' providers must otherwise be public).
+#trusted_oidc_issuers = ["https://sso.internal.example.net/realms/acme"]
+
+# Redis, to share rate limits between controllers; without it each limits
+# on its own.
+#redis_url = "rediss://:secret@redis.example.net:6380"
+
+[agents]
+# The endpoint hosts' agents connect to (gRPC over mutual TLS).
+#listen = "0.0.0.0:8443"
+
+# Where the other controllers reach this one's agent endpoint. Default: the
+# listen address if it names one, else this machine's address towards the
+# database's host.
+#peer_address = "10.0.0.21:8443"
+
+[ovn]
+# The northbound database's servers; the cluster's leader is used. Over
+# ssl:, they need certificates from `mst-controller ovn-certificate`.
+northbound = ["ssl:10.0.0.31:6641", "ssl:10.0.0.32:6641", "ssl:10.0.0.33:6641"]
+
+# The southbound database's servers, for hosts' ovn-controller (ssl: only).
+# Hosts then get certificates naming their chassis, for OVN's RBAC. Without
+# it, hosts keep the remote they were set up with.
+#southbound = ["ssl:10.0.0.31:6642", "ssl:10.0.0.32:6642", "ssl:10.0.0.33:6642"]

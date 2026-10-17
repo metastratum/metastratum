@@ -1,0 +1,20 @@
+# Controller configuration for development against the lab (see the README):
+#   export MST_CONFIG=deploy/dev/controller.toml
+# Every setting: deploy/config/controller.toml. Paths are relative to this
+# file; master.key beside it is ignored by git.
+database_url = "postgres://metastratum:metastratum@127.0.0.1:55432/metastratum"
+web_dir = "../../web/dist"
+
+[api]
+listen = "127.0.0.1:18080"
+redis_url = "redis://127.0.0.1:56379"
+# Dex (compose.yaml) is on an internal address.
+trusted_oidc_issuers = ["http://127.0.0.1:5556/dex"]
+
+[agents]
+listen = "10.77.0.1:8443"
+
+[ovn]
+# With TLS (README): ["ssl:10.77.0.10:6641"], and southbound below.
+northbound = ["tcp:10.77.0.10:6641"]
+#southbound = ["ssl:10.77.0.10:6642"]

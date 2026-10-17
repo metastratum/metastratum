@@ -1,0 +1,33 @@
+# metastratum host agent configuration: /etc/metastratum/agent.toml
+# (another file with `mst-agent --config FILE` or MST_CONFIG=FILE).
+#
+# Only controllers is required, and join_token until the host is enrolled;
+# the rest shows the defaults, commented out. Unknown settings are refused.
+# Paths are relative to this file.
+
+# The controllers' agent endpoints. With several, the agent moves to the
+# next when one is unreachable.
+controllers = ["https://ctl1.example.net:8443", "https://ctl2.example.net:8443"]
+
+# Single-use token from `mst-controller join-token` or the web UI
+# (Infrastructure -> Hosts); only needed for the first start.
+#join_token = "mstjoin...."
+
+# The address the controllers and other hosts reach this host on. Default:
+# the one the route to the first controller leaves from.
+#address = "10.0.0.11"
+
+# The host's identity (key and certificates).
+#state_dir = "/var/lib/metastratum-agent"
+
+# VM data: images, volumes, cloud-init seeds.
+#data_dir = "/var/lib/metastratum"
+
+# The largest image the host downloads, in GiB.
+#image_max_gib = 64
+
+#libvirt_uri = "qemu:///system"
+
+# libvirt's socket. Default: virtqemud's, or libvirtd's on monolithic
+# installs.
+#libvirt_socket = "/run/libvirt/virtqemud-sock"

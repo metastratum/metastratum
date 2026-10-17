@@ -5,9 +5,9 @@
 # Usage: deploy/lab/agent.sh [host...]          (default: all three hosts)
 #
 # Environment:
-#   MST_CONTROLLER       agent endpoint the hosts dial (default https://10.77.0.1:8443)
-#   DATABASE_URL         controller database, used to issue join tokens
-#   MST_MASTER_KEY_FILE  the controller's master key (join tokens use its CA)
+#   MST_CONTROLLER  agent endpoints the hosts dial, comma-separated
+#                   (default https://10.77.0.1:8443)
+#   MST_CONFIG      the controller's configuration, used to issue join tokens
 set -euo pipefail
 
 LAB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,7 +33,7 @@ main() {
     "$LAB" ssh "$host" 'cat > /tmp/mst-agent.service' <"$ROOT/deploy/systemd/mst-agent.service"
     token=""
     if ! "$LAB" ssh "$host" test -e /var/lib/metastratum-agent/host_id; then
-      : "${DATABASE_URL:?DATABASE_URL is needed to issue a join token for $host}"
+      : "${MST_CONFIG:?MST_CONFIG must name the controller configuration to issue a join token for $host}"
       token=$("$ROOT/target/debug/mst-controller" join-token --ttl-minutes 15)
     fi
     "$LAB" ssh "$host" sudo bash -s -- "$CONTROLLER" "$token" <<'REMOTE'
@@ -42,12 +42,13 @@ install -m 0755 /tmp/mst-agent /usr/local/bin/mst-agent
 install -m 0644 /tmp/mst-agent.service /etc/systemd/system/mst-agent.service
 install -d -m 0755 /etc/metastratum
 {
-  echo "MST_CONTROLLER=$1"
+  printf 'controllers = ["%s"]\n' "${1//,/\", \"}"
   # The token is single-use; it is only needed until the host is enrolled.
   # (ssh drops an empty argument, so it may be missing entirely.)
-  [[ -n ${2:-} ]] && echo "MST_JOIN_TOKEN=$2"
-} > /etc/metastratum/agent.env
-chmod 0600 /etc/metastratum/agent.env
+  [[ -n ${2:-} ]] && printf 'join_token = "%s"\n' "$2"
+} > /etc/metastratum/agent.toml
+chmod 0600 /etc/metastratum/agent.toml
+rm -f /etc/metastratum/agent.env
 systemctl daemon-reload
 systemctl enable -q mst-agent
 systemctl restart mst-agent

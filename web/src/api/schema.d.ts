@@ -1639,7 +1639,7 @@ export interface components {
         JoinTokenView: {
             /** Format: date-time */
             expires_at: string;
-            /** @description Pass to `mst-agent --join-token`. Shown only once. */
+            /** @description For the agent's join_token setting. Shown only once. */
             token: string;
         };
         /** @enum {string} */

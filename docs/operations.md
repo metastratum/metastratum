@@ -21,22 +21,29 @@ their traffic keeps flowing while every controller is down.
 ## Controllers
 
 Run as many replicas as you like (two or three is plenty), each with the
-same database, master key and OVN remotes. `deploy/systemd/mst-controller.service`
-is a unit for them; settings go in `/etc/metastratum/controller.env`:
+same database, master key and OVN servers. `deploy/systemd/mst-controller.service`
+is a unit for them. Their settings are in `/etc/metastratum/controller.toml`,
+with the master key beside it as `master.key`; the unit passes both in as
+credentials, readable by the controller alone. A typical file:
 
-```sh
-DATABASE_URL=postgres://metastratum:...@db.example.net/metastratum?sslmode=verify-full
-MST_MASTER_KEY_FILE=/run/credentials/mst-controller.service/master.key
-MST_LISTEN=127.0.0.1:8080              # behind the HTTPS proxy
-MST_TRUSTED_PROXIES=127.0.0.1
-MST_AGENT_LISTEN=0.0.0.0:8443
-MST_AGENT_NAMES=ctl1.example.net,10.0.0.21
-MST_PEER_ADDRESS=10.0.0.21:8443
-MST_OVN_NB=ssl:10.0.0.31:6641,ssl:10.0.0.32:6641,ssl:10.0.0.33:6641
-MST_OVN_SB=ssl:10.0.0.31:6642,ssl:10.0.0.32:6642,ssl:10.0.0.33:6642
-MST_METRICS_LISTEN=10.0.0.21:9180
-MST_REDIS_URL=rediss://:...@redis.example.net:6380
+```toml
+database_url = "postgres://metastratum:...@db.example.net/metastratum?sslmode=verify-full"
+metrics_listen = "10.0.0.21:9180"
+
+[api]
+trusted_proxies = ["10.0.0.5", "10.0.0.6"]
+redis_url = "rediss://:...@redis.example.net:6380"
+
+[ovn]
+northbound = ["ssl:10.0.0.31:6641", "ssl:10.0.0.32:6641", "ssl:10.0.0.33:6641"]
+southbound = ["ssl:10.0.0.31:6642", "ssl:10.0.0.32:6642", "ssl:10.0.0.33:6642"]
 ```
+
+Everything else has a default: the API on `127.0.0.1:8080` (for the proxy
+in front), the agent endpoint on port 8443. `deploy/config/controller.toml`
+lists every setting. A setting the controller does not know is an error, so
+a typo is caught when it starts. The other commands (`bootstrap`,
+`join-token`, `ovn-certificate`) read the same file.
 
 **The master key** seals the secrets kept in Postgres: the internal CA's
 key, storage credentials, identity provider client secrets and BMC
@@ -52,7 +59,7 @@ The proxy must:
 - pass WebSocket upgrades (`/api/v1/console/...`, the virtual consoles);
 - not buffer `/api/v1/events` (Server-Sent Events, the UI's live updates),
   and allow idle connections of a few minutes on both;
-- be listed in `--trusted-proxies`, and set `X-Forwarded-For` (so rate
+- be listed in `api.trusted_proxies`, and set `X-Forwarded-For` (so rate
   limits see clients rather than the proxy) and `X-Forwarded-Proto`,
   replacing whatever the client sent. `X-Forwarded-Proto: https` marks the
   session cookie `Secure` and turns on Strict-Transport-Security;
@@ -88,19 +95,20 @@ The controllers need no setting: they read the name from the request, as
 for the redirect URI above.
 
 **Agent traffic** does not go through that proxy. Each host dials a
-replica's agent endpoint (`--agent-listen`, gRPC with mutual TLS against
-the controller's own CA) and keeps one session open. Give the agents every
-replica, comma-separated, in `MST_CONTROLLER` in `/etc/metastratum/agent.env`
-(`https://ctl1.example.net:8443,https://ctl2.example.net:8443`); an agent
-that loses its replica moves to the next. `--agent-names` must include the
-name or address agents use for that replica: the endpoint's certificate is
-issued for those names.
+replica's agent endpoint (`agents.listen`, gRPC with mutual TLS against the
+controller's own CA) and keeps one session open. Give the agents every
+replica in `/etc/metastratum/agent.toml`
+(`controllers = ["https://ctl1.example.net:8443", "https://ctl2.example.net:8443"]`,
+see `deploy/config/agent.toml`); an agent that loses its replica moves to
+the next. Agents check the endpoint's certificate against the controller's
+CA, not its name, so any name or address that reaches a replica will do.
 
 A request or task may land on a replica other than the one holding the
 host's session. It then forwards the command, or console stream, to that
-replica over the agent endpoint, so replicas must reach each other's
-`--peer-address`, and authenticate each other with certificates the CA
-issues them at startup.
+replica over the agent endpoint, so replicas must reach each other, and
+authenticate each other with certificates the CA issues them at startup.
+Each finds its own address for that from the route to the database (set
+`agents.peer_address` if the others reach it elsewhere).
 
 **Work shared between replicas.** Tasks (creating, migrating VMs...) are
 claimed from Postgres by any replica with a lease, and resumed by another
@@ -128,7 +136,7 @@ A recipe that fits: three PostgreSQL servers managed by
 Kubernetes API, as its store), synchronous replication to one standby
 (`synchronous_mode: true`) so a failover loses no committed task, and
 HAProxy in front sending connections to whichever node Patroni's REST API
-reports as primary (`option httpchk GET /primary`). Point `DATABASE_URL` at
+reports as primary (`option httpchk GET /primary`). Point `database_url` at
 HAProxy.
 
 On failover the controllers' connections break. They reconnect on their
@@ -158,7 +166,7 @@ on every host. The controller has the certificate authorities for both:
   no access control, so hosts must never get in. Each replica issues itself
   a client certificate from it at startup and renews it.
 - **Southbound**, which every host's `ovn-controller` uses, trusts the OVN
-  CA. With `--ovn-sb ssl:...` each agent gets a certificate from it naming
+  CA. With `ovn.southbound` set, each agent gets a certificate from it naming
   its chassis, installs it, points `ovn-controller` at the southbound remote,
   and renews it like its own. OVN's RBAC then holds each host to its own
   chassis: a host that is taken over cannot rewrite the others' bindings or
@@ -178,7 +186,7 @@ both databases to use them, and serves them over TLS: northbound on
 `--sb-port` choose others), replacing plain listeners on those ports. In a
 cluster the settings are shared, so the files must be at the same place on
 every node: run each node's bundle on that node. Then start the controllers
-with `--ovn-nb ssl:...` and `--ovn-sb ssl:...`, nothing else.
+with `ssl:` servers in `ovn.northbound` and `ovn.southbound`, nothing else.
 
 The server certificates last a year (`--days`). The controllers look at
 what each server presents every hour, export its expiry
@@ -235,7 +243,7 @@ certificates are revoked, and the dialog asks for the host's name:
 OVN is yours, so it stays either way: `ovn-controller` keeps running, and
 the chassis, its bridges and settings stay. Delete only undoes what
 metastratum changed: it puts back the southbound address the host had before
-`--ovn-sb` (the agent keeps a record of it) and removes metastratum's TLS
+`ovn.southbound` (the agent keeps a record of it) and removes metastratum's TLS
 settings. Delete the chassis yourself (`ovn-sbctl chassis-del <name>`) if
 the machine leaves OVN too. A re-enrolled machine keeps its name; the old
 record stays, listed as decommissioned.
@@ -328,7 +336,7 @@ The release notes say when a release drops support for an agent revision.
 
 ## Monitoring
 
-`--metrics-listen` serves Prometheus metrics at `/metrics`, on an address of
+`metrics_listen` serves Prometheus metrics at `/metrics`, on an address of
 its own rather than the API's: they name hosts and count resources across
 tenants. Scrape every replica:
 
@@ -396,7 +404,7 @@ therefore cannot be guessed at quickly, but its user is slowed down, not
 locked out: the budget refills. Refusals are HTTP 429 with `Retry-After`,
 counted in `mst_rate_limited_total`.
 
-Give the controllers a Redis (`--redis-url`, `rediss://` for TLS) and they
+Give the controllers a Redis (`api.redis_url`, `rediss://` for TLS) and they
 share these budgets, whichever replica a client reaches, and keep them
 across restarts. Redis holds nothing else: losing it loses nothing but the
 budgets, and while it cannot be reached each replica limits on its own

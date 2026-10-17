@@ -112,7 +112,7 @@ pub struct CreateJoinToken {
 
 #[derive(Serialize, ToSchema)]
 pub struct JoinTokenView {
-    /// Pass to `mst-agent --join-token`. Shown only once.
+    /// For the agent's join_token setting. Shown only once.
     token: String,
     expires_at: DateTime<Utc>,
 }

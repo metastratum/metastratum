@@ -61,7 +61,7 @@ enum Reach {
 }
 
 /// The provider's (root tenant's) identity provider, and issuers the
-/// operator listed in `--trusted-oidc-issuers`, may be internal.
+/// operator listed in `api.trusted_oidc_issuers`, may be internal.
 async fn reach(state: &AppState, tenant: TenantId, issuer: &str) -> mst_db::Result<Reach> {
     let trusted = state
         .trusted_oidc_issuers

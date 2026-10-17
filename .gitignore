@@ -6,3 +6,4 @@
 *.iso
 .env
 .claude/scheduled_tasks.lock
+deploy/dev/master.key

@@ -68,11 +68,10 @@ async fn load_or_create_named(
     Ok(Ca::from_pem(&cert, &key)?)
 }
 
-/// Issues this replica's agent-endpoint certificate. Returns the PEM chain
-/// (leaf then CA, so agents can find the CA to pin) and the key.
-pub fn server_identity(ca: &Ca, extra_names: &[String]) -> anyhow::Result<(String, String)> {
-    let mut sans = vec![SERVER_NAME.to_owned()];
-    sans.extend(extra_names.iter().cloned());
-    let (cert, key) = ca.issue_server(&sans, SERVER_LIFETIME)?;
+/// Issues this replica's agent-endpoint certificate, for the fixed name
+/// agents and replicas check. Returns the PEM chain (leaf then CA, so agents
+/// can find the CA to pin) and the key.
+pub fn server_identity(ca: &Ca) -> anyhow::Result<(String, String)> {
+    let (cert, key) = ca.issue_server(&[SERVER_NAME.to_owned()], SERVER_LIFETIME)?;
     Ok((format!("{cert}{}", ca.cert_pem()), key))
 }
