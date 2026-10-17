@@ -2031,7 +2031,7 @@ dependencies = [
 
 [[package]]
 name = "mst-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -2055,7 +2055,7 @@ dependencies = [
 
 [[package]]
 name = "mst-authz"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mst-core",
  "serde",
@@ -2063,7 +2063,7 @@ dependencies = [
 
 [[package]]
 name = "mst-controller"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2111,7 +2111,7 @@ dependencies = [
 
 [[package]]
 name = "mst-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2123,7 +2123,7 @@ dependencies = [
 
 [[package]]
 name = "mst-db"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "mst-core",
@@ -2139,7 +2139,7 @@ dependencies = [
 
 [[package]]
 name = "mst-e2e"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -2157,7 +2157,7 @@ dependencies = [
 
 [[package]]
 name = "mst-libvirt"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "mst-virtrpc",
@@ -2170,7 +2170,7 @@ dependencies = [
 
 [[package]]
 name = "mst-netplan"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mst-ovsdb",
  "serde_json",
@@ -2180,7 +2180,7 @@ dependencies = [
 
 [[package]]
 name = "mst-ovsdb"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rcgen",
  "rustls",
@@ -2193,7 +2193,7 @@ dependencies = [
 
 [[package]]
 name = "mst-pki"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "chacha20poly1305",
@@ -2209,7 +2209,7 @@ dependencies = [
 
 [[package]]
 name = "mst-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "prost",
  "tonic",
@@ -2219,14 +2219,14 @@ dependencies = [
 
 [[package]]
 name = "mst-scheduler"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mst-core",
 ]
 
 [[package]]
 name = "mst-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures",
  "reqwest",
@@ -2241,7 +2241,7 @@ dependencies = [
 
 [[package]]
 name = "mst-virtrpc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rustix",
  "thiserror 2.0.21",
@@ -2251,7 +2251,7 @@ dependencies = [
 
 [[package]]
 name = "mstctl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
