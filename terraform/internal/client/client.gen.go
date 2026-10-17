@@ -98,6 +98,9 @@ type AcceptedVmView struct {
 	Error        *string    `json:"error,omitempty"`
 	Firmware     Firmware   `json:"firmware"`
 
+	// FreePageReporting The guest hands memory it frees back to its host.
+	FreePageReporting bool `json:"free_page_reporting"`
+
 	// HostConnected Whether the VM's host is connected and reporting. When it is not,
 	// `power` is the last state reported and may be out of date.
 	HostConnected bool    `json:"host_connected"`
@@ -556,7 +559,10 @@ type CreateVm struct {
 	// DiskGib Size of the boot disk. Must be at least the image's size.
 	DiskGib  int64     `json:"disk_gib"`
 	Firmware *Firmware `json:"firmware,omitempty"`
-	ImageId  ImageId   `json:"image_id"`
+
+	// FreePageReporting The guest hands memory it frees back to its host (on by default).
+	FreePageReporting *bool   `json:"free_page_reporting,omitempty"`
+	ImageId           ImageId `json:"image_id"`
 
 	// MaxMemoryMib What its memory may grow to while it runs (through its balloon, for
 	// guests with the driver); `memory_mib` by default. Its host keeps
@@ -1547,6 +1553,10 @@ type UpdateUser struct {
 
 // UpdateVm defines model for UpdateVm.
 type UpdateVm struct {
+	// FreePageReporting The guest hands memory it frees back to its host. Only while it is
+	// stopped; it applies from the next start.
+	FreePageReporting *bool `json:"free_page_reporting,omitempty"`
+
 	// MaxMemoryMib What memory may grow to while the VM runs. Only while it is stopped;
 	// it counts against quotas and its host's room as its memory does.
 	MaxMemoryMib *int64 `json:"max_memory_mib,omitempty"`
@@ -1667,6 +1677,9 @@ type VmView struct {
 	Disks        []DiskSpec `json:"disks"`
 	Error        *string    `json:"error,omitempty"`
 	Firmware     Firmware   `json:"firmware"`
+
+	// FreePageReporting The guest hands memory it frees back to its host.
+	FreePageReporting bool `json:"free_page_reporting"`
 
 	// HostConnected Whether the VM's host is connected and reporting. When it is not,
 	// `power` is the last state reported and may be out of date.

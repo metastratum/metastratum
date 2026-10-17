@@ -405,9 +405,14 @@ The host keeps the maximums for the VM, and they count against the
 tenant's `vcpus` and `memory_mib` quotas, so growing within them never
 fails for want of room. Raising a maximum itself needs the VM stopped.
 
-Guests also hand memory they do not use back to their host as they free
-it (free page reporting), so a host's actual use stays below what it keeps
-for its VMs. VMs made before this get it at their next start from stopped.
+Guests also hand memory they free back to their host as they free it
+(free page reporting), so a host's actual use stays below what it keeps
+for its VMs. It can be turned off per VM (Details → Free memory, or
+`free_page_reporting` in the API and Terraform), for a guest that should
+keep its memory: one that frees and reuses a lot of it quickly pays for
+getting it back from the host each time. It is part of the VM's balloon,
+so it changes while the VM is stopped and applies from its next start.
+VMs made before it existed get it at their next start from stopped.
 
 ## Templates and clones
 

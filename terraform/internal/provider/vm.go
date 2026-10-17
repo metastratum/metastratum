@@ -44,6 +44,7 @@ type vmModel struct {
 	MaxVcpus          types.Int32  `tfsdk:"max_vcpus"`
 	MemoryMib         types.Int64  `tfsdk:"memory_mib"`
 	MaxMemoryMib      types.Int64  `tfsdk:"max_memory_mib"`
+	FreePageReporting types.Bool   `tfsdk:"free_page_reporting"`
 	DiskGib           types.Int64  `tfsdk:"disk_gib"`
 	Firmware          types.String `tfsdk:"firmware"`
 	NetworkID         types.String `tfsdk:"network_id"`
@@ -121,6 +122,13 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 				Optional:      true,
 				Computed:      true,
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()},
+			},
+			"free_page_reporting": schema.BoolAttribute{
+				Description: "The guest hands memory it frees back to its host (default true). " +
+					"Changing it stops the VM: it applies from the next start.",
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
 			},
 			"disk_gib": schema.Int64Attribute{
 				Description: "Size of the boot disk in GiB; required with `image_id`. It grows in place; making it smaller replaces the VM.",
@@ -241,6 +249,7 @@ func (m *vmModel) set(ctx context.Context, v *client.VmView, diags *diag.Diagnos
 	m.MaxVcpus = types.Int32Value(int32(v.MaxVcpus))
 	m.MemoryMib = types.Int64Value(v.MemoryMib)
 	m.MaxMemoryMib = types.Int64Value(v.MaxMemoryMib)
+	m.FreePageReporting = types.BoolValue(v.FreePageReporting)
 	if len(v.Disks) > 0 {
 		m.DiskGib = types.Int64Value((v.Disks[0].SizeBytes + gib - 1) / gib)
 		// Imported: what it was made from is its disk's image.
@@ -409,6 +418,7 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 			MaxVcpus:          plan.MaxVcpus.ValueInt32Pointer(),
 			MemoryMib:         plan.MemoryMib.ValueInt64(),
 			MaxMemoryMib:      plan.MaxMemoryMib.ValueInt64Pointer(),
+			FreePageReporting: plan.FreePageReporting.ValueBoolPointer(),
 			DiskGib:           plan.DiskGib.ValueInt64(),
 			Start:             &start,
 			NetworkId:         optID(path.Root("network_id"), plan.NetworkID, d),
@@ -546,6 +556,9 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 	}
 	if !plan.MaxMemoryMib.IsUnknown() && !plan.MaxMemoryMib.Equal(state.MaxMemoryMib) {
 		change.MaxMemoryMib = plan.MaxMemoryMib.ValueInt64Pointer()
+	}
+	if !plan.FreePageReporting.IsUnknown() && !plan.FreePageReporting.Equal(state.FreePageReporting) {
+		change.FreePageReporting = plan.FreePageReporting.ValueBoolPointer()
 	}
 	if !plan.Migratable.IsUnknown() && !plan.Migratable.Equal(state.Migratable) {
 		change.Migratable = plan.Migratable.ValueBoolPointer()

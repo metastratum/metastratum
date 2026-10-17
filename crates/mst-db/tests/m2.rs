@@ -96,7 +96,7 @@ async fn allocate(
         memory_mib: mem,
         max_memory_mib: None,
         max_vcpus: None,
-        free_page_reporting: false,
+        free_page_reporting: None,
         firmware: Default::default(),
         disks: vec![],
         nics: vec![],

@@ -33,11 +33,13 @@ pub struct VmSpec {
     /// hosts' capacity and quotas count.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_memory_mib: Option<u64>,
-    /// The guest hands memory it does not use back to the host (virtio-balloon
-    /// free page reporting). For VMs defined since it existed: it changes the
-    /// device, so a running VM keeps what it started with until it restarts.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub free_page_reporting: bool,
+    /// The guest hands memory it frees back to the host (virtio-balloon free
+    /// page reporting): on for new VMs, and can be turned off (for guests
+    /// that should keep their memory warm, say). It is part of the balloon
+    /// device, so it changes only while the VM is stopped. Unset for VMs
+    /// from before it existed; they get it at their next start from stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free_page_reporting: Option<bool>,
     #[serde(default)]
     pub firmware: Firmware,
     /// Boot disk first.
@@ -62,6 +64,11 @@ impl VmSpec {
     /// for it on its host, and counted against its tenant's quota.
     pub fn reserved_memory_mib(&self) -> u64 {
         self.max_memory_mib.unwrap_or(0).max(self.memory_mib)
+    }
+
+    /// Whether the balloon hands free memory back.
+    pub fn reports_free_pages(&self) -> bool {
+        self.free_page_reporting.unwrap_or(false)
     }
 
     /// The most virtual CPUs the VM can have without a restart: what its
@@ -162,6 +169,24 @@ pub fn mac_for(nic: NicId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn free_page_reporting_tells_off_from_never_set() {
+        let base = r#""vcpus":1,"memory_mib":512,"disks":[],"nics":[]"#;
+        let parse = |extra: &str| -> VmSpec {
+            serde_json::from_str(&format!("{{{base}{extra}}}")).unwrap()
+        };
+        // From before it existed: unset, off until the next start sets it.
+        let legacy = parse("");
+        assert_eq!(legacy.free_page_reporting, None);
+        assert!(!legacy.reports_free_pages());
+        // Turned off: stays off, also written out.
+        let off = parse(r#","free_page_reporting":false"#);
+        assert_eq!(off.free_page_reporting, Some(false));
+        let again: VmSpec = serde_json::from_value(serde_json::to_value(&off).unwrap()).unwrap();
+        assert_eq!(again.free_page_reporting, Some(false));
+        assert!(parse(r#","free_page_reporting":true"#).reports_free_pages());
+    }
 
     #[test]
     fn spec_json_roundtrip_with_defaults() {

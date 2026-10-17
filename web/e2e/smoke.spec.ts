@@ -116,6 +116,10 @@ test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
   // Stopped, it becomes a template: never started, cloned instead.
   await page.getByRole('button', { name: 'Power off' }).click()
   await expect(page.getByText('Stopped', { exact: true })).toBeVisible({ timeout: 60_000 })
+  // Stopped, it can keep the memory it frees instead of handing it back.
+  await expect(page.getByText('Handed back to the host')).toBeVisible()
+  await page.getByRole('button', { name: 'Keep it' }).click()
+  await expect(page.getByText('Kept by the guest')).toBeVisible()
   await page.getByRole('button', { name: 'Make template' }).click()
   await expect(page.locator('.title .tag', { hasText: 'Template' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Start' })).toBeDisabled()

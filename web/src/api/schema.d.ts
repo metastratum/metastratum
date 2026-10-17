@@ -1751,6 +1751,8 @@ export interface components {
             disks: components["schemas"]["DiskSpec"][];
             error?: string | null;
             firmware: components["schemas"]["Firmware"];
+            /** @description The guest hands memory it frees back to its host. */
+            free_page_reporting: boolean;
             /**
              * @description Whether the VM's host is connected and reporting. When it is not,
              *     `power` is the last state reported and may be out of date.
@@ -2123,6 +2125,8 @@ export interface components {
              */
             disk_gib: number;
             firmware?: components["schemas"]["Firmware"];
+            /** @description The guest hands memory it frees back to its host (on by default). */
+            free_page_reporting?: boolean | null;
             image_id: components["schemas"]["ImageId"];
             /**
              * Format: int64
@@ -3003,6 +3007,11 @@ export interface components {
         };
         UpdateVm: {
             /**
+             * @description The guest hands memory it frees back to its host. Only while it is
+             *     stopped; it applies from the next start.
+             */
+            free_page_reporting?: boolean | null;
+            /**
              * Format: int64
              * @description What memory may grow to while the VM runs. Only while it is stopped;
              *     it counts against quotas and its host's room as its memory does.
@@ -3125,6 +3134,8 @@ export interface components {
             disks: components["schemas"]["DiskSpec"][];
             error?: string | null;
             firmware: components["schemas"]["Firmware"];
+            /** @description The guest hands memory it frees back to its host. */
+            free_page_reporting: boolean;
             /**
              * @description Whether the VM's host is connected and reporting. When it is not,
              *     `power` is the last state reported and may be out of date.

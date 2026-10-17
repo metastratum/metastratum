@@ -37,6 +37,7 @@ async fn memory_changes_while_the_vm_runs() -> anyhow::Result<()> {
         (Some(768), Some(1536)),
         "{vm}"
     );
+    assert_eq!(vm["free_page_reporting"], true, "handed back by default");
     let result = async {
         api.wait_task(vm["task_id"].as_str().unwrap(), BOOT).await?;
         scenario(&api, &id).await
@@ -170,6 +171,10 @@ async fn scenario(api: &Api, vm: &str) -> anyhow::Result<()> {
         (json!({"memory_mib": 2048}), "beyond the maximum"),
         (json!({"max_memory_mib": 2048}), "the maximum itself"),
         (json!({"vcpus": 2}), "CPUs"),
+        (
+            json!({"free_page_reporting": false}),
+            "handing free memory back",
+        ),
     ] {
         let (st, b) = patch(api, vm, body).await?;
         assert_eq!(st, 409, "{why}: {b}");
@@ -200,5 +205,23 @@ async fn scenario(api: &Api, vm: &str) -> anyhow::Result<()> {
         (v["memory_mib"].as_u64(), v["max_memory_mib"].as_u64()),
         (Some(2048), Some(2048))
     );
+
+    // Keeping free memory in the guest: from the next start, which brings
+    // the balloon up without reporting.
+    let (st, v) = patch(api, vm, json!({"free_page_reporting": false})).await?;
+    assert_eq!(
+        (st, v["free_page_reporting"].as_bool()),
+        (200, Some(false)),
+        "{v}"
+    );
+    let t = api.post(&format!("/vms/{vm}/start"), json!({})).await?;
+    api.wait_task(t["task_id"].as_str().unwrap(), BOOT).await?;
+    api.wait_vm(vm, BOOT, |v| v["power"] == "running").await?;
+    memory_until(api, vm, BOOT, "the balloon still reports", |m| {
+        m["driver"] == true
+    })
+    .await?;
+    let v = api.get(&format!("/vms/{vm}")).await?;
+    assert_eq!(v["free_page_reporting"], false, "kept over the start: {v}");
     Ok(())
 }

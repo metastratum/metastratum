@@ -78,6 +78,8 @@ pub struct VmView {
     memory_mib: u64,
     /// What `memory_mib` may grow to without a restart.
     max_memory_mib: u64,
+    /// The guest hands memory it frees back to its host.
+    free_page_reporting: bool,
     firmware: Firmware,
     /// Can live-migrate; otherwise it has its host's CPU and disk caching.
     migratable: bool,
@@ -196,6 +198,7 @@ fn view(vm: Vm, ctx: &Context) -> VmView {
         cpu_hotplug: spec.max_vcpus.is_some(),
         memory_mib: spec.memory_mib,
         max_memory_mib: spec.reserved_memory_mib(),
+        free_page_reporting: spec.reports_free_pages(),
         firmware: spec.firmware,
         migratable: spec.migratable,
         disks: spec.disks,
@@ -286,6 +289,9 @@ pub struct CreateVm {
     /// this much for it, and it counts against the tenant's memory quota.
     #[serde(default)]
     max_memory_mib: Option<u64>,
+    /// The guest hands memory it frees back to its host (on by default).
+    #[serde(default)]
+    free_page_reporting: Option<bool>,
     /// Size of the boot disk. Must be at least the image's size.
     disk_gib: u64,
     image_id: ImageId,
@@ -369,6 +375,7 @@ async fn restore_backup(
         max_vcpus: spec.max_vcpus,
         memory_mib: spec.memory_mib,
         max_memory_mib: spec.max_memory_mib,
+        free_page_reporting: spec.free_page_reporting,
         disk_gib: disk_bytes.div_ceil(GIB),
         image_id: ImageId(uuid::Uuid::nil()),
         firmware: spec.firmware,
@@ -446,6 +453,7 @@ async fn clone_vm(
         max_vcpus: spec.max_vcpus,
         memory_mib: spec.memory_mib,
         max_memory_mib: spec.max_memory_mib,
+        free_page_reporting: spec.free_page_reporting,
         disk_gib: disk_bytes.div_ceil(GIB),
         image_id: ImageId(uuid::Uuid::nil()),
         firmware: spec.firmware,
@@ -696,7 +704,7 @@ async fn create_inner(
         max_vcpus: req.max_vcpus.filter(|m| *m > req.vcpus),
         memory_mib: req.memory_mib,
         max_memory_mib: req.max_memory_mib.filter(|m| *m > req.memory_mib),
-        free_page_reporting: true,
+        free_page_reporting: Some(req.free_page_reporting.unwrap_or(true)),
         firmware: req.firmware,
         disks: disks.clone(),
         nics: vec![],
@@ -1074,6 +1082,9 @@ pub struct UpdateVm {
     /// What memory may grow to while the VM runs. Only while it is stopped;
     /// it counts against quotas and its host's room as its memory does.
     max_memory_mib: Option<u64>,
+    /// The guest hands memory it frees back to its host. Only while it is
+    /// stopped; it applies from the next start.
+    free_page_reporting: Option<bool>,
     /// Make the stopped VM a template, kept to be cloned and never started,
     /// or a VM again.
     template: Option<bool>,
@@ -1105,6 +1116,7 @@ async fn update_vm(
         .max_memory_mib
         .unwrap_or_else(|| old.reserved_memory_mib().max(memory_mib));
     let template = req.template.unwrap_or(vm.template);
+    let reporting = req.free_page_reporting.unwrap_or(old.reports_free_pages());
     if (
         migratable,
         vcpus,
@@ -1112,6 +1124,7 @@ async fn update_vm(
         memory_mib,
         max_memory_mib,
         template,
+        reporting,
     ) == (
         old.migratable,
         old.vcpus,
@@ -1119,6 +1132,7 @@ async fn update_vm(
         old.memory_mib,
         old.reserved_memory_mib(),
         vm.template,
+        old.reports_free_pages(),
     ) {
         return Ok(Json(view(vm, &context(&state).await?)));
     }
@@ -1138,12 +1152,13 @@ async fn update_vm(
     let running = vm.power == "running" && vm.desired_power == "running";
     if vm.status == "ready" && !busy && running {
         let old = &vm.spec.0;
-        if (migratable, max_vcpus, max_memory_mib, template)
+        if (migratable, max_vcpus, max_memory_mib, template, reporting)
             != (
                 old.migratable,
                 old.reserved_vcpus(),
                 old.reserved_memory_mib(),
                 vm.template,
+                old.reports_free_pages(),
             )
         {
             return Err(ApiError::conflict(format!(
@@ -1174,6 +1189,9 @@ async fn update_vm(
     spec.max_vcpus = (max_vcpus > vcpus).then_some(max_vcpus);
     spec.memory_mib = memory_mib;
     spec.max_memory_mib = (max_memory_mib > memory_mib).then_some(max_memory_mib);
+    if req.free_page_reporting.is_some() {
+        spec.free_page_reporting = Some(reporting);
+    }
     let migratable_changed = migratable != spec.migratable;
     spec.migratable = migratable;
     if migratable && migratable_changed {
@@ -1196,7 +1214,8 @@ async fn update_vm(
         Some(("vm", id.0)),
         json!({"name": vm.name, "migratable": req.migratable, "vcpus": req.vcpus,
                "max_vcpus": req.max_vcpus, "memory_mib": req.memory_mib,
-               "max_memory_mib": req.max_memory_mib, "template": req.template}),
+               "max_memory_mib": req.max_memory_mib, "template": req.template,
+               "free_page_reporting": req.free_page_reporting}),
     )
     .await;
     let vm = mst_db::vms::get(&state.db, id).await?;

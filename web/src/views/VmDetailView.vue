@@ -81,6 +81,19 @@ async function setTemplate(on: boolean) {
     switching.value = false
   }
 }
+async function setFreePageReporting(on: boolean) {
+  actionError.value = ''
+  switching.value = true
+  try {
+    vm.value = await ok(
+      api.PATCH('/api/v1/vms/{id}', { params: { path: { id: props.id } }, body: { free_page_reporting: on } }),
+    )
+  } catch (e) {
+    actionError.value = errorText(e)
+  } finally {
+    switching.value = false
+  }
+}
 async function setMigratable(on: boolean) {
   actionError.value = ''
   switching.value = true
@@ -337,6 +350,24 @@ async function remove() {
                 @click="setMigratable(!vm.migratable)"
               >
                 {{ switching ? 'Changing…' : vm.migratable ? 'Turn off' : 'Allow' }}
+              </button>
+            </dd>
+            <dt>Free memory</dt>
+            <dd class="migratable">
+              {{ vm.free_page_reporting ? 'Handed back to the host' : 'Kept by the guest' }}
+              <button
+                class="btn small"
+                :disabled="!stopped || switching"
+                :title="
+                  stopped
+                    ? vm.free_page_reporting
+                      ? 'The guest keeps memory it frees: no faults to get it back, but the host cannot use it'
+                      : 'The guest hands memory it frees back to the host, which can use it elsewhere'
+                    : 'Stop the VM to change this'
+                "
+                @click="setFreePageReporting(!vm.free_page_reporting)"
+              >
+                {{ vm.free_page_reporting ? 'Keep it' : 'Hand it back' }}
               </button>
             </dd>
             <dt>Template</dt>

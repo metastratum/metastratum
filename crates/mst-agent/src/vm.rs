@@ -146,7 +146,7 @@ pub async fn domain(
         vcpu_hotplug: spec.max_vcpus.is_some(),
         memory_mib: spec.memory_mib,
         max_memory_mib: spec.reserved_memory_mib(),
-        free_page_reporting: spec.free_page_reporting,
+        free_page_reporting: spec.reports_free_pages(),
         firmware: match spec.firmware {
             Firmware::Bios => mst_libvirt::Firmware::Bios,
             Firmware::Uefi => mst_libvirt::Firmware::Uefi,
