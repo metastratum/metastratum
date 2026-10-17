@@ -720,3 +720,41 @@ async fn migrations_under_way_are_listed(pool: PgPool) {
         (v.id, serde_json::json!({}))
     );
 }
+
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn a_source_is_being_cloned_while_its_clone_is_created(pool: PgPool) {
+    use mst_core::ids::VolumeId;
+    use mst_core::vm::DiskSpec;
+    let t = root(&pool).await;
+    let h = host(&pool).await;
+    let disk = |volume_id, cloned_from| DiskSpec {
+        volume_id,
+        pool_id: mst_core::ids::LOCAL_POOL,
+        size_bytes: 1 << 30,
+        image_id: None,
+        restored_from: None,
+        cloned_from,
+    };
+    let src = vm(&pool, &t, &h, "tpl").await;
+    let src_volume = VolumeId::new();
+    let mut spec = src.spec.0.clone();
+    spec.disks = vec![disk(src_volume, None)];
+    vms::set_spec(&pool, src.id, &spec).await.unwrap();
+    let other = vm(&pool, &t, &h, "other").await;
+    assert!(!vms::being_cloned(&pool, src.id).await.unwrap());
+
+    let copy = vm(&pool, &t, &h, "copy").await;
+    let mut spec = copy.spec.0.clone();
+    spec.disks = vec![disk(VolumeId::new(), Some(src_volume))];
+    vms::set_spec(&pool, copy.id, &spec).await.unwrap();
+    // `vm` leaves it creating.
+    assert!(vms::being_cloned(&pool, src.id).await.unwrap());
+    assert!(!vms::being_cloned(&pool, other.id).await.unwrap());
+    vms::set_status(&pool, copy.id, "ready", None)
+        .await
+        .unwrap();
+    assert!(!vms::being_cloned(&pool, src.id).await.unwrap());
+
+    vms::set_template(&pool, src.id, true).await.unwrap();
+    assert!(vms::get(&pool, src.id).await.unwrap().template);
+}

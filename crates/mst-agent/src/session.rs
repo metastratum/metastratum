@@ -480,6 +480,7 @@ impl Agent {
             Cmd::RevertSnapshot(c) => crate::snapshot::revert(self, &c).await?,
             Cmd::DeleteSnapshot(c) => crate::snapshot::delete(self, &c).await?,
             Cmd::ResizeDisk(c) => crate::vm::resize_disk(self, &c).await?,
+            Cmd::CloneVolume(c) => crate::vm::clone_volume(self, &c).await?,
             Cmd::DeleteImage(c) => {
                 let shared = c.pools.iter().map(pool_spec).collect::<Result<Vec<_>>>()?;
                 crate::cleanup::delete_image(self, &c.image_id, &shared).await?;

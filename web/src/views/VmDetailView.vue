@@ -5,6 +5,7 @@ import { api, ApiError, errorText, ok, type SecurityGroup, type Task, type Vm } 
 import IdChip from '../components/IdChip.vue'
 import MigrateDialog from '../components/MigrateDialog.vue'
 import ResizeDialog from '../components/ResizeDialog.vue'
+import CloneDialog from '../components/CloneDialog.vue'
 import StatusLed from '../components/StatusLed.vue'
 import VmBackups from '../components/VmBackups.vue'
 import VmSnapshots from '../components/VmSnapshots.vue'
@@ -42,12 +43,24 @@ const live = computed(
 const session = useSession()
 const migrating = ref(false)
 const resizing = ref(false)
+const cloning = ref(false)
 const migrationTask = computed(() => tasks.tasks.find((t) => t.id === vm.value?.migration?.task_id))
 // Live migration can change only while the VM is stopped.
 const stopped = computed(
   () => vm.value?.status === 'ready' && vm.value.power === 'stopped' && vm.value.desired_power === 'stopped',
 )
 const switching = ref(false)
+async function setTemplate(on: boolean) {
+  actionError.value = ''
+  switching.value = true
+  try {
+    vm.value = await ok(api.PATCH('/api/v1/vms/{id}', { params: { path: { id: props.id } }, body: { template: on } }))
+  } catch (e) {
+    actionError.value = errorText(e)
+  } finally {
+    switching.value = false
+  }
+}
 async function setMigratable(on: boolean) {
   actionError.value = ''
   switching.value = true
@@ -125,6 +138,16 @@ watch(
 )
 
 onMounted(load)
+// Another VM on the same page (a clone just made): start over.
+watch(
+  () => props.id,
+  () => {
+    vm.value = null
+    missing.value = false
+    tab.value = 'details'
+    void load()
+  },
+)
 // Task notices don't say which VM they are about; their history is cheap.
 useLiveRefresh(['vm', 'task', 'host', 'external_ip'], load, (n) => n.kind !== 'vm' || n.id === props.id)
 
@@ -168,9 +191,17 @@ async function remove() {
       <div class="title">
         <h1>{{ vm.name }}</h1>
         <StatusLed :tone="state.tone" :label="state.text" />
+        <span v-if="vm.template" class="tag">Template</span>
       </div>
       <div class="actions">
-        <button class="btn" :disabled="!settled || !vm.host_connected || vm.power === 'running'" @click="act('start')">Start</button>
+        <button
+          class="btn"
+          :disabled="!settled || !vm.host_connected || vm.power === 'running' || vm.template"
+          :title="vm.template ? 'A template is not started: clone it' : undefined"
+          @click="act('start')"
+        >
+          Start
+        </button>
         <button class="btn" :disabled="!running" title="Ask the guest OS to shut down" @click="act('stop')">Shut down</button>
         <button class="btn" :disabled="!running" title="Cut power immediately" @click="act('force')">Power off</button>
         <button class="btn" :disabled="!running" @click="act('reboot')">Reboot</button>
@@ -190,6 +221,14 @@ async function remove() {
           @click="resizing = true"
         >
           Resize
+        </button>
+        <button
+          class="btn"
+          :disabled="!stopped"
+          :title="stopped ? 'A new VM with copies of its disks' : 'Stop the VM to clone it'"
+          @click="cloning = true"
+        >
+          Clone
         </button>
         <template v-if="!confirmingDelete">
           <button
@@ -264,6 +303,18 @@ async function remove() {
                 {{ switching ? 'Changing…' : vm.migratable ? 'Turn off' : 'Allow' }}
               </button>
             </dd>
+            <dt>Template</dt>
+            <dd class="migratable">
+              {{ vm.template ? 'Yes: cloned, never started' : 'No' }}
+              <button
+                class="btn small"
+                :disabled="!stopped || switching"
+                :title="stopped ? undefined : 'Stop the VM to change this'"
+                @click="setTemplate(!vm.template)"
+              >
+                {{ vm.template ? 'Make it a VM' : 'Make template' }}
+              </button>
+            </dd>
             <dt>Created</dt><dd>{{ new Date(vm.created_at).toLocaleString() }}</dd>
           </dl>
         </section>
@@ -308,8 +359,8 @@ async function remove() {
             <dt>Volume</dt><dd><IdChip :value="d.volume_id" short /></dd>
           </dl>
         </section>
-        <VmSnapshots :vm="vm" />
-        <VmBackups :vm="vm" />
+        <VmSnapshots :key="`snapshots-${vm.id}`" :vm="vm" />
+        <VmBackups :key="`backups-${vm.id}`" :vm="vm" />
         <section>
           <h2 class="label">Recent activity</h2>
           <ol class="history">
@@ -323,6 +374,12 @@ async function remove() {
         </section>
       </div>
     </div>
+    <CloneDialog
+      v-if="cloning"
+      :vm="vm"
+      @close="cloning = false"
+      @created="(v) => ((cloning = false), tasks.poke(), router.push({ name: 'vm', params: { id: v.id } }))"
+    />
     <ResizeDialog v-if="resizing" :vm="vm" @close="resizing = false" @done="(v) => ((resizing = false), (vm = v))" />
     <MigrateDialog
       v-if="migrating"

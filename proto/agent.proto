@@ -200,6 +200,7 @@ message Command {
     RevertSnapshot revert_snapshot = 37;
     DeleteSnapshot delete_snapshot = 38;
     ResizeDisk resize_disk = 39;
+    CloneVolume clone_volume = 40;
   }
 }
 
@@ -432,6 +433,18 @@ message ResizeDisk {
   string vm_id = 1;
   BackupDisk disk = 2;
   uint64 size_bytes = 3;
+}
+
+// Create a volume as a copy of another in the same pool, at least
+// `size_bytes` large, on the image it was made from if given (file pools
+// keep sharing it). No VM may be using the source. An existing volume is
+// left alone.
+message CloneVolume {
+  Pool pool = 1;
+  string source_volume_id = 2;
+  string volume_id = 3;
+  uint64 size_bytes = 4;
+  string image_id = 5;
 }
 
 // An image was deleted: remove its cached copy from the local pool, and from

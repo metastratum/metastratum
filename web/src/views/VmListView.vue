@@ -75,6 +75,7 @@ function created(vm: Vm) {
           <tr v-for="vm in vms" :key="vm.id" @click="router.push({ name: 'vm', params: { id: vm.id } })">
             <td>
               <RouterLink :to="{ name: 'vm', params: { id: vm.id } }" class="name" @click.stop>{{ vm.name }}</RouterLink>
+              <span v-if="vm.template" class="tag">Template</span>
             </td>
             <td v-if="mixed" class="muted">{{ scope.byId.get(vm.tenant_id)?.name ?? '—' }}</td>
             <td><StatusLed :tone="vmState(vm).tone" :label="vmState(vm).text" /></td>
@@ -93,6 +94,9 @@ function created(vm: Vm) {
 </template>
 
 <style scoped>
+.name + .tag {
+  margin-left: 8px;
+}
 .head {
   display: flex;
   align-items: baseline;

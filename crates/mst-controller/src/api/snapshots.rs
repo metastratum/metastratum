@@ -55,8 +55,8 @@ impl From<mst_db::snapshots::Snapshot> for SnapshotView {
     }
 }
 
-/// Refuses work on a VM's disks while a backup or another snapshot
-/// operation has them.
+/// Refuses work on a VM's disks while a backup, a clone or another
+/// snapshot operation has them.
 pub async fn check_idle(db: &mut PgConnection, vm: VmId) -> ApiResult<()> {
     if let Some(what) = mst_db::snapshots::busy(&mut *db, vm).await? {
         return Err(ApiError::conflict(format!(
@@ -70,6 +70,9 @@ pub async fn check_idle(db: &mut PgConnection, vm: VmId) -> ApiResult<()> {
     }
     if mst_db::backups::running_for(&mut *db, vm).await? {
         return Err(ApiError::conflict("a backup of the VM is being taken"));
+    }
+    if mst_db::vms::being_cloned(&mut *db, vm).await? {
+        return Err(ApiError::conflict("a clone of the VM is being made"));
     }
     Ok(())
 }

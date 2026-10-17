@@ -327,6 +327,33 @@ impl RbdPool {
         result
     }
 
+    /// Creates volume `id` as a full copy of `source` (its snapshots are not
+    /// copied), at least `size` bytes; under a temporary name until done.
+    /// An existing volume is left alone.
+    pub async fn clone_volume(&self, source: &str, id: &str, size: u64) -> Result<()> {
+        let vol = self.spec(&Self::volume_name(id)?);
+        if self.exists(&vol).await? {
+            return Ok(());
+        }
+        let src = self.spec(&Self::volume_name(source)?);
+        let tmp = format!("{vol}-{}", random_suffix());
+        let result = async {
+            self.rbd(&["cp", "--no-progress", &src, &tmp]).await?;
+            if size > self.size_of(&tmp).await? {
+                let mib = size.div_ceil(1 << 20).to_string();
+                self.rbd(&["resize", "--no-progress", "--size", &mib, &tmp])
+                    .await?;
+            }
+            self.rbd(&["rename", &tmp, &vol]).await?;
+            Ok(())
+        }
+        .await;
+        if result.is_err() {
+            let _ = self.rbd(&["rm", "--no-progress", &tmp]).await;
+        }
+        result
+    }
+
     /// Grows a volume to `size` bytes; one that large already is left
     /// alone. Safe while a VM uses it, though the VM only notices through
     /// libvirt's block resize.

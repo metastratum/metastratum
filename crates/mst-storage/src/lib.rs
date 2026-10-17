@@ -335,6 +335,48 @@ impl FilePool {
         Ok(removed)
     }
 
+    /// Creates volume `id` as a copy of `source`, at least `size` bytes,
+    /// keeping only what differs from `image` when given (the copy then
+    /// shares it, as volumes made from it do). Internal snapshots are not
+    /// copied. An existing volume is left alone.
+    pub async fn clone_volume(
+        &self,
+        source: &str,
+        id: &str,
+        size: u64,
+        image: Option<&str>,
+    ) -> Result<()> {
+        let dest = self.volume_path(id)?;
+        if tokio::fs::try_exists(&dest).await? {
+            return Ok(());
+        }
+        let src = self.volume_path(source)?;
+        let tmp = dest.with_extension(format!("{}.tmp", random_suffix()));
+        let (s, t) = (src.to_string_lossy(), tmp.to_string_lossy());
+        let base = image.map(|i| self.image_path(i)).transpose()?;
+        let base_s = base.as_ref().map(|b| b.to_string_lossy());
+        let mut args = vec!["convert", "-q", "-f", "qcow2", "-O", "qcow2"];
+        if let Some(b) = &base_s {
+            args.extend(["-B", b, "-F", "qcow2"]);
+        }
+        args.extend([&*s, &*t]);
+        let result = async {
+            run("qemu-img", &args).await?;
+            if size > img_info(&tmp, Some("qcow2")).await?.virtual_size {
+                let sz = size.to_string();
+                run("qemu-img", &["resize", "-q", "-f", "qcow2", &t, &sz]).await?;
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(e) = result {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(e);
+        }
+        tokio::fs::rename(&tmp, &dest).await?;
+        Ok(())
+    }
+
     /// Grows a volume no VM is using to `size` bytes; one that large already
     /// is left alone. qcow2 cannot resize images with internal snapshots.
     pub async fn grow_volume(&self, id: &str, size: u64) -> Result<()> {
@@ -510,6 +552,31 @@ mod tests {
         pool.delete_snapshot("blank", snap).await.unwrap();
         assert!(pool.snapshots("blank").await.unwrap().is_empty());
         assert!(pool.create_snapshot("blank", "../x").await.is_err());
+
+        // A clone has vol1's data, still on img1, and stands apart from it.
+        pool.clone_volume("vol1", "copy", 3 << 30, Some("img1"))
+            .await
+            .unwrap();
+        pool.clone_volume("vol1", "copy", 3 << 30, Some("img1"))
+            .await
+            .unwrap();
+        let info = img_info(&pool.volume_path("copy").unwrap(), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            (info.virtual_size, info.backing_filename.as_deref()),
+            (3 << 30, img.to_str())
+        );
+        pool.clone_volume("blank", "blank-copy", 0, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            img_info(&pool.volume_path("blank-copy").unwrap(), None)
+                .await
+                .unwrap()
+                .backing_filename,
+            None
+        );
 
         // Grown, never shrunk.
         pool.grow_volume("blank", 2 << 30).await.unwrap();

@@ -9,6 +9,7 @@ const emit = defineEmits<{ close: []; created: [vm: Vm] }>()
 const scope = useScope()
 const tenantId = scope.current
 const images = ref<Image[]>([])
+const templates = ref<Vm[]>([])
 const clusters = ref<Schemas['UsableCluster'][]>([])
 const pools = ref<Schemas['UsablePool'][]>([])
 const clusterId = ref<string | null>(null)
@@ -21,7 +22,12 @@ const groupIds = ref<string[]>([])
 const migratable = ref<boolean | null>(null)
 const loaded = ref(false)
 const name = ref('')
-const imageId = ref('')
+// `image:<id>` or `template:<id>`.
+const from = ref('')
+const imageId = computed(() => (from.value.startsWith('image:') ? from.value.slice(6) : ''))
+const template = computed(() =>
+  from.value.startsWith('template:') ? templates.value.find((t) => `template:${t.id}` === from.value) : undefined,
+)
 const vcpus = ref(2)
 const memory = ref(2048)
 const disk = ref(10)
@@ -35,8 +41,10 @@ const nameOk = computed(() => /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.te
 
 onMounted(async () => {
   const path = { params: { path: { id: tenantId } } }
-  ;[images.value, clusters.value, pools.value, vpcs.value, groups.value] = await Promise.all([
+  let vms: Vm[]
+  ;[images.value, vms, clusters.value, pools.value, vpcs.value, groups.value] = await Promise.all([
     ok(api.GET('/api/v1/images', { params: { query: { tenant_id: tenantId } } })),
+    ok(api.GET('/api/v1/vms')).catch(() => [] as Vm[]),
     ok(api.GET('/api/v1/tenants/{id}/clusters', path)),
     ok(api.GET('/api/v1/tenants/{id}/storage-pools', path)),
     // Without network access the defaults apply.
@@ -46,7 +54,8 @@ onMounted(async () => {
   const nets = vpcs.value.flatMap((v) => v.networks)
   networkId.value = (nets.find((n) => n.name === 'default') ?? nets[0])?.id ?? null
   groupIds.value = groups.value.filter((g) => g.name === 'default').map((g) => g.id)
-  imageId.value = images.value[0]?.id ?? ''
+  templates.value = vms.filter((v) => v.template && v.tenant_id === tenantId)
+  from.value = images.value[0] ? `image:${images.value[0].id}` : templates.value[0] ? `template:${templates.value[0].id}` : ''
   poolId.value = pools.value.find((p) => p.kind === 'local')?.id ?? pools.value[0]?.id ?? null
   loaded.value = true
 })
@@ -55,6 +64,22 @@ async function submit() {
   error.value = ''
   busy.value = true
   try {
+    const common = {
+      cluster_id: clusterId.value,
+      network_id: networkId.value,
+      // Leave the choice to the server when the tenant has no groups yet.
+      security_group_ids: groups.value.length ? groupIds.value : null,
+      name: name.value,
+      ssh_authorized_keys: sshKey.value.split('\n').map((k) => k.trim()).filter(Boolean),
+      password: password.value || null,
+    }
+    if (template.value) {
+      const res = await ok(
+        api.POST('/api/v1/vms/{id}/clone', { params: { path: { id: template.value.id } }, body: common }),
+      )
+      emit('created', res as unknown as Vm)
+      return
+    }
     const res = await ok(
       api.POST('/api/v1/vms', {
         body: {
@@ -89,7 +114,7 @@ async function submit() {
     :title="scope.solo ? 'Create VM' : `Create VM in ${scope.tenant?.name ?? 'tenant'}`"
     @close="emit('close')"
   >
-    <p v-if="loaded && !images.length" class="body empty">
+    <p v-if="loaded && !images.length && !templates.length" class="body empty">
       There are no images to boot from yet.
       <RouterLink to="/images" @click="emit('close')">Add an image</RouterLink> first.
     </p>
@@ -109,12 +134,22 @@ async function submit() {
         </span>
       </label>
       <label class="field">
-        <span class="label">Image</span>
-        <select v-model="imageId" required>
-          <option v-for="i in images" :key="i.id" :value="i.id">{{ i.name }}</option>
+        <span class="label">Start from</span>
+        <select v-model="from" required>
+          <optgroup label="Images">
+            <option v-for="i in images" :key="i.id" :value="`image:${i.id}`">{{ i.name }}</option>
+          </optgroup>
+          <optgroup v-if="templates.length" label="Templates">
+            <option v-for="t in templates" :key="t.id" :value="`template:${t.id}`">{{ t.name }}</option>
+          </optgroup>
         </select>
+        <span v-if="template" class="hint">
+          A copy of {{ template.name }}’s disks, with its {{ template.vcpus }} vCPU{{ template.vcpus === 1 ? '' : 's' }}
+          and {{ template.memory_mib >= 1024 ? `${template.memory_mib / 1024} GiB` : `${template.memory_mib} MiB` }}
+          of memory, in its storage; it boots as a new machine.
+        </span>
       </label>
-      <div v-if="clusters.length > 1 || pools.length > 1" class="row two">
+      <div v-if="clusters.length > 1 || (pools.length > 1 && !template)" class="row two">
         <label class="field">
           <span class="label">Cluster</span>
           <select v-model="clusterId">
@@ -122,7 +157,7 @@ async function submit() {
             <option v-for="c in clusters" :key="c.id" :value="c.id">{{ c.name }}</option>
           </select>
         </label>
-        <label class="field">
+        <label v-if="!template" class="field">
           <span class="label">Disk storage</span>
           <select v-model="poolId">
             <option v-for="p in pools" :key="p.id" :value="p.id">
@@ -150,7 +185,7 @@ async function submit() {
           <span v-if="!groupIds.length" class="hint error-text">No group: the VM passes no traffic.</span>
         </fieldset>
       </div>
-      <div class="row">
+      <div v-if="!template" class="row">
         <label class="field">
           <span class="label">vCPUs</span>
           <select v-model.number="vcpus">
@@ -168,7 +203,7 @@ async function submit() {
           <input v-model.number="disk" type="number" min="1" max="16384" required />
         </label>
       </div>
-      <label class="field">
+      <label v-if="!template" class="field">
         <span class="label">Live migration</span>
         <select v-model="migratable">
           <option :value="null">Automatic</option>
@@ -195,7 +230,7 @@ async function submit() {
       <p v-if="error" class="error-text" role="alert">{{ error }}</p>
       <footer>
         <button type="button" class="btn" @click="emit('close')">Cancel</button>
-        <button class="btn primary" :disabled="busy || !nameOk || !imageId">
+        <button class="btn primary" :disabled="busy || !nameOk || !from">
           {{ busy ? 'Creating…' : 'Create VM' }}
         </button>
       </footer>

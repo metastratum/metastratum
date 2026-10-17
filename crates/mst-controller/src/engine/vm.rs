@@ -7,8 +7,8 @@ use mst_core::ids::{HostId, VmId};
 use mst_db::vms::Vm;
 use mst_proto::command::Cmd;
 use mst_proto::{
-    DefineVm, DeleteVolume, EnsureImage, EnsureVolume, RebootVm, RestoreVolume, StartVm, StopVm,
-    UndefineVm,
+    CloneVolume, DefineVm, DeleteVolume, EnsureImage, EnsureVolume, RebootVm, RestoreVolume,
+    StartVm, StopVm, UndefineVm,
 };
 
 use super::TaskCtx;
@@ -107,6 +107,17 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
     for disk in &spec.disks {
         let pool = Some(pools[&disk.pool_id].clone());
         let (cmd, timeout) = match disk.restored_from {
+            // A copy of another VM's disk, which takes as long as its size.
+            None if disk.cloned_from.is_some() => {
+                let cmd = Cmd::CloneVolume(CloneVolume {
+                    pool,
+                    source_volume_id: disk.cloned_from.map(|v| v.to_string()).unwrap_or_default(),
+                    volume_id: disk.volume_id.to_string(),
+                    size_bytes: disk.size_bytes,
+                    image_id: disk.image_id.map(|i| i.to_string()).unwrap_or_default(),
+                });
+                (cmd, RESTORE)
+            }
             // A copy of a backup's disk, which takes as long as its size.
             Some(from) => {
                 let backup = mst_db::backups::get(db, from.backup_id).await?;

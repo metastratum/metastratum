@@ -32,6 +32,7 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(cancel_migration))
         .routes(routes!(restore_backup))
         .routes(routes!(resize_disk))
+        .routes(routes!(clone_vm))
 }
 
 const GIB: u64 = 1 << 30;
@@ -48,6 +49,8 @@ pub struct VmView {
     host_connected: bool,
     /// Lifecycle: `creating`, `ready`, `error` or `deleting`.
     status: String,
+    /// A template: kept to be cloned, never started.
+    template: bool,
     /// The power state last requested through the API: `running` or
     /// `stopped`. Never changed by what happens on the host.
     desired_power: String,
@@ -171,6 +174,7 @@ fn view(vm: Vm, ctx: &Context) -> VmView {
         host_connected: host.is_some_and(|(_, live)| *live),
         host_id: vm.host_id,
         status: vm.status,
+        template: vm.template,
         desired_power: vm.desired_power,
         power: vm.power,
         power_reason: vm.power_reason,
@@ -353,7 +357,7 @@ async fn restore_backup(
         security_group_ids: req.security_group_ids,
         migratable: None,
     };
-    let out = create_inner(state.clone(), p.clone(), create, Some(&backup)).await?;
+    let out = create_inner(state.clone(), p.clone(), create, Source::Backup(&backup)).await?;
     audit(
         &state.db,
         Some(&p),
@@ -364,6 +368,71 @@ async fn restore_backup(
     )
     .await;
     Ok(out)
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct CloneVm {
+    /// Name of the new VM.
+    name: String,
+    /// Start it once created (default true).
+    start: Option<bool>,
+    /// Cluster to place it in, for shared storage; any the tenant may use
+    /// otherwise. A VM on local storage is cloned on its host.
+    cluster_id: Option<ClusterId>,
+    /// Network to connect it to; the tenant's default network otherwise.
+    network_id: Option<NetworkId>,
+    /// Security groups for its NIC; the tenant's `default` group otherwise.
+    security_group_ids: Option<Vec<SecurityGroupId>>,
+    /// SSH keys for the image's default user, as when creating a VM.
+    #[serde(default)]
+    ssh_authorized_keys: Vec<String>,
+    /// A console password for the image's default user.
+    password: Option<String>,
+}
+
+/// Creates a VM with copies of a stopped VM's (or template's) disks, in the
+/// same tenant and storage pool, with its CPUs, memory and firmware, on a
+/// new NIC. It boots as a new instance, so cloud-init sets up its network,
+/// host name and host keys again; the disks keep everything else.
+#[utoipa::path(post, path = "/vms/{id}/clone", tag = "vms", params(("id" = VmId, Path)),
+    request_body = CloneVm,
+    responses((status = 202, body = Accepted<VmView>), (status = 400), (status = 403), (status = 404),
+        (status = 409, description = "The VM is running or busy")))]
+async fn clone_vm(
+    State(state): State<AppState>,
+    p: Principal,
+    Path(id): Path<VmId>,
+    Json(req): Json<CloneVm>,
+) -> ApiResult<(StatusCode, Json<Accepted<VmView>>)> {
+    let source = load(&state, &p, id, Perm::VmWrite).await?;
+    if source.status != "ready" || source.power != "stopped" || source.desired_power != "stopped" {
+        return Err(ApiError::conflict(format!(
+            "stop {} first: only a stopped VM is cloned",
+            source.name
+        )));
+    }
+    super::check_disks_idle(&mut *state.db.acquire().await?, id).await?;
+    let spec = &source.spec.0;
+    let disk_bytes: u64 = spec.disks.iter().map(|d| d.size_bytes).sum();
+    let create = CreateVm {
+        tenant_id: Some(source.tenant_id),
+        name: req.name,
+        vcpus: spec.vcpus,
+        memory_mib: spec.memory_mib,
+        disk_gib: disk_bytes.div_ceil(GIB),
+        image_id: ImageId(uuid::Uuid::nil()),
+        firmware: spec.firmware,
+        ssh_authorized_keys: req.ssh_authorized_keys,
+        password: req.password,
+        user_data: None,
+        start: req.start,
+        cluster_id: req.cluster_id,
+        storage_pool_id: None,
+        network_id: req.network_id,
+        security_group_ids: req.security_group_ids,
+        migratable: Some(spec.migratable),
+    };
+    create_inner(state, p, create, Source::Clone(&source)).await
 }
 
 #[derive(Serialize, ToSchema)]
@@ -445,31 +514,52 @@ async fn create_vm(
     p: Principal,
     Json(req): Json<CreateVm>,
 ) -> ApiResult<(StatusCode, Json<Accepted<VmView>>)> {
-    create_inner(state, p, req, None).await
+    create_inner(state, p, req, Source::Image).await
 }
 
-/// Creates a VM: from an image, or with `backup`'s disks restored in place
-/// of one.
+/// What a new VM's disks come from.
+#[derive(Clone, Copy)]
+enum Source<'a> {
+    /// The request's image.
+    Image,
+    /// A backup's disks, restored.
+    Backup(&'a mst_db::backups::Backup),
+    /// Another VM's disks, copied in their pool (on their host, for local
+    /// storage).
+    Clone(&'a mst_db::vms::Vm),
+}
+
+/// Creates a VM from an image, a backup or another VM.
 async fn create_inner(
     state: AppState,
     p: Principal,
     req: CreateVm,
-    backup: Option<&mst_db::backups::Backup>,
+    source: Source<'_>,
 ) -> ApiResult<(StatusCode, Json<Accepted<VmView>>)> {
     validate(&req)?;
     let tenant = req.tenant_id.unwrap_or(p.tenant_id);
     authorize(&state.db, &p, Perm::VmWrite, tenant).await?;
-    if backup.is_none() && !mst_db::images::is_usable_by(&state.db, req.image_id, tenant).await? {
+    if matches!(source, Source::Image)
+        && !mst_db::images::is_usable_by(&state.db, req.image_id, tenant).await?
+    {
         return Err(ApiError::not_found("image"));
     }
-    let pool =
-        mst_db::storage_pools::get(&state.db, req.storage_pool_id.unwrap_or(LOCAL_POOL)).await?;
+    let pool_id = match source {
+        Source::Clone(vm) => vm.spec.0.disks.first().map_or(LOCAL_POOL, |d| d.pool_id),
+        _ => req.storage_pool_id.unwrap_or(LOCAL_POOL),
+    };
+    let pool = mst_db::storage_pools::get(&state.db, pool_id).await?;
     if !super::storage_pools::may_use(&state, tenant, &pool).await? {
         return Err(ApiError::not_found("storage pool"));
     }
+    // Local disks are copied on their host.
+    let pin = match source {
+        Source::Clone(vm) if pool.kind == "local" => vm.host_id,
+        _ => None,
+    };
 
     let mut tx = state.db.begin().await?;
-    let host = place(&state, &mut tx, tenant, &req, &pool).await?;
+    let host = place(&state, &mut tx, tenant, &req, &pool, pin).await?;
     let delta: mst_db::quotas::Amounts = [
         ("vms", 1),
         ("vcpus", i64::from(req.vcpus)),
@@ -499,16 +589,33 @@ async fn create_inner(
     };
 
     let vm_id = VmId::new();
-    let disks: Vec<DiskSpec> = match backup {
-        None => vec![DiskSpec {
+    let disks: Vec<DiskSpec> = match source {
+        Source::Image => vec![DiskSpec {
             volume_id: VolumeId::new(),
             pool_id: pool.id,
             size_bytes: req.disk_gib * GIB,
             image_id: Some(req.image_id),
             restored_from: None,
+            cloned_from: None,
         }],
+        // Every disk the source has, at its size and on the image it was
+        // made from (file pools keep sharing it).
+        Source::Clone(vm) => vm
+            .spec
+            .0
+            .disks
+            .iter()
+            .map(|d| DiskSpec {
+                volume_id: VolumeId::new(),
+                pool_id: pool.id,
+                size_bytes: d.size_bytes,
+                image_id: d.image_id,
+                restored_from: None,
+                cloned_from: Some(d.volume_id),
+            })
+            .collect(),
         // Every disk the backup has, at its size, in the chosen pool.
-        Some(b) => b
+        Source::Backup(b) => b
             .spec
             .0
             .disks
@@ -523,6 +630,7 @@ async fn create_inner(
                     backup_id: b.id,
                     index: i as u32,
                 }),
+                cloned_from: None,
             })
             .collect(),
     };
@@ -614,7 +722,8 @@ async fn create_inner(
         "vm.create",
         Some(("vm", vm_id.0)),
         json!({"name": req.name, "vcpus": req.vcpus, "memory_mib": req.memory_mib, "disk_gib": req.disk_gib, "host": host.name,
-               "restored_from": backup.map(|b| b.id)}),
+               "restored_from": match source { Source::Backup(b) => Some(b.id), _ => None },
+               "cloned_from": match source { Source::Clone(vm) => Some(vm.id), _ => None }}),
     )
     .await;
     let vm = mst_db::vms::get(&state.db, vm_id).await?;
@@ -692,6 +801,7 @@ async fn place(
     tenant: TenantId,
     req: &CreateVm,
     pool: &mst_db::storage_pools::Pool,
+    pin: Option<HostId>,
 ) -> ApiResult<mst_scheduler::Host> {
     let mut clusters = super::storage_pools::clusters_for(
         pool,
@@ -733,7 +843,7 @@ async fn place(
         vcpus: req.vcpus,
         memory_mib: req.memory_mib,
         clusters,
-        host: None,
+        host: pin,
     };
     let id =
         mst_scheduler::place(&request, &hosts).map_err(|e| ApiError::unavailable(e.to_string()))?;
@@ -792,6 +902,18 @@ async fn power_action(
         return Err(ApiError::conflict(
             "the VM is being reverted to a snapshot; start it once that is done",
         ));
+    }
+    if desired == Some("running") {
+        if vm.template {
+            return Err(ApiError::conflict(
+                "the VM is a template: clone it, or make it a VM again first",
+            ));
+        }
+        if mst_db::vms::being_cloned(&mut *tx, id).await? {
+            return Err(ApiError::conflict(
+                "a clone of the VM is being made; start it once that is done",
+            ));
+        }
     }
     let task_id = enqueue(&mut tx, p, vm.tenant_id, kind, id, params.clone()).await?;
     tx.commit().await?;
@@ -901,6 +1023,9 @@ pub struct UpdateVm {
     /// Memory in MiB (128-4194304). Only while the VM is stopped; its host
     /// must have room for more.
     memory_mib: Option<u64>,
+    /// Make the stopped VM a template, kept to be cloned and never started,
+    /// or a VM again.
+    template: Option<bool>,
 }
 
 /// Changes a stopped VM's settings. Its definition on the host is updated
@@ -919,7 +1044,10 @@ async fn update_vm(
     let migratable = req.migratable.unwrap_or(old.migratable);
     let vcpus = req.vcpus.unwrap_or(old.vcpus);
     let memory_mib = req.memory_mib.unwrap_or(old.memory_mib);
-    if (migratable, vcpus, memory_mib) == (old.migratable, old.vcpus, old.memory_mib) {
+    let template = req.template.unwrap_or(vm.template);
+    if (migratable, vcpus, memory_mib, template)
+        == (old.migratable, old.vcpus, old.memory_mib, vm.template)
+    {
         return Ok(Json(view(vm, &context(&state).await?)));
     }
     check_size(vcpus, memory_mib)?;
@@ -960,6 +1088,9 @@ async fn update_vm(
             ApiError::unavailable("could not determine a CPU model the VM's cluster shares; is its host connected?")
         })?);
     }
+    if template != vm.template {
+        mst_db::vms::set_template(&mut *tx, id, template).await?;
+    }
     let generation = mst_db::vms::redefine(&mut tx, id, &spec).await?;
     let mut pools = std::collections::BTreeMap::new();
     for d in &spec.disks {
@@ -996,7 +1127,7 @@ async fn update_vm(
         "vm.update",
         Some(("vm", id.0)),
         json!({"name": vm.name, "migratable": req.migratable, "vcpus": req.vcpus,
-               "memory_mib": req.memory_mib}),
+               "memory_mib": req.memory_mib, "template": req.template}),
     )
     .await;
     let vm = mst_db::vms::get(&state.db, id).await?;

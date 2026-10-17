@@ -23,13 +23,15 @@ pub struct Vm {
     pub created_by: Option<UserId>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Kept to be cloned; it never starts.
+    pub template: bool,
 }
 
 macro_rules! vm_columns {
     () => {
         "id, tenant_id, name, host_id, spec, generation, status, desired_power, power, power_reason, \
          power_observed_at, error, \
-         created_by, created_at, updated_at"
+         created_by, created_at, updated_at, template"
     };
 }
 
@@ -258,6 +260,28 @@ pub async fn delete_volume(db: impl PgExecutor<'_>, id: VolumeId) -> Result<()> 
         .execute(db)
         .await?;
     Ok(())
+}
+
+pub async fn set_template(db: impl PgExecutor<'_>, id: VmId, template: bool) -> Result<()> {
+    sqlx::query("UPDATE vms SET template = $2, updated_at = now() WHERE id = $1")
+        .bind(id)
+        .bind(template)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// Whether a VM is still being created with copies of `source`'s disks.
+pub async fn being_cloned(db: impl PgExecutor<'_>, source: VmId) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM vms v, jsonb_array_elements(v.spec->'disks') d
+             WHERE v.status = 'creating' AND d->>'cloned_from' IN (
+                 SELECT s->>'volume_id' FROM vms src, jsonb_array_elements(src.spec->'disks') s
+                 WHERE src.id = $1))",
+    )
+    .bind(source)
+    .fetch_one(db)
+    .await?)
 }
 
 pub async fn set_volume_size(db: impl PgExecutor<'_>, id: VolumeId, size: i64) -> Result<()> {

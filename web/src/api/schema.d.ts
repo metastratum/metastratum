@@ -1247,6 +1247,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/vms/{id}/clone": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Creates a VM with copies of a stopped VM's (or template's) disks, in the
+         *     same tenant and storage pool, with its CPUs, memory and firmware, on a
+         *     new NIC. It boots as a new instance, so cloud-init sets up its network,
+         *     host name and host keys again; the disks keep everything else.
+         */
+        post: operations["clone_vm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/vms/{id}/console": {
         parameters: {
             query?: never;
@@ -1496,6 +1518,8 @@ export interface components {
             power_reason?: string | null;
             /** @description Lifecycle: `creating`, `ready`, `error` or `deleting`. */
             status: string;
+            /** @description A template: kept to be cloned, never started. */
+            template: boolean;
             tenant_id: components["schemas"]["TenantId"];
             /** Format: date-time */
             updated_at: string;
@@ -1598,6 +1622,20 @@ export interface components {
             tenant_name: string;
             user_id: components["schemas"]["UserId"];
             username: string;
+        };
+        CloneVm: {
+            cluster_id?: components["schemas"]["ClusterId"] | null;
+            /** @description Name of the new VM. */
+            name: string;
+            network_id?: components["schemas"]["NetworkId"] | null;
+            /** @description A console password for the image's default user. */
+            password?: string | null;
+            /** @description Security groups for its NIC; the tenant's `default` group otherwise. */
+            security_group_ids?: components["schemas"]["SecurityGroupId"][] | null;
+            /** @description SSH keys for the image's default user, as when creating a VM. */
+            ssh_authorized_keys?: string[];
+            /** @description Start it once created (default true). */
+            start?: boolean | null;
         };
         /** Format: uuid */
         ClusterId: string;
@@ -1808,6 +1846,7 @@ export interface components {
             task_id: components["schemas"]["TaskId"];
         };
         DiskSpec: {
+            cloned_from?: components["schemas"]["VolumeId"] | null;
             image_id?: components["schemas"]["ImageId"] | null;
             /**
              * @description Pool the volume lives in. Specs from before storage pools existed
@@ -2423,6 +2462,11 @@ export interface components {
              */
             migratable?: boolean | null;
             /**
+             * @description Make the stopped VM a template, kept to be cloned and never started,
+             *     or a VM again.
+             */
+            template?: boolean | null;
+            /**
              * Format: int32
              * @description Virtual CPUs (1-128). Only while the VM is stopped; its host must
              *     have room for more.
@@ -2539,6 +2583,8 @@ export interface components {
             power_reason?: string | null;
             /** @description Lifecycle: `creating`, `ready`, `error` or `deleting`. */
             status: string;
+            /** @description A template: kept to be cloned, never started. */
+            template: boolean;
             tenant_id: components["schemas"]["TenantId"];
             /** Format: date-time */
             updated_at: string;
@@ -5831,6 +5877,56 @@ export interface operations {
                 content?: never;
             };
             /** @description The VM is busy, or over quota */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    clone_vm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloneVm"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Accepted_VmView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The VM is running or busy */
             409: {
                 headers: {
                     [name: string]: unknown;

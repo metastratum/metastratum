@@ -76,6 +76,10 @@ pub struct DiskSpec {
     /// The backup disk the volume was restored from, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restored_from: Option<RestoredFrom>,
+    /// The volume (in the same pool) it was copied from, if any: a clone of
+    /// another VM's disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloned_from: Option<VolumeId>,
 }
 
 /// One of a backup's disks.

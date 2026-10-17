@@ -186,3 +186,13 @@ pub async fn resize_disk(agent: &crate::session::Agent, c: &mst_proto::ResizeDis
     tracing::info!(vm = %c.vm_id, disk = disk.index, size = c.size_bytes, "disk grown");
     Ok(())
 }
+
+/// Creates a volume as a copy of another VM's (stopped) volume.
+pub async fn clone_volume(agent: &crate::session::Agent, c: &mst_proto::CloneVolume) -> Result<()> {
+    let pool = agent.pool(c.pool.as_ref()).await?;
+    let image = (!c.image_id.is_empty()).then_some(c.image_id.as_str());
+    pool.clone_volume(&c.source_volume_id, &c.volume_id, c.size_bytes, image)
+        .await
+        .context("copying the volume")?;
+    Ok(())
+}
