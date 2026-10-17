@@ -1889,7 +1889,8 @@ export interface components {
         };
         SiteView: {
             /**
-             * @description Whether the tenant sign-ins start from has sub-tenants: whether the
+             * @description Whether the tenant sign-ins start from has sub-tenants that can be
+             *     signed in to here (those without a domain of their own): whether the
              *     sign-in page needs to ask for one.
              */
             sub_tenants: boolean;
