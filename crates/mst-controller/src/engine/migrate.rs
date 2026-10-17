@@ -246,10 +246,10 @@ async fn local_disks(
     vm: &mst_db::vms::Vm,
 ) -> Result<Vec<(String, mst_core::vm::DiskSpec, mst_db::storage_pools::Pool)>> {
     let mut out = vec![];
-    for (i, d) in vm.spec.0.disks.iter().enumerate() {
+    for (d, slot) in vm.spec.0.disks.iter().zip(vm.spec.0.disk_slots()) {
         let pool = mst_db::storage_pools::get(&ctx.state.db, d.pool_id).await?;
         if pool.kind == "local" {
-            out.push((format!("vd{}", (b'a' + i as u8) as char), d.clone(), pool));
+            out.push((slot.target, d.clone(), pool));
         }
     }
     Ok(out)

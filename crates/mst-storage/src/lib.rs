@@ -10,12 +10,14 @@ mod fetch;
 mod pools;
 mod rbd;
 mod snapshots;
+mod transfer;
 
 pub use fetch::{FetchPolicy, PublicOnly, check_url, is_public};
 
 pub use pools::{Pool, PoolSpec, Pools};
 pub use rbd::RbdPool;
 pub use snapshots::snapshot_name;
+pub use transfer::NbdSource;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -154,6 +156,31 @@ impl FilePool {
         set_mode(&tmp, 0o600).await?;
         tokio::fs::rename(&tmp, &dest).await?;
         Ok(())
+    }
+
+    /// Creates a volume as a copy of one another host serves, of at least
+    /// `size` bytes. An existing volume is left alone.
+    pub async fn import_nbd(&self, id: &str, size: u64, src: &transfer::NbdSource) -> Result<()> {
+        let dest = self.volume_path(id)?;
+        if tokio::fs::try_exists(&dest).await? {
+            return Ok(());
+        }
+        let tmp = transfer::temporary(&dest);
+        let result = async {
+            transfer::copy_from_nbd(src, &tmp, "qcow2").await?;
+            if size > img_info(&tmp, Some("qcow2")).await?.virtual_size {
+                let (t, sz) = (tmp.to_string_lossy().into_owned(), size.to_string());
+                run("qemu-img", &["resize", "-q", "-f", "qcow2", &t, &sz]).await?;
+            }
+            set_mode(&tmp, 0o600).await?;
+            tokio::fs::rename(&tmp, &dest).await?;
+            Ok(())
+        }
+        .await;
+        if result.is_err() {
+            let _ = tokio::fs::remove_file(&tmp).await;
+        }
+        result
     }
 
     pub async fn init(&self) -> Result<()> {

@@ -195,13 +195,34 @@ pub async fn list(db: impl PgExecutor<'_>) -> Result<Vec<Host>> {
     .await?)
 }
 
-pub async fn set_agent_protocol(db: impl PgExecutor<'_>, id: HostId, version: u32) -> Result<()> {
-    sqlx::query("UPDATE hosts SET agent_protocol = $2 WHERE id = $1")
+/// Records the protocol revision and capabilities (commands it handles) of
+/// the host's agent, as it said hello.
+pub async fn set_agent_protocol(
+    db: impl PgExecutor<'_>,
+    id: HostId,
+    version: u32,
+    capabilities: &[String],
+) -> Result<()> {
+    sqlx::query("UPDATE hosts SET agent_protocol = $2, agent_capabilities = $3 WHERE id = $1")
         .bind(id)
         .bind(version as i32)
+        .bind(capabilities)
         .execute(db)
         .await?;
     Ok(())
+}
+
+/// Whether the host's agent handles `command` (see
+/// `mst_proto::capability`), as it last said.
+pub async fn agent_supports(db: impl PgExecutor<'_>, id: HostId, command: &str) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT coalesce($2 = ANY (agent_capabilities), false) FROM hosts WHERE id = $1",
+    )
+    .bind(id)
+    .bind(command)
+    .fetch_optional(db)
+    .await?
+    .unwrap_or(false))
 }
 
 /// Records which replica holds the agent session (or that none does).

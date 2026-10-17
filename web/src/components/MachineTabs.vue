@@ -1,6 +1,7 @@
 <template>
   <nav class="tabs" aria-label="Machines">
     <RouterLink to="/vms">Machines</RouterLink>
+    <RouterLink to="/disks">Disks</RouterLink>
     <RouterLink to="/backups">Backups</RouterLink>
   </nav>
 </template>

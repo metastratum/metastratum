@@ -377,6 +377,29 @@ impl Agent {
                 tracing::info!(vm = %c.vm_id, vcpus = c.vcpus, "setting virtual CPUs");
                 self.lv.set_vcpus(&c.vm_id, c.vcpus).await?;
             }
+            Cmd::AttachDisk(c) => {
+                let v = c.vm.context("no VM to attach the disk to")?;
+                let def = self.domain_def(&v).await?;
+                if self.lv.power(&v.vm_id).await? != Power::Stopped {
+                    let xml = def
+                        .disk_xml(&c.target)
+                        .with_context(|| format!("the VM has no disk at {}", c.target))?;
+                    self.lv.attach_device(&v.vm_id, &xml).await?;
+                }
+                self.lv.define(def.to_xml()).await?;
+                tracing::info!(vm = %v.vm_id, target = %c.target, "disk attached");
+            }
+            Cmd::DetachDisk(c) => {
+                let v = c.vm.context("no VM to detach the disk from")?;
+                let def = self.domain_def(&v).await?;
+                if self.lv.power(&v.vm_id).await? != Power::Stopped {
+                    self.lv
+                        .detach_disk(&v.vm_id, &c.target, Duration::from_secs(30))
+                        .await?;
+                }
+                self.lv.define(def.to_xml()).await?;
+                tracing::info!(vm = %v.vm_id, target = %c.target, "disk detached");
+            }
             Cmd::MemoryStats(c) => {
                 let m = self.lv.memory_stats(&c.vm_id).await?;
                 return Ok(serde_json::to_string(&serde_json::json!({
@@ -531,6 +554,9 @@ impl Agent {
             Cmd::DeleteSnapshot(c) => crate::snapshot::delete(self, &c).await?,
             Cmd::ResizeDisk(c) => crate::vm::resize_disk(self, &c).await?,
             Cmd::CloneVolume(c) => crate::vm::clone_volume(self, &c).await?,
+            Cmd::ExportVolume(c) => return crate::transfer::export(self, &c).await,
+            Cmd::EndExport(c) => crate::transfer::end(&c.volume_id),
+            Cmd::CopyVolume(c) => crate::transfer::copy(self, &c).await?,
             Cmd::DeleteImage(c) => {
                 let shared = c.pools.iter().map(pool_spec).collect::<Result<Vec<_>>>()?;
                 crate::cleanup::delete_image(self, &c.image_id, &shared).await?;

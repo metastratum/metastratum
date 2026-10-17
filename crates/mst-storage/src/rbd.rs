@@ -327,6 +327,29 @@ impl RbdPool {
         result
     }
 
+    /// Creates a volume as a copy of one another host serves, of at least
+    /// `size` bytes, by way of a qcow2 file in `scratch`. An existing volume
+    /// is left alone.
+    pub async fn import_nbd(
+        &self,
+        id: &str,
+        size: u64,
+        src: &crate::NbdSource,
+        scratch: &Path,
+    ) -> Result<()> {
+        if self.exists(&self.spec(&Self::volume_name(id)?)).await? {
+            return Ok(());
+        }
+        let file = crate::transfer::temporary(&scratch.join(format!("{id}.qcow2")));
+        let result = async {
+            crate::transfer::copy_from_nbd(src, &file, "qcow2").await?;
+            self.import_volume(id, size, &file).await
+        }
+        .await;
+        let _ = tokio::fs::remove_file(&file).await;
+        result
+    }
+
     /// Creates volume `id` as a full copy of `source` (its snapshots are not
     /// copied), at least `size` bytes; under a temporary name until done.
     /// An existing volume is left alone.

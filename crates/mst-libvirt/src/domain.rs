@@ -47,6 +47,12 @@ pub struct Disk {
     pub bus: String,
     pub boot_order: Option<u32>,
     pub readonly: bool,
+    /// Its unit on the virtio-SCSI controller (bus "scsi"): a fixed address,
+    /// so that it is where the domain's definition says also when plugged in
+    /// while running.
+    pub scsi_unit: Option<u32>,
+    /// What the guest sees as its serial number (`/dev/disk/by-id`).
+    pub serial: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -91,6 +97,8 @@ pub struct DomainDef {
     pub host_cache: bool,
     /// Throttling for each disk (not CD-ROMs).
     pub disk_limits: DiskLimits,
+    /// A virtio-SCSI controller, for disks to plug in while it runs.
+    pub scsi_controller: bool,
 }
 
 /// Disk throttling; `None`: no limit.
@@ -135,6 +143,84 @@ impl DomainDef {
         Some(el)
     }
 
+    /// A disk's `<disk>` element.
+    fn disk_el(&self, d: &Disk) -> El {
+        let device = match d.device {
+            DiskDevice::Disk => "disk",
+            DiskDevice::Cdrom => "cdrom",
+        };
+        let mut driver = El::new("driver")
+            .attr("name", "qemu")
+            .attr("type", &d.format);
+        if d.device == DiskDevice::Disk {
+            // Without the host page cache, disks on shared storage can
+            // live-migrate safely; VMs that never migrate may use it.
+            let cache = if self.host_cache { "writeback" } else { "none" };
+            driver = driver.attr("cache", cache).attr("discard", "unmap");
+        }
+        let (kind, source) = match &d.source {
+            DiskSource::File(path) => ("file", El::new("source").attr("file", path)),
+            DiskSource::Rbd {
+                name,
+                monitors,
+                user,
+                secret_uuid,
+            } => (
+                "network",
+                El::new("source")
+                    .attr("protocol", "rbd")
+                    .attr("name", name)
+                    .children(
+                        monitors
+                            .iter()
+                            .map(|(h, p)| El::new("host").attr("name", h).attr("port", p)),
+                    )
+                    .child(
+                        El::new("auth").attr("username", user).child(
+                            El::new("secret")
+                                .attr("type", "ceph")
+                                .attr("uuid", secret_uuid),
+                        ),
+                    ),
+            ),
+        };
+        El::new("disk")
+            .attr("type", kind)
+            .attr("device", device)
+            .child(driver)
+            .child(source)
+            .child(El::new("target").attr("dev", &d.target).attr("bus", &d.bus))
+            .maybe(d.serial.as_ref().map(|s| El::new("serial").text(s)))
+            .maybe(d.scsi_unit.map(|u| {
+                El::new("address")
+                    .attr("type", "drive")
+                    .attr("controller", 0)
+                    .attr("bus", 0)
+                    .attr("target", 0)
+                    .attr("unit", u)
+            }))
+            .maybe(
+                (d.device == DiskDevice::Disk && self.disk_limits != DiskLimits::default()).then(
+                    || {
+                        let l = self.disk_limits;
+                        El::new("iotune")
+                            .maybe(l.bytes_per_sec.map(|b| El::new("total_bytes_sec").text(b)))
+                            .maybe(l.iops.map(|i| El::new("total_iops_sec").text(i)))
+                    },
+                ),
+            )
+            .maybe(d.readonly.then(|| El::new("readonly")))
+            .maybe(d.boot_order.map(|o| El::new("boot").attr("order", o)))
+    }
+
+    /// The `<disk>` element of the disk at `target`, to plug it in.
+    pub fn disk_xml(&self, target: &str) -> Option<String> {
+        self.disks
+            .iter()
+            .find(|d| d.target == target)
+            .map(|d| self.disk_el(d).render())
+    }
+
     pub fn to_xml(&self) -> String {
         let os = match self.firmware {
             Firmware::Uefi => El::new("os").attr("firmware", "efi").child(
@@ -153,64 +239,7 @@ impl DomainDef {
                 .text("hvm"),
         );
 
-        let disks = self.disks.iter().map(|d| {
-            let device = match d.device {
-                DiskDevice::Disk => "disk",
-                DiskDevice::Cdrom => "cdrom",
-            };
-            let mut driver = El::new("driver")
-                .attr("name", "qemu")
-                .attr("type", &d.format);
-            if d.device == DiskDevice::Disk {
-                // Without the host page cache, disks on shared storage can
-                // live-migrate safely; VMs that never migrate may use it.
-                let cache = if self.host_cache { "writeback" } else { "none" };
-                driver = driver.attr("cache", cache).attr("discard", "unmap");
-            }
-            let (kind, source) = match &d.source {
-                DiskSource::File(path) => ("file", El::new("source").attr("file", path)),
-                DiskSource::Rbd {
-                    name,
-                    monitors,
-                    user,
-                    secret_uuid,
-                } => (
-                    "network",
-                    El::new("source")
-                        .attr("protocol", "rbd")
-                        .attr("name", name)
-                        .children(
-                            monitors
-                                .iter()
-                                .map(|(h, p)| El::new("host").attr("name", h).attr("port", p)),
-                        )
-                        .child(
-                            El::new("auth").attr("username", user).child(
-                                El::new("secret")
-                                    .attr("type", "ceph")
-                                    .attr("uuid", secret_uuid),
-                            ),
-                        ),
-                ),
-            };
-            El::new("disk")
-                .attr("type", kind)
-                .attr("device", device)
-                .child(driver)
-                .child(source)
-                .child(El::new("target").attr("dev", &d.target).attr("bus", &d.bus))
-                .maybe(
-                    (d.device == DiskDevice::Disk && self.disk_limits != DiskLimits::default())
-                        .then(|| {
-                            let l = self.disk_limits;
-                            El::new("iotune")
-                                .maybe(l.bytes_per_sec.map(|b| El::new("total_bytes_sec").text(b)))
-                                .maybe(l.iops.map(|i| El::new("total_iops_sec").text(i)))
-                        }),
-                )
-                .maybe(d.readonly.then(|| El::new("readonly")))
-                .maybe(d.boot_order.map(|o| El::new("boot").attr("order", o)))
-        });
+        let disks = self.disks.iter().map(|d| self.disk_el(d));
 
         let nics = self.nics.iter().map(|n| {
             El::new("interface")
@@ -285,6 +314,12 @@ impl DomainDef {
             .child(El::new("on_crash").text("destroy"))
             .child(
                 El::new("devices")
+                    .maybe(self.scsi_controller.then(|| {
+                        El::new("controller")
+                            .attr("type", "scsi")
+                            .attr("index", 0)
+                            .attr("model", "virtio-scsi")
+                    }))
                     .children(disks)
                     .children(nics)
                     .child(
@@ -407,6 +442,8 @@ mod tests {
                     bus: "virtio".into(),
                     boot_order: Some(1),
                     readonly: false,
+                    scsi_unit: None,
+                    serial: None,
                 },
                 Disk {
                     device: DiskDevice::Disk,
@@ -421,6 +458,8 @@ mod tests {
                     bus: "virtio".into(),
                     boot_order: None,
                     readonly: false,
+                    scsi_unit: None,
+                    serial: None,
                 },
                 Disk {
                     device: DiskDevice::Cdrom,
@@ -430,10 +469,13 @@ mod tests {
                     bus: "sata".into(),
                     boot_order: None,
                     readonly: true,
+                    scsi_unit: None,
+                    serial: None,
                 },
             ],
             host_cache: false,
             disk_limits: DiskLimits::default(),
+            scsi_controller: false,
             cpu: Some(crate::cpu::CpuModel {
                 model: "EPYC-Milan".into(),
                 vendor: Some("AMD".into()),
@@ -448,6 +490,31 @@ mod tests {
                 interface_id: "0199f0a2-7b3c-7d00-8000-0000000000b1".into(),
             }],
         }
+    }
+
+    #[test]
+    fn data_disks_sit_at_fixed_scsi_units() {
+        let mut d = sample();
+        d.scsi_controller = true;
+        d.disks[1].target = "sdd".into();
+        d.disks[1].bus = "scsi".into();
+        d.disks[1].scsi_unit = Some(2);
+        d.disks[1].serial = Some("0199f0a27b3c7d008000000000000002".into());
+        let xml = d.to_xml();
+        assert!(
+            xml.contains("<controller type='scsi' index='0' model='virtio-scsi'/>"),
+            "{xml}"
+        );
+        let disk = d.disk_xml("sdd").unwrap();
+        assert!(
+            disk.contains("<address type='drive' controller='0' bus='0' target='0' unit='2'/>")
+                && disk.contains("<serial>0199f0a27b3c7d008000000000000002</serial>"),
+            "{disk}"
+        );
+        // Plugged in as the definition has it (only indented differently).
+        let flat = |x: &str| x.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat(&xml).contains(&flat(&disk)), "{disk}");
+        assert!(d.disk_xml("sdz").is_none());
     }
 
     #[test]

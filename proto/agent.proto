@@ -204,6 +204,11 @@ message Command {
     SetMemory set_memory = 41;
     MemoryStats memory_stats = 42;
     SetVcpus set_vcpus = 43;
+    AttachDisk attach_disk = 44;
+    DetachDisk detach_disk = 45;
+    ExportVolume export_volume = 46;
+    EndExport end_export = 47;
+    CopyVolume copy_volume = 48;
   }
 }
 
@@ -390,6 +395,9 @@ message BackupDisk {
   uint32 index = 1;
   string volume_id = 2;
   Pool pool = 3;
+  // Its target device in the VM's domain (vda, sdb...); from its index
+  // (vda, vdb...) when empty, as older controllers send it.
+  string target = 4;
 }
 
 // Create a volume from one of a backup's disks. An existing volume is left
@@ -535,4 +543,52 @@ message TunnelChunk {
     string session_id = 1;
     bytes data = 2;
   }
+}
+
+// Plug the disk at `target` into the running VM, as `vm` (its definition
+// with the disk) has it, and define it so. A VM not running is only
+// defined.
+message AttachDisk {
+  DefineVm vm = 1;
+  string target = 2;
+}
+
+// Unplug the disk at `target` from the running VM, waiting until the guest
+// lets go of it, and define `vm` (its definition without the disk). A VM
+// not running is only defined.
+message DetachDisk {
+  DefineVm vm = 1;
+  string target = 2;
+}
+
+// Serve a volume, read-only, to one other host over NBD with TLS, for it to
+// copy (CopyVolume): `tls` holds this copy's server credentials, which only
+// that host's client certificate matches. Returns {"port": N} once it
+// listens on `address` (this host's); it stops when that host disconnects,
+// with EndExport, or after an hour. Volumes in pools of files only.
+message ExportVolume {
+  string volume_id = 1;
+  Pool pool = 2;
+  MigrationTls tls = 3;
+  string address = 4;
+}
+
+// Stop serving a volume (ExportVolume), if it still is.
+message EndExport {
+  string volume_id = 1;
+}
+
+// Create a volume in `pool` as a copy of another (with its image's data:
+// the copy depends on nothing), of at least `size_bytes`: from a pool this
+// host reaches (`source_pool`), or served by another host (`nbd_*`, with
+// this copy's client credentials in `tls`). An existing volume is left
+// alone.
+message CopyVolume {
+  string volume_id = 1;
+  uint64 size_bytes = 2;
+  Pool pool = 3;
+  Pool source_pool = 4;
+  string nbd_address = 5;
+  uint32 nbd_port = 6;
+  MigrationTls tls = 7;
 }

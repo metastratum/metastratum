@@ -6,6 +6,7 @@
 //! written as sequences of idempotent steps.
 
 mod backup;
+mod disk;
 mod migrate;
 mod recover;
 mod snapshot;
@@ -122,6 +123,7 @@ async fn execute(state: AppState, task: Task) {
         "snapshot.create" => snapshot::create(&ctx).await,
         "snapshot.revert" => snapshot::revert(&ctx).await,
         "snapshot.delete" => snapshot::delete(&ctx).await,
+        "disk.move" => disk::move_disk(&ctx).await,
         other => Err(anyhow::anyhow!("unknown task kind {other}")),
     };
     renew.abort();

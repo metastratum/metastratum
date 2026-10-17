@@ -21,9 +21,7 @@ pub async fn disk_limits(
 
 /// Disk targets of a VM's spec, as its domain names them.
 pub fn disk_targets(spec: &mst_core::vm::VmSpec) -> Vec<String> {
-    (0..spec.disks.len())
-        .map(|i| format!("vd{}", (b'a' + i as u8) as char))
-        .collect()
+    spec.disk_slots().into_iter().map(|s| s.target).collect()
 }
 
 /// Applies a cluster's (changed) disk limits to the VMs on its hosts, live

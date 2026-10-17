@@ -40,6 +40,13 @@ pub struct VmSpec {
     /// from before it existed; they get it at their next start from stopped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free_page_reporting: Option<bool>,
+    /// Its disks other than the boot disk sit on a virtio-SCSI controller,
+    /// each at a unit of its own, so they plug in and out while it runs (and
+    /// stay put when one before them goes). It adds a device, so it is set
+    /// as the VM starts from stopped; unset for VMs not started since, whose
+    /// disks are all virtio disks in order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_hotplug: Option<bool>,
     #[serde(default)]
     pub firmware: Firmware,
     /// Boot disk first.
@@ -76,6 +83,61 @@ impl VmSpec {
     pub fn reserved_vcpus(&self) -> u32 {
         self.max_vcpus.unwrap_or(0).max(self.vcpus)
     }
+
+    /// Where each of its disks sits in the guest, in the order of `disks`.
+    pub fn disk_slots(&self) -> Vec<DiskSlot> {
+        let hotplug = self.disk_hotplug == Some(true);
+        self.disks
+            .iter()
+            .enumerate()
+            .map(|(i, d)| match (i, hotplug) {
+                (0, _) | (_, false) => DiskSlot {
+                    // vda, vdb, ...: specs stay far below 26 disks.
+                    target: format!("vd{}", letter(i as u32)),
+                    scsi_unit: None,
+                },
+                (_, true) => {
+                    let unit = d.unit.unwrap_or(i as u32 - 1);
+                    DiskSlot {
+                        // sdb...: sda is the cloud-init seed's (on SATA).
+                        target: format!("sd{}", letter(unit + 1)),
+                        scsi_unit: Some(unit),
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// The SCSI unit for another data disk: the lowest one free, also
+    /// before its disks are on the SCSI controller (they take the units
+    /// they will have there).
+    pub fn free_unit(&self) -> u32 {
+        let taken: Vec<u32> = self
+            .disks
+            .iter()
+            .skip(1)
+            .enumerate()
+            .map(|(i, d)| d.unit.unwrap_or(i as u32))
+            .collect();
+        (0..).find(|u| !taken.contains(u)).unwrap_or(0)
+    }
+}
+
+/// The most disks a VM has besides its boot disk.
+pub const MAX_DATA_DISKS: usize = 16;
+
+/// Where a disk sits in the guest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiskSlot {
+    /// libvirt's target device: `vda` for the boot disk.
+    pub target: String,
+    /// Its unit on the virtio-SCSI controller, for data disks of VMs that
+    /// plug them in while running.
+    pub scsi_unit: Option<u32>,
+}
+
+fn letter(i: u32) -> char {
+    (b'a' + i as u8) as char
 }
 
 fn yes() -> bool {
@@ -120,6 +182,10 @@ pub struct DiskSpec {
     /// another VM's disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloned_from: Option<VolumeId>,
+    /// Its unit on the VM's SCSI controller (see [`VmSpec::disk_hotplug`]),
+    /// kept while it is attached; unset for the boot disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<u32>,
 }
 
 /// One of a backup's disks.
@@ -200,6 +266,43 @@ mod tests {
         );
         let again: VmSpec = serde_json::from_str(&serde_json::to_string(&spec).unwrap()).unwrap();
         assert_eq!(again, spec);
+    }
+
+    #[test]
+    fn data_disks_keep_their_place() {
+        let disk = |unit| DiskSpec {
+            volume_id: VolumeId::new(),
+            pool_id: LOCAL_POOL,
+            size_bytes: 1,
+            image_id: None,
+            restored_from: None,
+            cloned_from: None,
+            unit,
+        };
+        let mut spec: VmSpec =
+            serde_json::from_str(r#"{"vcpus":1,"memory_mib":512,"disks":[],"nics":[]}"#).unwrap();
+        spec.disks = vec![disk(None), disk(Some(0)), disk(Some(2))];
+        // Not started since: virtio disks in order.
+        let targets = |s: &VmSpec| {
+            s.disk_slots()
+                .into_iter()
+                .map(|d| d.target)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(targets(&spec), ["vda", "vdb", "vdc"]);
+        // A disk from before units takes the one it will have.
+        let mut legacy = spec.clone();
+        legacy.disks[1].unit = None;
+        legacy.disks[2].unit = None;
+        assert_eq!(legacy.free_unit(), 2);
+        // Plugged in: units stay as they were when one goes.
+        spec.disk_hotplug = Some(true);
+        assert_eq!(targets(&spec), ["vda", "sdb", "sdd"]);
+        assert_eq!(spec.free_unit(), 1);
+        spec.disks.remove(1);
+        assert_eq!(targets(&spec), ["vda", "sdd"]);
+        assert_eq!(spec.disk_slots()[1].scsi_unit, Some(2));
+        assert_eq!(spec.free_unit(), 0);
     }
 
     #[test]

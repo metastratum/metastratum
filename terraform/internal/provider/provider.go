@@ -112,6 +112,8 @@ func (p *mstProvider) Resources(_ context.Context) []func() resource.Resource {
 		newFloatingIPResource,
 		newVMResource,
 		newLoadBalancerResource,
+		newDiskResource,
+		newDiskAttachmentResource,
 	}
 }
 

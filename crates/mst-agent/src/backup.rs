@@ -61,6 +61,15 @@ pub(crate) fn target_of(index: u32) -> String {
     format!("vd{}", (b'a' + index as u8) as char)
 }
 
+/// The disk's target device in its VM's domain.
+pub(crate) fn target(d: &mst_proto::BackupDisk) -> String {
+    if d.target.is_empty() {
+        target_of(d.index)
+    } else {
+        d.target.clone()
+    }
+}
+
 /// Takes a backup (or waits for, or answers for, one already under way or
 /// taken).
 pub async fn backup(agent: &Agent, c: &BackupVm) -> Result<String> {
@@ -115,7 +124,7 @@ async fn live(agent: &Agent, c: &BackupVm, dir: &Path) -> Result<bool> {
         let wanted: HashMap<String, PathBuf> = c
             .disks
             .iter()
-            .map(|d| (target_of(d.index), disk_file(dir, d.index)))
+            .map(|d| (target(d), disk_file(dir, d.index)))
             .collect();
         let targets = lv.disk_targets(&c.vm_id).await?;
         if let Some(missing) = wanted.keys().find(|t| !targets.contains(t)) {

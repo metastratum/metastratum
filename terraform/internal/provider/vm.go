@@ -619,7 +619,9 @@ func (r *vmResource) Delete(ctx context.Context, req resource.DeleteRequest, res
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	res, err := r.data.api.DeleteVmWithResponse(ctx, id)
+	// Disks of their own are their resources': kept (their attachments go
+	// first).
+	res, err := r.data.api.DeleteVmWithResponse(ctx, id, &client.DeleteVmParams{})
 	if err == nil {
 		err = client.Check(res.StatusCode(), res.Body, http.StatusAccepted, http.StatusNotFound)
 	}

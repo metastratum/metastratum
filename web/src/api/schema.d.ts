@@ -305,6 +305,67 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/disks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Disks, newest first: VMs' boot disks, and disks attached to a VM or not. */
+        get: operations["list_disks"];
+        put?: never;
+        /**
+         * Makes an empty disk, attached to a VM or not. It counts against the
+         *     tenant's disk quota.
+         */
+        post: operations["create_disk"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/disks/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_disk"];
+        put?: never;
+        post?: never;
+        /** Deletes a disk attached to no VM, with what it holds. */
+        delete: operations["delete_disk"];
+        options?: never;
+        head?: never;
+        /** Renames or grows a disk. */
+        patch: operations["update_disk"];
+        trace?: never;
+    };
+    "/api/v1/disks/{id}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Moves a disk attached to no VM: to another host (local storage), or to
+         *     another pool. It is copied, with what its image held (the copy depends
+         *     on nothing), then the old copy is removed. Given a VM, it goes where the
+         *     VM can reach it and is attached once there.
+         */
+        post: operations["move_disk"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/events": {
         parameters: {
             query?: never;
@@ -1434,6 +1495,11 @@ export interface paths {
         get: operations["get_vm"];
         put?: never;
         post?: never;
+        /**
+         * Deletes a VM with the disks made with it: its boot disk, and the copies
+         *     a clone or restore made (unnamed). Disks of their own attached to it
+         *     (named) are kept, attached to nothing, unless `delete_disks` is given.
+         */
         delete: operations["delete_vm"];
         options?: never;
         head?: never;
@@ -1524,6 +1590,49 @@ export interface paths {
         put?: never;
         post: operations["create_ticket"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/disks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A VM's disks: its boot disk first, then the others as attached. */
+        get: operations["vm_disks"];
+        put?: never;
+        /**
+         * Attaches a disk to a VM of its tenant: plugged in at once if it runs
+         *     (where it started since disks could be), otherwise from its next start.
+         *     A disk on local storage attaches to VMs on its host. Not while the VM
+         *     has snapshots (they cover the disks it had).
+         */
+        post: operations["attach_disk"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/disks/{disk_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Detaches a disk (not the boot disk) from a VM, unplugging it if the VM
+         *     runs: unmount it in the guest first. The disk is kept, to attach again.
+         */
+        delete: operations["detach_disk"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1843,6 +1952,9 @@ export interface components {
             clientDataJSON: string;
             signature: string;
         };
+        AttachDisk: {
+            disk_id: components["schemas"]["VolumeId"];
+        };
         AttestationResponse: {
             attestationObject: string;
             clientDataJSON: string;
@@ -2022,6 +2134,19 @@ export interface components {
             role: string;
             tenant_id: components["schemas"]["TenantId"];
             user_id: components["schemas"]["UserId"];
+        };
+        CreateDisk: {
+            host_id?: components["schemas"]["HostId"] | null;
+            /** @description Unique among the tenant's disks. */
+            name: string;
+            /**
+             * Format: int64
+             * @description 1 to 16384.
+             */
+            size_gib: number;
+            storage_pool_id?: components["schemas"]["StoragePoolId"] | null;
+            tenant_id?: components["schemas"]["TenantId"] | null;
+            vm_id?: components["schemas"]["VmId"] | null;
         };
         CreateExternalNetwork: {
             /** @description e.g. `203.0.113.0/24`. */
@@ -2211,7 +2336,48 @@ export interface components {
             restored_from?: components["schemas"]["RestoredFrom"] | null;
             /** Format: int64 */
             size_bytes: number;
+            /**
+             * Format: int32
+             * @description Its unit on the VM's SCSI controller (see [`VmSpec::disk_hotplug`]),
+             *     kept while it is attached; unset for the boot disk.
+             */
+            unit?: number | null;
             volume_id: components["schemas"]["VolumeId"];
+        };
+        DiskView: {
+            /** @description The VM's boot disk, which stays with it. */
+            boot: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /** @description What went wrong, when `failed`. */
+            error?: string | null;
+            /**
+             * @description Where the guest finds it, for disks attached besides the boot disk:
+             *     by its serial number, which is its ID.
+             */
+            guest_path?: string | null;
+            host_id?: components["schemas"]["HostId"] | null;
+            host_name?: string | null;
+            id: components["schemas"]["VolumeId"];
+            /**
+             * @description Unset for disks made with a VM: its boot disk, and copies of disks
+             *     made with a clone or a restore.
+             */
+            name?: string | null;
+            /** Format: int64 */
+            size_gib: number;
+            /**
+             * @description `creating`, `ready`, `attaching`, `detaching`, `moving`, `deleting`
+             *     or `failed`.
+             */
+            state: string;
+            storage_pool_id: components["schemas"]["StoragePoolId"];
+            /** @description `local`, `nfs` or `rbd`. */
+            storage_pool_kind: string;
+            storage_pool_name: string;
+            tenant_id: components["schemas"]["TenantId"];
+            vm_id?: components["schemas"]["VmId"] | null;
+            vm_name?: string | null;
         };
         EvacuateRef: {
             task_id: components["schemas"]["TaskId"];
@@ -2511,6 +2677,14 @@ export interface components {
             /** @description `preparing`, `running` or `committing`. */
             state: string;
             task_id: components["schemas"]["TaskId"];
+        };
+        MoveAccepted: components["schemas"]["DiskView"] & {
+            task_id: components["schemas"]["TaskId"];
+        };
+        MoveDisk: {
+            host_id?: components["schemas"]["HostId"] | null;
+            storage_pool_id?: components["schemas"]["StoragePoolId"] | null;
+            vm_id?: components["schemas"]["VmId"] | null;
         };
         /** Format: uuid */
         NetworkId: string;
@@ -2954,6 +3128,15 @@ export interface components {
             required: boolean;
             /** @description Whether this installation can check Yubico OTPs. */
             yubico_otp: boolean;
+        };
+        UpdateDisk: {
+            name?: string | null;
+            /**
+             * Format: int64
+             * @description Larger than it is (disks only grow), at most 16384. A disk attached
+             *     to a running VM grows under it, as `/vms/{id}/disks/{index}/resize`.
+             */
+            size_gib?: number | null;
         };
         UpdateExternalNetwork: {
             name: string;
@@ -3877,6 +4060,237 @@ export interface operations {
                 content?: never;
             };
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_disks: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Those of this tenant and its sub-tenants; by default, of every
+                 *     tenant the caller sees VMs of.
+                 */
+                tenant_id?: components["schemas"]["TenantId"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiskView"][];
+                };
+            };
+        };
+    };
+    create_disk: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateDisk"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiskView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No room in the quota, or the VM cannot take it now */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_disk: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VolumeId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiskView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_disk: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VolumeId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The disk is attached, or busy */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_disk: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VolumeId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateDisk"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiskView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    move_disk: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VolumeId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveDisk"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoveAccepted"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The disk is attached, or busy */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7070,7 +7484,13 @@ export interface operations {
     };
     delete_vm: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Delete the disks of their own attached to it too; otherwise they are
+                 *     kept, attached to nothing.
+                 */
+                delete_disks?: boolean;
+            };
             header?: never;
             path: {
                 id: components["schemas"]["VmId"];
@@ -7332,6 +7752,118 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    vm_disks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiskView"][];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    attach_disk: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttachDisk"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiskView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The disk or the VM cannot be attached now */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    detach_disk: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+                disk_id: components["schemas"]["VolumeId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiskView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The VM cannot let go of the disk now */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

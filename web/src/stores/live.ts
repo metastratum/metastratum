@@ -20,6 +20,7 @@ export type Kind =
   | 'load_balancer'
   | 'backup'
   | 'snapshot'
+  | 'disk'
   | 'backup_repository'
 const KINDS: Kind[] = [
   'vm',
@@ -38,6 +39,7 @@ const KINDS: Kind[] = [
   'load_balancer',
   'backup',
   'snapshot',
+  'disk',
   'backup_repository',
 ]
 

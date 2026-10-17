@@ -36,7 +36,7 @@ func TestSchemas(t *testing.T) {
 	for _, name := range []string{
 		"metastratum_vpc", "metastratum_network", "metastratum_security_group",
 		"metastratum_security_group_rule", "metastratum_floating_ip", "metastratum_vm",
-		"metastratum_load_balancer",
+		"metastratum_load_balancer", "metastratum_disk", "metastratum_disk_attachment",
 	} {
 		if resp.ResourceSchemas[name] == nil {
 			t.Errorf("no resource %s", name)
@@ -120,6 +120,17 @@ resource "metastratum_floating_ip" "web" {
   nic_id              = %[8]s
 }
 
+resource "metastratum_disk" "data" {
+  name     = "%[1]s-data"
+  size_gib = %[9]d
+  host_id  = metastratum_vm.web.host_id
+}
+
+resource "metastratum_disk_attachment" "data" {
+  vm_id   = metastratum_vm.web.id
+  disk_id = metastratum_disk.data.id
+}
+
 resource "metastratum_load_balancer" "web" {
   name          = %[1]q
   vpc_id        = metastratum_vpc.web.id
@@ -132,7 +143,7 @@ resource "metastratum_load_balancer" "web" {
     target_port = %[6]d
   }
 }
-`, run, image, external, disk, memory, port, health, nic)
+`, run, image, external, disk, memory, port, health, nic, disk-1)
 	}
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: factories,
@@ -145,6 +156,7 @@ resource "metastratum_load_balancer" "web" {
 					statecheck.ExpectKnownValue("metastratum_vm.web", tfjsonpath.New("max_memory_mib"), knownvalue.Int64Exact(1024)),
 					statecheck.ExpectKnownValue("metastratum_vm.web", tfjsonpath.New("max_vcpus"), knownvalue.Int32Exact(2)),
 					statecheck.ExpectKnownValue("metastratum_load_balancer.web", tfjsonpath.New("listener").AtSliceIndex(0).AtMapKey("target_port"), knownvalue.Int32Exact(8080)),
+					statecheck.ExpectKnownValue("metastratum_disk_attachment.data", tfjsonpath.New("guest_path"), knownvalue.NotNull()),
 				},
 			},
 			{
@@ -159,6 +171,8 @@ resource "metastratum_load_balancer" "web" {
 						plancheck.ExpectResourceAction("metastratum_load_balancer.web", plancheck.ResourceActionUpdate),
 						plancheck.ExpectResourceAction("metastratum_floating_ip.web", plancheck.ResourceActionUpdate),
 						plancheck.ExpectResourceAction("metastratum_security_group_rule.http", plancheck.ResourceActionReplace),
+						plancheck.ExpectResourceAction("metastratum_disk.data", plancheck.ResourceActionUpdate),
+						plancheck.ExpectResourceAction("metastratum_disk_attachment.data", plancheck.ResourceActionNoop),
 					},
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
@@ -166,7 +180,18 @@ resource "metastratum_load_balancer" "web" {
 					statecheck.ExpectKnownValue("metastratum_vm.web", tfjsonpath.New("memory_mib"), knownvalue.Int64Exact(768)),
 					statecheck.ExpectKnownValue("metastratum_vm.web", tfjsonpath.New("running"), knownvalue.Bool(true)),
 					statecheck.ExpectKnownValue("metastratum_floating_ip.web", tfjsonpath.New("nic_id"), knownvalue.Null()),
+					statecheck.ExpectKnownValue("metastratum_disk.data", tfjsonpath.New("size_gib"), knownvalue.Int64Exact(3)),
 				},
+			},
+			{
+				ResourceName:      "metastratum_disk.data",
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			{
+				ResourceName:      "metastratum_disk_attachment.data",
+				ImportState:       true,
+				ImportStateVerify: true,
 			},
 			{
 				ResourceName:            "metastratum_vm.web",

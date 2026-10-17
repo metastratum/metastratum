@@ -24,6 +24,8 @@ pub enum Error {
     NoDomain(String),
     #[error("invalid domain UUID {0:?}")]
     BadUuid(String),
+    #[error("{0}")]
+    Other(String),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -742,6 +744,54 @@ impl Libvirt {
             flags: AFFECT_LIVE,
         })
         .await?;
+        Ok(())
+    }
+
+    /// Plugs a device (`xml`, as in a domain's definition) into the running
+    /// domain. Its definition is updated separately.
+    pub async fn attach_device(&self, uuid: &str, xml: &str) -> Result<()> {
+        const AFFECT_LIVE: u32 = 1;
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        c.domain_attach_device_flags(&DomainAttachDeviceFlagsArgs {
+            dom,
+            xml: xml.into(),
+            flags: AFFECT_LIVE,
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Unplugs the disk at `target` from the running domain, and waits until
+    /// it is gone (the guest lets go of it). One not there is fine. Its
+    /// definition is updated separately.
+    pub async fn detach_disk(&self, uuid: &str, target: &str, within: Duration) -> Result<()> {
+        const AFFECT_LIVE: u32 = 1;
+        if !self.disk_targets(uuid).await?.iter().any(|t| t == target) {
+            return Ok(());
+        }
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        // libvirt finds the disk by its target.
+        let xml = format!(
+            "<disk type='file' device='disk'><target dev='{}'/></disk>",
+            crate::xml::escape(target)
+        );
+        c.domain_detach_device_flags(&DomainDetachDeviceFlagsArgs {
+            dom,
+            xml,
+            flags: AFFECT_LIVE,
+        })
+        .await?;
+        let deadline = tokio::time::Instant::now() + within;
+        while self.disk_targets(uuid).await?.iter().any(|t| t == target) {
+            if tokio::time::Instant::now() > deadline {
+                return Err(Error::Other(format!(
+                    "the guest did not let go of {target}"
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
         Ok(())
     }
 

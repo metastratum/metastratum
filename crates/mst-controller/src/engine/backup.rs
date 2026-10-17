@@ -57,12 +57,14 @@ async fn take(ctx: &TaskCtx, backup: &mst_db::backups::Backup) -> Result<Taken> 
     let host = vm.host_id.context("the VM is not placed on a host")?;
     let repo = mst_db::backups::get_repository(db, backup.repository_id).await?;
     let mut disks = vec![];
-    for (i, d) in vm.spec.0.disks.iter().enumerate() {
+    let slots = vm.spec.0.disk_slots();
+    for (i, (d, slot)) in vm.spec.0.disks.iter().zip(slots).enumerate() {
         let pool = mst_db::storage_pools::get(db, d.pool_id).await?;
         disks.push(BackupDisk {
             index: i as u32,
             volume_id: d.volume_id.to_string(),
             pool: Some(crate::api::agent_pool(&pool)?),
+            target: slot.target,
         });
     }
     ctx.step("copying disks", 0.1).await;

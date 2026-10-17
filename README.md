@@ -15,6 +15,9 @@ controllers with PostgreSQL behind them, and an agent on each host.
   network bandwidth, and more CPUs, memory or disk when they need it,
   also while they run (CPUs plugged in, memory through their balloon).
   Clone them, or keep templates to make new ones from.
+- **Disks** of their own, attached to VMs (plugged in while they run) and
+  detached, kept when their VM goes, and moved between hosts and storage
+  pools.
 - **Live migration** between hosts, on shared storage (NFS, Ceph RBD) or
   local disks. Putting a host in maintenance moves its VMs elsewhere.
 - **Snapshots** to put a VM's disks back to, and **backups** of running
@@ -323,7 +326,11 @@ boot). A stopped VM made a template is never started, and its clones on
 local disk, NFS and Ceph boot with what its disk held under their own name.
 Load balancers spread connections from here over two VMs through an
 external address and leave out one that stops answering, serve the VPC's
-own VMs through an internal one, and follow changed members.
+own VMs through an internal one, and follow changed members. A disk is
+plugged into a running VM (the guest finds it by its ID), unplugged and
+plugged in again with what it holds, grown, taken along when the VM
+migrates and kept when it is deleted, moved to another host, to another
+VM's host and into NFS, and found intact each time.
 `MST_E2E_DEBUG=1` prints
 console traffic. The browser suite does the VM lifecycle and tenant
 management through the UI with Playwright, using your installed Chrome.

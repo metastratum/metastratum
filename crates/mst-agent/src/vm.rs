@@ -91,7 +91,8 @@ pub async fn domain(
 ) -> Result<DomainDef> {
     let vm_id = vm.vm_id.as_str();
     let mut disks = Vec::new();
-    for (i, d) in spec.disks.iter().enumerate() {
+    let slots = spec.disk_slots();
+    for (i, (d, slot)) in spec.disks.iter().zip(slots).enumerate() {
         let pool = pools
             .get(&d.pool_id.to_string())
             .with_context(|| format!("storage pool {} of disk {i} was not provided", d.pool_id))?;
@@ -115,11 +116,18 @@ pub async fn domain(
             device: DiskDevice::Disk,
             source,
             format: format.into(),
-            // vda, vdb, ...; specs stay far below 26 disks.
-            target: format!("vd{}", (b'a' + i as u8) as char),
-            bus: "virtio".into(),
+            target: slot.target,
+            bus: if slot.scsi_unit.is_some() {
+                "scsi"
+            } else {
+                "virtio"
+            }
+            .into(),
             boot_order: (i == 0).then_some(1),
             readonly: false,
+            // The guest finds it by its ID: /dev/disk/by-id/*<id>.
+            serial: slot.scsi_unit.map(|_| d.volume_id.0.simple().to_string()),
+            scsi_unit: slot.scsi_unit,
         });
     }
     if let Some(ci) = &spec.cloud_init {
@@ -134,6 +142,8 @@ pub async fn domain(
             bus: "sata".into(),
             boot_order: None,
             readonly: true,
+            scsi_unit: None,
+            serial: None,
         });
     }
     Ok(DomainDef {
@@ -156,6 +166,7 @@ pub async fn domain(
         cpu: spec.cpu.as_ref().filter(|_| spec.migratable).map(cpu_model),
         host_cache: !spec.migratable,
         disk_limits,
+        scsi_controller: spec.disk_hotplug == Some(true),
         nics: spec
             .nics
             .iter()
@@ -179,11 +190,7 @@ pub async fn resize_disk(agent: &crate::session::Agent, c: &mst_proto::ResizeDis
     ) {
         agent
             .lv
-            .block_resize(
-                &c.vm_id,
-                &crate::backup::target_of(disk.index),
-                c.size_bytes,
-            )
+            .block_resize(&c.vm_id, &crate::backup::target(disk), c.size_bytes)
             .await
             .context("growing the disk")?;
     } else {

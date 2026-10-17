@@ -505,7 +505,7 @@ impl AgentControl for AgentControlService {
         let _ = tx.send(Ok(welcome)).await;
         let conn = state.agents.register(host, tx, &hello.capabilities);
         tracing::info!(%host, protocol = version, "agent protocol");
-        mst_db::hosts::set_agent_protocol(&state.db, host, version)
+        mst_db::hosts::set_agent_protocol(&state.db, host, version, &hello.capabilities)
             .await
             .map_err(internal)?;
         mst_db::hosts::set_connected(&state.db, host, Some(&state.replica))

@@ -154,11 +154,19 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
     // A CPU model every host of the cluster runs, so the VM can migrate
     // anywhere in it. Kept in the spec: the VM keeps it for life.
     let mut spec = spec.clone();
+    let mut changed = false;
     if spec.migratable && spec.cpu.is_none() {
         spec.cpu = crate::migration::baseline_cpu(&ctx.state, host).await;
-        if spec.cpu.is_some() {
-            mst_db::vms::set_spec(db, vm.id, &spec).await?;
-        }
+        changed |= spec.cpu.is_some();
+    }
+    // Disks plug in while it runs, where its host's agent does that.
+    if spec.disk_hotplug.is_none() && mst_db::hosts::agent_supports(db, host, "attach_disk").await?
+    {
+        spec.disk_hotplug = Some(true);
+        changed = true;
+    }
+    if changed {
+        mst_db::vms::set_spec(db, vm.id, &spec).await?;
     }
     let spec = &spec;
     call(
@@ -196,11 +204,17 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
 
 pub async fn start(ctx: &TaskCtx) -> Result<()> {
     let vm = mst_db::vms::get(&ctx.state.db, target(ctx)?).await?;
-    if vm.spec.0.free_page_reporting.is_none() {
-        // Starting afresh: the balloon can now hand the guest's free memory
-        // back (it changes the device, which a running VM keeps as it was).
+    // Starting afresh, the VM gets devices a running VM keeps as it was
+    // started with: a balloon that hands the guest's free memory back, and
+    // a controller for disks to plug in (where its host's agent does).
+    let hotplug = vm.spec.0.disk_hotplug.is_none()
+        && mst_db::hosts::agent_supports(&ctx.state.db, host_of(&vm)?, "attach_disk").await?;
+    if vm.spec.0.free_page_reporting.is_none() || hotplug {
         let mut spec = vm.spec.0.clone();
-        spec.free_page_reporting = Some(true);
+        spec.free_page_reporting.get_or_insert(true);
+        if hotplug {
+            spec.disk_hotplug = Some(true);
+        }
         let mut tx = ctx.state.db.begin().await?;
         let generation = mst_db::vms::redefine(&mut tx, vm.id, &spec).await?;
         crate::api::define_on_host(&ctx.state, &mut tx, &vm, host_of(&vm)?, &spec, generation)
@@ -307,8 +321,20 @@ pub async fn delete(ctx: &TaskCtx) -> Result<()> {
         .await
         .context("removing domain")?;
         ctx.step("volumes", 0.5).await;
+        // Disks made with it (its boot disk, copies from a clone or a
+        // restore: unnamed) go with it; disks of their own (named) only
+        // when asked, otherwise they are kept, attached to nothing.
+        let all = ctx
+            .task
+            .params
+            .get("delete_disks")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         let mut images: std::collections::BTreeMap<_, Vec<mst_proto::Pool>> = Default::default();
-        for vol in mst_db::vms::volumes_for_vm(db, id).await? {
+        for vol in mst_db::disks::of_vm(db, id).await? {
+            if !all && vol.name.is_some() && !vol.boot {
+                continue;
+            }
             let stored = mst_db::storage_pools::get(db, vol.pool_id).await?;
             let pool = crate::api::agent_pool(&stored)?;
             if let Some(image) = vol.image_id {

@@ -5,6 +5,7 @@ mod auth;
 mod backups;
 mod clusters;
 mod console;
+mod disks;
 mod events;
 mod external_networks;
 mod floating_ips;
@@ -25,6 +26,7 @@ mod vpcs;
 
 pub use auth::hash_password;
 pub use backups::{queue_delete as queue_backup_delete, repository_pool, start as start_backup};
+pub use disks::attach as attach_disk;
 pub use snapshots::check_idle as check_disks_idle;
 pub use storage_pools::agent_pool;
 pub use vms::define_on_host;
@@ -48,7 +50,7 @@ pub const SESSION_COOKIE: &str = "mst_session";
     tags(
         (name = "auth"), (name = "tenants"), (name = "users"), (name = "vms"), (name = "images"),
         (name = "hosts"), (name = "tasks"), (name = "audit"), (name = "events"), (name = "networks"),
-        (name = "backups"), (name = "snapshots"),
+        (name = "backups"), (name = "snapshots"), (name = "disks"),
     )
 )]
 struct ApiDoc;
@@ -60,6 +62,7 @@ fn api() -> OpenApiRouter<AppState> {
         .merge(vms::routes())
         .merge(backups::routes())
         .merge(snapshots::routes())
+        .merge(disks::routes())
         .merge(console::routes())
         .merge(images::routes())
         .merge(hosts::routes())

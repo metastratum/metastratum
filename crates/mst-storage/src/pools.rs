@@ -82,6 +82,31 @@ impl Pool {
         }
     }
 
+    /// Creates a volume as a copy of one another host serves (see
+    /// [`crate::NbdSource`]), of at least `size` bytes; `scratch` holds what
+    /// is copied on its way into Ceph. An existing volume is left alone.
+    pub async fn import_nbd(
+        &self,
+        id: &str,
+        size: u64,
+        src: &crate::NbdSource,
+        scratch: &Path,
+    ) -> Result<()> {
+        match self {
+            Pool::File(p) => p.import_nbd(id, size, src).await,
+            Pool::Rbd(p) => p.import_nbd(id, size, src, scratch).await,
+        }
+    }
+
+    /// The file a volume is in, for pools of files: what `qemu-nbd` serves
+    /// for another host to copy.
+    pub fn volume_file(&self, id: &str) -> Result<Option<PathBuf>> {
+        match self {
+            Pool::File(p) => p.volume_path(id).map(Some),
+            Pool::Rbd(_) => Ok(None),
+        }
+    }
+
     /// Creates a volume as a copy of another; see each pool's
     /// `clone_volume`.
     pub async fn clone_volume(

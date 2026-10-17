@@ -235,7 +235,8 @@ Less of anything is taken at once.
 
 Hosts' libvirt does not listen on the network: the controller drives live
 migrations on each host's own libvirt, and QEMU sends the VM over TLS
-(migration ports 49152-49215 must be open between hosts). Each migration
+(migration ports 49152-49215 must be open between hosts; disks moving
+between hosts use them too, see Disks). Each migration
 gets certificates of its own from a CA the controller makes for it, so the
 destination accepts the VM from that source only. The agent puts them in
 `/etc/pki/qemu` just while QEMU loads them, and the host's own back after.
@@ -417,6 +418,38 @@ keep its memory: one that frees and reuses a lot of it quickly pays for
 getting it back from the host each time. It is part of the VM's balloon,
 so it changes while the VM is stopped and applies from its next start.
 VMs made before it existed get it at their next start from stopped.
+
+## Disks
+
+Every VM has its boot disk, and can have up to 16 disks of their own
+besides (Machines → Disks, or Add disk on a VM's page). A disk is made
+empty, on local storage (on a host) or in a shared pool, and attached to
+a VM of its tenant: one that runs has it plugged in at once, and the guest
+finds it under `/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_<disk ID>` (format
+it there); a stopped one from its next start. Detaching one from a
+running VM unplugs it: unmount it in the guest first. Disks grow like a
+VM's (Change), attached or not, and count against the tenant's disk quota.
+
+VMs plug disks in while they run from their first start with agents of
+this version on: data disks sit on a virtio-SCSI controller, at places of
+their own. VMs started before plug disks in from their next start (attach
+to them while stopped meanwhile). Not while a VM has snapshots: they cover
+the disks it had.
+
+Deleting a VM deletes the disks made with it (its boot disk, and the copies
+a clone or restore made); disks of their own attached to it are kept,
+attached to nothing, unless you tick "Its disks too" (`?delete_disks=true`).
+
+A disk on local storage attaches to VMs on its host. Attached, it moves
+with its VM when that migrates. Attached to nothing, it moves on its own
+(Move): to another host, or into another pool (and back). Attaching it to
+a VM on another host moves it there first. The host that has it serves it
+read-only with `qemu-nbd` over TLS, with credentials made for that copy
+alone, on a port of the migration range (49152-49215), and the other host
+copies it in; a host that reaches both copies it alone (between pools).
+The copy carries what its image held: it depends on nothing there. Once
+copied, the old copy is removed. Disks on Ceph move through a host that
+reaches both their pool and where they go.
 
 ## Templates and clones
 

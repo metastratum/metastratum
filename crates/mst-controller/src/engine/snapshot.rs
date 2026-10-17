@@ -29,12 +29,14 @@ async fn load(ctx: &TaskCtx) -> Result<(mst_db::snapshots::Snapshot, HostId, Vec
     let vm = mst_db::vms::get(db, snap.vm_id).await?;
     let host = vm.host_id.context("the VM is not placed on a host")?;
     let mut disks = vec![];
-    for (i, d) in vm.spec.0.disks.iter().enumerate() {
+    let slots = vm.spec.0.disk_slots();
+    for (i, (d, slot)) in vm.spec.0.disks.iter().zip(slots).enumerate() {
         let pool = mst_db::storage_pools::get(db, d.pool_id).await?;
         disks.push(BackupDisk {
             index: i as u32,
             volume_id: d.volume_id.to_string(),
             pool: Some(crate::api::agent_pool(&pool)?),
+            target: slot.target,
         });
     }
     Ok((snap, host, disks))

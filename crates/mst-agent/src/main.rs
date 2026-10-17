@@ -11,6 +11,7 @@ mod ovn;
 mod session;
 mod snapshot;
 mod tls;
+mod transfer;
 mod vm;
 
 use std::path::PathBuf;

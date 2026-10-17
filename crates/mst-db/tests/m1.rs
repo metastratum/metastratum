@@ -60,6 +60,7 @@ async fn vm(pool: &PgPool, tenant: &tenants::Tenant, host: &hosts::Host, name: &
         max_memory_mib: None,
         max_vcpus: None,
         free_page_reporting: None,
+        disk_hotplug: None,
         firmware: Default::default(),
         disks: vec![],
         nics: vec![],
@@ -500,6 +501,7 @@ async fn scheduling_snapshot_reports_allocations_and_liveness(pool: PgPool) {
         max_memory_mib: None,
         max_vcpus: None,
         free_page_reporting: None,
+        disk_hotplug: None,
         firmware: Default::default(),
         disks: vec![],
         nics: vec![],
@@ -915,6 +917,7 @@ async fn a_source_is_being_cloned_while_its_clone_is_created(pool: PgPool) {
         image_id: None,
         restored_from: None,
         cloned_from,
+        unit: None,
     };
     let src = vm(&pool, &t, &h, "tpl").await;
     let src_volume = VolumeId::new();

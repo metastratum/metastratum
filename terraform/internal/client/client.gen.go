@@ -192,6 +192,11 @@ type AssertionResponse struct {
 	Signature         string `json:"signature"`
 }
 
+// AttachDisk defines model for AttachDisk.
+type AttachDisk struct {
+	DiskId VolumeId `json:"disk_id"`
+}
+
 // AttestationResponse defines model for AttestationResponse.
 type AttestationResponse struct {
 	AttestationObject string    `json:"attestationObject"`
@@ -436,6 +441,20 @@ type CreateBinding struct {
 	UserId   UserId   `json:"user_id"`
 }
 
+// CreateDisk defines model for CreateDisk.
+type CreateDisk struct {
+	HostId *HostId `json:"host_id,omitempty"`
+
+	// Name Unique among the tenant's disks.
+	Name string `json:"name"`
+
+	// SizeGib 1 to 16384.
+	SizeGib       int64          `json:"size_gib"`
+	StoragePoolId *StoragePoolId `json:"storage_pool_id,omitempty"`
+	TenantId      *TenantId      `json:"tenant_id,omitempty"`
+	VmId          *VmId          `json:"vm_id,omitempty"`
+}
+
 // CreateExternalNetwork defines model for CreateExternalNetwork.
 type CreateExternalNetwork struct {
 	// Cidr e.g. `203.0.113.0/24`.
@@ -645,7 +664,45 @@ type DiskSpec struct {
 	PoolId       *StoragePoolId `json:"pool_id,omitempty"`
 	RestoredFrom *RestoredFrom  `json:"restored_from,omitempty"`
 	SizeBytes    int64          `json:"size_bytes"`
-	VolumeId     VolumeId       `json:"volume_id"`
+
+	// Unit Its unit on the VM's SCSI controller (see [`VmSpec::disk_hotplug`]),
+	// kept while it is attached; unset for the boot disk.
+	Unit     *int32   `json:"unit,omitempty"`
+	VolumeId VolumeId `json:"volume_id"`
+}
+
+// DiskView defines model for DiskView.
+type DiskView struct {
+	// Boot The VM's boot disk, which stays with it.
+	Boot      bool      `json:"boot"`
+	CreatedAt time.Time `json:"created_at"`
+
+	// Error What went wrong, when `failed`.
+	Error *string `json:"error,omitempty"`
+
+	// GuestPath Where the guest finds it, for disks attached besides the boot disk:
+	// by its serial number, which is its ID.
+	GuestPath *string  `json:"guest_path,omitempty"`
+	HostId    *HostId  `json:"host_id,omitempty"`
+	HostName  *string  `json:"host_name,omitempty"`
+	Id        VolumeId `json:"id"`
+
+	// Name Unset for disks made with a VM: its boot disk, and copies of disks
+	// made with a clone or a restore.
+	Name    *string `json:"name,omitempty"`
+	SizeGib int64   `json:"size_gib"`
+
+	// State `creating`, `ready`, `attaching`, `detaching`, `moving`, `deleting`
+	// or `failed`.
+	State         string        `json:"state"`
+	StoragePoolId StoragePoolId `json:"storage_pool_id"`
+
+	// StoragePoolKind `local`, `nfs` or `rbd`.
+	StoragePoolKind string   `json:"storage_pool_kind"`
+	StoragePoolName string   `json:"storage_pool_name"`
+	TenantId        TenantId `json:"tenant_id"`
+	VmId            *VmId    `json:"vm_id,omitempty"`
+	VmName          *string  `json:"vm_name,omitempty"`
 }
 
 // EvacuateRef defines model for EvacuateRef.
@@ -971,6 +1028,48 @@ type MigrationView struct {
 	// State `preparing`, `running` or `committing`.
 	State  string `json:"state"`
 	TaskId TaskId `json:"task_id"`
+}
+
+// MoveAccepted defines model for MoveAccepted.
+type MoveAccepted struct {
+	// Boot The VM's boot disk, which stays with it.
+	Boot      bool      `json:"boot"`
+	CreatedAt time.Time `json:"created_at"`
+
+	// Error What went wrong, when `failed`.
+	Error *string `json:"error,omitempty"`
+
+	// GuestPath Where the guest finds it, for disks attached besides the boot disk:
+	// by its serial number, which is its ID.
+	GuestPath *string  `json:"guest_path,omitempty"`
+	HostId    *HostId  `json:"host_id,omitempty"`
+	HostName  *string  `json:"host_name,omitempty"`
+	Id        VolumeId `json:"id"`
+
+	// Name Unset for disks made with a VM: its boot disk, and copies of disks
+	// made with a clone or a restore.
+	Name    *string `json:"name,omitempty"`
+	SizeGib int64   `json:"size_gib"`
+
+	// State `creating`, `ready`, `attaching`, `detaching`, `moving`, `deleting`
+	// or `failed`.
+	State         string        `json:"state"`
+	StoragePoolId StoragePoolId `json:"storage_pool_id"`
+
+	// StoragePoolKind `local`, `nfs` or `rbd`.
+	StoragePoolKind string   `json:"storage_pool_kind"`
+	StoragePoolName string   `json:"storage_pool_name"`
+	TaskId          TaskId   `json:"task_id"`
+	TenantId        TenantId `json:"tenant_id"`
+	VmId            *VmId    `json:"vm_id,omitempty"`
+	VmName          *string  `json:"vm_name,omitempty"`
+}
+
+// MoveDisk defines model for MoveDisk.
+type MoveDisk struct {
+	HostId        *HostId        `json:"host_id,omitempty"`
+	StoragePoolId *StoragePoolId `json:"storage_pool_id,omitempty"`
+	VmId          *VmId          `json:"vm_id,omitempty"`
 }
 
 // NetworkId defines model for NetworkId.
@@ -1490,6 +1589,15 @@ type TwoFactorStatus struct {
 	YubicoOtp bool `json:"yubico_otp"`
 }
 
+// UpdateDisk defines model for UpdateDisk.
+type UpdateDisk struct {
+	Name *string `json:"name,omitempty"`
+
+	// SizeGib Larger than it is (disks only grow), at most 16384. A disk attached
+	// to a running VM grows under it, as `/vms/{id}/disks/{index}/resize`.
+	SizeGib *int64 `json:"size_gib,omitempty"`
+}
+
 // UpdateExternalNetwork defines model for UpdateExternalNetwork.
 type UpdateExternalNetwork struct {
 	Name      string `json:"name"`
@@ -1798,6 +1906,13 @@ type ListBackupsParams struct {
 	TenantId *TenantId `form:"tenant_id,omitempty" json:"tenant_id,omitempty"`
 }
 
+// ListDisksParams defines parameters for ListDisks.
+type ListDisksParams struct {
+	// TenantId Those of this tenant and its sub-tenants; by default, of every
+	// tenant the caller sees VMs of.
+	TenantId *TenantId `form:"tenant_id,omitempty" json:"tenant_id,omitempty"`
+}
+
 // ListFloatingIpsParams defines parameters for ListFloatingIps.
 type ListFloatingIpsParams struct {
 	// TenantId Defaults to the caller's tenant.
@@ -1891,6 +2006,13 @@ type ListVmsParams struct {
 	Descendants *bool `form:"descendants,omitempty" json:"descendants,omitempty"`
 }
 
+// DeleteVmParams defines parameters for DeleteVm.
+type DeleteVmParams struct {
+	// DeleteDisks Delete the disks of their own attached to it too; otherwise they are
+	// kept, attached to nothing.
+	DeleteDisks *bool `form:"delete_disks,omitempty" json:"delete_disks,omitempty"`
+}
+
 // StopVmParams defines parameters for StopVm.
 type StopVmParams struct {
 	// Force Power off immediately instead of asking the guest to shut down.
@@ -1923,6 +2045,15 @@ type CreateClusterJSONRequestBody = ClusterSpec
 
 // UpdateClusterJSONRequestBody defines body for UpdateCluster for application/json ContentType.
 type UpdateClusterJSONRequestBody = ClusterSpec
+
+// CreateDiskJSONRequestBody defines body for CreateDisk for application/json ContentType.
+type CreateDiskJSONRequestBody = CreateDisk
+
+// UpdateDiskJSONRequestBody defines body for UpdateDisk for application/json ContentType.
+type UpdateDiskJSONRequestBody = UpdateDisk
+
+// MoveDiskJSONRequestBody defines body for MoveDisk for application/json ContentType.
+type MoveDiskJSONRequestBody = MoveDisk
 
 // CreateExternalNetworkJSONRequestBody defines body for CreateExternalNetwork for application/json ContentType.
 type CreateExternalNetworkJSONRequestBody = CreateExternalNetwork
@@ -2046,6 +2177,9 @@ type CloneVmJSONRequestBody = CloneVm
 
 // CreateTicketJSONRequestBody defines body for CreateTicket for application/json ContentType.
 type CreateTicketJSONRequestBody = ConsoleRequest
+
+// AttachDiskJSONRequestBody defines body for AttachDisk for application/json ContentType.
+type AttachDiskJSONRequestBody = AttachDisk
 
 // ResizeDiskJSONRequestBody defines body for ResizeDisk for application/json ContentType.
 type ResizeDiskJSONRequestBody = ResizeDisk
@@ -2278,6 +2412,69 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /api/v1/console/{ticket} (the `ConsoleSocket` operationId).
 	ConsoleSocket(ctx context.Context, ticket string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListDisks Disks, newest first: VMs' boot disks, and disks attached to a VM or not.
+	//
+	// Corresponds with GET /api/v1/disks (the `ListDisks` operationId).
+	ListDisks(ctx context.Context, params *ListDisksParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateDiskWithBody Makes an empty disk, attached to a VM or not. It counts against the
+	// tenant's disk quota.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/disks (the `CreateDisk` operationId).
+	CreateDiskWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateDisk Makes an empty disk, attached to a VM or not. It counts against the
+	// tenant's disk quota.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/disks (the `CreateDisk` operationId).
+	CreateDisk(ctx context.Context, body CreateDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteDisk Deletes a disk attached to no VM, with what it holds.
+	//
+	// Corresponds with DELETE /api/v1/disks/{id} (the `DeleteDisk` operationId).
+	DeleteDisk(ctx context.Context, id VolumeId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetDisk performs a GET /api/v1/disks/{id} (the `GetDisk` operationId) request.
+	GetDisk(ctx context.Context, id VolumeId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UpdateDiskWithBody Renames or grows a disk.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /api/v1/disks/{id} (the `UpdateDisk` operationId).
+	UpdateDiskWithBody(ctx context.Context, id VolumeId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UpdateDisk Renames or grows a disk.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PATCH /api/v1/disks/{id} (the `UpdateDisk` operationId).
+	UpdateDisk(ctx context.Context, id VolumeId, body UpdateDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// MoveDiskWithBody Moves a disk attached to no VM: to another host (local storage), or to
+	// another pool. It is copied, with what its image held (the copy depends
+	// on nothing), then the old copy is removed. Given a VM, it goes where the
+	// VM can reach it and is attached once there.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/disks/{id}/move (the `MoveDisk` operationId).
+	MoveDiskWithBody(ctx context.Context, id VolumeId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// MoveDisk Moves a disk attached to no VM: to another host (local storage), or to
+	// another pool. It is copied, with what its image held (the copy depends
+	// on nothing), then the old copy is removed. Given a VM, it goes where the
+	// VM can reach it and is attached once there.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/disks/{id}/move (the `MoveDisk` operationId).
+	MoveDisk(ctx context.Context, id VolumeId, body MoveDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// Events A stream of changes the caller can see, as `text/event-stream`. Each event
 	// is named for the kind of thing that changed (`vm`, `task`, `host`, `image`,
@@ -2940,8 +3137,12 @@ type ClientInterface interface {
 	// Takes a body of the `application/json` content type.
 	CreateVm(ctx context.Context, body CreateVmJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// DeleteVm performs a DELETE /api/v1/vms/{id} (the `DeleteVm` operationId) request.
-	DeleteVm(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// DeleteVm Deletes a VM with the disks made with it: its boot disk, and the copies
+	// a clone or restore made (unnamed). Disks of their own attached to it
+	// (named) are kept, attached to nothing, unless `delete_disks` is given.
+	//
+	// Corresponds with DELETE /api/v1/vms/{id} (the `DeleteVm` operationId).
+	DeleteVm(ctx context.Context, id VmId, params *DeleteVmParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetVm performs a GET /api/v1/vms/{id} (the `GetVm` operationId) request.
 	GetVm(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3038,6 +3239,37 @@ type ClientInterface interface {
 	// CreateTicket performs a POST /api/v1/vms/{id}/console (the `CreateTicket` operationId) request.
 	// Takes a body of the `application/json` content type.
 	CreateTicket(ctx context.Context, id VmId, body CreateTicketJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// VmDisks A VM's disks: its boot disk first, then the others as attached.
+	//
+	// Corresponds with GET /api/v1/vms/{id}/disks (the `VmDisks` operationId).
+	VmDisks(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AttachDiskWithBody Attaches a disk to a VM of its tenant: plugged in at once if it runs
+	// (where it started since disks could be), otherwise from its next start.
+	// A disk on local storage attaches to VMs on its host. Not while the VM
+	// has snapshots (they cover the disks it had).
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/vms/{id}/disks (the `AttachDisk` operationId).
+	AttachDiskWithBody(ctx context.Context, id VmId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AttachDisk Attaches a disk to a VM of its tenant: plugged in at once if it runs
+	// (where it started since disks could be), otherwise from its next start.
+	// A disk on local storage attaches to VMs on its host. Not while the VM
+	// has snapshots (they cover the disks it had).
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/vms/{id}/disks (the `AttachDisk` operationId).
+	AttachDisk(ctx context.Context, id VmId, body AttachDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DetachDisk Detaches a disk (not the boot disk) from a VM, unplugging it if the VM
+	// runs: unmount it in the guest first. The disk is kept, to attach again.
+	//
+	// Corresponds with DELETE /api/v1/vms/{id}/disks/{disk_id} (the `DetachDisk` operationId).
+	DetachDisk(ctx context.Context, id VmId, diskId VolumeId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ResizeDiskWithBody Grows one of a VM's disks (0 is the boot disk), running or stopped. A
 	// running guest sees the larger disk at once; its partition and file
@@ -3563,6 +3795,159 @@ func (c *Client) UpdateCluster(ctx context.Context, id ClusterId, body UpdateClu
 // Corresponds with GET /api/v1/console/{ticket} (the `ConsoleSocket` operationId).
 func (c *Client) ConsoleSocket(ctx context.Context, ticket string, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewConsoleSocketRequest(c.Server, ticket)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ListDisks Disks, newest first: VMs' boot disks, and disks attached to a VM or not.
+//
+// Corresponds with GET /api/v1/disks (the `ListDisks` operationId).
+func (c *Client) ListDisks(ctx context.Context, params *ListDisksParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListDisksRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CreateDiskWithBody Makes an empty disk, attached to a VM or not. It counts against the
+// tenant's disk quota.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/disks (the `CreateDisk` operationId).
+func (c *Client) CreateDiskWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateDiskRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CreateDisk Makes an empty disk, attached to a VM or not. It counts against the
+// tenant's disk quota.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/disks (the `CreateDisk` operationId).
+func (c *Client) CreateDisk(ctx context.Context, body CreateDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateDiskRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DeleteDisk Deletes a disk attached to no VM, with what it holds.
+//
+// Corresponds with DELETE /api/v1/disks/{id} (the `DeleteDisk` operationId).
+func (c *Client) DeleteDisk(ctx context.Context, id VolumeId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteDiskRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetDisk performs a GET /api/v1/disks/{id} (the `GetDisk` operationId) request.
+func (c *Client) GetDisk(ctx context.Context, id VolumeId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetDiskRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// UpdateDiskWithBody Renames or grows a disk.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /api/v1/disks/{id} (the `UpdateDisk` operationId).
+func (c *Client) UpdateDiskWithBody(ctx context.Context, id VolumeId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateDiskRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// UpdateDisk Renames or grows a disk.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PATCH /api/v1/disks/{id} (the `UpdateDisk` operationId).
+func (c *Client) UpdateDisk(ctx context.Context, id VolumeId, body UpdateDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateDiskRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// MoveDiskWithBody Moves a disk attached to no VM: to another host (local storage), or to
+// another pool. It is copied, with what its image held (the copy depends
+// on nothing), then the old copy is removed. Given a VM, it goes where the
+// VM can reach it and is attached once there.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/disks/{id}/move (the `MoveDisk` operationId).
+func (c *Client) MoveDiskWithBody(ctx context.Context, id VolumeId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMoveDiskRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// MoveDisk Moves a disk attached to no VM: to another host (local storage), or to
+// another pool. It is copied, with what its image held (the copy depends
+// on nothing), then the old copy is removed. Given a VM, it goes where the
+// VM can reach it and is attached once there.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/disks/{id}/move (the `MoveDisk` operationId).
+func (c *Client) MoveDisk(ctx context.Context, id VolumeId, body MoveDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMoveDiskRequest(c.Server, id, body)
 	if err != nil {
 		return nil, err
 	}
@@ -5524,9 +5909,13 @@ func (c *Client) CreateVm(ctx context.Context, body CreateVmJSONRequestBody, req
 	return c.Client.Do(req)
 }
 
-// DeleteVm performs a DELETE /api/v1/vms/{id} (the `DeleteVm` operationId) request.
-func (c *Client) DeleteVm(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewDeleteVmRequest(c.Server, id)
+// DeleteVm Deletes a VM with the disks made with it: its boot disk, and the copies
+// a clone or restore made (unnamed). Disks of their own attached to it
+// (named) are kept, attached to nothing, unless `delete_disks` is given.
+//
+// Corresponds with DELETE /api/v1/vms/{id} (the `DeleteVm` operationId).
+func (c *Client) DeleteVm(ctx context.Context, id VmId, params *DeleteVmParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteVmRequest(c.Server, id, params)
 	if err != nil {
 		return nil, err
 	}
@@ -5743,6 +6132,77 @@ func (c *Client) CreateTicketWithBody(ctx context.Context, id VmId, contentType 
 // Takes a body of the `application/json` content type.
 func (c *Client) CreateTicket(ctx context.Context, id VmId, body CreateTicketJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewCreateTicketRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// VmDisks A VM's disks: its boot disk first, then the others as attached.
+//
+// Corresponds with GET /api/v1/vms/{id}/disks (the `VmDisks` operationId).
+func (c *Client) VmDisks(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVmDisksRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AttachDiskWithBody Attaches a disk to a VM of its tenant: plugged in at once if it runs
+// (where it started since disks could be), otherwise from its next start.
+// A disk on local storage attaches to VMs on its host. Not while the VM
+// has snapshots (they cover the disks it had).
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/vms/{id}/disks (the `AttachDisk` operationId).
+func (c *Client) AttachDiskWithBody(ctx context.Context, id VmId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAttachDiskRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AttachDisk Attaches a disk to a VM of its tenant: plugged in at once if it runs
+// (where it started since disks could be), otherwise from its next start.
+// A disk on local storage attaches to VMs on its host. Not while the VM
+// has snapshots (they cover the disks it had).
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/vms/{id}/disks (the `AttachDisk` operationId).
+func (c *Client) AttachDisk(ctx context.Context, id VmId, body AttachDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAttachDiskRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DetachDisk Detaches a disk (not the boot disk) from a VM, unplugging it if the VM
+// runs: unmount it in the guest first. The disk is kept, to attach again.
+//
+// Corresponds with DELETE /api/v1/vms/{id}/disks/{disk_id} (the `DetachDisk` operationId).
+func (c *Client) DetachDisk(ctx context.Context, id VmId, diskId VolumeId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDetachDiskRequest(c.Server, id, diskId)
 	if err != nil {
 		return nil, err
 	}
@@ -6983,6 +7443,262 @@ func NewConsoleSocketRequest(server string, ticket string) (*http.Request, error
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewListDisksRequest constructs an http.Request for the ListDisks method
+func NewListDisksRequest(server string, params *ListDisksParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/disks")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.TenantId != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "tenant_id", *params.TenantId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: "uuid"}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewCreateDiskRequest calls the generic CreateDisk builder with application/json body
+func NewCreateDiskRequest(server string, body CreateDiskJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateDiskRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewCreateDiskRequestWithBody constructs an http.Request for the CreateDisk method, with any body, and a specified content type
+func NewCreateDiskRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/disks")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewDeleteDiskRequest constructs an http.Request for the DeleteDisk method
+func NewDeleteDiskRequest(server string, id VolumeId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/disks/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetDiskRequest constructs an http.Request for the GetDisk method
+func NewGetDiskRequest(server string, id VolumeId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/disks/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewUpdateDiskRequest calls the generic UpdateDisk builder with application/json body
+func NewUpdateDiskRequest(server string, id VolumeId, body UpdateDiskJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewUpdateDiskRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewUpdateDiskRequestWithBody constructs an http.Request for the UpdateDisk method, with any body, and a specified content type
+func NewUpdateDiskRequestWithBody(server string, id VolumeId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/disks/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewMoveDiskRequest calls the generic MoveDisk builder with application/json body
+func NewMoveDiskRequest(server string, id VolumeId, body MoveDiskJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewMoveDiskRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewMoveDiskRequestWithBody constructs an http.Request for the MoveDisk method, with any body, and a specified content type
+func NewMoveDiskRequestWithBody(server string, id VolumeId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/disks/%s/move", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -10836,7 +11552,7 @@ func NewCreateVmRequestWithBody(server string, contentType string, body io.Reade
 }
 
 // NewDeleteVmRequest constructs an http.Request for the DeleteVm method
-func NewDeleteVmRequest(server string, id VmId) (*http.Request, error) {
+func NewDeleteVmRequest(server string, id VmId, params *DeleteVmParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -10859,6 +11575,33 @@ func NewDeleteVmRequest(server string, id VmId) (*http.Request, error) {
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.DeleteDisks != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "delete_disks", *params.DeleteDisks, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
 	}
 
 	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
@@ -11168,6 +11911,128 @@ func NewCreateTicketRequestWithBody(server string, id VmId, contentType string, 
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewVmDisksRequest constructs an http.Request for the VmDisks method
+func NewVmDisksRequest(server string, id VmId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/vms/%s/disks", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewAttachDiskRequest calls the generic AttachDisk builder with application/json body
+func NewAttachDiskRequest(server string, id VmId, body AttachDiskJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewAttachDiskRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewAttachDiskRequestWithBody constructs an http.Request for the AttachDisk method, with any body, and a specified content type
+func NewAttachDiskRequestWithBody(server string, id VmId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/vms/%s/disks", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewDetachDiskRequest constructs an http.Request for the DetachDisk method
+func NewDetachDiskRequest(server string, id VmId, diskId VolumeId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "disk_id", diskId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/vms/%s/disks/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
 
 	return req, nil
 }
@@ -12046,6 +12911,75 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/console/{ticket} (the `ConsoleSocket` operationId).
 	ConsoleSocketWithResponse(ctx context.Context, ticket string, reqEditors ...RequestEditorFn) (*ConsoleSocketResponse, error)
 
+	// ListDisksWithResponse Disks, newest first: VMs' boot disks, and disks attached to a VM or not.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/disks (the `ListDisks` operationId).
+	ListDisksWithResponse(ctx context.Context, params *ListDisksParams, reqEditors ...RequestEditorFn) (*ListDisksResponse, error)
+
+	// CreateDiskWithBodyWithResponse Makes an empty disk, attached to a VM or not. It counts against the
+	// tenant's disk quota.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/disks (the `CreateDisk` operationId).
+	CreateDiskWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateDiskResponse, error)
+
+	// CreateDiskWithResponse Makes an empty disk, attached to a VM or not. It counts against the
+	// tenant's disk quota.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/disks (the `CreateDisk` operationId).
+	CreateDiskWithResponse(ctx context.Context, body CreateDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateDiskResponse, error)
+
+	// DeleteDiskWithResponse Deletes a disk attached to no VM, with what it holds.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /api/v1/disks/{id} (the `DeleteDisk` operationId).
+	DeleteDiskWithResponse(ctx context.Context, id VolumeId, reqEditors ...RequestEditorFn) (*DeleteDiskResponse, error)
+
+	// GetDiskWithResponse performs a GET /api/v1/disks/{id} (the `GetDisk` operationId) request.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	GetDiskWithResponse(ctx context.Context, id VolumeId, reqEditors ...RequestEditorFn) (*GetDiskResponse, error)
+
+	// UpdateDiskWithBodyWithResponse Renames or grows a disk.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PATCH /api/v1/disks/{id} (the `UpdateDisk` operationId).
+	UpdateDiskWithBodyWithResponse(ctx context.Context, id VolumeId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateDiskResponse, error)
+
+	// UpdateDiskWithResponse Renames or grows a disk.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PATCH /api/v1/disks/{id} (the `UpdateDisk` operationId).
+	UpdateDiskWithResponse(ctx context.Context, id VolumeId, body UpdateDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateDiskResponse, error)
+
+	// MoveDiskWithBodyWithResponse Moves a disk attached to no VM: to another host (local storage), or to
+	// another pool. It is copied, with what its image held (the copy depends
+	// on nothing), then the old copy is removed. Given a VM, it goes where the
+	// VM can reach it and is attached once there.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/disks/{id}/move (the `MoveDisk` operationId).
+	MoveDiskWithBodyWithResponse(ctx context.Context, id VolumeId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*MoveDiskResponse, error)
+
+	// MoveDiskWithResponse Moves a disk attached to no VM: to another host (local storage), or to
+	// another pool. It is copied, with what its image held (the copy depends
+	// on nothing), then the old copy is removed. Given a VM, it goes where the
+	// VM can reach it and is attached once there.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/disks/{id}/move (the `MoveDisk` operationId).
+	MoveDiskWithResponse(ctx context.Context, id VolumeId, body MoveDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*MoveDiskResponse, error)
+
 	// EventsWithResponse A stream of changes the caller can see, as `text/event-stream`. Each event
 	// is named for the kind of thing that changed (`vm`, `task`, `host`, `image`,
 	// `tenant`, `cluster`, `storage_pool`, `vpc`, `network`, `security_group`,
@@ -12859,10 +13793,14 @@ type ClientWithResponsesInterface interface {
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	CreateVmWithResponse(ctx context.Context, body CreateVmJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateVmResponse, error)
 
-	// DeleteVmWithResponse performs a DELETE /api/v1/vms/{id} (the `DeleteVm` operationId) request.
+	// DeleteVmWithResponse Deletes a VM with the disks made with it: its boot disk, and the copies
+	// a clone or restore made (unnamed). Disks of their own attached to it
+	// (named) are kept, attached to nothing, unless `delete_disks` is given.
 	//
 	// Returns a wrapper object for the known response body format(s).
-	DeleteVmWithResponse(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*DeleteVmResponse, error)
+	//
+	// Corresponds with DELETE /api/v1/vms/{id} (the `DeleteVm` operationId).
+	DeleteVmWithResponse(ctx context.Context, id VmId, params *DeleteVmParams, reqEditors ...RequestEditorFn) (*DeleteVmResponse, error)
 
 	// GetVmWithResponse performs a GET /api/v1/vms/{id} (the `GetVm` operationId) request.
 	//
@@ -12965,6 +13903,41 @@ type ClientWithResponsesInterface interface {
 	// CreateTicketWithResponse performs a POST /api/v1/vms/{id}/console (the `CreateTicket` operationId) request.
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	CreateTicketWithResponse(ctx context.Context, id VmId, body CreateTicketJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateTicketResponse, error)
+
+	// VmDisksWithResponse A VM's disks: its boot disk first, then the others as attached.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/vms/{id}/disks (the `VmDisks` operationId).
+	VmDisksWithResponse(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*VmDisksResponse, error)
+
+	// AttachDiskWithBodyWithResponse Attaches a disk to a VM of its tenant: plugged in at once if it runs
+	// (where it started since disks could be), otherwise from its next start.
+	// A disk on local storage attaches to VMs on its host. Not while the VM
+	// has snapshots (they cover the disks it had).
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/vms/{id}/disks (the `AttachDisk` operationId).
+	AttachDiskWithBodyWithResponse(ctx context.Context, id VmId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AttachDiskResponse, error)
+
+	// AttachDiskWithResponse Attaches a disk to a VM of its tenant: plugged in at once if it runs
+	// (where it started since disks could be), otherwise from its next start.
+	// A disk on local storage attaches to VMs on its host. Not while the VM
+	// has snapshots (they cover the disks it had).
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/vms/{id}/disks (the `AttachDisk` operationId).
+	AttachDiskWithResponse(ctx context.Context, id VmId, body AttachDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*AttachDiskResponse, error)
+
+	// DetachDiskWithResponse Detaches a disk (not the boot disk) from a VM, unplugging it if the VM
+	// runs: unmount it in the guest first. The disk is kept, to attach again.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /api/v1/vms/{id}/disks/{disk_id} (the `DetachDisk` operationId).
+	DetachDiskWithResponse(ctx context.Context, id VmId, diskId VolumeId, reqEditors ...RequestEditorFn) (*DetachDiskResponse, error)
 
 	// ResizeDiskWithBodyWithResponse Grows one of a VM's disks (0 is the boot disk), running or stopped. A
 	// running guest sees the larger disk at once; its partition and file
@@ -13918,6 +14891,245 @@ func (r ConsoleSocketResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r ConsoleSocketResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ListDisksResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *[]DiskView
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r ListDisksResponse) GetJSON200() *[]DiskView {
+	return r.JSON200
+}
+
+// GetBody returns the raw response body bytes
+func (r ListDisksResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r ListDisksResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListDisksResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListDisksResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type CreateDiskResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON201 the response for an HTTP 201 `application/json` response
+	JSON201 *DiskView
+}
+
+// GetJSON201 returns the response for an HTTP 201 `application/json` response
+func (r CreateDiskResponse) GetJSON201() *DiskView {
+	return r.JSON201
+}
+
+// GetBody returns the raw response body bytes
+func (r CreateDiskResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateDiskResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateDiskResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r CreateDiskResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeleteDiskResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+}
+
+// GetBody returns the raw response body bytes
+func (r DeleteDiskResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteDiskResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteDiskResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteDiskResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetDiskResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *DiskView
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetDiskResponse) GetJSON200() *DiskView {
+	return r.JSON200
+}
+
+// GetBody returns the raw response body bytes
+func (r GetDiskResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetDiskResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetDiskResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetDiskResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type UpdateDiskResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *DiskView
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r UpdateDiskResponse) GetJSON200() *DiskView {
+	return r.JSON200
+}
+
+// GetBody returns the raw response body bytes
+func (r UpdateDiskResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r UpdateDiskResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UpdateDiskResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r UpdateDiskResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type MoveDiskResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON202 the response for an HTTP 202 `application/json` response
+	JSON202 *MoveAccepted
+}
+
+// GetJSON202 returns the response for an HTTP 202 `application/json` response
+func (r MoveDiskResponse) GetJSON202() *MoveAccepted {
+	return r.JSON202
+}
+
+// GetBody returns the raw response body bytes
+func (r MoveDiskResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r MoveDiskResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r MoveDiskResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r MoveDiskResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -17918,6 +19130,129 @@ func (r CreateTicketResponse) ContentType() string {
 	return ""
 }
 
+type VmDisksResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *[]DiskView
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r VmDisksResponse) GetJSON200() *[]DiskView {
+	return r.JSON200
+}
+
+// GetBody returns the raw response body bytes
+func (r VmDisksResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r VmDisksResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r VmDisksResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r VmDisksResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type AttachDiskResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *DiskView
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r AttachDiskResponse) GetJSON200() *DiskView {
+	return r.JSON200
+}
+
+// GetBody returns the raw response body bytes
+func (r AttachDiskResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r AttachDiskResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AttachDiskResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r AttachDiskResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DetachDiskResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *DiskView
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r DetachDiskResponse) GetJSON200() *DiskView {
+	return r.JSON200
+}
+
+// GetBody returns the raw response body bytes
+func (r DetachDiskResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DetachDiskResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DetachDiskResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DetachDiskResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type ResizeDiskResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -18855,6 +20190,129 @@ func (c *ClientWithResponses) ConsoleSocketWithResponse(ctx context.Context, tic
 		return nil, err
 	}
 	return ParseConsoleSocketResponse(rsp)
+}
+
+// ListDisksWithResponse Disks, newest first: VMs' boot disks, and disks attached to a VM or not.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /api/v1/disks (the `ListDisks` operationId).
+func (c *ClientWithResponses) ListDisksWithResponse(ctx context.Context, params *ListDisksParams, reqEditors ...RequestEditorFn) (*ListDisksResponse, error) {
+	rsp, err := c.ListDisks(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListDisksResponse(rsp)
+}
+
+// CreateDiskWithBodyWithResponse Makes an empty disk, attached to a VM or not. It counts against the
+// tenant's disk quota.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/disks (the `CreateDisk` operationId).
+func (c *ClientWithResponses) CreateDiskWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateDiskResponse, error) {
+	rsp, err := c.CreateDiskWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateDiskResponse(rsp)
+}
+
+// CreateDiskWithResponse Makes an empty disk, attached to a VM or not. It counts against the
+// tenant's disk quota.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/disks (the `CreateDisk` operationId).
+func (c *ClientWithResponses) CreateDiskWithResponse(ctx context.Context, body CreateDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateDiskResponse, error) {
+	rsp, err := c.CreateDisk(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateDiskResponse(rsp)
+}
+
+// DeleteDiskWithResponse Deletes a disk attached to no VM, with what it holds.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /api/v1/disks/{id} (the `DeleteDisk` operationId).
+func (c *ClientWithResponses) DeleteDiskWithResponse(ctx context.Context, id VolumeId, reqEditors ...RequestEditorFn) (*DeleteDiskResponse, error) {
+	rsp, err := c.DeleteDisk(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteDiskResponse(rsp)
+}
+
+// GetDiskWithResponse performs a GET /api/v1/disks/{id} (the `GetDisk` operationId) request.
+//
+// Returns a wrapper object for the known response body format(s).
+func (c *ClientWithResponses) GetDiskWithResponse(ctx context.Context, id VolumeId, reqEditors ...RequestEditorFn) (*GetDiskResponse, error) {
+	rsp, err := c.GetDisk(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetDiskResponse(rsp)
+}
+
+// UpdateDiskWithBodyWithResponse Renames or grows a disk.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PATCH /api/v1/disks/{id} (the `UpdateDisk` operationId).
+func (c *ClientWithResponses) UpdateDiskWithBodyWithResponse(ctx context.Context, id VolumeId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateDiskResponse, error) {
+	rsp, err := c.UpdateDiskWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateDiskResponse(rsp)
+}
+
+// UpdateDiskWithResponse Renames or grows a disk.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PATCH /api/v1/disks/{id} (the `UpdateDisk` operationId).
+func (c *ClientWithResponses) UpdateDiskWithResponse(ctx context.Context, id VolumeId, body UpdateDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateDiskResponse, error) {
+	rsp, err := c.UpdateDisk(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateDiskResponse(rsp)
+}
+
+// MoveDiskWithBodyWithResponse Moves a disk attached to no VM: to another host (local storage), or to
+// another pool. It is copied, with what its image held (the copy depends
+// on nothing), then the old copy is removed. Given a VM, it goes where the
+// VM can reach it and is attached once there.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/disks/{id}/move (the `MoveDisk` operationId).
+func (c *ClientWithResponses) MoveDiskWithBodyWithResponse(ctx context.Context, id VolumeId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*MoveDiskResponse, error) {
+	rsp, err := c.MoveDiskWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseMoveDiskResponse(rsp)
+}
+
+// MoveDiskWithResponse Moves a disk attached to no VM: to another host (local storage), or to
+// another pool. It is copied, with what its image held (the copy depends
+// on nothing), then the old copy is removed. Given a VM, it goes where the
+// VM can reach it and is attached once there.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/disks/{id}/move (the `MoveDisk` operationId).
+func (c *ClientWithResponses) MoveDiskWithResponse(ctx context.Context, id VolumeId, body MoveDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*MoveDiskResponse, error) {
+	rsp, err := c.MoveDisk(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseMoveDiskResponse(rsp)
 }
 
 // EventsWithResponse A stream of changes the caller can see, as `text/event-stream`. Each event
@@ -20444,11 +21902,15 @@ func (c *ClientWithResponses) CreateVmWithResponse(ctx context.Context, body Cre
 	return ParseCreateVmResponse(rsp)
 }
 
-// DeleteVmWithResponse performs a DELETE /api/v1/vms/{id} (the `DeleteVm` operationId) request.
+// DeleteVmWithResponse Deletes a VM with the disks made with it: its boot disk, and the copies
+// a clone or restore made (unnamed). Disks of their own attached to it
+// (named) are kept, attached to nothing, unless `delete_disks` is given.
 //
 // Returns a wrapper object for the known response body format(s).
-func (c *ClientWithResponses) DeleteVmWithResponse(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*DeleteVmResponse, error) {
-	rsp, err := c.DeleteVm(ctx, id, reqEditors...)
+//
+// Corresponds with DELETE /api/v1/vms/{id} (the `DeleteVm` operationId).
+func (c *ClientWithResponses) DeleteVmWithResponse(ctx context.Context, id VmId, params *DeleteVmParams, reqEditors ...RequestEditorFn) (*DeleteVmResponse, error) {
+	rsp, err := c.DeleteVm(ctx, id, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -20627,6 +22089,65 @@ func (c *ClientWithResponses) CreateTicketWithResponse(ctx context.Context, id V
 		return nil, err
 	}
 	return ParseCreateTicketResponse(rsp)
+}
+
+// VmDisksWithResponse A VM's disks: its boot disk first, then the others as attached.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /api/v1/vms/{id}/disks (the `VmDisks` operationId).
+func (c *ClientWithResponses) VmDisksWithResponse(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*VmDisksResponse, error) {
+	rsp, err := c.VmDisks(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVmDisksResponse(rsp)
+}
+
+// AttachDiskWithBodyWithResponse Attaches a disk to a VM of its tenant: plugged in at once if it runs
+// (where it started since disks could be), otherwise from its next start.
+// A disk on local storage attaches to VMs on its host. Not while the VM
+// has snapshots (they cover the disks it had).
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/vms/{id}/disks (the `AttachDisk` operationId).
+func (c *ClientWithResponses) AttachDiskWithBodyWithResponse(ctx context.Context, id VmId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AttachDiskResponse, error) {
+	rsp, err := c.AttachDiskWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAttachDiskResponse(rsp)
+}
+
+// AttachDiskWithResponse Attaches a disk to a VM of its tenant: plugged in at once if it runs
+// (where it started since disks could be), otherwise from its next start.
+// A disk on local storage attaches to VMs on its host. Not while the VM
+// has snapshots (they cover the disks it had).
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/vms/{id}/disks (the `AttachDisk` operationId).
+func (c *ClientWithResponses) AttachDiskWithResponse(ctx context.Context, id VmId, body AttachDiskJSONRequestBody, reqEditors ...RequestEditorFn) (*AttachDiskResponse, error) {
+	rsp, err := c.AttachDisk(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAttachDiskResponse(rsp)
+}
+
+// DetachDiskWithResponse Detaches a disk (not the boot disk) from a VM, unplugging it if the VM
+// runs: unmount it in the guest first. The disk is kept, to attach again.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /api/v1/vms/{id}/disks/{disk_id} (the `DetachDisk` operationId).
+func (c *ClientWithResponses) DetachDiskWithResponse(ctx context.Context, id VmId, diskId VolumeId, reqEditors ...RequestEditorFn) (*DetachDiskResponse, error) {
+	rsp, err := c.DetachDisk(ctx, id, diskId, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDetachDiskResponse(rsp)
 }
 
 // ResizeDiskWithBodyWithResponse Grows one of a VM's disks (0 is the boot disk), running or stopped. A
@@ -21437,6 +22958,188 @@ func ParseConsoleSocketResponse(rsp *http.Response) (*ConsoleSocketResponse, err
 	response := &ConsoleSocketResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseListDisksResponse parses an HTTP response from a ListDisksWithResponse call
+func ParseListDisksResponse(rsp *http.Response) (*ListDisksResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListDisksResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest []DiskView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateDiskResponse parses an HTTP response from a CreateDiskWithResponse call
+func ParseCreateDiskResponse(rsp *http.Response) (*CreateDiskResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateDiskResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest DiskView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case rsp.StatusCode == 400:
+		break // No content-type
+
+	case rsp.StatusCode == 404:
+		break // No content-type
+
+	case rsp.StatusCode == 409:
+		break // No content-type
+
+	case rsp.StatusCode == 503:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteDiskResponse parses an HTTP response from a DeleteDiskWithResponse call
+func ParseDeleteDiskResponse(rsp *http.Response) (*DeleteDiskResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteDiskResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseGetDiskResponse parses an HTTP response from a GetDiskWithResponse call
+func ParseGetDiskResponse(rsp *http.Response) (*GetDiskResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetDiskResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest DiskView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case rsp.StatusCode == 404:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseUpdateDiskResponse parses an HTTP response from a UpdateDiskWithResponse call
+func ParseUpdateDiskResponse(rsp *http.Response) (*UpdateDiskResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UpdateDiskResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest DiskView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case rsp.StatusCode == 400:
+		break // No content-type
+
+	case rsp.StatusCode == 404:
+		break // No content-type
+
+	case rsp.StatusCode == 409:
+		break // No content-type
+
+	case rsp.StatusCode == 503:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseMoveDiskResponse parses an HTTP response from a MoveDiskWithResponse call
+func ParseMoveDiskResponse(rsp *http.Response) (*MoveDiskResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &MoveDiskResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
+		var dest MoveAccepted
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON202 = &dest
+
+	case rsp.StatusCode == 400:
+		break // No content-type
+
+	case rsp.StatusCode == 404:
+		break // No content-type
+
+	case rsp.StatusCode == 409:
+		break // No content-type
+
 	}
 
 	return response, nil
@@ -24292,6 +25995,105 @@ func ParseCreateTicketResponse(rsp *http.Response) (*CreateTicketResponse, error
 		break // No content-type
 
 	case rsp.StatusCode == 409:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseVmDisksResponse parses an HTTP response from a VmDisksWithResponse call
+func ParseVmDisksResponse(rsp *http.Response) (*VmDisksResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &VmDisksResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest []DiskView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case rsp.StatusCode == 404:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseAttachDiskResponse parses an HTTP response from a AttachDiskWithResponse call
+func ParseAttachDiskResponse(rsp *http.Response) (*AttachDiskResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AttachDiskResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest DiskView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case rsp.StatusCode == 404:
+		break // No content-type
+
+	case rsp.StatusCode == 409:
+		break // No content-type
+
+	case rsp.StatusCode == 503:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseDetachDiskResponse parses an HTTP response from a DetachDiskWithResponse call
+func ParseDetachDiskResponse(rsp *http.Response) (*DetachDiskResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DetachDiskResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest DiskView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case rsp.StatusCode == 404:
+		break // No content-type
+
+	case rsp.StatusCode == 409:
+		break // No content-type
+
+	case rsp.StatusCode == 503:
 		break // No content-type
 
 	}

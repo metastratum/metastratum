@@ -25,6 +25,7 @@ export type ExternalNetwork = Schemas['ExternalNetworkView']
 export type Backup = Schemas['BackupView']
 export type BackupRepository = Schemas['RepositoryView']
 export type Snapshot = Schemas['SnapshotView']
+export type Disk = Schemas['DiskView']
 export type SecondFactor = Schemas['FactorView']
 export type SecondFactorChallenge = Schemas['SecondFactorChallenge']
 

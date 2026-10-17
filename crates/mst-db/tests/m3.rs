@@ -231,6 +231,7 @@ async fn the_model_snapshot_has_everything_the_compiler_needs(pool: PgPool) {
                 max_memory_mib: None,
                 max_vcpus: None,
                 free_page_reporting: None,
+                disk_hotplug: None,
                 firmware: Default::default(),
                 disks: vec![],
                 nics: vec![],

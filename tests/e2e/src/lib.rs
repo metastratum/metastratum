@@ -315,10 +315,11 @@ impl Console {
             .expect_any(&["login:", "$ "], Duration::from_secs(180))
             .await?;
         if screen.contains("login:") {
+            // A first login starts the user's session, slowly on a busy host.
             self.send(format!("{user}\r").as_bytes()).await?;
-            self.expect("assword:", Duration::from_secs(20)).await?;
+            self.expect("assword:", Duration::from_secs(60)).await?;
             self.send(format!("{password}\r").as_bytes()).await?;
-            self.expect("$ ", Duration::from_secs(30)).await?;
+            self.expect("$ ", Duration::from_secs(90)).await?;
         }
         // Quoting splits the marker in the echoed command line, so only the
         // command's own output contains `__rc=<code>__`.
@@ -538,9 +539,9 @@ pub async fn cleaned_up(
     outcome.finish(clean(api, run).await)
 }
 
-/// Removes what a run made: VMs named after it, and its tenants (those
-/// whose slug path starts with it) with what they hold (VMs, images),
-/// deepest first. Says what it could not remove.
+/// Removes what a run made: VMs and disks named after it, and its tenants
+/// (those whose slug path starts with it) with what they hold (VMs, disks,
+/// images), deepest first. Says what it could not remove.
 pub async fn clean(api: &Api, run: &str) -> Result<()> {
     let ours = |path: &str| path.split('/').next().is_some_and(|s| s.starts_with(run));
     let tenants: Vec<Value> = api
@@ -576,6 +577,24 @@ pub async fn clean(api: &Api, run: &str) -> Result<()> {
     for r in futures::future::join_all(deletions).await {
         if let Err(e) = r {
             failed.push(format!("{e:#}"));
+        }
+    }
+
+    // Disks of their own, attached to nothing once the VMs are gone.
+    let disks = api.get("/disks").await?;
+    for d in disks.as_array().into_iter().flatten() {
+        let ours = d["name"].as_str().is_some_and(|n| n.starts_with(run))
+            || d["tenant_id"]
+                .as_str()
+                .is_some_and(|t| tenant_ids.contains(&t));
+        if !ours {
+            continue;
+        }
+        let path = format!("/disks/{}", d["id"].as_str().unwrap_or_default());
+        match api.try_send(reqwest::Method::DELETE, &path, None).await {
+            Ok((st, _)) if st < 300 || st == 404 => {}
+            Ok((_, b)) => failed.push(format!("disk {}: {b}", d["name"])),
+            Err(e) => failed.push(format!("disk {}: {e:#}", d["name"])),
         }
     }
 

@@ -8,6 +8,7 @@ export const router = createRouter({
     { path: '/', redirect: '/vms' },
     { path: '/vms', name: 'vms', component: () => import('./views/VmListView.vue') },
     { path: '/vms/:id', name: 'vm', component: () => import('./views/VmDetailView.vue'), props: true },
+    { path: '/disks', name: 'disks', component: () => import('./views/DisksView.vue'), meta: { machines: true } },
     { path: '/backups', name: 'backups', component: () => import('./views/BackupsView.vue'), meta: { machines: true } },
     { path: '/images', name: 'images', component: () => import('./views/ImagesView.vue') },
     { path: '/tenants/:id?', name: 'tenants', component: () => import('./views/TenantsView.vue'), props: true },

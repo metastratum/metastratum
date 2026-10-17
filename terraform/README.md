@@ -11,6 +11,8 @@ on a metastratum installation through its API.
 | `metastratum_security_group`, `metastratum_security_group_rule` | A security group and its rules (a NIC in a group passes what its rules allow). |
 | `metastratum_floating_ip` | An external address forwarding to a VM's `nic_id`. |
 | `metastratum_load_balancer` | An external or internal address whose `listener`s spread connections over `member_vm_ids`. |
+| `metastratum_disk` | An empty disk of its own, on local storage (`host_id`) or in a shared pool. It grows in place; a changed pool or host moves it there (attached to no VM). |
+| `metastratum_disk_attachment` | A disk attached to a VM of its tenant (plugged in while it runs), with the `guest_path` it has there; one on another host's local storage moves to the VM's first. Destroyed, it is detached. |
 
 Data sources: `metastratum_image` and `metastratum_external_network`, by
 name. Everything can be imported by ID (security group rules as

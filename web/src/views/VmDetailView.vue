@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, ApiError, errorText, ok, type Schemas, type SecurityGroup, type Task, type Vm } from '../api/client'
+import { api, ApiError, errorText, ok, type Disk, type Schemas, type SecurityGroup, type Task, type Vm } from '../api/client'
 import IdChip from '../components/IdChip.vue'
 import MigrateDialog from '../components/MigrateDialog.vue'
 import ResizeDialog from '../components/ResizeDialog.vue'
 import CloneDialog from '../components/CloneDialog.vue'
 import StatusLed from '../components/StatusLed.vue'
 import VmBackups from '../components/VmBackups.vue'
+import VmDisks from '../components/VmDisks.vue'
 import VmSnapshots from '../components/VmSnapshots.vue'
 import { ago, gib, mib, powerNote, shortId, vmState } from '../state'
 import { useLiveRefresh } from '../stores/live'
@@ -201,9 +202,23 @@ async function act(action: Action) {
   }
 }
 
+// Disks of their own attached to it (named): kept when it goes, unless asked.
+const ownDisks = ref<Disk[]>([])
+const deleteDisks = ref(false)
+watch(confirmingDelete, async (on) => {
+  deleteDisks.value = false
+  if (!on) return
+  const disks = await ok(api.GET('/api/v1/vms/{id}/disks', { params: { path: { id: props.id } } })).catch(() => [])
+  ownDisks.value = disks.filter((d) => !d.boot && d.name)
+})
+
 async function remove() {
   try {
-    await ok(api.DELETE('/api/v1/vms/{id}', { params: { path: { id: props.id } } }))
+    await ok(
+      api.DELETE('/api/v1/vms/{id}', {
+        params: { path: { id: props.id }, query: { delete_disks: deleteDisks.value } },
+      }),
+    )
     tasks.poke()
     await router.push({ name: 'vms' })
   } catch (e) {
@@ -273,7 +288,13 @@ async function remove() {
           </button>
         </template>
         <template v-else>
-          <button class="btn danger" @click="remove">Delete {{ vm.name }} and its disk</button>
+          <label v-if="ownDisks.length" class="check own-disks">
+            <input id="delete-disks" v-model="deleteDisks" type="checkbox" />
+            Its disks too: {{ ownDisks.map((d) => d.name).join(', ') }}
+          </label>
+          <button class="btn danger" @click="remove">
+            Delete {{ vm.name }} and its {{ deleteDisks ? 'disks' : 'disk' }}
+          </button>
           <button class="btn" @click="confirmingDelete = false">Keep it</button>
         </template>
       </div>
@@ -317,7 +338,13 @@ async function remove() {
           </span>
         </dd>
       </div>
-      <div><dt class="label">Disk</dt><dd class="mono">{{ vm.disks[0] ? gib(vm.disks[0].size_bytes) : '—' }}</dd></div>
+      <div>
+        <dt class="label">{{ vm.disks.length > 1 ? 'Disks' : 'Disk' }}</dt>
+        <dd class="mono">
+          {{ vm.disks[0] ? gib(vm.disks[0].size_bytes) : '—'
+          }}<span v-if="vm.disks.length > 1" class="muted"> + {{ vm.disks.length - 1 }} more</span>
+        </dd>
+      </div>
     </dl>
 
     <div class="tabs" role="tablist">
@@ -419,13 +446,7 @@ async function remove() {
             <dt>Interface</dt><dd><IdChip :value="n.id" short /></dd>
           </dl>
         </section>
-        <section>
-          <h2 class="label">Disks</h2>
-          <dl v-for="(d, i) in vm.disks" :key="d.volume_id" class="kv">
-            <dt>{{ i === 0 ? 'Boot disk' : `Disk ${i + 1}` }}</dt><dd class="mono">{{ gib(d.size_bytes) }}</dd>
-            <dt>Volume</dt><dd><IdChip :value="d.volume_id" short /></dd>
-          </dl>
-        </section>
+        <VmDisks :key="`disks-${vm.id}`" :vm="vm" />
         <VmSnapshots :key="`snapshots-${vm.id}`" :vm="vm" />
         <VmBackups :key="`backups-${vm.id}`" :vm="vm" />
         <section>

@@ -62,6 +62,11 @@ pub fn capability(cmd: &command::Cmd) -> &'static str {
         SetMemory(_) => "set_memory",
         MemoryStats(_) => "memory_stats",
         SetVcpus(_) => "set_vcpus",
+        AttachDisk(_) => "attach_disk",
+        DetachDisk(_) => "detach_disk",
+        ExportVolume(_) => "export_volume",
+        EndExport(_) => "end_export",
+        CopyVolume(_) => "copy_volume",
     }
 }
 
@@ -101,6 +106,11 @@ pub const CAPABILITIES: &[&str] = &[
     "set_memory",
     "memory_stats",
     "set_vcpus",
+    "attach_disk",
+    "detach_disk",
+    "export_volume",
+    "end_export",
+    "copy_volume",
 ];
 
 #[cfg(test)]
@@ -109,7 +119,7 @@ mod tests {
     fn every_command_is_a_capability() {
         // A new command added to the protocol must be named here too; this
         // count is a reminder (prost has no variant list to check against).
-        assert_eq!(super::CAPABILITIES.len(), 34);
+        assert_eq!(super::CAPABILITIES.len(), 39);
         let unique: std::collections::HashSet<_> = super::CAPABILITIES.iter().collect();
         assert_eq!(unique.len(), super::CAPABILITIES.len());
     }

@@ -7,6 +7,7 @@ pub mod audit;
 pub mod backups;
 pub mod clusters;
 pub mod console;
+pub mod disks;
 pub mod external;
 pub mod grants;
 pub mod hosts;

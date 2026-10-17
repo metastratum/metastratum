@@ -15,7 +15,7 @@ use mst_libvirt::Power;
 use mst_proto::{BackupDisk, DeleteSnapshot, RevertSnapshot, SnapshotVm};
 use serde_json::{Value, json};
 
-use crate::backup::target_of;
+use crate::backup::target;
 use crate::session::Agent;
 
 /// One snapshot request at a time per VM.
@@ -69,7 +69,7 @@ async fn nodes(agent: &Agent, vm: &str, disks: &[BackupDisk]) -> Result<HashMap<
     disks
         .iter()
         .map(|d| {
-            let target = target_of(d.index);
+            let target = target(d);
             let index = sources
                 .get(&target)
                 .ok_or_else(|| anyhow!("the VM has no disk {target}"))?;

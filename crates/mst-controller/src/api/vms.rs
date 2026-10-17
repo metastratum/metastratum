@@ -644,6 +644,7 @@ async fn create_inner(
             image_id: Some(req.image_id),
             restored_from: None,
             cloned_from: None,
+            unit: None,
         }],
         // Every disk the source has, at its size and on the image it was
         // made from (file pools keep sharing it).
@@ -659,6 +660,7 @@ async fn create_inner(
                 image_id: d.image_id,
                 restored_from: None,
                 cloned_from: Some(d.volume_id),
+                unit: d.unit,
             })
             .collect(),
         // Every disk the backup has, at its size, in the chosen pool.
@@ -678,6 +680,7 @@ async fn create_inner(
                     index: i as u32,
                 }),
                 cloned_from: None,
+                unit: d.unit,
             })
             .collect(),
     };
@@ -705,6 +708,8 @@ async fn create_inner(
         memory_mib: req.memory_mib,
         max_memory_mib: req.max_memory_mib.filter(|m| *m > req.memory_mib),
         free_page_reporting: Some(req.free_page_reporting.unwrap_or(true)),
+        // Set as it starts, if its host's agent plugs disks in.
+        disk_hotplug: None,
         firmware: req.firmware,
         disks: disks.clone(),
         nics: vec![],
@@ -1026,12 +1031,25 @@ async fn reboot_vm(
     power_action(&state, &p, id, "vm.reboot", None, json!({})).await
 }
 
-#[utoipa::path(delete, path = "/vms/{id}", tag = "vms", params(("id" = VmId, Path)),
+#[derive(Deserialize, IntoParams, Default)]
+#[into_params(parameter_in = Query)]
+pub struct DeleteQuery {
+    /// Delete the disks of their own attached to it too; otherwise they are
+    /// kept, attached to nothing.
+    #[serde(default)]
+    delete_disks: bool,
+}
+
+/// Deletes a VM with the disks made with it: its boot disk, and the copies
+/// a clone or restore made (unnamed). Disks of their own attached to it
+/// (named) are kept, attached to nothing, unless `delete_disks` is given.
+#[utoipa::path(delete, path = "/vms/{id}", tag = "vms", params(("id" = VmId, Path), DeleteQuery),
     responses((status = 202, body = TaskRef), (status = 404)))]
 async fn delete_vm(
     State(state): State<AppState>,
     p: Principal,
     Path(id): Path<VmId>,
+    Query(q): Query<DeleteQuery>,
 ) -> ApiResult<(StatusCode, Json<TaskRef>)> {
     let vm = load(&state, &p, id, Perm::VmWrite).await?;
     if vm.status == "migrating" {
@@ -1047,7 +1065,8 @@ async fn delete_vm(
     }
     let mut tx = state.db.begin().await?;
     mst_db::vms::set_status(&mut *tx, id, "deleting", None).await?;
-    let task_id = enqueue(&mut tx, &p, vm.tenant_id, "vm.delete", id, json!({})).await?;
+    let params = json!({"delete_disks": q.delete_disks});
+    let task_id = enqueue(&mut tx, &p, vm.tenant_id, "vm.delete", id, params).await?;
     tx.commit().await?;
     audit(
         &state.db,
@@ -1055,7 +1074,7 @@ async fn delete_vm(
         Some(vm.tenant_id),
         "vm.delete",
         Some(("vm", id.0)),
-        json!({"name": vm.name}),
+        json!({"name": vm.name, "delete_disks": q.delete_disks}),
     )
     .await;
     Ok((StatusCode::ACCEPTED, Json(TaskRef { task_id })))
@@ -1232,24 +1251,7 @@ pub async fn define_on_host(
     spec: &VmSpec,
     generation: i64,
 ) -> ApiResult<()> {
-    let mut pools = std::collections::BTreeMap::new();
-    for d in &spec.disks {
-        if let std::collections::btree_map::Entry::Vacant(e) = pools.entry(d.pool_id) {
-            e.insert(
-                super::agent_pool(&mst_db::storage_pools::get(&mut *tx, d.pool_id).await?)
-                    .map_err(ApiError::internal)?,
-            );
-        }
-    }
-    let define = mst_proto::DefineVm {
-        vm_id: vm.id.to_string(),
-        tenant_id: vm.tenant_id.to_string(),
-        name: vm.name.clone(),
-        generation: generation as u64,
-        spec_json: serde_json::to_string(spec).map_err(ApiError::internal)?,
-        pools: pools.into_values().collect(),
-        disk_limits: crate::limits::disk_limits(&state.db, host).await?,
-    };
+    let define = definition(state, tx, vm, host, spec, generation).await?;
     state
         .agents
         .call(
@@ -1259,6 +1261,35 @@ pub async fn define_on_host(
         )
         .await
         .map_err(|e| ApiError::unavailable(format!("updating the VM on its host: {e}")))
+}
+
+/// The VM's definition with `spec`, as its host's agent takes it.
+pub async fn definition(
+    state: &AppState,
+    tx: &mut mst_db::sqlx::PgConnection,
+    vm: &mst_db::vms::Vm,
+    host: mst_core::ids::HostId,
+    spec: &VmSpec,
+    generation: i64,
+) -> ApiResult<mst_proto::DefineVm> {
+    let mut pools = std::collections::BTreeMap::new();
+    for d in &spec.disks {
+        if let std::collections::btree_map::Entry::Vacant(e) = pools.entry(d.pool_id) {
+            e.insert(
+                super::agent_pool(&mst_db::storage_pools::get(&mut *tx, d.pool_id).await?)
+                    .map_err(ApiError::internal)?,
+            );
+        }
+    }
+    Ok(mst_proto::DefineVm {
+        vm_id: vm.id.to_string(),
+        tenant_id: vm.tenant_id.to_string(),
+        name: vm.name.clone(),
+        generation: generation as u64,
+        spec_json: serde_json::to_string(spec).map_err(ApiError::internal)?,
+        pools: pools.into_values().collect(),
+        disk_limits: crate::limits::disk_limits(&state.db, host).await?,
+    })
 }
 
 /// What a running VM's balloon reports.
@@ -1422,15 +1453,26 @@ async fn resize_disk(
     Path((id, index)): Path<(VmId, usize)>,
     Json(req): Json<ResizeDisk>,
 ) -> ApiResult<Json<VmView>> {
-    let vm = load(&state, &p, id, Perm::VmWrite).await?;
+    grow_disk(&state, &p, id, index, req.size_gib).await
+}
+
+/// Grows the VM's disk at `index` to `size_gib` (see `resize_disk`).
+pub(crate) async fn grow_disk(
+    state: &AppState,
+    p: &Principal,
+    id: VmId,
+    index: usize,
+    size_gib: u64,
+) -> ApiResult<Json<VmView>> {
+    let vm = load(state, p, id, Perm::VmWrite).await?;
     let disk = vm
         .spec
         .0
         .disks
         .get(index)
         .ok_or_else(|| ApiError::not_found("disk"))?;
-    let size = req.size_gib.saturating_mul(GIB);
-    if req.size_gib > 16384 || size <= disk.size_bytes {
+    let size = size_gib.saturating_mul(GIB);
+    if size_gib > 16384 || size <= disk.size_bytes {
         return Err(ApiError::bad_request(format!(
             "the disk is {} GiB: it can grow, to at most 16384 GiB",
             disk.size_bytes.div_ceil(GIB)
@@ -1479,6 +1521,7 @@ async fn resize_disk(
             index: index as u32,
             volume_id: volume.to_string(),
             pool: Some(super::agent_pool(&pool).map_err(ApiError::internal)?),
+            target: spec.disk_slots()[index].target.clone(),
         }),
         size_bytes: size,
     };
@@ -1494,15 +1537,15 @@ async fn resize_disk(
     tx.commit().await?;
     audit(
         &state.db,
-        Some(&p),
+        Some(p),
         Some(vm.tenant_id),
         "vm.resize_disk",
         Some(("vm", id.0)),
-        json!({"name": vm.name, "disk": index, "size_gib": req.size_gib}),
+        json!({"name": vm.name, "disk": index, "size_gib": size_gib}),
     )
     .await;
     let vm = mst_db::vms::get(&state.db, id).await?;
-    Ok(Json(view(vm, &context(&state).await?)))
+    Ok(Json(view(vm, &context(state).await?)))
 }
 
 fn check_max_memory(memory_mib: u64, max: Option<u64>) -> ApiResult<()> {

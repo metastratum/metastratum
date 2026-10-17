@@ -20,16 +20,22 @@ test.afterEach(async ({ page }) => {
   expect(cspViolations).toEqual([])
 })
 
-/** Deletes the VMs named with `prefix` through the API, and waits until
- *  they are gone. */
+/** Deletes the VMs named with `prefix` through the API, with their disks,
+ *  and waits until they are gone. */
 async function deleteVms(page: Page, prefix: string) {
   for (let i = 0; i < 40; i++) {
     const res = await page.request.get('/api/v1/vms')
     if (!res.ok()) return
     const left = ((await res.json()) as { id: string; name: string }[]).filter((v) => v.name.startsWith(prefix))
-    if (left.length === 0) return
+    if (left.length === 0) {
+      const disks = (await (await page.request.get('/api/v1/disks')).json()) as { id: string; name?: string | null }[]
+      for (const d of disks.filter((d) => d.name?.startsWith(prefix))) {
+        await page.request.delete(`/api/v1/disks/${d.id}`)
+      }
+      return
+    }
     // Busy VMs (still being made, or being deleted) answer 409: again later.
-    for (const v of left) await page.request.delete(`/api/v1/vms/${v.id}`)
+    for (const v of left) await page.request.delete(`/api/v1/vms/${v.id}?delete_disks=true`)
     await page.waitForTimeout(5_000)
   }
   throw new Error(`VMs named ${prefix}… were left behind`)
@@ -112,6 +118,18 @@ test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
   await page.getByRole('dialog').getByRole('button', { name: 'Delete snapshot' }).click()
   await expect(first).toHaveCount(0, { timeout: 60_000 })
 
+  // A disk of its own, plugged in while it runs; detached, it is kept.
+  await page.getByRole('button', { name: 'Add disk…' }).click()
+  const adding = page.getByRole('dialog')
+  await adding.getByLabel('Name').fill(`${name}-data`)
+  await adding.getByLabel('Size (GiB)').fill('1')
+  await adding.getByRole('button', { name: 'Add disk' }).click()
+  const data = page.locator('.disks li', { hasText: `${name}-data` })
+  await expect(data).toContainText('/dev/disk/by-id/')
+  await data.getByRole('button', { name: 'Detach…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Detach disk' }).click()
+  await expect(data).toHaveCount(0)
+
   // While it runs: its disk grows, a CPU is plugged in and memory shrinks
   // (through its balloon), within what they can grow to; that waits for it
   // to stop.
@@ -160,6 +178,14 @@ test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
   await page.getByRole('button', { name: `Delete ${name} and its disk` }).click()
   await expect(page.getByRole('heading', { name: 'Virtual machines' })).toBeVisible()
   await expect(page.getByRole('link', { name, exact: true })).toHaveCount(0, { timeout: 2 * 60_000 })
+
+  // The disk it had stays, attached to nothing, until deleted.
+  await page.getByRole('link', { name: 'Disks', exact: true }).click()
+  const kept = page.getByRole('row').filter({ hasText: `${name}-data` })
+  await expect(kept).toContainText('Free')
+  await kept.getByRole('button', { name: 'Delete…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: `Delete ${name}-data` }).click()
+  await expect(kept).toHaveCount(0)
 })
 
 test('manage a sub-tenant: quotas, people, removal', async ({ page }) => {
