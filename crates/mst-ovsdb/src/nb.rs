@@ -22,7 +22,9 @@ pub struct Northbound {
     /// The database's name.
     db: &'static str,
     remotes: Vec<String>,
-    tls: Option<Arc<rustls::ClientConfig>>,
+    /// Replaced when the client certificate is renewed; new connections use
+    /// the current one.
+    tls: std::sync::RwLock<Option<Arc<rustls::ClientConfig>>>,
     client: Mutex<(usize, Option<Arc<Client>>)>,
 }
 
@@ -41,9 +43,20 @@ impl Northbound {
                 .map(|r| r.trim().to_owned())
                 .filter(|r| !r.is_empty())
                 .collect(),
-            tls,
+            tls: std::sync::RwLock::new(tls),
             client: Mutex::new((0, None)),
         }
+    }
+
+    /// The TLS configuration for connections from now on (a renewed client
+    /// certificate). The current connection carries on.
+    pub fn set_tls(&self, tls: Arc<rustls::ClientConfig>) {
+        *self.tls.write().unwrap_or_else(|e| e.into_inner()) = Some(tls);
+    }
+
+    /// The remotes, as given.
+    pub fn remotes(&self) -> &[String] {
+        &self.remotes
     }
 
     async fn client(&self) -> Result<Arc<Client>> {
@@ -83,7 +96,8 @@ impl Northbound {
     /// Connects to `remote` if it is a standalone database or the leader
     /// of a clustered one.
     async fn open(&self, remote: &str) -> Result<Client> {
-        let c = Client::connect(remote, self.tls.as_ref()).await?;
+        let tls = self.tls.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let c = Client::connect(remote, tls.as_ref()).await?;
         let rows = c
             .transact(
                 "_Server",

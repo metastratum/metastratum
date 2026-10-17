@@ -11,12 +11,11 @@
 #   mst-lab  10.77.0.0/24  management + Geneve underlay (NAT to the internet)
 #   mst-ext  10.78.0.0/24  "external" provider network for floating IPs (NAT)
 #
-# Usage: deploy/lab/lab.sh up | down | status | ceph | ovn-tls | ovn-sb-tls | testdb | ssh <vm> [cmd...] | ip <vm>
+# Usage: deploy/lab/lab.sh up | down | status | ceph | ovn-tls | testdb | ssh <vm> [cmd...] | ip <vm>
 #
-#   ovn-tls also serves the northbound database over TLS (ssl:10.77.0.10:6643)
-#           and prints the controller's flags for it
-#   ovn-sb-tls  serves the southbound database over TLS with OVN's RBAC
-#           (ssl:10.77.0.10:6644), with a certificate from the controller
+#   ovn-tls serves the OVN databases over TLS instead (northbound on
+#           ssl:10.77.0.10:6641, southbound with OVN's RBAC on
+#           ssl:10.77.0.10:6642), with certificates from the controller
 #   testdb  (re)starts empty, unused OVN northbound databases on mst-ctl for
 #           integration tests (plain, TLS and a three-server cluster) and
 #           prints the variables that point the tests at them
@@ -332,54 +331,24 @@ make_pki() {
 }
 SH
 
-# Serves the lab's northbound database over TLS as well, on 6643, with
-# a client certificate for the controller.
+# Switches the OVN databases on mst-ctl to TLS, with the bundle the controller
+# writes for an OVN central node. Create it first with
+#   mst-controller ovn-certificate --name mst-ctl --address 10.77.0.10 \
+#     --out-dir deploy/lab/.state/ovn-central
+# then run the controllers with --ovn-nb ssl:10.77.0.10:6641 and
+# --ovn-sb ssl:10.77.0.10:6642.
 cmd_ovn_tls() {
-  log "serving the OVN northbound database over TLS on ssl:10.77.0.10:6643"
-  { echo "$MAKE_PKI"; cat <<'REMOTE'; } | ssh_vm mst-ctl sudo bash -s
-set -euo pipefail
-make_pki /etc/ovn/mst-pki nb controller
-ovn-nbctl set-ssl /etc/ovn/mst-pki/nb-key.pem /etc/ovn/mst-pki/nb.pem /etc/ovn/mst-pki/ca.pem
-ovn-nbctl set-connection ptcp:6641 pssl:6643
-REMOTE
-  mkdir -p "$STATE/ovn-pki"
-  local f
-  for f in ca.pem controller.pem controller-key.pem; do
-    (umask 077; ssh_vm mst-ctl sudo cat "/etc/ovn/mst-pki/$f" > "$STATE/ovn-pki/$f")
+  local dir="$STATE/ovn-central" f
+  [[ -x $dir/setup.sh ]] || die "$dir/setup.sh is missing; see the comment above cmd_ovn_tls"
+  log "serving the OVN databases over TLS on ssl:10.77.0.10:6641 (northbound) and :6642 (southbound)"
+  ssh_vm mst-ctl 'rm -rf /tmp/ovn-central && mkdir -m 700 /tmp/ovn-central'
+  for f in "$dir"/*; do
+    ssh_vm mst-ctl "umask 077; cat > /tmp/ovn-central/$(basename "$f")" < "$f"
   done
-  log "controller flags:"
-  echo "  --ovn-nb ssl:10.77.0.10:6643 --ovn-ca-cert $STATE/ovn-pki/ca.pem \\"
-  echo "  --ovn-certificate $STATE/ovn-pki/controller.pem --ovn-private-key $STATE/ovn-pki/controller-key.pem"
+  ssh_vm mst-ctl 'sudo sh /tmp/ovn-central/setup.sh; rm -rf /tmp/ovn-central'
+  log "controller flags: --ovn-nb ssl:10.77.0.10:6641 --ovn-sb ssl:10.77.0.10:6642"
 }
 
-# Serves the southbound database over TLS as well, on 6644, with OVN's
-# RBAC: each host may change its own chassis only. The server certificate
-# comes from the controller's OVN CA, which the agents' certificates come
-# from too: create it first with
-#   mst-controller ovn-certificate --name mst-ctl --out-dir deploy/lab/.state/ovn-sb-pki
-# then run the controllers with --ovn-sb ssl:10.77.0.10:6644. The plain
-# listener on 6642 stays for hosts that have not switched yet.
-cmd_ovn_sb_tls() {
-  local dir="$STATE/ovn-sb-pki" f
-  for f in ca.pem mst-ctl.pem mst-ctl-key.pem; do
-    [[ -f $dir/$f ]] || die "$dir/$f is missing; see the comment above cmd_ovn_sb_tls"
-  done
-  log "serving the OVN southbound database over TLS with RBAC on ssl:10.77.0.10:6644"
-  ssh_vm mst-ctl sudo install -d -m 700 /etc/ovn/mst-sb-pki
-  for f in ca.pem mst-ctl.pem mst-ctl-key.pem; do
-    ssh_vm mst-ctl sudo sh -c "'umask 077; cat > /etc/ovn/mst-sb-pki/$f'" < "$dir/$f"
-  done
-  ssh_vm mst-ctl sudo bash -s <<'REMOTE'
-set -euo pipefail
-p=/etc/ovn/mst-sb-pki
-ovn-sbctl set-ssl $p/mst-ctl-key.pem $p/mst-ctl.pem $p/ca.pem
-if ! ovn-sbctl --bare --columns=target list Connection | grep -qx 'pssl:6644'; then
-  ovn-sbctl -- --id=@c create Connection 'target="pssl:6644"' role=ovn-controller \
-    -- add SB_Global . connections @c
-fi
-ovn-sbctl --columns=target,role list Connection
-REMOTE
-}
 
 cmd_testdb() {
   log "starting scratch OVN northbound databases on 10.77.0.10"
@@ -463,7 +432,6 @@ main() {
     ceph) cmd_ceph ;;
     testdb) cmd_testdb ;;
     ovn-tls) cmd_ovn_tls ;;
-    ovn-sb-tls) cmd_ovn_sb_tls ;;
     ssh) shift; ssh_vm "$@" ;;
     ip) vm_field "$2" 1 ;;
     *) sed -n '2,27p' "$0"; exit 1 ;;

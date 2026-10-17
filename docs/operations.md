@@ -33,9 +33,6 @@ MST_AGENT_LISTEN=0.0.0.0:8443
 MST_AGENT_NAMES=ctl1.example.net,10.0.0.21
 MST_PEER_ADDRESS=10.0.0.21:8443
 MST_OVN_NB=ssl:10.0.0.31:6641,ssl:10.0.0.32:6641,ssl:10.0.0.33:6641
-MST_OVN_CA_CERT=/etc/metastratum/ovn/ca.pem
-MST_OVN_CERTIFICATE=/etc/metastratum/ovn/controller.pem
-MST_OVN_PRIVATE_KEY=/run/credentials/mst-controller.service/ovn-key.pem
 MST_OVN_SB=ssl:10.0.0.31:6642,ssl:10.0.0.32:6642,ssl:10.0.0.33:6642
 MST_METRICS_LISTEN=10.0.0.21:9180
 MST_REDIS_URL=rediss://:...@redis.example.net:6380
@@ -154,39 +151,43 @@ follow it when it changes.
 
 Use TLS for both: whoever can write the northbound database can rewrite
 every tenant's network, and whoever can write the southbound one, the flows
-on every host.
+on every host. The controller has the certificate authorities for both:
 
-**Northbound**, which only the controllers use: create a PKI with
-`ovs-pki` (or any CA), give the servers a certificate
-(`ovn-nbctl set-ssl <key> <cert> <ca>`, `ovn-nbctl set-connection
-pssl:6641`), and the controllers the CA and a client certificate
-(`--ovn-ca-cert`, `--ovn-certificate`, `--ovn-private-key`). Keep this PKI
-apart from the southbound's: hosts must never reach the northbound
-database.
+- **Northbound**, which only the controllers use, trusts a CA of its own
+  that issues certificates to controllers only: the northbound database has
+  no access control, so hosts must never get in. Each replica issues itself
+  a client certificate from it at startup and renews it.
+- **Southbound**, which every host's `ovn-controller` uses, trusts the OVN
+  CA. With `--ovn-sb ssl:...` each agent gets a certificate from it naming
+  its chassis, installs it, points `ovn-controller` at the southbound remote,
+  and renews it like its own. OVN's RBAC then holds each host to its own
+  chassis: a host that is taken over cannot rewrite the others' bindings or
+  flows. The chassis name is the host's Open vSwitch `system-id`; two live
+  hosts cannot have the same one.
 
-**Southbound**, which every host's `ovn-controller` uses, metastratum sets up
-itself. The controller keeps a CA for it (separate from the one for agents
-and replicas), and with `--ovn-sb ssl:...` each agent gets a certificate
-from it naming its chassis, installs it (`ovs-vsctl set-ssl`), points
-`ovn-controller` at the southbound remote, and renews the certificate like
-its own. OVN's RBAC then holds each host to its own chassis: a host that is
-taken over cannot rewrite the others' bindings or flows. The chassis name is
-the host's Open vSwitch `system-id`; two live hosts cannot have the same
-one. On the southbound servers:
+The OVN servers' certificates come as one bundle per OVN central node:
 
 ```sh
-mst-controller ovn-certificate --name sb1 --out-dir /tmp/sb1   # on a controller
-ovn-sbctl set-ssl /etc/ovn/sb1-key.pem /etc/ovn/sb1.pem /etc/ovn/ca.pem
-ovn-sbctl set-connection role=ovn-controller pssl:6642
+mst-controller ovn-certificate --name ovn1 --address 10.0.0.31 --out-dir ovn1   # on a controller
+scp -r ovn1 root@10.0.0.31: && ssh root@10.0.0.31 sh ovn1/setup.sh
 ```
 
-To move hosts over without interruption, add the TLS listener beside the
-plain one first (as `deploy/lab/lab.sh ovn-sb-tls` does on the lab), start
-the controllers with `--ovn-sb`, and remove the plain listener once every
-host has switched (`ovn-sbctl list Connection`, and each host's
-`external_ids:ovn-remote`).
+`setup.sh` installs the certificates in `/etc/ovn/metastratum`, configures
+both databases to use them, and serves them over TLS: northbound on
+`pssl:6641`, southbound on `pssl:6642` with OVN's RBAC (`--nb-port` and
+`--sb-port` choose others), replacing plain listeners on those ports. In a
+cluster the settings are shared, so the files must be at the same place on
+every node: run each node's bundle on that node. Then start the controllers
+with `--ovn-nb ssl:...` and `--ovn-sb ssl:...`, nothing else.
 
-`deploy/lab/lab.sh ovn-tls` and `ovn-sb-tls` set up both on the lab.
+The server certificates last a year (`--days`). The controllers look at
+what each server presents every hour, export its expiry
+(`mst_ovn_certificate_expiry_timestamp_seconds`), and warn in their log a
+month ahead, or when a server presents a certificate from another CA. To
+renew, make a new bundle and run its `setup.sh` again: the servers pick the
+new files up without restarting.
+
+`deploy/lab/lab.sh ovn-tls` installs the lab's bundle on `mst-ctl`.
 
 ## Hosts
 

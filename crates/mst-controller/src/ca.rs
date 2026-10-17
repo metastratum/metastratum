@@ -11,6 +11,11 @@ pub const CA_NAME: &str = "ca";
 /// it alone, so no other certificate metastratum issues (replicas', the agent
 /// endpoint's, hosts' own) opens the southbound database.
 pub const OVN_CA_NAME: &str = "ovn-ca";
+/// A CA of its own for the OVN northbound database: its servers trust it
+/// alone, and only controllers get certificates from it. The northbound
+/// database has no access control, so hosts' southbound certificates must
+/// not open it.
+pub const OVN_NB_CA_NAME: &str = "ovn-nb-ca";
 const CA_LIFETIME: Duration = Duration::from_secs(10 * 365 * 86400);
 const SERVER_LIFETIME: Duration = Duration::from_secs(365 * 86400);
 
@@ -29,6 +34,16 @@ pub async fn load_or_create_ovn(db: &PgPool) -> anyhow::Result<Ca> {
         OVN_CA_NAME,
         "metastratum OVN CA",
         crate::secrets::OVN_CA_KEY,
+    )
+    .await
+}
+
+pub async fn load_or_create_ovn_nb(db: &PgPool) -> anyhow::Result<Ca> {
+    load_or_create_named(
+        db,
+        OVN_NB_CA_NAME,
+        "metastratum OVN northbound CA",
+        crate::secrets::OVN_NB_CA_KEY,
     )
     .await
 }

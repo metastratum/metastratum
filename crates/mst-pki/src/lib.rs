@@ -196,6 +196,24 @@ impl Ca {
         Ok((cert.pem(), key.serialize_pem()))
     }
 
+    /// Issues a certificate for a server that also connects to its peers
+    /// with it (clustered OVN databases): valid for server and client auth.
+    /// Returns `(cert_pem, key_pem)`.
+    pub fn issue_peer(&self, sans: &[String], lifetime: Duration) -> Result<(String, String)> {
+        let key = KeyPair::generate()?;
+        let mut params = CertificateParams::new(sans.to_vec())?;
+        params.distinguished_name = dn(sans.first().map_or("mst-controller", String::as_str));
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![
+            ExtendedKeyUsagePurpose::ServerAuth,
+            ExtendedKeyUsagePurpose::ClientAuth,
+        ];
+        params.serial_number = Some(serial());
+        validity(&mut params, lifetime);
+        let cert = params.signed_by(&key, &self.issuer()?)?;
+        Ok((cert.pem(), key.serialize_pem()))
+    }
+
     /// Signs a host certificate for the public key in `csr_pem`. Only the key
     /// is taken from the CSR: subject and SANs are decided by the controller,
     /// so an agent cannot request an identity it was not given. Host

@@ -83,9 +83,11 @@ The boundaries metastratum enforces:
   over, with TLS. Each migration gets certificates of its own, from a CA
   made for it alone: the destination accepts the VM from that source
   only, and the source sends it to that destination only. The controller reaches
-  OVN's northbound database over TLS with a client certificate; hosts reach
-  the southbound one with certificates from a CA of its own, naming their
-  chassis, under OVN's RBAC.
+  OVN's northbound database over TLS with a client certificate from a CA
+  that issues to controllers only; hosts reach the southbound one with
+  certificates from another CA, naming their chassis, under OVN's RBAC.
+  The controllers issue the OVN servers' certificates too, and warn before
+  they expire.
 - **Abuse**: requests and password sign-ins are rate limited per client,
   and failed sign-ins per account (see [operations](docs/operations.md#rate-limits)).
 - **Browsers**: a Content-Security-Policy allowing scripts only from the
@@ -135,11 +137,10 @@ A review of the whole system before calling it hardened. Fixed:
   database can rewrite every tenant's network; whoever reaches the
   southbound one, every host's flows. metastratum supports TLS for both but
   cannot impose it on OVN.
-  *Mitigation:* serve the northbound database over TLS (`--ovn-nb ssl:...`
-  with `--ovn-ca-cert`, `--ovn-certificate`, `--ovn-private-key`), and run
-  the controllers with `--ovn-sb ssl:...` so hosts reach the southbound one
-  over TLS under OVN's RBAC; then remove the plain listeners
-  ([operations](docs/operations.md#ovn)).
+  *Mitigation:* install a bundle from `mst-controller ovn-certificate` on
+  each OVN central node, which switches both databases to TLS, and run the
+  controllers with `--ovn-nb ssl:...` and `--ovn-sb ssl:...`; remove any
+  plain listeners left ([operations](docs/operations.md#ovn)).
 - **The controller serves plain HTTP.** Sessions and passwords would cross
   the network in clear text.
   *Mitigation:* put a TLS-terminating proxy in front of it, listen on
@@ -202,8 +203,9 @@ What metastratum offers but leaves to the deployment to switch on:
 
 - HTTPS in front of the controllers, with `X-Forwarded-Proto` from a proxy
   in `--trusted-proxies`; the API listening on a private address.
-- TLS for OVN's northbound database and `--ovn-sb` for the southbound one,
-  with the plain listeners removed.
+- TLS for OVN's databases: a bundle from `ovn-certificate` on each OVN
+  central node, `--ovn-nb ssl:...` and `--ovn-sb ssl:...`, and no plain
+  listeners left.
 - `--redis-url` with more than one controller.
 - The master key and other keys as systemd credentials; the master key out
   of the database's backups.

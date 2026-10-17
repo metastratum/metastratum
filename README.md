@@ -159,8 +159,7 @@ deploy/lab/lab.sh up        # create networks, storage pool and VMs; wait until 
 deploy/lab/lab.sh status
 deploy/lab/lab.sh ssh mst-host1 [cmd...]
 deploy/lab/lab.sh ceph      # (re)run the Ceph setup; prints the RBD pool config
-deploy/lab/lab.sh ovn-tls   # serve OVN's northbound database over TLS too; prints the controller flags
-deploy/lab/lab.sh ovn-sb-tls # serve the southbound over TLS with RBAC, for --ovn-sb (see the script)
+deploy/lab/lab.sh ovn-tls   # serve OVN's databases over TLS, with the controller's certificates (see the script)
 deploy/lab/lab.sh testdb    # throwaway OVN northbound databases for tests
 deploy/lab/lab.sh down      # remove VMs and networks; keeps the cached base image
 ```
@@ -195,13 +194,17 @@ target/debug/mst-controller serve --listen 127.0.0.1:18080 \
   --ovn-nb tcp:10.77.0.10:6641 --web-dir web/dist
 ```
 
-Whoever reaches the northbound database can rewrite every tenant's network,
-so beyond trying things out, use TLS: `deploy/lab/lab.sh ovn-tls` sets it up
-on the lab and prints the `--ovn-nb ssl:...` flags to use instead. Likewise
-for the southbound database the hosts use: create a server certificate with
-`mst-controller ovn-certificate --name mst-ctl --out-dir deploy/lab/.state/ovn-sb-pki`,
-run `deploy/lab/lab.sh ovn-sb-tls`, and add `--ovn-sb ssl:10.77.0.10:6644`;
-the agents then switch their hosts over.
+Whoever reaches OVN's databases can rewrite every tenant's network and every
+host's flows, so beyond trying things out, use TLS. Write the certificates
+for `mst-ctl`, install them, and restart the controller with
+`--ovn-nb ssl:10.77.0.10:6641 --ovn-sb ssl:10.77.0.10:6642`; the agents then
+switch their hosts over:
+
+```sh
+target/debug/mst-controller ovn-certificate --name mst-ctl --address 10.77.0.10 \
+  --out-dir deploy/lab/.state/ovn-central
+deploy/lab/lab.sh ovn-tls
+```
 
 Then build and install the agent on the three hosts. It is a static binary, so
 it runs on any distribution; hosts that are not enrolled yet get a fresh join

@@ -58,6 +58,18 @@ async fn tls_with_the_servers_ca_only() {
     // ssl: without TLS configuration is refused up front.
     let err = Client::connect(&addr, None).await.err().unwrap();
     assert!(matches!(err, Error::Tls(_)), "{err}");
+
+    // What the server presents can be seen without a client certificate,
+    // and judged against either CA.
+    let seen = mst_ovsdb::tls::presented(&addr, &read(&pki, "ca.pem"))
+        .await
+        .unwrap();
+    assert!(seen.trusted.is_ok(), "{:?}", seen.trusted);
+    assert!(!seen.certificate.is_empty());
+    let seen = mst_ovsdb::tls::presented(&addr, other_ca.as_bytes())
+        .await
+        .unwrap();
+    assert!(seen.trusted.is_err(), "trusted by another CA");
 }
 
 #[tokio::test]
