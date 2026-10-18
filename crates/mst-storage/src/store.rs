@@ -183,32 +183,43 @@ impl ImageStore {
         result
     }
 
-    /// Removes an image from the store, and its tenants' directories that
-    /// leaves empty.
+    /// Removes an image from the store. Its tenants' directories stay:
+    /// on NFS, hosts that saw one go may not see it made again for a while
+    /// (they cache that it is gone), so they go only as the store is
+    /// pruned or purged.
     pub async fn remove(&self, tenant_path: &str, id: &str) -> Result<()> {
         let path = self.path(tenant_path, id)?;
         let lock = lock(id);
         let _held = lock.lock().await;
         match tokio::fs::remove_file(&path).await {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-            _ => {}
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
         }
-        self.remove_empty_dirs(&path).await;
-        Ok(())
     }
 
-    /// Removes the (empty) directories above `path`, up to the store's.
-    async fn remove_empty_dirs(&self, path: &Path) {
-        let mut dir = path.parent();
-        while let Some(d) = dir {
-            if d == self.root || !d.starts_with(&self.root) {
-                break;
+    /// Removes the tenants' directories left empty.
+    async fn remove_empty_dirs(&self) -> Result<()> {
+        // Deepest first: a directory may be empty once its own are gone.
+        let mut dirs = vec![];
+        let mut todo = vec![self.root.clone()];
+        while let Some(dir) = todo.pop() {
+            let mut d = match tokio::fs::read_dir(&dir).await {
+                Ok(d) => d,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            while let Some(e) = d.next_entry().await? {
+                if e.file_type().await?.is_dir() {
+                    todo.push(e.path());
+                    dirs.push(e.path());
+                }
             }
-            if tokio::fs::remove_dir(d).await.is_err() {
-                break;
-            }
-            dir = d.parent();
         }
+        dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+        for d in dirs {
+            let _ = tokio::fs::remove_dir(d).await;
+        }
+        Ok(())
     }
 
     /// Every file in the tenants' directories: (path, image ID if it is an
@@ -280,9 +291,9 @@ impl ImageStore {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
                 _ => {}
             }
-            self.remove_empty_dirs(&path).await;
             removed.extend(id);
         }
+        self.remove_empty_dirs().await?;
         Ok(removed)
     }
 
@@ -294,8 +305,8 @@ impl ImageStore {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
                 _ => {}
             }
-            self.remove_empty_dirs(path).await;
         }
+        self.remove_empty_dirs().await?;
         Ok(files.len())
     }
 }
@@ -352,13 +363,11 @@ mod tests {
 
         store.remove(T, ID).await.unwrap();
         store.remove(T, ID).await.unwrap();
-        // The tenants' directories went with their last image.
-        assert!(
-            !root
-                .join("images")
-                .join(T.split('/').next().unwrap())
-                .exists()
-        );
+        // The tenants' directories stay until pruned.
+        let top = root.join("images").join(T.split('/').next().unwrap());
+        assert!(top.exists());
+        assert!(store.prune(&keep, later, later).await.unwrap().is_empty());
+        assert!(!top.exists());
         assert!(cached.exists());
         assert_eq!(store.purge().await.unwrap(), 0);
         let _ = tokio::fs::remove_dir_all(&root).await;

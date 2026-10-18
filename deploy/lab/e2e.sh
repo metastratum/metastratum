@@ -2,9 +2,11 @@
 # Runs the end-to-end suites (tests/e2e) and the browser tests (web/e2e)
 # against the lab, several at once. Suites that change what the others rely
 # on run first, on their own: storage (makes the NFS pool others use),
-# limits (throttles every VM of the cluster) and m5 (renews the hosts'
-# certificates, reconnecting every agent). The browser tests run last, on
-# their own too: they migrate a large VM, which needs room on another host.
+# limits (throttles every VM of the cluster), m5 (renews the hosts'
+# certificates, reconnecting every agent) and image_relay (moves a host
+# without VMs into a cluster of its own for the while). The browser tests
+# run last, on their own too: they migrate a large VM, which needs room on
+# another host.
 #
 # Usage: deploy/lab/e2e.sh [-j N] [-n] [--changed [REV]] [suite...]
 #   suite      an e2e test file (m1, balloon...) or "browser"; default: all
@@ -20,7 +22,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-FIRST=(storage limits m5)
+FIRST=(storage limits m5 image_relay)
 LAST=(browser)
 # The slowest start first, so that none of them is left running alone at
 # the end.
@@ -75,8 +77,8 @@ affects() {
       crates/mst-controller/src/crl.rs | crates/mst-controller/src/ca.rs) echo m5 ;;
     crates/mst-controller/src/migration.rs | crates/mst-controller/src/engine/migrate.rs) echo m4 balloon hotplug cpu browser ;;
     crates/mst-controller/src/cpu.rs) echo cpu m4 m5 ;;
-    crates/mst-storage/*) echo storage clone snapshots backups resize m4 disks images ;;
-    crates/mst-controller/src/api/images.rs | crates/mst-controller/src/engine/image.rs) echo images m5 browser ;;
+    crates/mst-storage/*) echo storage clone snapshots backups resize m4 disks images image_relay ;;
+    crates/mst-controller/src/api/images.rs | crates/mst-controller/src/engine/image.rs) echo images image_relay m5 browser ;;
     crates/mst-controller/src/api/disks.rs | crates/mst-controller/src/engine/disk.rs | \
       crates/mst-agent/src/transfer.rs) echo disks browser ;;
     *) echo all ;;

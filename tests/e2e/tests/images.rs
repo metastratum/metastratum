@@ -220,7 +220,8 @@ async fn failed_downloads_say_why_and_can_be_tried_again() -> anyhow::Result<()>
 
 /// Images kept in a shared pool (the storage tests' NFS and Ceph pools):
 /// downloaded into it, and VMs on hosts that reach it made from it there,
-/// with no copy on any host.
+/// with no copy on any host, whichever pool their disks are in (local, the
+/// same shared pool, or the other).
 #[tokio::test]
 async fn images_kept_in_shared_pools() -> anyhow::Result<()> {
     let Some(api) = mst_e2e::connect().await? else {
@@ -233,15 +234,19 @@ async fn images_kept_in_shared_pools() -> anyhow::Result<()> {
                 .into()
         });
         let pools = api.get("/storage-pools").await?;
-        let mut tried = 0;
-        for name in ["e2e-nfs", "e2e-rbd"] {
-            let Some(pool) = pools.as_array().into_iter().flatten().find(|p| {
-                p["name"] == name && !p["cluster_ids"].as_array().is_none_or(Vec::is_empty)
-            }) else {
-                eprintln!("no {name} pool; skipping it (run the storage tests first)");
-                continue;
-            };
-            tried += 1;
+        let shared: Vec<(&str, Value)> = ["e2e-nfs", "e2e-rbd"]
+            .into_iter()
+            .filter_map(|name| {
+                let pool = pools.as_array().into_iter().flatten().find(|p| {
+                    p["name"] == name && !p["cluster_ids"].as_array().is_none_or(Vec::is_empty)
+                });
+                if pool.is_none() {
+                    eprintln!("no {name} pool; skipping it (run the storage tests first)");
+                }
+                Some((name, pool?.clone()))
+            })
+            .collect();
+        for (name, pool) in &shared {
             let added = api
                 .post(
                     "/images",
@@ -250,40 +255,51 @@ async fn images_kept_in_shared_pools() -> anyhow::Result<()> {
                 )
                 .await?;
             let id = added["id"].as_str().unwrap().to_owned();
-            assert_eq!(added["storage_pool_name"], name);
+            assert_eq!(added["storage_pool_name"], *name);
             api.wait_task(added["task_id"].as_str().unwrap(), Duration::from_secs(900))
                 .await?;
             let img = image(&api, &id).await?;
             assert_eq!(img["state"], "ready", "{img}");
             assert_eq!(img["hosts"], json!([]), "kept in {name} alone: {img}");
 
-            // On local disk, on a host that reaches the pool: made from it.
-            let vm = api
-                .post(
-                    "/vms",
-                    json!({"name": format!("{run}-{name}"), "vcpus": 1, "memory_mib": 512,
-                           "disk_gib": 4, "image_id": id, "password": PW}),
-                )
-                .await?;
-            api.wait_task(vm["task_id"].as_str().unwrap(), Duration::from_secs(600))
-                .await?;
-            let vm_id = vm["id"].as_str().unwrap();
-            api.wait_vm(vm_id, Duration::from_secs(120), |v| v["power"] == "running")
-                .await?;
+            // On hosts that reach the pool, a disk in each pool: made from
+            // the pool's copy.
+            let mut targets = vec![("local", Value::Null)];
+            targets.extend(shared.iter().map(|(n, p)| (*n, p["id"].clone())));
+            let mut vms = vec![];
+            for (target, pool_id) in &targets {
+                let vm = api
+                    .post(
+                        "/vms",
+                        json!({"name": format!("{run}-{name}-to-{target}"), "vcpus": 1,
+                               "memory_mib": 512, "disk_gib": 4, "image_id": id,
+                               "password": PW, "storage_pool_id": pool_id}),
+                    )
+                    .await?;
+                vms.push((*target, vm));
+            }
+            for (target, vm) in &vms {
+                api.wait_task(vm["task_id"].as_str().unwrap(), Duration::from_secs(600))
+                    .await
+                    .map_err(|e| e.context(format!("from {name} to {target}")))?;
+                let vm_id = vm["id"].as_str().unwrap();
+                api.wait_vm(vm_id, Duration::from_secs(120), |v| v["power"] == "running")
+                    .await?;
+                let mut serial = api.console(vm_id, "serial").await?;
+                let (out, rc) = serial
+                    .run("debian", PW, "grep -c trixie /etc/os-release")
+                    .await?;
+                assert_eq!(rc, 0, "from {name} to {target}: {out}");
+                eprintln!("from {name} to {target}: boots");
+            }
             assert_eq!(
                 image(&api, &id).await?["hosts"],
                 json!([]),
                 "no host needed a copy"
             );
-            let mut serial = api.console(vm_id, "serial").await?;
-            let (out, rc) = serial
-                .run("debian", PW, "grep -c trixie /etc/os-release")
-                .await?;
-            assert_eq!(rc, 0, "{out}");
-            drop(serial);
 
             // The pool cannot go while it keeps the image; the image can,
-            // and the VM keeps its disk.
+            // and the VMs keep their disks.
             let (status, _) = api
                 .try_send(
                     Method::DELETE,
@@ -296,14 +312,16 @@ async fn images_kept_in_shared_pools() -> anyhow::Result<()> {
                 .send(Method::DELETE, &format!("/images/{id}"), None)
                 .await?;
             assert_eq!(status, 204, "{body}");
-            let (status, t) = api
-                .send(Method::DELETE, &format!("/vms/{vm_id}"), None)
-                .await?;
-            assert_eq!(status, 202, "{t}");
-            api.wait_task(t["task_id"].as_str().unwrap(), Duration::from_secs(120))
-                .await?;
+            for (_, vm) in &vms {
+                let vm_id = vm["id"].as_str().unwrap();
+                let (_, t) = api
+                    .send(Method::DELETE, &format!("/vms/{vm_id}"), None)
+                    .await?;
+                api.wait_task(t["task_id"].as_str().unwrap(), Duration::from_secs(120))
+                    .await?;
+            }
         }
-        if tried == 0 {
+        if shared.is_empty() {
             eprintln!("no shared pools; nothing tested");
         }
         Ok(())

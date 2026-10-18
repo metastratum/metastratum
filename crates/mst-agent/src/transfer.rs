@@ -267,9 +267,8 @@ pub async fn copy_image(agent: &Agent, c: &CopyImage) -> Result<String> {
     let store = agent.pools.store();
     if let Some(source) = &c.source_pool {
         let from = agent.pool(Some(source)).await?;
-        let stored = from
-            .copy_stored_to(&store, &c.tenant_path, &c.image_id)
-            .await?;
+        let stored =
+            in_shared_pool(|| from.copy_stored_to(&store, &c.tenant_path, &c.image_id)).await?;
         return Ok(serde_json::to_string(&stored)?);
     }
     let name = export_name(&c.export_id)?;
@@ -291,4 +290,28 @@ pub async fn copy_image(agent: &Agent, c: &CopyImage) -> Result<String> {
         .await;
     let _ = std::fs::remove_dir_all(&dir);
     Ok(serde_json::to_string(&result?)?)
+}
+
+/// How long an image in a shared pool is looked for before it is taken to
+/// be missing: longer than an NFS client caches a directory's contents.
+const SHARED_LOOKUP: Duration = Duration::from_secs(90);
+
+/// Runs `op` on an image in a shared pool. A host may not see an image
+/// another just stored there for a while (on NFS it caches what it looked
+/// up, a directory found missing among it), so one found missing is looked
+/// for again for a while.
+pub async fn in_shared_pool<T, F, Fut>(op: F) -> mst_storage::Result<T>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = mst_storage::Result<T>>,
+{
+    let deadline = tokio::time::Instant::now() + SHARED_LOOKUP;
+    loop {
+        match op().await {
+            Err(mst_storage::Error::MissingImage(_)) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+            r => return r,
+        }
+    }
 }

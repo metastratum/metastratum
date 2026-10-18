@@ -633,14 +633,19 @@ impl Agent {
             Cmd::VolumeFromImage(c) => {
                 let from = self.store_pool(c.source_pool.as_ref()).await?;
                 let pool = self.pool(c.pool.as_ref()).await?;
-                pool.volume_from_stored(
-                    &c.volume_id,
-                    c.size_bytes,
-                    &from,
-                    &c.tenant_path,
-                    &c.image_id,
-                )
-                .await?;
+                let make = || {
+                    pool.volume_from_stored(
+                        &c.volume_id,
+                        c.size_bytes,
+                        &from,
+                        &c.tenant_path,
+                        &c.image_id,
+                    )
+                };
+                match c.source_pool {
+                    Some(_) => crate::transfer::in_shared_pool(make).await?,
+                    None => make().await?,
+                }
             }
             Cmd::Decommission(_) => {
                 tracing::warn!("decommissioning this host");

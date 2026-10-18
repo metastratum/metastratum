@@ -63,7 +63,8 @@ every suite shares (the VM engine, the agent) all of them.
 
 Suites that change what the others rely on run first, on their own:
 `storage` (it makes the NFS pool the others use), `limits` (it throttles
-every VM of the cluster) and `m5` (it renews the hosts' certificates). The
+every VM of the cluster), `m5` (it renews the hosts' certificates) and
+`image_relay` (it moves a host without VMs into a cluster of its own). The
 browser tests run last, also on their own: they migrate a large VM, which
 needs room on another host. Each suite's output goes to a log, and those of
 the suites that failed are printed.
@@ -104,7 +105,8 @@ the suites that failed are printed.
 | `clone` | A stopped VM made a template, and clones of it booting with what its disks held, on local disk, NFS and Ceph. |
 | `snapshots` | Snapshots taken of running and stopped VMs, reverted to and deleted, on local disk, NFS (where the VM migrates with them) and Ceph. |
 | `backups` | Backups of running and stopped VMs, by hand and on a schedule, restored as new VMs. Chains of incremental ones (across a migration, of a stopped VM, after a snapshot revert) restore what the VM held, also after the backups they built on are merged into them. |
-| `images` | Images downloaded once as they are added, copied to the hosts VMs are made on, and VMs that migrate without them and boot again once they are deleted; images kept in the NFS and Ceph pools, which VMs are made from directly. Downloads that fail say why, and can be tried again. |
+| `images` | Images downloaded once as they are added, copied to the hosts VMs are made on, and VMs that migrate without them and boot again once they are deleted; images kept in the NFS and Ceph pools, which VMs are made from directly, with their disks in either pool or on local disk. Downloads that fail say why, and can be tried again. |
+| `image_relay` | An image kept in the NFS pool, for a VM on a host that does not reach that pool (moved into a cluster of its own for the while): a host that does hands it over. |
 | `disks` | Disks plugged into running VMs (the guest finds them by ID) and out again, grown, moved along when a VM migrates, kept when it is deleted, and moved between hosts and into NFS, intact each time. |
 | `cpu` | CPU models every host of a cluster runs, fitted again on request. |
 | `load_balancers` | An external address spreading connections over VMs and leaving out one that stops answering, an internal one, changed members. |
