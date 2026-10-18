@@ -13,8 +13,8 @@
 # deployment uses, a database left from an earlier installation) and stops
 # if it finds any.
 #
-# Supported: Debian 13, Fedora 43 and later, RHEL, Rocky Linux and
-# AlmaLinux 10, and Arch Linux, on x86-64. On Arch, OVN is built from source
+# Supported: Debian 13, Ubuntu 26.04 and later, Fedora 43 and later, RHEL,
+# Rocky Linux and AlmaLinux 10, and Arch Linux, on x86-64. On Arch, OVN is built from source
 # (it is not packaged) and the system is upgraded first (pacman -Syu), as
 # Arch requires. RHEL needs its Fast Datapath repository (Open vSwitch and
 # OVN) through a subscription.
@@ -114,11 +114,11 @@ major=${VERSION_ID:-0}
 major=${major%%.*}
 case $ID in
   debian) family=debian; ((major >= 13)) || die "Debian 13 or later is needed (this is $PRETTY_NAME)" ;;
-  ubuntu) family=debian; warn "$PRETTY_NAME is not tested; going on as for Debian" ;;
+  ubuntu) family=debian; ((major >= 26)) || die "Ubuntu 26.04 or later is needed (this is $PRETTY_NAME)" ;;
   fedora) family=fedora; ((major >= 43)) || die "Fedora 43 or later is needed (this is $PRETTY_NAME)" ;;
   rhel | rocky | almalinux) family=el; ((major >= 10)) || die "$NAME 10 or later is needed (this is $PRETTY_NAME)" ;;
   arch) family=arch ;;
-  *) die "$PRETTY_NAME is not supported: Debian 13, Fedora 43+, RHEL/Rocky/AlmaLinux 10 or Arch Linux" ;;
+  *) die "$PRETTY_NAME is not supported: Debian 13, Ubuntu 26.04+, Fedora 43+, RHEL/Rocky/AlmaLinux 10 or Arch Linux" ;;
 esac
 
 if [[ -z $address ]]; then
@@ -156,6 +156,9 @@ report_conflicts() {
   } >&2
   die "nothing was changed"
 }
+
+# Whether ufw (Ubuntu's firewall, which may be on elsewhere too) is on.
+ufw_active() { command -v ufw >/dev/null && ufw status 2>/dev/null | grep '^Status: active' >/dev/null; }
 
 # Asks before going on, unless --yes.
 confirm() {
@@ -450,8 +453,8 @@ EOF
   - SELinux lets web servers connect to the network (httpd_can_network_connect),
     for Caddy to reach the controller
 EOF
-systemctl -q is-active firewalld && cat <<EOF
-  - firewalld lets in what is listed above
+{ systemctl -q is-active firewalld || ufw_active; } && cat <<EOF
+  - $(systemctl -q is-active firewalld && printf firewalld || printf ufw) lets in what is listed above
 EOF
 echo
 confirm
@@ -680,11 +683,15 @@ EOF
     sleep 1
   done
   curl -fsS -o /dev/null "$API/healthz" || die "the controller does not answer; see: journalctl -u mst-controller"
+  # Hosts' agents, and their ovn-controller.
   if systemctl -q is-active firewalld; then
-    # Hosts' agents, and their ovn-controller.
     firewall-cmd -q --permanent --add-port=7821/tcp
     ((local_ovn)) && firewall-cmd -q --permanent --add-port=6642/tcp
     firewall-cmd -q --reload
+  fi
+  if ufw_active; then
+    ufw allow 7821/tcp comment "metastratum: host agents" >/dev/null
+    ((local_ovn)) && ufw allow 6642/tcp comment "metastratum: OVN southbound" >/dev/null
   fi
 }
 
@@ -734,6 +741,12 @@ setup_proxy() {
   ((selinux)) && setsebool -P httpd_can_network_connect 1
   systemctl enable -q caddy
   systemctl restart caddy
+  if ufw_active; then
+    ufw allow "$https_port/tcp" comment "metastratum: web UI" >/dev/null
+    if ((https_port == 443)) || [[ -n $domain ]]; then
+      ufw allow 80/tcp comment "metastratum: web UI (redirects, certificates)" >/dev/null
+    fi
+  fi
   if systemctl -q is-active firewalld; then
     if ((https_port == 443)); then
       firewall-cmd -q --permanent --add-service=https --add-service=http

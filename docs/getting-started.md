@@ -15,8 +15,9 @@ You need:
 
 ## The quick way: the installers
 
-Two scripts set everything up from scratch, on Debian 13, Fedora 43 or
-later, RHEL, Rocky Linux or AlmaLinux 10, or Arch Linux:
+Two scripts set everything up from scratch, on Debian 13, Ubuntu 26.04 or
+later, Fedora 43 or later, RHEL, Rocky Linux or AlmaLinux 10, or Arch
+Linux:
 
 - [`deploy/install-controller.sh`](../deploy/install-controller.sh)
   installs PostgreSQL, OVN's central databases over TLS, the controller with
@@ -64,7 +65,8 @@ what it would clash with, reports all of it, and stops:
 
 - ports in use by other programs (7820, 7821, 6641, 6642, and 80 and 443
   for the HTTPS proxy: `--https-port` serves the web UI on another port,
-  and `--no-proxy` leaves the proxy to you);
+  and `--no-proxy` leaves the proxy to you; with firewalld or ufw on, they
+  open what they need);
 - a database named `metastratum` left from an earlier installation whose
   `controller.toml` and master key are gone (the database's secrets are
   sealed with that key);

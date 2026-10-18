@@ -223,13 +223,20 @@ impl DomainDef {
 
     pub fn to_xml(&self) -> String {
         let os = match self.firmware {
-            Firmware::Uefi => El::new("os").attr("firmware", "efi").child(
-                El::new("firmware").child(
-                    El::new("feature")
-                        .attr("enabled", "no")
-                        .attr("name", "secure-boot"),
-                ),
-            ),
+            // libvirt picks the firmware: one in flash, with variables
+            // of the VM's own. Without asking for flash it may pick a
+            // confidential-computing build (AMD SEV, Intel TDX) that a
+            // plain VM cannot use (Ubuntu 26.04 does, on AMD hosts).
+            Firmware::Uefi => El::new("os")
+                .attr("firmware", "efi")
+                .child(
+                    El::new("firmware").child(
+                        El::new("feature")
+                            .attr("enabled", "no")
+                            .attr("name", "secure-boot"),
+                    ),
+                )
+                .child(El::new("loader").attr("type", "pflash")),
             Firmware::Bios => El::new("os"),
         }
         .child(

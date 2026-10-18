@@ -16,8 +16,9 @@
 # network or bridge of that name in use, libvirt TLS certificates it would
 # replace) and stops if it finds any.
 #
-# Supported: Debian 13, Fedora 43 and later, RHEL, Rocky Linux and
-# AlmaLinux 10, and Arch Linux, on x86-64 with hardware virtualisation. On
+# Supported: Debian 13, Ubuntu 26.04 and later, Fedora 43 and later, RHEL,
+# Rocky Linux and AlmaLinux 10, and Arch Linux, on x86-64 with hardware
+# virtualisation. On
 # Arch, OVN is built from source (it is not packaged) and the system is
 # upgraded first (pacman -Syu), as Arch requires. RHEL needs its Fast
 # Datapath repository (Open vSwitch and OVN) through a subscription.
@@ -111,11 +112,11 @@ major=${VERSION_ID:-0}
 major=${major%%.*}
 case $ID in
   debian) family=debian; ((major >= 13)) || die "Debian 13 or later is needed (this is $PRETTY_NAME)" ;;
-  ubuntu) family=debian; warn "$PRETTY_NAME is not tested; going on as for Debian" ;;
+  ubuntu) family=debian; ((major >= 26)) || die "Ubuntu 26.04 or later is needed (this is $PRETTY_NAME)" ;;
   fedora) family=fedora; ((major >= 43)) || die "Fedora 43 or later is needed (this is $PRETTY_NAME)" ;;
   rhel | rocky | almalinux) family=el; ((major >= 10)) || die "$NAME 10 or later is needed (this is $PRETTY_NAME)" ;;
   arch) family=arch ;;
-  *) die "$PRETTY_NAME is not supported: Debian 13, Fedora 43+, RHEL/Rocky/AlmaLinux 10 or Arch Linux" ;;
+  *) die "$PRETTY_NAME is not supported: Debian 13, Ubuntu 26.04+, Fedora 43+, RHEL/Rocky/AlmaLinux 10 or Arch Linux" ;;
 esac
 
 if [[ -z $address ]]; then
@@ -153,6 +154,9 @@ report_conflicts() {
   } >&2
   die "nothing was changed"
 }
+
+# Whether ufw (Ubuntu's firewall, which may be on elsewhere too) is on.
+ufw_active() { command -v ufw >/dev/null && ufw status 2>/dev/null | grep '^Status: active' >/dev/null; }
 
 # Asks before going on, unless --yes.
 confirm() {
@@ -352,6 +356,10 @@ EOF
   - an Open vSwitch bridge br-ext with $ext_prefix.1 on it, and NAT from
     $ext_cidr to the outside: IP forwarding gets switched on
 EOF
+{ systemctl -q is-active firewalld || ufw_active; } && cat <<EOF
+  - $(systemctl -q is-active firewalld && printf firewalld || printf ufw) lets in OVN's tunnels (UDP 6081) and migrations (TCP 49152-49215)$([[ $ext_cidr != none ]] && printf ',
+    and forwards what the VMs send out through br-ext')
+EOF
 echo
 confirm
 
@@ -451,10 +459,14 @@ setup_ovs() {
   fi
   systemctl enable -q ovn-controller
   systemctl restart ovn-controller
+  # OVN's tunnels and live migrations between hosts.
   if systemctl -q is-active firewalld; then
-    # OVN's tunnels and live migrations between hosts.
     firewall-cmd -q --permanent --add-port=6081/udp --add-port=49152-49215/tcp
     firewall-cmd -q --reload
+  fi
+  if ufw_active; then
+    ufw allow 6081/udp comment "metastratum: OVN tunnels" >/dev/null
+    ufw allow 49152:49215/tcp comment "metastratum: migrations" >/dev/null
   fi
 }
 
@@ -531,6 +543,10 @@ EOF
     firewall-cmd -q --permanent --zone=trusted --add-interface=br-ext
     firewall-cmd -q --permanent --add-masquerade
     firewall-cmd -q --reload
+  fi
+  # ufw forwards nothing it is not told to (its NAT is ours, above).
+  if ufw_active; then
+    ufw route allow in on br-ext comment "metastratum: VMs to the outside" >/dev/null
   fi
   docker_forward
 }

@@ -37,9 +37,10 @@ each host.
 
 ## Getting started
 
-On a machine with Debian 13, Fedora 43 or later, RHEL, Rocky Linux or
-AlmaLinux 10, or Arch Linux, and hardware virtualisation, two scripts set
-up a controller and make the machine its first host:
+On a machine with Debian 13, Ubuntu 26.04 or later, Fedora 43 or later,
+RHEL, Rocky Linux or AlmaLinux 10, or Arch Linux, and hardware
+virtualisation, two scripts set up a controller and make the machine its
+first host:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/metastratum/metastratum/main/deploy/install-controller.sh

@@ -18,6 +18,7 @@
     <firmware>
       <feature enabled='no' name='secure-boot'/>
     </firmware>
+    <loader type='pflash'/>
     <type arch='x86_64' machine='q35'>hvm</type>
   </os>
   <features>
