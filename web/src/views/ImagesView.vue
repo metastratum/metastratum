@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { api, ApiError, ok, type Image } from '../api/client'
+import { api, ApiError, ok, type Image, type Schemas } from '../api/client'
 import IdChip from '../components/IdChip.vue'
 import ModalDialog from '../components/ModalDialog.vue'
 import { ago, gib } from '../state'
@@ -10,7 +10,11 @@ import { useScope } from '../stores/scope'
 const scope = useScope()
 const images = ref<Image[] | null>(null)
 const adding = ref(false)
-const form = ref({ name: '', source_url: '', format: 'qcow2', shared: false })
+const LOCAL_POOL = '00000000-0000-0000-0000-000000000001'
+const blank = () => ({ name: '', source_url: '', format: 'qcow2', shared: false, storage_pool_id: LOCAL_POOL })
+const form = ref(blank())
+// Where images can be kept: the pools the tenant may use.
+const pools = ref<Schemas['UsablePool'][]>([])
 const error = ref('')
 
 async function load() {
@@ -18,6 +22,12 @@ async function load() {
   images.value = await ok(api.GET('/api/v1/images', { params: { query: { tenant_id: scope.current } } }))
 }
 watch(() => scope.current, load, { immediate: true })
+async function openAdd() {
+  adding.value = true
+  pools.value = await ok(
+    api.GET('/api/v1/tenants/{id}/storage-pools', { params: { path: { id: scope.current } } }),
+  ).catch(() => [])
+}
 useLiveRefresh(['image'], load)
 
 async function add() {
@@ -25,7 +35,7 @@ async function add() {
   try {
     await ok(api.POST('/api/v1/images', { body: { ...form.value, tenant_id: scope.current } }))
     adding.value = false
-    form.value = { name: '', source_url: '', format: 'qcow2', shared: false }
+    form.value = blank()
     await load()
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : 'The controller isn’t responding. Try again.'
@@ -75,7 +85,7 @@ const own = (img: Image) => img.tenant_id === scope.current
   <section>
     <header class="head">
       <h1>Images</h1>
-      <button v-if="scope.can('image.write')" class="btn primary" @click="adding = true">Add image</button>
+      <button v-if="scope.can('image.write')" class="btn primary" @click="openAdd">Add image</button>
     </header>
     <p class="intro">
       A host downloads an image as you add it. Hosts copy it from there to make VMs from it, and keep their copy
@@ -85,7 +95,7 @@ const own = (img: Image) => img.tenant_id === scope.current
 
     <div v-if="images && !images.length" class="empty">
       <p>Add an image so VMs have something to boot. Any cloud image in qcow2 or raw format works.</p>
-      <button v-if="scope.can('image.write')" class="btn primary" @click="adding = true">Add image</button>
+      <button v-if="scope.can('image.write')" class="btn primary" @click="openAdd">Add image</button>
     </div>
 
     <ul v-else-if="images" class="list">
@@ -104,6 +114,7 @@ const own = (img: Image) => img.tenant_id === scope.current
         <div v-if="img.state === 'ready' && img.virtual_bytes" class="facts muted">
           <span>{{ gib(img.virtual_bytes) }} disk</span>
           <span v-if="img.size_bytes">{{ gib(img.size_bytes) }} stored</span>
+          <span v-if="img.storage_pool_id !== LOCAL_POOL">Kept in {{ img.storage_pool_name }}</span>
           <span v-if="img.hosts.length">On {{ img.hosts.join(', ') }}</span>
         </div>
         <div class="meta">
@@ -166,6 +177,17 @@ const own = (img: Image) => img.tenant_id === scope.current
             <option value="qcow2">qcow2</option>
             <option value="raw">raw</option>
           </select>
+        </label>
+        <label v-if="pools.length > 1" class="field">
+          <span class="label">Keep it in</span>
+          <select v-model="form.storage_pool_id">
+            <option v-for="p in pools" :key="p.id" :value="p.id">
+              {{ p.kind === 'local' ? 'Local disk of a host' : `${p.name} (${p.kind})` }}
+            </option>
+          </select>
+          <span class="hint">
+            Hosts that reach a shared pool make VMs’ disks from it directly; others copy it to their local disk.
+          </span>
         </label>
         <label v-if="!scope.solo" class="check">
           <input v-model="form.shared" type="checkbox" />

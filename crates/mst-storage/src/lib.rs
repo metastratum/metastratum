@@ -39,7 +39,7 @@ pub enum Error {
     Tool { tool: &'static str, stderr: String },
     #[error("invalid image: {0}")]
     InvalidImage(String),
-    #[error("image {0} is not cached on this host")]
+    #[error("image {0} is not in the image store")]
     MissingImage(String),
     #[error("requested size {requested} is smaller than the image ({image} bytes)")]
     TooSmall { requested: u64, image: u64 },
@@ -349,13 +349,14 @@ impl FilePool {
         Ok(out)
     }
 
-    /// Removes everything of metastratum's from the pool: cached images, and
-    /// any volumes left (the controller removes pools that hold none). Only
-    /// metastratum's own files go (`<id>.qcow2` in `images/` and `volumes/`);
+    /// Removes everything of metastratum's from the pool: its image store,
+    /// cached images, and any volumes left (the controller removes pools
+    /// that hold none). Only metastratum's own files go (`<id>.qcow2` in
+    /// `images/` and `volumes/`, and the store's tenants' directories);
     /// the directories go too if that leaves them empty. Returns how many
     /// files were removed.
     pub async fn purge(&self) -> Result<usize> {
-        let mut removed = 0;
+        let mut removed = crate::ImageStore::new(&self.root).purge().await?;
         for sub in ["images", "volumes"] {
             let dir_path = self.root.join(sub);
             let mut dir = match tokio::fs::read_dir(&dir_path).await {

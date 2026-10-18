@@ -2,7 +2,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use mst_core::ids::{ImageId, TaskId, TenantId};
+use mst_core::ids::{ImageId, LOCAL_POOL, StoragePoolId, TaskId, TenantId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
@@ -47,14 +47,21 @@ pub struct ImageView {
     /// SHA-256 of the file downloaded from `source_url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     sha256: Option<String>,
-    /// The hosts holding a copy (VMs made from it on other hosts copy it
-    /// from these).
+    /// The hosts holding a copy on their local disk (VMs made from it on
+    /// other hosts copy it from these).
     hosts: Vec<String>,
+    /// The pool it is kept in: the local pool (a host's local disk, picked
+    /// at random), or a shared pool, which the hosts attached to it make
+    /// disks from directly.
+    storage_pool_id: StoragePoolId,
+    storage_pool_name: String,
 }
 
 impl ImageView {
-    fn new(i: mst_db::images::Image, hosts: Vec<String>) -> Self {
+    fn new(i: mst_db::images::Image, hosts: Vec<String>, pool_name: String) -> Self {
         Self {
+            storage_pool_id: i.storage_pool_id,
+            storage_pool_name: pool_name,
             id: i.id,
             tenant_id: i.tenant_id,
             name: i.name,
@@ -75,11 +82,18 @@ impl ImageView {
 async fn views(state: &AppState, images: Vec<mst_db::images::Image>) -> ApiResult<Vec<ImageView>> {
     let ids: Vec<ImageId> = images.iter().map(|i| i.id).collect();
     let mut hosts = mst_db::images::copy_hosts(&state.db, &ids).await?;
+    let pools: std::collections::HashMap<StoragePoolId, String> =
+        mst_db::storage_pools::list(&state.db)
+            .await?
+            .into_iter()
+            .map(|p| (p.id, p.name))
+            .collect();
     Ok(images
         .into_iter()
         .map(|i| {
             let h = hosts.remove(&i.id).unwrap_or_default();
-            ImageView::new(i, h)
+            let pool = pools.get(&i.storage_pool_id).cloned().unwrap_or_default();
+            ImageView::new(i, h, pool)
         })
         .collect())
 }
@@ -115,6 +129,9 @@ pub struct CreateImage {
     format: String,
     #[serde(default)]
     shared: bool,
+    /// The pool to keep it in (one the tenant may use): by default the
+    /// local pool, on the local disk of a host picked at random.
+    storage_pool_id: Option<StoragePoolId>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -125,8 +142,10 @@ pub struct CreatedImage {
     image: ImageView,
 }
 
-/// Adds an image: a host picked at random downloads it into its image
-/// store (the task), and hosts copy it from there to make VMs from it.
+/// Adds an image: a host downloads it into the image store of the pool it
+/// is kept in (the task): its own local disk (a host picked at random), or
+/// a shared pool, which its hosts make disks from directly. Other hosts copy
+/// it from there to make VMs from it.
 #[utoipa::path(post, path = "/images", tag = "images", request_body = CreateImage,
     responses((status = 201, body = CreatedImage), (status = 400), (status = 409)))]
 async fn create_image(
@@ -145,6 +164,11 @@ async fn create_image(
     if !matches!(req.format.as_str(), "qcow2" | "raw") {
         return Err(ApiError::bad_request("format must be qcow2 or raw"));
     }
+    let pool =
+        mst_db::storage_pools::get(&state.db, req.storage_pool_id.unwrap_or(LOCAL_POOL)).await?;
+    if !super::storage_pools::may_use(&state, tenant, &pool).await? {
+        return Err(ApiError::not_found("storage pool"));
+    }
     let mut tx = state.db.begin().await?;
     // Images are charged what they take once downloaded (`image_gib`);
     // none is downloaded where the quota is used up.
@@ -158,6 +182,7 @@ async fn create_image(
             source_url: &req.source_url,
             format: &req.format,
             shared: req.shared,
+            storage_pool_id: pool.id,
         },
     )
     .await?;
@@ -169,14 +194,14 @@ async fn create_image(
         Some(tenant),
         "image.create",
         Some(("image", image.id.0)),
-        json!({"name": image.name, "url": image.source_url}),
+        json!({"name": image.name, "url": image.source_url, "storage_pool": pool.name}),
     )
     .await;
     Ok((
         StatusCode::CREATED,
         Json(CreatedImage {
             task_id,
-            image: ImageView::new(image, vec![]),
+            image: ImageView::new(image, vec![], pool.name),
         }),
     ))
 }

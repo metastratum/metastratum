@@ -281,7 +281,7 @@ async fn update_pool(
 /// hosts unmount it and forget its credentials, and its storage is left as
 /// it is; with `delete_data` metastratum's data on the storage goes too.
 #[utoipa::path(delete, path = "/storage-pools/{id}", tag = "hosts", params(("id" = StoragePoolId, Path), DeletePool),
-    responses((status = 204), (status = 403), (status = 404), (status = 409, description = "Has volumes")))]
+    responses((status = 204), (status = 403), (status = 404), (status = 409, description = "Has volumes or images")))]
 async fn delete_pool(
     State(state): State<AppState>,
     p: Principal,
@@ -297,6 +297,12 @@ async fn delete_pool(
     if n > 0 {
         return Err(ApiError::conflict(format!(
             "the pool still holds {n} volumes"
+        )));
+    }
+    let n = mst_db::images::count_in_pool(&state.db, id).await?;
+    if n > 0 {
+        return Err(ApiError::conflict(format!(
+            "the pool keeps {n} images; delete them first"
         )));
     }
     // Data on storage another pool uses stays; that pool needs it.

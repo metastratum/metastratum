@@ -5,6 +5,7 @@ use std::time::Duration;
 use chrono::Utc;
 use mst_core::ids::{HostId, NetworkId, NicId, VmId};
 use mst_core::vm::VmSpec;
+use mst_db::images::Copy;
 use mst_db::{
     console, hosts, images, join_tokens, networks, sessions, tenants, two_factor, users, vms,
 };
@@ -411,6 +412,7 @@ async fn images_visible_to_owner_and_shared_down_the_tree(pool: PgPool) {
         source_url: "http://x",
         format: "qcow2",
         shared,
+        storage_pool_id: mst_core::ids::LOCAL_POOL,
     };
 
     let public = images::create(&pool, img(r.id, "debian", true))
@@ -461,6 +463,7 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
             source_url: "http://x",
             format: "qcow2",
             shared: false,
+            storage_pool_id: mst_core::ids::LOCAL_POOL,
         },
     )
     .await
@@ -493,21 +496,24 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
         virtual_bytes: 3 << 30,
         sha256: sha256.into(),
     };
-    images::add_copy(&mut conn, img.id, h1.id, &stored("abc"))
+    images::add_copy(&mut conn, img.id, Copy::local(h1.id), &stored("abc"))
         .await
         .unwrap();
     // A copy has no hash of its own: the download's stays.
-    images::add_copy(&mut conn, img.id, h2.id, &stored(""))
+    images::add_copy(&mut conn, img.id, Copy::local(h2.id), &stored(""))
         .await
         .unwrap();
-    images::add_copy(&mut conn, img.id, h2.id, &stored(""))
+    images::add_copy(&mut conn, img.id, Copy::local(h2.id), &stored(""))
         .await
         .unwrap();
     let got = images::get(&pool, img.id).await.unwrap();
     assert_eq!(got.state, "ready");
     assert_eq!(got.sha256.as_deref(), Some("abc"));
     assert_eq!(got.virtual_bytes, Some(3 << 30));
-    assert_eq!(images::copies(&pool, img.id).await.unwrap(), [h1.id, h2.id]);
+    assert_eq!(
+        images::copies(&pool, img.id).await.unwrap(),
+        [Copy::local(h1.id), Copy::local(h2.id)]
+    );
     // Charged its stored size once, however many hosts hold it.
     let used = mst_db::quotas::usage(&pool, a.id).await.unwrap();
     assert_eq!(used["image_gib"], 1);
@@ -515,13 +521,43 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
         images::copy_hosts(&pool, &[img.id]).await.unwrap()[&img.id].len(),
         2
     );
-    images::remove_copy(&pool, img.id, h1.id).await.unwrap();
-    assert_eq!(images::copies(&pool, img.id).await.unwrap(), [h2.id]);
+    images::remove_copy(&pool, img.id, Copy::local(h1.id))
+        .await
+        .unwrap();
+    assert_eq!(
+        images::copies(&pool, img.id).await.unwrap(),
+        [Copy::local(h2.id)]
+    );
+    // A copy in a shared pool is the pool's, not a host's: once.
+    let nfs = mst_db::storage_pools::create(
+        &mut conn,
+        "nfs",
+        "nfs",
+        &serde_json::json!({"server": "10.0.0.1", "export": "/x"}),
+        &[],
+    )
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        images::add_copy(&mut conn, img.id, Copy::shared(nfs), &stored(""))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        images::copies(&pool, img.id).await.unwrap(),
+        [Copy::local(h2.id), Copy::shared(nfs)]
+    );
+    assert_eq!(images::count_in_pool(&pool, nfs).await.unwrap(), 1);
+    assert_eq!(
+        images::copy_hosts(&pool, &[img.id]).await.unwrap()[&img.id],
+        ["mst-host1"]
+    );
 
     // Deleted meanwhile: nothing to record a copy on.
     images::delete(&mut conn, img.id).await.unwrap();
+    assert_eq!(images::count_in_pool(&pool, nfs).await.unwrap(), 0);
     assert!(
-        images::add_copy(&mut conn, img.id, h1.id, &stored(""))
+        images::add_copy(&mut conn, img.id, Copy::local(h1.id), &stored(""))
             .await
             .is_err()
     );

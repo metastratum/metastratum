@@ -28,7 +28,8 @@ pub struct NbdSource {
 pub enum CopySource<'a> {
     /// A volume in a pool of files here (qcow2, on its image if any).
     File(&'a Path),
-    /// A volume in a Ceph pool this host reaches: its ID.
+    /// An image in a Ceph pool this host reaches, by its RBD name (a
+    /// volume's is [`RbdPool::volume_name`]).
     Rbd(&'a RbdPool, &'a str),
     /// A volume another host serves.
     Nbd(&'a NbdSource),
@@ -85,7 +86,7 @@ async fn source_args(src: &CopySource<'_>) -> Result<ImageArgs> {
             image: vec!["-f".into(), "qcow2".into(), path.to_string_lossy().into()],
             _key: None,
         },
-        CopySource::Rbd(pool, id) => {
+        CopySource::Rbd(pool, name) => {
             let key = KeyFile::new(pool).await?;
             ImageArgs {
                 objects: vec![format!(
@@ -94,7 +95,7 @@ async fn source_args(src: &CopySource<'_>) -> Result<ImageArgs> {
                 )],
                 image: vec![
                     "--image-opts".into(),
-                    rbd_opts(pool, &RbdPool::volume_name(id)?, "srckey"),
+                    rbd_opts(pool, crate::rbd::safe(name)?, "srckey"),
                 ],
                 _key: Some(key),
             }
@@ -160,7 +161,7 @@ pub async fn copy_into(dest: &Pool, id: &str, size: u64, src: &CopySource<'_>) -
     let source = source_args(src).await?;
     match dest {
         Pool::File(pool) => copy_to_file(pool, id, size, src, &source).await,
-        Pool::Rbd(pool) => copy_to_rbd(pool, id, size, &source).await,
+        Pool::Rbd(pool) => copy_to_rbd(pool, &RbdPool::volume_name(id)?, size, &source).await,
     }
 }
 
@@ -207,8 +208,19 @@ async fn copy_to_file(
     result
 }
 
-async fn copy_to_rbd(pool: &RbdPool, id: &str, size: u64, source: &ImageArgs) -> Result<()> {
-    let vol = RbdPool::volume_name(id)?;
+/// Makes RBD image `name` a copy of `src`, of at least `size` bytes,
+/// replacing what is there under that name.
+pub(crate) async fn copy_to_rbd_name(
+    pool: &RbdPool,
+    name: &str,
+    size: u64,
+    src: &CopySource<'_>,
+) -> Result<()> {
+    let source = source_args(src).await?;
+    copy_to_rbd(pool, name, size, &source).await
+}
+
+async fn copy_to_rbd(pool: &RbdPool, vol: &str, size: u64, source: &ImageArgs) -> Result<()> {
     let tmp = format!("{vol}-part-{}", random_suffix());
     let bytes = virtual_size(source).await?.max(size);
     let mib = bytes.div_ceil(1 << 20).to_string();
@@ -236,10 +248,10 @@ async fn copy_to_rbd(pool: &RbdPool, id: &str, size: u64, source: &ImageArgs) ->
         args.extend(["--target-image-opts".into(), rbd_opts(pool, &tmp, "dstkey")]);
         qemu_img(args).await?;
         drop(key);
-        if pool.exists(&pool.spec(&vol)).await? {
-            pool.rbd(&["rm", "--no-progress", &pool.spec(&vol)]).await?;
+        if pool.exists(&pool.spec(vol)).await? {
+            pool.rbd(&["rm", "--no-progress", &pool.spec(vol)]).await?;
         }
-        pool.rbd(&["rename", &pool.spec(&tmp), &pool.spec(&vol)])
+        pool.rbd(&["rename", &pool.spec(&tmp), &pool.spec(vol)])
             .await?;
         Ok(())
     }

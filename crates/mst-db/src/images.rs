@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use mst_core::ids::{HostId, ImageId, TenantId};
+use mst_core::ids::{HostId, ImageId, LOCAL_POOL, StoragePoolId, TenantId};
 use sqlx::PgExecutor;
 
 use crate::{Result, conflict_on_unique};
@@ -23,12 +23,15 @@ pub struct Image {
     pub virtual_bytes: Option<i64>,
     /// SHA-256 of the file downloaded from `source_url`.
     pub sha256: Option<String>,
+    /// Where it is kept: a host's local disk (the local pool), or a shared
+    /// pool.
+    pub storage_pool_id: StoragePoolId,
 }
 
 macro_rules! image_columns {
     () => {
         "i.id, i.tenant_id, i.name, i.source_url, i.format, i.shared, i.created_at,
-         i.state, i.error, i.size_bytes, i.virtual_bytes, i.sha256"
+         i.state, i.error, i.size_bytes, i.virtual_bytes, i.sha256, i.storage_pool_id"
     };
 }
 
@@ -38,13 +41,14 @@ pub struct NewImage<'a> {
     pub source_url: &'a str,
     pub format: &'a str,
     pub shared: bool,
+    pub storage_pool_id: StoragePoolId,
 }
 
 /// Adds an image, to be downloaded (see [`downloading`]).
 pub async fn create(db: impl PgExecutor<'_>, new: NewImage<'_>) -> Result<Image> {
     sqlx::query_as(concat!(
-        "INSERT INTO images AS i (id, tenant_id, name, source_url, format, shared, state)
-         VALUES ($1, $2, $3, $4, $5, $6, 'downloading') RETURNING ",
+        "INSERT INTO images AS i (id, tenant_id, name, source_url, format, shared, state, storage_pool_id)
+         VALUES ($1, $2, $3, $4, $5, $6, 'downloading', $7) RETURNING ",
         image_columns!()
     ))
     .bind(ImageId::new())
@@ -53,6 +57,7 @@ pub async fn create(db: impl PgExecutor<'_>, new: NewImage<'_>) -> Result<Image>
     .bind(new.source_url)
     .bind(new.format)
     .bind(new.shared)
+    .bind(new.storage_pool_id)
     .fetch_one(db)
     .await
     .map_err(|e| conflict_on_unique(e, "image"))
@@ -200,13 +205,37 @@ pub struct Stored {
     pub sha256: String,
 }
 
-/// Records a host's copy of the image: it is ready, with what the copy
-/// says of it (a hash only when it was downloaded just now, and the first
-/// one recorded stays). Fails if the image is gone.
+/// Where a copy of an image is: in a host's local image store, or in a
+/// shared pool's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, sqlx::FromRow)]
+pub struct Copy {
+    pub pool_id: StoragePoolId,
+    pub host_id: Option<HostId>,
+}
+
+impl Copy {
+    pub fn local(host: HostId) -> Self {
+        Self {
+            pool_id: LOCAL_POOL,
+            host_id: Some(host),
+        }
+    }
+
+    pub fn shared(pool: StoragePoolId) -> Self {
+        Self {
+            pool_id: pool,
+            host_id: None,
+        }
+    }
+}
+
+/// Records a copy of the image: it is ready, with what the copy says of
+/// it (a hash only when it was downloaded just now, and the first one
+/// recorded stays). Fails if the image is gone.
 pub async fn add_copy(
     db: &mut sqlx::PgConnection,
     id: ImageId,
-    host: HostId,
+    at: Copy,
     stored: &Stored,
 ) -> Result<()> {
     let found = sqlx::query(
@@ -229,22 +258,28 @@ pub async fn add_copy(
         .into());
     }
     sqlx::query(
-        "INSERT INTO image_copies (image_id, host_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        "INSERT INTO image_copies (image_id, pool_id, host_id) VALUES ($1, $2, $3)
+         ON CONFLICT DO NOTHING",
     )
     .bind(id)
-    .bind(host)
+    .bind(at.pool_id)
+    .bind(at.host_id)
     .execute(&mut *db)
     .await?;
     Ok(())
 }
 
-/// Forgets a host's copy (found missing).
-pub async fn remove_copy(db: impl PgExecutor<'_>, id: ImageId, host: HostId) -> Result<()> {
-    sqlx::query("DELETE FROM image_copies WHERE image_id = $1 AND host_id = $2")
-        .bind(id)
-        .bind(host)
-        .execute(db)
-        .await?;
+/// Forgets a copy (found missing).
+pub async fn remove_copy(db: impl PgExecutor<'_>, id: ImageId, at: Copy) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM image_copies WHERE image_id = $1 AND pool_id = $2
+         AND host_id IS NOT DISTINCT FROM $3",
+    )
+    .bind(id)
+    .bind(at.pool_id)
+    .bind(at.host_id)
+    .execute(db)
+    .await?;
     Ok(())
 }
 
@@ -258,14 +293,27 @@ pub async fn failed(db: impl PgExecutor<'_>, id: ImageId, error: &str) -> Result
     Ok(())
 }
 
-/// The hosts holding a copy (decommissioned ones hold nothing).
-pub async fn copies(db: impl PgExecutor<'_>, id: ImageId) -> Result<Vec<HostId>> {
-    Ok(sqlx::query_scalar(
-        "SELECT c.host_id FROM image_copies c JOIN hosts h ON h.id = c.host_id
-         WHERE c.image_id = $1 AND h.state <> 'decommissioned' ORDER BY c.created_at",
+/// The copies of an image, oldest first (decommissioned hosts hold
+/// nothing).
+pub async fn copies(db: impl PgExecutor<'_>, id: ImageId) -> Result<Vec<Copy>> {
+    Ok(sqlx::query_as(
+        "SELECT c.pool_id, c.host_id FROM image_copies c LEFT JOIN hosts h ON h.id = c.host_id
+         WHERE c.image_id = $1 AND (h.id IS NULL OR h.state <> 'decommissioned')
+         ORDER BY c.created_at",
     )
     .bind(id)
     .fetch_all(db)
+    .await?)
+}
+
+/// How many images a pool keeps, or holds copies of.
+pub async fn count_in_pool(db: impl PgExecutor<'_>, pool: StoragePoolId) -> Result<i64> {
+    Ok(sqlx::query_scalar(
+        "SELECT count(*) FROM images i WHERE i.storage_pool_id = $1
+            OR EXISTS (SELECT 1 FROM image_copies c WHERE c.image_id = i.id AND c.pool_id = $1)",
+    )
+    .bind(pool)
+    .fetch_one(db)
     .await?)
 }
 

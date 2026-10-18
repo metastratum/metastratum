@@ -87,7 +87,9 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
     // depends on nothing. Hosts whose agents predate the image store put
     // an overlay on a cached download instead.
     let store = mst_db::hosts::agent_supports(db, host, "volume_from_image").await?;
-    let mut from_store = std::collections::BTreeSet::new();
+    // Volume → the shared pool whose store the host makes it from (None:
+    // its own).
+    let mut from_store = std::collections::BTreeMap::new();
     for disk in &spec.disks {
         let Some(image_id) = disk.image_id else {
             continue;
@@ -103,10 +105,10 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
             continue;
         }
         if store {
-            super::image::ensure_on(ctx, image_id, host)
+            let source = super::image::ensure_on(ctx, image_id, host)
                 .await
                 .context("getting the image onto the host")?;
-            from_store.insert(disk.volume_id);
+            from_store.insert(disk.volume_id, source);
             continue;
         }
         let image = mst_db::images::get(db, image_id).await?;
@@ -131,9 +133,10 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
 
     ctx.step("volumes", 0.6).await;
     for disk in &spec.disks {
-        if from_store.contains(&disk.volume_id) {
+        if let Some(source) = from_store.get(&disk.volume_id) {
             let image_id = disk.image_id.context("no image")?;
-            volume_from_image(ctx, host, disk, image_id, &pools[&disk.pool_id]).await?;
+            let pool = &pools[&disk.pool_id];
+            volume_from_image(ctx, host, disk, image_id, pool, source.clone()).await?;
             continue;
         }
         let pool = Some(pools[&disk.pool_id].clone());
@@ -230,15 +233,16 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
     Ok(())
 }
 
-/// Makes the disk a copy of the image in the host's store. Should the store
-/// turn out not to hold it after all (removed by hand), the image gets
-/// there again, once.
+/// Makes the disk a copy of the image in the host's store, or `source`'s
+/// (a shared pool's). Should the host's store turn out not to hold it after
+/// all (removed by hand), the image gets there again, once.
 async fn volume_from_image(
     ctx: &TaskCtx,
     host: HostId,
     disk: &mst_core::vm::DiskSpec,
     image_id: mst_core::ids::ImageId,
     pool: &mst_proto::Pool,
+    source: Option<mst_proto::Pool>,
 ) -> Result<()> {
     let db = &ctx.state.db;
     let image = mst_db::images::get(db, image_id).await?;
@@ -248,13 +252,19 @@ async fn volume_from_image(
         pool: Some(pool.clone()),
         image_id: image_id.to_string(),
         tenant_path: mst_db::images::store_path(db, image.tenant_id).await?,
+        source_pool: source.clone(),
     });
     match call(ctx, host, cmd.clone(), RESTORE).await {
-        Err(e) if super::image::missing_from_store(&e) => {
-            mst_db::images::remove_copy(db, image_id, host).await?;
-            super::image::ensure_on(ctx, image_id, host)
+        Err(e) if source.is_none() && super::image::missing_from_store(&e) => {
+            let at = mst_db::images::Copy::local(host);
+            mst_db::images::remove_copy(db, image_id, at).await?;
+            let source = super::image::ensure_on(ctx, image_id, host)
                 .await
                 .context("getting the image onto the host")?;
+            let mut cmd = cmd;
+            if let Cmd::VolumeFromImage(c) = &mut cmd {
+                c.source_pool = source;
+            }
             call(ctx, host, cmd, RESTORE)
                 .await
                 .context("creating volume")?;

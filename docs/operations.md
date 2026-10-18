@@ -286,7 +286,8 @@ record stays, listed as decommissioned.
 
 ### Deleting pools and images
 
-A storage pool that holds no VM disks can be removed two ways:
+A storage pool that holds no VM disks and keeps no images can be removed
+two ways:
 
 - **Unlink** (the default): every host unmounts it and forgets its
   credentials; the storage is left as it is, cached images included.
@@ -379,15 +380,25 @@ back in service.
 
 ## Images
 
-Adding an image downloads it at once, onto a connected host picked at
-random, into that host's image store: `images/<tenant>/<sub-tenant>/…/<image
-ID>.qcow2` under the agent's data directory, the tenants named by their
-IDs. The images page shows when it is there, its size, and which hosts hold
-it; a download that failed says why, and can be tried again (Download
-again). The SHA-256 of what was downloaded is recorded.
+Adding an image downloads it at once into the image store of the storage
+pool it is kept in (Keep it in, among the pools the tenant may use):
 
-A VM made from an image is made on its host from that host's copy. A host
-without one gets it from a host that has it: served read-only with
+- **Local disk of a host** (the default): a connected host picked at
+  random keeps it, in `images/<tenant>/<sub-tenant>/…/<image ID>.qcow2`
+  under the agent's data directory, the tenants named by their IDs.
+- **A shared pool**: a host attached to it downloads it there, once: the
+  same path on an NFS pool, an RBD image `store_<tenant>_…_<image ID>` on
+  Ceph.
+
+The images page shows when it is there, its size, where it is kept and
+which hosts hold a copy; a download that failed says why, and can be tried
+again (Download again). The SHA-256 of what was downloaded is recorded.
+
+A VM made from an image is made on its host from that host's copy, or
+straight from the shared pool keeping it when the host is attached to that
+pool. A host without either gets a copy from a host that has one (a host
+attached to the shared pool first copies it into its own store): served
+read-only with
 `qemu-nbd` over TLS, with credentials for that copy alone, on a port of the
 migration range (49152-49215), as disks move. Hosts keep their copy, and
 each is a source for the next. The VM's disk is a copy of the image of its
@@ -395,8 +406,8 @@ own, in its pool: it depends on nothing, so a VM migrates without its
 image, and keeps working once the image is deleted. VMs made while the
 image downloads wait for it.
 
-Should no host that holds an image be reachable (or every one be
-decommissioned), the host that needs it downloads it again, from its
+Should no copy of an image be reachable (its hosts are down or
+decommissioned, say), the host that needs it downloads it again, from its
 address; what it downloads must then be the file first downloaded (the same
 SHA-256), or the VM is not made.
 

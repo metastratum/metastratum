@@ -106,10 +106,91 @@ impl Pool {
         }
     }
 
-    /// Creates a volume as a copy of an image file (in the image store), of
-    /// at least `size` bytes, which depends on nothing. An existing volume
-    /// is left alone.
-    pub async fn volume_from_image(&self, id: &str, size: u64, image: &Path) -> Result<()> {
+    /// Downloads an image into the pool's image store (see
+    /// [`crate::ImageStore::fetch`]), unless it is there already.
+    pub async fn fetch_stored(
+        &self,
+        tenant_path: &str,
+        id: &str,
+        url: &str,
+        format: &str,
+        policy: crate::FetchPolicy,
+        sha256: Option<&str>,
+    ) -> Result<crate::StoredImage> {
+        match self {
+            Pool::File(p) => {
+                crate::ImageStore::new(p.root())
+                    .fetch(tenant_path, id, url, format, policy, sha256)
+                    .await
+            }
+            Pool::Rbd(p) => {
+                p.fetch_stored(tenant_path, id, url, format, policy, sha256)
+                    .await
+            }
+        }
+    }
+
+    /// Whether the pool's image store holds the image.
+    pub async fn has_stored(&self, tenant_path: &str, id: &str) -> Result<bool> {
+        match self {
+            Pool::File(p) => crate::ImageStore::new(p.root()).has(tenant_path, id).await,
+            Pool::Rbd(p) => p.has_stored(tenant_path, id).await,
+        }
+    }
+
+    /// Removes an image from the pool's image store.
+    pub async fn remove_stored(&self, tenant_path: &str, id: &str) -> Result<()> {
+        match self {
+            Pool::File(p) => {
+                crate::ImageStore::new(p.root())
+                    .remove(tenant_path, id)
+                    .await
+            }
+            Pool::Rbd(p) => p.remove_stored(tenant_path, id).await,
+        }
+    }
+
+    /// Copies an image in the pool's image store into `store` (a host's
+    /// local one), unless it is there already.
+    pub async fn copy_stored_to(
+        &self,
+        store: &crate::ImageStore,
+        tenant_path: &str,
+        id: &str,
+    ) -> Result<crate::StoredImage> {
+        match self {
+            Pool::File(p) => {
+                let path = crate::ImageStore::new(p.root()).path(tenant_path, id)?;
+                if !tokio::fs::try_exists(&path).await? {
+                    return Err(crate::Error::MissingImage(id.into()));
+                }
+                store
+                    .copy_in(tenant_path, id, &crate::CopySource::File(&path))
+                    .await
+            }
+            Pool::Rbd(p) => {
+                let name = RbdPool::store_name(tenant_path, id)?;
+                if !p.has_stored(tenant_path, id).await? {
+                    return Err(crate::Error::MissingImage(id.into()));
+                }
+                store
+                    .copy_in(tenant_path, id, &crate::CopySource::Rbd(p, &name))
+                    .await
+            }
+        }
+    }
+
+    /// Creates a volume as a copy of an image in `from`'s image store, of at
+    /// least `size` bytes, which depends on nothing. An existing volume is
+    /// left alone.
+    pub async fn volume_from_stored(
+        &self,
+        id: &str,
+        size: u64,
+        from: &Pool,
+        tenant_path: &str,
+        image: &str,
+    ) -> Result<()> {
         let exists = match self {
             Pool::File(p) => tokio::fs::try_exists(p.volume_path(id)?).await?,
             Pool::Rbd(p) => p.volume_size(id).await?.is_some(),
@@ -117,14 +198,35 @@ impl Pool {
         if exists {
             return Ok(());
         }
-        let virtual_size = crate::img_info(image, Some("qcow2")).await?.virtual_size;
-        if size < virtual_size {
-            return Err(crate::Error::TooSmall {
+        let too_small = |virtual_size: u64| {
+            (size < virtual_size).then_some(crate::Error::TooSmall {
                 requested: size,
                 image: virtual_size,
-            });
+            })
+        };
+        match from {
+            Pool::File(p) => {
+                let path = crate::ImageStore::new(p.root()).path(tenant_path, image)?;
+                if !tokio::fs::try_exists(&path).await? {
+                    return Err(crate::Error::MissingImage(image.into()));
+                }
+                let virtual_size = crate::img_info(&path, Some("qcow2")).await?.virtual_size;
+                if let Some(e) = too_small(virtual_size) {
+                    return Err(e);
+                }
+                crate::copy_into(self, id, size, &crate::CopySource::File(&path)).await
+            }
+            Pool::Rbd(p) => {
+                let name = RbdPool::store_name(tenant_path, image)?;
+                let Some(virtual_size) = p.image_size(&name).await? else {
+                    return Err(crate::Error::MissingImage(image.into()));
+                };
+                if let Some(e) = too_small(virtual_size) {
+                    return Err(e);
+                }
+                crate::copy_into(self, id, size, &crate::CopySource::Rbd(p, &name)).await
+            }
         }
-        crate::copy_into(self, id, size, &crate::CopySource::File(image)).await
     }
 
     /// Grows a volume no VM is using; see each pool's `grow_volume`.

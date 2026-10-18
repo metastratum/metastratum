@@ -645,8 +645,10 @@ export interface paths {
         get: operations["list_images"];
         put?: never;
         /**
-         * Adds an image: a host picked at random downloads it into its image
-         *     store (the task), and hosts copy it from there to make VMs from it.
+         * Adds an image: a host downloads it into the image store of the pool it
+         *     is kept in (the task): its own local disk (a host picked at random), or
+         *     a shared pool, which its hosts make disks from directly. Other hosts copy
+         *     it from there to make VMs from it.
          */
         post: operations["create_image"];
         delete?: never;
@@ -2236,6 +2238,7 @@ export interface components {
             shared?: boolean;
             /** @description HTTP(S) URL a host downloads the image from, as it is added. */
             source_url: string;
+            storage_pool_id?: components["schemas"]["StoragePoolId"] | null;
             tenant_id?: components["schemas"]["TenantId"] | null;
         };
         CreateJoinToken: {
@@ -2611,8 +2614,8 @@ export interface components {
             /** @description `qcow2` or `raw`. */
             format: string;
             /**
-             * @description The hosts holding a copy (VMs made from it on other hosts copy it
-             *     from these).
+             * @description The hosts holding a copy on their local disk (VMs made from it on
+             *     other hosts copy it from these).
              */
             hosts: string[];
             id: components["schemas"]["ImageId"];
@@ -2632,6 +2635,13 @@ export interface components {
              *     `failed` (see `error`; it can be downloaded again).
              */
             state: string;
+            /**
+             * @description The pool it is kept in: the local pool (a host's local disk, picked
+             *     at random), or a shared pool, which the hosts attached to it make
+             *     disks from directly.
+             */
+            storage_pool_id: components["schemas"]["StoragePoolId"];
+            storage_pool_name: string;
             tenant_id: components["schemas"]["TenantId"];
             /**
              * Format: int64
@@ -6149,7 +6159,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Has volumes */
+            /** @description Has volumes or images */
             409: {
                 headers: {
                     [name: string]: unknown;

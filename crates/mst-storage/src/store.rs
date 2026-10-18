@@ -1,7 +1,9 @@
 //! The image store: images downloaded once, when they are added, and copied
 //! from host to host from then on. Each is a qcow2 file of its own (no
-//! backing file) in the local pool, under its tenant's lineage:
+//! backing file) in a pool of files (the local pool, or a shared one an
+//! image is kept in), under its tenant's lineage:
 //! `images/<tenant>/<sub-tenant>/.../<image id>.qcow2`, tenants named by ID.
+//! Ceph pools keep them as RBD images (see [`crate::RbdPool::store_name`]).
 //! VMs' disks are copies of them, so an image here is only ever read, to
 //! make a disk or another host's copy.
 //!
@@ -14,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::SystemTime;
 
-use crate::transfer::{CopySource, NbdSource};
+use crate::transfer::CopySource;
 use crate::{Error, FetchPolicy, Result, img_info, random_suffix, safe_id, set_mode};
 
 /// One fetch or copy at a time per image, on this host.
@@ -42,34 +44,42 @@ pub struct StoredImage {
     pub sha256: String,
 }
 
+/// A tenant's lineage (see [`ImageStore`]), checked.
+pub(crate) fn tenant_labels(tenant_path: &str) -> Result<Vec<&str>> {
+    let labels: Vec<&str> = tenant_path.split('/').collect();
+    let ok = |l: &&str| {
+        (1..=64).contains(&l.len())
+            && l.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    };
+    if labels.len() > 64 || !labels.iter().all(ok) {
+        return Err(Error::InvalidImage(format!(
+            "bad tenant path {tenant_path:?}"
+        )));
+    }
+    Ok(labels)
+}
+
 #[derive(Clone, Debug)]
 pub struct ImageStore {
     root: PathBuf,
 }
 
 impl ImageStore {
-    /// The store of the local pool at `data_dir`.
-    pub fn new(data_dir: impl AsRef<Path>) -> Self {
+    /// The store of the pool of files at `root` (the local pool's is the
+    /// agent's data directory).
+    pub fn new(root: impl AsRef<Path>) -> Self {
         Self {
-            root: data_dir.as_ref().join("images"),
+            root: root.as_ref().join("images"),
         }
     }
 
     /// The directory of a tenant's images; `tenant_path` is its lineage,
     /// IDs (simple hex form) separated by '/'.
     fn tenant_dir(&self, tenant_path: &str) -> Result<PathBuf> {
-        let labels: Vec<&str> = tenant_path.split('/').collect();
-        let ok = |l: &&str| {
-            (1..=64).contains(&l.len())
-                && l.bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        };
-        if labels.len() > 64 || !labels.iter().all(ok) {
-            return Err(Error::InvalidImage(format!(
-                "bad tenant path {tenant_path:?}"
-            )));
-        }
-        Ok(labels.iter().fold(self.root.clone(), |p, l| p.join(l)))
+        Ok(tenant_labels(tenant_path)?
+            .iter()
+            .fold(self.root.clone(), |p, l| p.join(l)))
     }
 
     pub fn path(&self, tenant_path: &str, id: &str) -> Result<PathBuf> {
@@ -142,13 +152,13 @@ impl ImageStore {
         result
     }
 
-    /// Copies an image into the store from another host serving it, unless
-    /// it is here already.
+    /// Copies an image into the store (from another host serving it, or
+    /// a shared pool's store), unless it is here already.
     pub async fn copy_in(
         &self,
         tenant_path: &str,
         id: &str,
-        src: &NbdSource,
+        src: &CopySource<'_>,
     ) -> Result<StoredImage> {
         let dest = self.path(tenant_path, id)?;
         let lock = lock(id);
@@ -159,7 +169,7 @@ impl ImageStore {
         self.make_dir(tenant_path).await?;
         let tmp = dest.with_extension(format!("{}.tmp", random_suffix()));
         let result = async {
-            crate::transfer::convert_to(&CopySource::Nbd(src), &tmp).await?;
+            crate::transfer::convert_to(src, &tmp).await?;
             set_mode(&tmp, 0o600).await?;
             tokio::fs::rename(&tmp, &dest).await?;
             Self::stored(&dest, String::new()).await
@@ -168,7 +178,7 @@ impl ImageStore {
         if result.is_err() {
             let _ = tokio::fs::remove_file(&tmp).await;
         } else {
-            tracing::info!(image = id, from = %src.host, "image copied into the store");
+            tracing::info!(image = id, "image copied into the store");
         }
         result
     }
@@ -355,7 +365,8 @@ mod tests {
     }
 
     /// Exercises qemu-img when it is installed: volumes made from an image
-    /// hold its data and stand on their own.
+    /// (in the local store, or a shared pool's) hold its data and stand on
+    /// their own, and a shared pool's image copies into the local store.
     #[tokio::test]
     async fn volumes_are_copies_of_images() {
         if tokio::process::Command::new("qemu-img")
@@ -367,11 +378,13 @@ mod tests {
             return eprintln!("qemu-img not installed; skipping");
         }
         let root = std::env::temp_dir().join(format!("mst-store-vol-{}", std::process::id()));
-        let pool = crate::FilePool::new(&root);
-        pool.init().await.unwrap();
-        let store = ImageStore::new(&root);
-        store.make_dir(T).await.unwrap();
-        let image = store.path(T, ID).unwrap();
+        let local = crate::FilePool::new(root.join("local"));
+        local.init().await.unwrap();
+        let shared = crate::FilePool::new(root.join("shared"));
+        shared.init().await.unwrap();
+        // The image is kept in the shared pool.
+        let kept = ImageStore::new(shared.root());
+        kept.make_dir(T).await.unwrap();
         let raw = root.join("image.raw");
         tokio::fs::write(&raw, {
             let mut b = b"image data".to_vec();
@@ -380,35 +393,73 @@ mod tests {
         })
         .await
         .unwrap();
-        crate::convert(&raw, "raw", &image, "qcow2").await.unwrap();
+        crate::convert(&raw, "raw", &kept.path(T, ID).unwrap(), "qcow2")
+            .await
+            .unwrap();
+        let (local_pool, shared_pool) = (
+            crate::Pool::File(local.clone()),
+            crate::Pool::File(shared.clone()),
+        );
+        assert!(shared_pool.has_stored(T, ID).await.unwrap());
 
-        let pool = crate::Pool::File(pool);
+        let read = |path: PathBuf| {
+            let out = root.join(format!("{}.raw", random_suffix()));
+            async move {
+                crate::convert(&path, "qcow2", &out, "raw").await.unwrap();
+                tokio::fs::read(&out).await.unwrap()
+            }
+        };
+        // Straight from the shared pool's store.
         let vol = "0199f0a2-7b3c-7d00-8000-0000000000b1";
         assert!(matches!(
-            pool.volume_from_image(vol, 4096, &image).await,
+            local_pool
+                .volume_from_stored(vol, 4096, &shared_pool, T, ID)
+                .await,
             Err(Error::TooSmall { .. })
         ));
-        pool.volume_from_image(vol, 2 << 20, &image).await.unwrap();
-        pool.volume_from_image(vol, 2 << 20, &image).await.unwrap();
-        let crate::Pool::File(files) = &pool else {
-            unreachable!()
-        };
-        let info = img_info(&files.volume_path(vol).unwrap(), None)
+        for _ in 0..2 {
+            local_pool
+                .volume_from_stored(vol, 2 << 20, &shared_pool, T, ID)
+                .await
+                .unwrap();
+        }
+        let info = img_info(&local.volume_path(vol).unwrap(), None)
             .await
             .unwrap();
         assert_eq!((info.virtual_size, info.backing_filename), (2 << 20, None));
-        // The image can go: the volume keeps its data.
-        store.remove(T, ID).await.unwrap();
-        let out = root.join("out.raw");
-        crate::convert(&files.volume_path(vol).unwrap(), "qcow2", &out, "raw")
+
+        // Copied into the local store, and made from there.
+        let store = ImageStore::new(local.root());
+        shared_pool.copy_stored_to(&store, T, ID).await.unwrap();
+        assert!(local_pool.has_stored(T, ID).await.unwrap());
+        let other = "0199f0a2-7b3c-7d00-8000-0000000000b2";
+        local_pool
+            .volume_from_stored(other, 2 << 20, &local_pool, T, ID)
             .await
             .unwrap();
-        assert!(
-            tokio::fs::read(&out)
-                .await
-                .unwrap()
-                .starts_with(b"image data")
-        );
+
+        // The image can go: the volumes keep its data.
+        shared_pool.remove_stored(T, ID).await.unwrap();
+        local_pool.remove_stored(T, ID).await.unwrap();
+        assert!(matches!(
+            shared_pool.copy_stored_to(&store, T, ID).await,
+            Err(Error::MissingImage(_))
+        ));
+        for v in [vol, other] {
+            assert!(
+                read(local.volume_path(v).unwrap())
+                    .await
+                    .starts_with(b"image data")
+            );
+        }
+        // Purging a pool takes its store along.
+        let shared_pool = crate::Pool::File(shared.clone());
+        kept.make_dir(T).await.unwrap();
+        tokio::fs::write(kept.path(T, ID).unwrap(), "x")
+            .await
+            .unwrap();
+        assert_eq!(shared_pool.purge().await.unwrap(), 1);
+        assert!(!kept.has(T, ID).await.unwrap());
         let _ = tokio::fs::remove_dir_all(&root).await;
     }
 }

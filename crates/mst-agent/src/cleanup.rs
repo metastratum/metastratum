@@ -27,7 +27,8 @@ pub async fn remove_pool(agent: &Agent, spec: PoolSpec, remove_data: bool) -> Re
 }
 
 /// Removes a deleted image's cached copies: the local one, those in the
-/// given shared pools, and with its tenant's path, the one in the store.
+/// given shared pools, and with its tenant's path, those in the image
+/// stores of both.
 pub async fn delete_image(
     agent: &Agent,
     id: &str,
@@ -39,13 +40,15 @@ pub async fn delete_image(
     }
     agent.pools.local().delete_image(id).await?;
     for spec in shared {
-        agent
+        let pool = agent
             .pools
             .get(spec)
             .await
-            .with_context(|| format!("reaching pool {}", spec.id))?
-            .delete_image(id)
-            .await?;
+            .with_context(|| format!("reaching pool {}", spec.id))?;
+        if let Some(tenant_path) = store {
+            pool.remove_stored(tenant_path, id).await?;
+        }
+        pool.delete_image(id).await?;
     }
     tracing::info!(
         image = id,

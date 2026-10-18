@@ -1,7 +1,9 @@
 //! Ceph RBD pools, driven with the `rbd` tool (package `ceph-common`).
 //!
-//! Images are imported once as `img-<id>` with a protected `base` snapshot;
-//! volumes are copy-on-write clones of it (`vol-<id>`). QEMU reaches the
+//! Images kept in the pool are in its image store (`store_*`, see
+//! [`RbdPool::store_name`]); volumes made from them are copies. Volumes made
+//! before the store are copy-on-write clones (`vol-<id>`) of an image
+//! imported as `img-<id>` with a protected `base` snapshot. QEMU reaches the
 //! volumes directly over the network, authenticating with a libvirt secret.
 
 use std::collections::HashMap;
@@ -31,7 +33,7 @@ pub struct RbdPool {
     image_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
-fn safe(name: &str) -> Result<&str> {
+pub(crate) fn safe(name: &str) -> Result<&str> {
     if !name.is_empty()
         && name
             .bytes()
@@ -216,15 +218,124 @@ impl RbdPool {
         Ok(())
     }
 
-    /// Removes metastratum's images from the Ceph pool (`img-*`; volumes are
-    /// gone before a pool is removed, and anything else is not ours).
+    /// The store's name for an image (see [`crate::ImageStore`]):
+    /// `store_<tenant>_<sub-tenant>_..._<image id>`, a raw RBD image.
+    pub fn store_name(tenant_path: &str, id: &str) -> Result<String> {
+        let labels = crate::store::tenant_labels(tenant_path)?;
+        Ok(format!("store_{}_{}", labels.join("_"), safe(id)?))
+    }
+
+    fn store_lock(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.image_locks
+            .lock()
+            .unwrap()
+            .entry(format!("store:{id}"))
+            .or_default()
+            .clone()
+    }
+
+    async fn stored(&self, name: &str, sha256: String) -> Result<crate::StoredImage> {
+        #[derive(Deserialize)]
+        struct Du {
+            images: Vec<DuImage>,
+        }
+        #[derive(Deserialize)]
+        struct DuImage {
+            used_size: u64,
+        }
+        let spec = self.spec(name);
+        let virtual_bytes = self.size_of(&spec).await?;
+        // What it takes in Ceph (thin): its size where that cannot be told.
+        let used = self
+            .rbd(&["du", "--format", "json", &spec])
+            .await
+            .ok()
+            .and_then(|out| serde_json::from_slice::<Du>(&out).ok())
+            .and_then(|du| du.images.first().map(|i| i.used_size));
+        Ok(crate::StoredImage {
+            size_bytes: used.unwrap_or(virtual_bytes),
+            virtual_bytes,
+            sha256,
+        })
+    }
+
+    /// The size of an RBD image, if it exists.
+    pub(crate) async fn image_size(&self, name: &str) -> Result<Option<u64>> {
+        let spec = self.spec(safe(name)?);
+        if !self.exists(&spec).await? {
+            return Ok(None);
+        }
+        Ok(Some(self.size_of(&spec).await?))
+    }
+
+    /// Whether the store holds the image.
+    pub async fn has_stored(&self, tenant_path: &str, id: &str) -> Result<bool> {
+        self.exists(&self.spec(&Self::store_name(tenant_path, id)?))
+            .await
+    }
+
+    /// Downloads an image into the store (see [`crate::ImageStore::fetch`]):
+    /// checked and converted on this host first, then copied in.
+    pub async fn fetch_stored(
+        &self,
+        tenant_path: &str,
+        id: &str,
+        url: &str,
+        format: &str,
+        policy: crate::FetchPolicy,
+        sha256: Option<&str>,
+    ) -> Result<crate::StoredImage> {
+        let name = Self::store_name(tenant_path, id)?;
+        let lock = self.store_lock(id);
+        let _held = lock.lock().await;
+        if self.exists(&self.spec(&name)).await? {
+            return self.stored(&name, String::new()).await;
+        }
+        let unique = format!("{}.{}", std::process::id(), random_suffix());
+        let part = self.work_dir.join(format!("{id}.{unique}.part"));
+        let converted = self.work_dir.join(format!("{id}.{unique}.qcow2"));
+        let result = async {
+            let hash = fetch(url, format, &part, &converted, "qcow2", policy, sha256).await?;
+            let _ = tokio::fs::remove_file(&part).await;
+            let src = crate::CopySource::File(&converted);
+            crate::transfer::copy_to_rbd_name(self, &name, 0, &src).await?;
+            self.stored(&name, hash).await
+        }
+        .await;
+        let _ = tokio::fs::remove_file(&part).await;
+        let _ = tokio::fs::remove_file(&converted).await;
+        if result.is_ok() {
+            tracing::info!(image = id, pool = %self.pool, "image downloaded into the store");
+        }
+        result
+    }
+
+    /// Removes an image from the store.
+    pub async fn remove_stored(&self, tenant_path: &str, id: &str) -> Result<()> {
+        let spec = self.spec(&Self::store_name(tenant_path, id)?);
+        let lock = self.store_lock(id);
+        let _held = lock.lock().await;
+        match self.rbd(&["rm", "--no-progress", &spec]).await {
+            Err(Error::Tool { stderr, .. }) if stderr.contains("No such file") => Ok(()),
+            r => r.map(|_| ()),
+        }
+    }
+
+    /// Removes metastratum's images from the Ceph pool (`img-*`, and the
+    /// store's `store_*`; volumes are gone before a pool is removed, and
+    /// anything else is not ours).
     /// Returns how many were removed.
     pub async fn purge(&self) -> Result<usize> {
         let list = self.rbd(&["ls", &self.pool]).await?;
         let mut removed = 0;
         for name in String::from_utf8_lossy(&list).lines() {
-            if let Some(id) = name.trim().strip_prefix("img-") {
+            let name = name.trim();
+            if let Some(id) = name.strip_prefix("img-") {
                 self.delete_image(id).await?;
+                removed += 1;
+            } else if name.starts_with("store_") {
+                self.rbd(&["rm", "--no-progress", &self.spec(safe(name)?)])
+                    .await?;
                 removed += 1;
             }
         }

@@ -310,6 +310,18 @@ impl Agent {
     }
 
     /// Prepares the pool a command refers to.
+    /// The pool whose image store a command names: this host's local pool
+    /// when it names none.
+    pub(crate) async fn store_pool(
+        &self,
+        spec: Option<&mst_proto::Pool>,
+    ) -> Result<mst_storage::Pool> {
+        match spec {
+            None => Ok(mst_storage::Pool::File(self.pools.local())),
+            Some(_) => self.pool(spec).await,
+        }
+    }
+
     pub(crate) async fn pool(&self, spec: Option<&mst_proto::Pool>) -> Result<mst_storage::Pool> {
         let spec = pool_spec(spec.context("command does not name a storage pool")?)?;
         let pool = self.pools.get(&spec).await?;
@@ -603,9 +615,9 @@ impl Agent {
                 };
                 let sha256 = Some(c.sha256.as_str()).filter(|s| !s.is_empty());
                 let stored = self
-                    .pools
-                    .store()
-                    .fetch(
+                    .store_pool(c.pool.as_ref())
+                    .await?
+                    .fetch_stored(
                         &c.tenant_path,
                         &c.image_id,
                         &c.source_url,
@@ -619,13 +631,16 @@ impl Agent {
             Cmd::ExportImage(c) => return crate::transfer::export_image(self, &c).await,
             Cmd::CopyImage(c) => return crate::transfer::copy_image(self, &c).await,
             Cmd::VolumeFromImage(c) => {
-                let image = self.pools.store().path(&c.tenant_path, &c.image_id)?;
-                if !tokio::fs::try_exists(&image).await? {
-                    bail!("image {} is not in this host's image store", c.image_id);
-                }
+                let from = self.store_pool(c.source_pool.as_ref()).await?;
                 let pool = self.pool(c.pool.as_ref()).await?;
-                pool.volume_from_image(&c.volume_id, c.size_bytes, &image)
-                    .await?;
+                pool.volume_from_stored(
+                    &c.volume_id,
+                    c.size_bytes,
+                    &from,
+                    &c.tenant_path,
+                    &c.image_id,
+                )
+                .await?;
             }
             Cmd::Decommission(_) => {
                 tracing::warn!("decommissioning this host");

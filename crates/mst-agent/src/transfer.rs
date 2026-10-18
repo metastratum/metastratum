@@ -123,7 +123,7 @@ pub async fn export(agent: &Agent, c: &ExportVolume) -> Result<String> {
 pub async fn export_image(agent: &Agent, c: &ExportImage) -> Result<String> {
     let file = agent.pools.store().path(&c.tenant_path, &c.image_id)?;
     if !tokio::fs::try_exists(&file).await? {
-        bail!("image {} is not in this host's image store", c.image_id);
+        bail!("image {} is not in the image store", c.image_id);
     }
     serve(
         &export_name(&c.export_id)?,
@@ -235,7 +235,8 @@ pub async fn copy(agent: &Agent, c: &CopyVolume) -> Result<()> {
                 mst_storage::copy_into(&pool, &c.volume_id, c.size_bytes, &src).await?;
             }
             (mst_storage::Pool::Rbd(rbd), None) => {
-                let src = mst_storage::CopySource::Rbd(rbd, &c.volume_id);
+                let name = mst_storage::RbdPool::volume_name(&c.volume_id)?;
+                let src = mst_storage::CopySource::Rbd(rbd, &name);
                 mst_storage::copy_into(&pool, &c.volume_id, c.size_bytes, &src).await?;
             }
             (mst_storage::Pool::File(_), None) => bail!("no volume file to copy"),
@@ -259,10 +260,18 @@ pub async fn copy(agent: &Agent, c: &CopyVolume) -> Result<()> {
     Ok(())
 }
 
-/// Copies an image into the store from the host serving it (see
-/// [`export_image`]). Returns what [`mst_storage::ImageStore::copy_in`] does,
+/// Copies an image into the store: from the host serving it (see
+/// [`export_image`]), or from a pool's store this host reaches. Returns what [`mst_storage::ImageStore::copy_in`] does,
 /// as JSON.
 pub async fn copy_image(agent: &Agent, c: &CopyImage) -> Result<String> {
+    let store = agent.pools.store();
+    if let Some(source) = &c.source_pool {
+        let from = agent.pool(Some(source)).await?;
+        let stored = from
+            .copy_stored_to(&store, &c.tenant_path, &c.image_id)
+            .await?;
+        return Ok(serde_json::to_string(&stored)?);
+    }
     let name = export_name(&c.export_id)?;
     let tls = c.tls.as_ref().context("no credentials for the copy")?;
     let port = u16::try_from(c.nbd_port).context("no port to copy from")?;
@@ -273,10 +282,12 @@ pub async fn copy_image(agent: &Agent, c: &CopyImage) -> Result<String> {
         export: name,
         tls_dir: dir.clone(),
     };
-    let result = agent
-        .pools
-        .store()
-        .copy_in(&c.tenant_path, &c.image_id, &source)
+    let result = store
+        .copy_in(
+            &c.tenant_path,
+            &c.image_id,
+            &mst_storage::CopySource::Nbd(&source),
+        )
         .await;
     let _ = std::fs::remove_dir_all(&dir);
     Ok(serde_json::to_string(&result?)?)

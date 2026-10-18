@@ -523,7 +523,8 @@ message MemoryStats {
 // these shared pools.
 // Remove an image's cached copies: the local pool's, and those in `pools`
 // (as backing files of volumes made before the image store, see
-// FetchImage). With `tenant_path`, the copy in the host's image store too.
+// FetchImage). With `tenant_path`, the copies in the image stores of the
+// local pool and of `pools` too.
 message DeleteImage {
   string image_id = 1;
   repeated Pool pools = 2;
@@ -640,10 +641,12 @@ message CopyVolume {
   MigrationTls tls = 7;
 }
 
-// Download an image into this host's image store, converted to qcow2: the
-// local pool's images/<tenant path>/<image id>.qcow2, where `tenant_path` is
-// the owning tenant's lineage (tenant IDs in simple hex form, root first,
-// separated by '/'). Tenants' images come from public addresses only, and
+// Download an image into an image store: this host's (the local pool's
+// images/<tenant path>/<image id>.qcow2, converted to qcow2), or with `pool`
+// that pool's (the same in a pool of files; on Ceph a raw RBD image,
+// store_<tenant path, '_' for '/'>_<image id>). `tenant_path` is the owning
+// tenant's lineage (tenant IDs in simple hex form, root first, separated by
+// '/'). Tenants' images come from public addresses only, and
 // describe disks of at most the host's largest download (`image_max_gib`).
 // With `sha256`, what is downloaded must be that file (a copy downloaded
 // again). One already in the store is kept. Returns {"size_bytes": N,
@@ -657,6 +660,7 @@ message FetchImage {
   string format = 4;
   bool trusted = 5;
   string sha256 = 6;
+  Pool pool = 7;
 }
 
 // Serve an image in this host's store to one other host, as ExportVolume
@@ -671,7 +675,8 @@ message ExportImage {
 }
 
 // Copy an image into this host's store from another host serving it
-// (ExportImage). One already in the store is kept. Returns as FetchImage.
+// (ExportImage), or with `source_pool` from that pool's store. One already
+// in the store is kept. Returns as FetchImage.
 message CopyImage {
   string image_id = 1;
   string tenant_path = 2;
@@ -679,15 +684,17 @@ message CopyImage {
   uint32 nbd_port = 4;
   MigrationTls tls = 5;
   string export_id = 6;
+  Pool source_pool = 7;
 }
 
-// Create a volume as a copy of an image in this host's store, of at least
-// `size_bytes`: the volume depends on nothing. An existing volume is left
-// alone.
+// Create a volume as a copy of an image in this host's store (or with
+// `source_pool`, that pool's), of at least `size_bytes`: the volume depends
+// on nothing. An existing volume is left alone.
 message VolumeFromImage {
   string volume_id = 1;
   uint64 size_bytes = 2;
   Pool pool = 3;
   string image_id = 4;
   string tenant_path = 5;
+  Pool source_pool = 6;
 }

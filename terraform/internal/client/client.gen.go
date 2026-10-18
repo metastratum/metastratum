@@ -532,8 +532,9 @@ type CreateImage struct {
 	Shared *bool  `json:"shared,omitempty"`
 
 	// SourceUrl HTTP(S) URL a host downloads the image from, as it is added.
-	SourceUrl string    `json:"source_url"`
-	TenantId  *TenantId `json:"tenant_id,omitempty"`
+	SourceUrl     string         `json:"source_url"`
+	StoragePoolId *StoragePoolId `json:"storage_pool_id,omitempty"`
+	TenantId      *TenantId      `json:"tenant_id,omitempty"`
 }
 
 // CreateJoinToken defines model for CreateJoinToken.
@@ -693,8 +694,8 @@ type CreatedImage struct {
 	// Format `qcow2` or `raw`.
 	Format string `json:"format"`
 
-	// Hosts The hosts holding a copy (VMs made from it on other hosts copy it
-	// from these).
+	// Hosts The hosts holding a copy on their local disk (VMs made from it on
+	// other hosts copy it from these).
 	Hosts []string `json:"hosts"`
 	Id    ImageId  `json:"id"`
 	Name  string   `json:"name"`
@@ -712,6 +713,12 @@ type CreatedImage struct {
 	// State `downloading` (VMs made from it meanwhile wait for it), `ready`, or
 	// `failed` (see `error`; it can be downloaded again).
 	State string `json:"state"`
+
+	// StoragePoolId The pool it is kept in: the local pool (a host's local disk, picked
+	// at random), or a shared pool, which the hosts attached to it make
+	// disks from directly.
+	StoragePoolId   StoragePoolId `json:"storage_pool_id"`
+	StoragePoolName string        `json:"storage_pool_name"`
 
 	// TaskId The download.
 	TaskId   TaskId   `json:"task_id"`
@@ -1002,8 +1009,8 @@ type ImageView struct {
 	// Format `qcow2` or `raw`.
 	Format string `json:"format"`
 
-	// Hosts The hosts holding a copy (VMs made from it on other hosts copy it
-	// from these).
+	// Hosts The hosts holding a copy on their local disk (VMs made from it on
+	// other hosts copy it from these).
 	Hosts []string `json:"hosts"`
 	Id    ImageId  `json:"id"`
 	Name  string   `json:"name"`
@@ -1020,8 +1027,14 @@ type ImageView struct {
 
 	// State `downloading` (VMs made from it meanwhile wait for it), `ready`, or
 	// `failed` (see `error`; it can be downloaded again).
-	State    string   `json:"state"`
-	TenantId TenantId `json:"tenant_id"`
+	State string `json:"state"`
+
+	// StoragePoolId The pool it is kept in: the local pool (a host's local disk, picked
+	// at random), or a shared pool, which the hosts attached to it make
+	// disks from directly.
+	StoragePoolId   StoragePoolId `json:"storage_pool_id"`
+	StoragePoolName string        `json:"storage_pool_name"`
+	TenantId        TenantId      `json:"tenant_id"`
 
 	// VirtualBytes The size of the disk it holds: VMs' disks made from it are at least
 	// as large.
@@ -2761,16 +2774,20 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/images (the `ListImages` operationId).
 	ListImages(ctx context.Context, params *ListImagesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CreateImageWithBody Adds an image: a host picked at random downloads it into its image
-	// store (the task), and hosts copy it from there to make VMs from it.
+	// CreateImageWithBody Adds an image: a host downloads it into the image store of the pool it
+	// is kept in (the task): its own local disk (a host picked at random), or
+	// a shared pool, which its hosts make disks from directly. Other hosts copy
+	// it from there to make VMs from it.
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with POST /api/v1/images (the `CreateImage` operationId).
 	CreateImageWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CreateImage Adds an image: a host picked at random downloads it into its image
-	// store (the task), and hosts copy it from there to make VMs from it.
+	// CreateImage Adds an image: a host downloads it into the image store of the pool it
+	// is kept in (the task): its own local disk (a host picked at random), or
+	// a shared pool, which its hosts make disks from directly. Other hosts copy
+	// it from there to make VMs from it.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -4556,8 +4573,10 @@ func (c *Client) ListImages(ctx context.Context, params *ListImagesParams, reqEd
 	return c.Client.Do(req)
 }
 
-// CreateImageWithBody Adds an image: a host picked at random downloads it into its image
-// store (the task), and hosts copy it from there to make VMs from it.
+// CreateImageWithBody Adds an image: a host downloads it into the image store of the pool it
+// is kept in (the task): its own local disk (a host picked at random), or
+// a shared pool, which its hosts make disks from directly. Other hosts copy
+// it from there to make VMs from it.
 //
 // Takes any type of body and a specified content type.
 //
@@ -4574,8 +4593,10 @@ func (c *Client) CreateImageWithBody(ctx context.Context, contentType string, bo
 	return c.Client.Do(req)
 }
 
-// CreateImage Adds an image: a host picked at random downloads it into its image
-// store (the task), and hosts copy it from there to make VMs from it.
+// CreateImage Adds an image: a host downloads it into the image store of the pool it
+// is kept in (the task): its own local disk (a host picked at random), or
+// a shared pool, which its hosts make disks from directly. Other hosts copy
+// it from there to make VMs from it.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -13413,16 +13434,20 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/images (the `ListImages` operationId).
 	ListImagesWithResponse(ctx context.Context, params *ListImagesParams, reqEditors ...RequestEditorFn) (*ListImagesResponse, error)
 
-	// CreateImageWithBodyWithResponse Adds an image: a host picked at random downloads it into its image
-	// store (the task), and hosts copy it from there to make VMs from it.
+	// CreateImageWithBodyWithResponse Adds an image: a host downloads it into the image store of the pool it
+	// is kept in (the task): its own local disk (a host picked at random), or
+	// a shared pool, which its hosts make disks from directly. Other hosts copy
+	// it from there to make VMs from it.
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/images (the `CreateImage` operationId).
 	CreateImageWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateImageResponse, error)
 
-	// CreateImageWithResponse Adds an image: a host picked at random downloads it into its image
-	// store (the task), and hosts copy it from there to make VMs from it.
+	// CreateImageWithResponse Adds an image: a host downloads it into the image store of the pool it
+	// is kept in (the task): its own local disk (a host picked at random), or
+	// a shared pool, which its hosts make disks from directly. Other hosts copy
+	// it from there to make VMs from it.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -20990,8 +21015,10 @@ func (c *ClientWithResponses) ListImagesWithResponse(ctx context.Context, params
 	return ParseListImagesResponse(rsp)
 }
 
-// CreateImageWithBodyWithResponse Adds an image: a host picked at random downloads it into its image
-// store (the task), and hosts copy it from there to make VMs from it.
+// CreateImageWithBodyWithResponse Adds an image: a host downloads it into the image store of the pool it
+// is kept in (the task): its own local disk (a host picked at random), or
+// a shared pool, which its hosts make disks from directly. Other hosts copy
+// it from there to make VMs from it.
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -21004,8 +21031,10 @@ func (c *ClientWithResponses) CreateImageWithBodyWithResponse(ctx context.Contex
 	return ParseCreateImageResponse(rsp)
 }
 
-// CreateImageWithResponse Adds an image: a host picked at random downloads it into its image
-// store (the task), and hosts copy it from there to make VMs from it.
+// CreateImageWithResponse Adds an image: a host downloads it into the image store of the pool it
+// is kept in (the task): its own local disk (a host picked at random), or
+// a shared pool, which its hosts make disks from directly. Other hosts copy
+// it from there to make VMs from it.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
