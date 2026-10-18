@@ -493,6 +493,7 @@ async fn grow_detached(
                 volume_id: id.to_string(),
                 pool: Some(super::agent_pool(&pool).map_err(ApiError::internal)?),
                 target: String::new(),
+                parent_index: None,
             }),
             size_bytes: size,
         };

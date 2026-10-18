@@ -378,6 +378,7 @@ pub async fn delete(ctx: &TaskCtx) -> Result<()> {
                     volume_id: d.id.to_string(),
                     pool: Some(crate::api::agent_pool(&pool)?),
                     target: String::new(),
+                    parent_index: None,
                 });
             }
         }

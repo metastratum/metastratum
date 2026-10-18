@@ -227,7 +227,11 @@ export interface paths {
         get: operations["get_backup"];
         put?: never;
         post?: never;
-        /** Deletes a backup and its files. */
+        /**
+         * Deletes a backup and its files. Backups built on it stay whole: it is
+         *     merged into the one built on it first. A deletion that failed leaves it
+         *     `deleting`; delete it again.
+         */
         delete: operations["delete_backup"];
         options?: never;
         head?: never;
@@ -1525,8 +1529,9 @@ export interface paths {
         /**
          * Sets a VM's backup schedule. The first scheduled backup follows within a
          *     minute or so; each later one when the last is a day (or a week) old.
-         *     Beyond `keep`, the oldest scheduled backups are deleted; backups taken
-         *     by hand are kept until deleted.
+         *     Beyond `keep`, the oldest scheduled backups are deleted (merged into the
+         *     backups built on them, which stay whole); backups taken by hand are
+         *     kept until deleted.
          */
         put: operations["set_schedule"];
         post?: never;
@@ -1549,7 +1554,10 @@ export interface paths {
         /**
          * Starts a backup of a VM, running or stopped. A running VM's backup is of
          *     the moment it starts, with its file systems frozen then if its guest
-         *     agent answers; the VM carries on meanwhile.
+         *     agent answers; the VM carries on meanwhile. An incremental one holds
+         *     only what changed since the VM's last backup in the repository: a
+         *     running VM's changes are tracked by QEMU, a stopped VM's found by
+         *     comparing its disks with that backup. Disks on Ceph are copied in full.
          */
         post: operations["create_backup"];
         delete?: never;
@@ -2004,6 +2012,11 @@ export interface components {
         };
         /** Format: uuid */
         BackupId: string;
+        /**
+         * @description How to take a backup.
+         * @enum {string}
+         */
+        BackupMode: "incremental" | "full";
         /** Format: uuid */
         BackupRepositoryId: string;
         BackupView: {
@@ -2020,22 +2033,35 @@ export interface components {
             /** @description Each disk's size. */
             disks: number[];
             error?: string | null;
+            /** @description Why it was taken in full although asked to be incremental. */
+            full_reason?: string | null;
             id: components["schemas"]["BackupId"];
+            /**
+             * @description `full`, or `incremental`: only what changed since the backup it
+             *     builds on. Restoring either gives the whole VM.
+             */
+            kind: string;
             /** Format: int64 */
             memory_mib: number;
+            parent_id?: components["schemas"]["BackupId"] | null;
             repository_id: components["schemas"]["BackupRepositoryId"];
             /** @description Taken by the VM's schedule (which also deletes it in time). */
             scheduled: boolean;
             /**
              * Format: int64
-             * @description What it counts against quotas: its disks' sizes added up.
+             * @description Its disks' sizes added up: what it counts against quotas while it
+             *     is taken.
              */
             size_bytes: number;
-            /** @description `running`, `ready` or `failed`. */
+            /**
+             * @description `running`, `ready`, `failed`, or `deleting` (being merged into the
+             *     backup built on it, and removed).
+             */
             state: string;
             /**
              * Format: int64
-             * @description What it takes up in the repository.
+             * @description What it takes up in the repository, and counts against quotas once
+             *     taken.
              */
             stored_bytes?: number | null;
             tenant_id: components["schemas"]["TenantId"];
@@ -2136,6 +2162,8 @@ export interface components {
             ticket: string;
         };
         CreateBackup: {
+            /** @description `incremental` (the default) or `full`. */
+            mode?: components["schemas"]["BackupMode"];
             repository_id?: components["schemas"]["BackupRepositoryId"] | null;
         };
         CreateBinding: {
@@ -2930,6 +2958,12 @@ export interface components {
             every: string;
             /**
              * Format: int32
+             * @description A full backup every this many; incremental ones in between (1: all
+             *     full).
+             */
+            full_every: number;
+            /**
+             * Format: int32
              * @description How many of its scheduled backups to keep; older ones are deleted.
              */
             keep: number;
@@ -2982,6 +3016,12 @@ export interface components {
         SetSchedule: {
             /** @description `daily` or `weekly`; null stops scheduled backups (those taken stay). */
             every?: string | null;
+            /**
+             * Format: int32
+             * @description A full backup every this many of the VM's backups, incremental ones
+             *     in between; 1 takes every one in full (default 7).
+             */
+            full_every?: number | null;
             /**
              * Format: int32
              * @description How many scheduled backups to keep (default 7).
@@ -3864,7 +3904,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description It is being taken, or restored */
+            /** @description It, or a backup built on it, is being taken or restored */
             409: {
                 headers: {
                     [name: string]: unknown;

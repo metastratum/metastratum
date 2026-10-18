@@ -231,8 +231,71 @@ pub fn has_scsi_controller(xml: &str) -> bool {
     }
 }
 
+/// The disks (targets) a checkpoint (`<domaincheckpoint>`) keeps a dirty
+/// bitmap in.
+pub fn checkpoint_disks(xml: &str) -> Vec<String> {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut out = Vec::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e) | Event::Empty(e)) if e.local_name().as_ref() == "disk" => {
+                let attr = |k: &str| {
+                    e.attributes()
+                        .flatten()
+                        .find(|a| a.key.as_ref() == k)
+                        .and_then(|a| a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok())
+                        .map(|v| v.into_owned())
+                };
+                if attr("checkpoint").as_deref() == Some("bitmap")
+                    && let Some(name) = attr("name")
+                {
+                    out.push(name);
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return out,
+            _ => {}
+        }
+    }
+}
+
+/// A checkpoint's description without its `<parent>`, to tell a libvirt
+/// that may not know the parent of it again.
+pub fn without_parent(xml: &str) -> String {
+    match (xml.find("<parent>"), xml.find("</parent>")) {
+        (Some(start), Some(end)) if start < end => {
+            let end = end + "</parent>".len();
+            // The line it was on goes too.
+            let end = xml[end..].find('\n').map_or(end, |n| end + n + 1);
+            let start = xml[..start].rfind('\n').map_or(start, |n| n + 1);
+            format!("{}{}", &xml[..start], &xml[end..])
+        }
+        _ => xml.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn checkpoint_descriptions() {
+        let xml = "<domaincheckpoint>\n  <name>mst-b</name>\n  <parent>\n    <name>mst-a</name>\n  </parent>\n  \
+                   <creationTime>1792324940</creationTime>\n  <disks>\n    \
+                   <disk name='vda' checkpoint='bitmap' bitmap='mst-b'/>\n    \
+                   <disk name='sda' checkpoint='no'/>\n    \
+                   <disk name='sdb' checkpoint='bitmap' bitmap='mst-b'/>\n  </disks>\n</domaincheckpoint>\n";
+        assert_eq!(super::checkpoint_disks(xml), ["vda", "sdb"]);
+        let alone = super::without_parent(xml);
+        assert!(
+            !alone.contains("parent") && !alone.contains("mst-a"),
+            "{alone}"
+        );
+        assert!(
+            alone.starts_with("<domaincheckpoint>\n  <name>mst-b</name>\n  <creationTime>"),
+            "{alone}"
+        );
+        assert_eq!(super::without_parent(&alone), alone);
+    }
+
     #[test]
     fn disk_paths_and_the_scsi_controller() {
         let xml = r#"<domain><devices>

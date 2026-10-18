@@ -527,6 +527,34 @@ test('backup repositories, and the backups page', async ({ page }) => {
   const row = page.getByRole('row').filter({ hasText: `e2e-${id}` })
   await expect(row).toContainText('10.77.0.10:/srv/nfs/backups')
 
+  // A VM backed up from its page: incremental by default, which with
+  // nothing to build on yet is taken in full, and says why.
+  const images = (await (await page.request.get('/api/v1/images')).json()) as { id: string; name: string }[]
+  const image = images.find((i) => i.name === 'e2e-debian-13-shared')
+  if (image) {
+    vmPrefix = `e2e-bk-${id}`
+    const made = await page.request.post('/api/v1/vms', {
+      data: { name: vmPrefix, vcpus: 1, memory_mib: 512, disk_gib: 3, image_id: image.id, start: false },
+    })
+    expect(made.ok()).toBeTruthy()
+    await page.goto(`/vms/${((await made.json()) as { id: string }).id}`)
+    const backups = page.locator('section.backups')
+    await backups.getByRole('button', { name: 'Back up now…' }).click({ timeout: 3 * 60_000 })
+    const taking = page.getByRole('dialog')
+    if (await taking.getByLabel('Repository').count()) {
+      await taking.getByLabel('Repository').selectOption({ label: `e2e-${id}` })
+    }
+    await expect(taking.getByRole('radio', { name: /^Incremental/ })).toBeChecked()
+    await expect(taking).toContainText('so this one is taken in full')
+    await taking.getByRole('button', { name: 'Back up', exact: true }).click()
+    const taken = backups.getByRole('listitem').first()
+    await expect(taken.getByText('Consistent', { exact: true })).toBeVisible({ timeout: 3 * 60_000 })
+    await expect(taken.locator('.tag', { hasText: /^Full$/ })).toHaveAttribute('title', /no earlier backup/)
+    await taken.getByRole('button', { name: 'Delete…' }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Delete backup' }).click()
+    await expect(backups.getByRole('listitem')).toHaveCount(0, { timeout: 2 * 60_000 })
+  }
+
   // Backups sit beside the machines.
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Machines' }).click()
   await page.getByRole('navigation', { name: 'Machines' }).getByRole('link', { name: 'Backups' }).click()

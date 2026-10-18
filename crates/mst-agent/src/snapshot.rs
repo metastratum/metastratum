@@ -84,7 +84,7 @@ async fn nodes(agent: &Agent, vm: &str, disks: &[BackupDisk]) -> Result<HashMap<
 }
 
 /// Sends a QMP command to the VM's QEMU; its `return`, or its error.
-async fn qmp(agent: &Agent, vm: &str, cmd: Value) -> Result<Value> {
+pub(crate) async fn qmp(agent: &Agent, vm: &str, cmd: Value) -> Result<Value> {
     let out = agent.lv.qemu_monitor(vm, &cmd.to_string()).await?;
     let mut reply: Value = serde_json::from_str(&out).context("QEMU's reply")?;
     if let Some(e) = reply.get("error") {
@@ -165,6 +165,10 @@ pub async fn revert(agent: &Agent, c: &RevertSnapshot) -> Result<()> {
     if running(agent, &c.vm_id).await {
         bail!("the VM is running: stop it to revert it to a snapshot");
     }
+    // Its change tracking for incremental backups would not account for the
+    // revert: libvirt forgets its checkpoints (the volumes' dirty bitmaps go
+    // as each is reverted), and its next backup is a full one.
+    crate::backup::forget_checkpoints(agent, &c.vm_id).await?;
     for (index, vol, pool) in volumes(agent, &c.disks).await? {
         pool.revert_snapshot(&vol, &c.snapshot_id)
             .await

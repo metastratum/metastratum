@@ -277,7 +277,10 @@ the code after two-factor sign-in was added. Fixed:
   only the client's address, and the export needs `no_root_squash`.
   *Mitigation:* export repositories to the hosts' management addresses
   only, on a network guests and tenants cannot reach, and give tenants that
-  must not share storage repositories of their own.
+  must not share storage repositories of their own. Incremental backups'
+  files name the files they build on; a restore follows only names of
+  other backups' files in the same repository, so a tampered file cannot
+  have a host file read into a restored disk.
 - **Networking is IPv4 only.** Port security, security groups and
   guardrails are written for IPv4; guests' IPv6 is dropped (tested), not
   filtered.

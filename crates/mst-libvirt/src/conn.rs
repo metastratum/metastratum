@@ -910,18 +910,116 @@ impl Libvirt {
         Ok(Some(job))
     }
 
-    /// Starts a backup job (push mode) described by `xml` (`<domainbackup>`).
-    pub async fn backup_begin(&self, uuid: &str, xml: String) -> Result<()> {
+    /// Starts a backup job (push mode) described by `xml` (`<domainbackup>`),
+    /// creating the checkpoint `checkpoint` (`<domaincheckpoint>`) describes
+    /// at the same moment. With `reuse`, the target files are there already
+    /// (made beforehand, with what backing file they are to have).
+    pub async fn backup_begin(
+        &self,
+        uuid: &str,
+        xml: String,
+        checkpoint: Option<String>,
+        reuse: bool,
+    ) -> Result<()> {
+        /// `VIR_DOMAIN_BACKUP_BEGIN_REUSE_EXTERNAL`.
+        const REUSE_EXTERNAL: u32 = 1;
         let c = self.client().await?;
         let dom = self.lookup(&c, uuid).await?;
         c.domain_backup_begin(&DomainBackupBeginArgs {
             dom,
             backup_xml: xml,
-            checkpoint_xml: None,
-            flags: 0,
+            checkpoint_xml: checkpoint,
+            flags: if reuse { REUSE_EXTERNAL } else { 0 },
         })
         .await?;
         Ok(())
+    }
+
+    /// The names of the domain's checkpoints.
+    pub async fn checkpoints(&self, uuid: &str) -> Result<Vec<String>> {
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        let r = c
+            .domain_list_all_checkpoints(&DomainListAllCheckpointsArgs {
+                dom,
+                need_results: 1,
+                flags: 0,
+            })
+            .await?;
+        Ok(r.checkpoints.into_iter().map(|c| c.name).collect())
+    }
+
+    /// A checkpoint's description (`<domaincheckpoint>`), without the
+    /// domain's.
+    pub async fn checkpoint_xml(&self, uuid: &str, name: &str) -> Result<String> {
+        /// `VIR_DOMAIN_CHECKPOINT_XML_NO_DOMAIN`.
+        const NO_DOMAIN: u32 = 2;
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        let r = c
+            .domain_checkpoint_get_xml_desc(&DomainCheckpointGetXmlDescArgs {
+                checkpoint: NonnullDomainCheckpoint {
+                    name: name.to_owned(),
+                    dom,
+                },
+                flags: NO_DOMAIN,
+            })
+            .await?;
+        Ok(r.xml)
+    }
+
+    /// Tells libvirt again of a checkpoint whose dirty bitmaps the disks
+    /// have (the domain came from another host, which knew it): refused
+    /// unless every disk it names has its bitmap, intact.
+    pub async fn redefine_checkpoint(&self, uuid: &str, xml: String) -> Result<()> {
+        /// `VIR_DOMAIN_CHECKPOINT_CREATE_REDEFINE | _REDEFINE_VALIDATE`.
+        const REDEFINE_VALIDATED: u32 = 1 | 4;
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        c.domain_checkpoint_create_xml(&DomainCheckpointCreateXmlArgs {
+            dom,
+            xml_desc: xml,
+            flags: REDEFINE_VALIDATED,
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Deletes a checkpoint: its dirty bitmaps too, or (`metadata_only`)
+    /// just libvirt's record of it.
+    pub async fn delete_checkpoint(
+        &self,
+        uuid: &str,
+        name: &str,
+        metadata_only: bool,
+    ) -> Result<()> {
+        /// `VIR_DOMAIN_CHECKPOINT_DELETE_METADATA_ONLY`.
+        const METADATA_ONLY: u32 = 2;
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        c.domain_checkpoint_delete(&DomainCheckpointDeleteArgs {
+            checkpoint: NonnullDomainCheckpoint {
+                name: name.to_owned(),
+                dom,
+            },
+            flags: if metadata_only { METADATA_ONLY } else { 0 },
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// A disk's (`vda`, ...) size as its guest sees it, in bytes.
+    pub async fn disk_capacity(&self, uuid: &str, target: &str) -> Result<u64> {
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        let r = c
+            .domain_get_block_info(&DomainGetBlockInfoArgs {
+                dom,
+                path: target.to_owned(),
+                flags: 0,
+            })
+            .await?;
+        Ok(r.capacity)
     }
 
     /// Sends a QMP command (JSON) to the domain's QEMU and returns its reply

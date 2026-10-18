@@ -1,19 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api, errorText, ok, type Backup, type Schemas, type Vm } from '../api/client'
+import { backupKind, backupTone } from '../backups'
 import { ago, gib } from '../state'
 import { useLiveRefresh } from '../stores/live'
 import { useScope } from '../stores/scope'
 import { useSession } from '../stores/session'
-import { useTasks } from '../stores/tasks'
-import ModalDialog from './ModalDialog.vue'
+import BackUpDialog from './BackUpDialog.vue'
+import DeleteBackupDialog from './DeleteBackupDialog.vue'
 import RestoreBackupDialog from './RestoreBackupDialog.vue'
 import StatusLed from './StatusLed.vue'
 
 const props = defineProps<{ vm: Vm }>()
 const scope = useScope()
 const session = useSession()
-const tasks = useTasks()
 
 const data = ref<Schemas['VmBackups'] | null>(null)
 const repos = ref<Schemas['UsableRepository'][]>([])
@@ -23,7 +23,8 @@ const canWrite = computed(() => scope.can('vm.write', props.vm.tenant_id))
 const running = computed(() => data.value?.backups.some((b) => b.state === 'running') ?? false)
 
 type Every = '' | 'daily' | 'weekly'
-const schedule = ref<{ every: Every; keep: number; repository_id: string }>({ every: '', keep: 7, repository_id: '' })
+type Schedule = { every: Every; keep: number; repository_id: string; full_every: number }
+const schedule = ref<Schedule>({ every: '', keep: 7, repository_id: '', full_every: 7 })
 const saved = ref(false)
 
 async function load() {
@@ -35,25 +36,13 @@ async function load() {
   repos.value = r
   const s = d.schedule
   schedule.value = s
-    ? { every: s.every as Every, keep: s.keep, repository_id: s.repository_id }
-    : { every: '', keep: 7, repository_id: r[0]?.id ?? '' }
+    ? { every: s.every as Every, keep: s.keep, repository_id: s.repository_id, full_every: s.full_every }
+    : { every: '', keep: 7, repository_id: r[0]?.id ?? '', full_every: 7 }
 }
 onMounted(load)
 useLiveRefresh(['backup'], load)
 
-async function backUp() {
-  error.value = ''
-  busy.value = true
-  try {
-    await ok(api.POST('/api/v1/vms/{id}/backups', { params: { path: { id: props.vm.id } }, body: {} }))
-    tasks.poke()
-    await load()
-  } catch (e) {
-    error.value = errorText(e)
-  } finally {
-    busy.value = false
-  }
-}
+const backingUp = ref(false)
 
 async function saveSchedule() {
   error.value = ''
@@ -64,7 +53,12 @@ async function saveSchedule() {
     data.value = await ok(
       api.PUT('/api/v1/vms/{id}/backup-schedule', {
         params: { path: { id: props.vm.id } },
-        body: { every: s.every || null, keep: s.keep, repository_id: s.repository_id || null },
+        body: {
+          every: s.every || null,
+          keep: s.keep,
+          repository_id: s.repository_id || null,
+          full_every: s.full_every,
+        },
       }),
     )
     saved.value = true
@@ -77,24 +71,6 @@ async function saveSchedule() {
 
 const restoring = ref<Backup | null>(null)
 const deleting = ref<Backup | null>(null)
-
-async function remove() {
-  const b = deleting.value
-  if (!b) return
-  error.value = ''
-  busy.value = true
-  try {
-    await ok(api.DELETE('/api/v1/backups/{id}', { params: { path: { id: b.id } } }))
-    deleting.value = null
-    tasks.poke()
-  } catch (e) {
-    error.value = errorText(e)
-  } finally {
-    busy.value = false
-  }
-}
-
-const tone = (b: Backup) => (b.state === 'failed' ? 'fault' : b.state === 'running' ? 'busy' : 'on')
 </script>
 
 <template>
@@ -105,9 +81,9 @@ const tone = (b: Backup) => (b.state === 'failed' ? 'fault' : b.state === 'runni
         v-if="canWrite && repos.length"
         class="btn small"
         :disabled="busy || running || vm.status !== 'ready'"
-        @click="backUp"
+        @click="backingUp = true"
       >
-        {{ running ? 'Backing up…' : 'Back up now' }}
+        {{ running ? 'Backing up…' : 'Back up now…' }}
       </button>
     </div>
 
@@ -138,6 +114,19 @@ const tone = (b: Backup) => (b.state === 'failed' ? 'fault' : b.state === 'runni
           @input="saved = false"
         />
       </label>
+      <label v-if="schedule.every" class="field keep">
+        <span class="label">Full every</span>
+        <input
+          id="backup-full-every"
+          v-model.number="schedule.full_every"
+          type="number"
+          min="1"
+          max="365"
+          required
+          title="A full backup every this many; incremental ones in between (1: all full)"
+          @input="saved = false"
+        />
+      </label>
       <label v-if="schedule.every && repos.length > 1" class="field">
         <span class="label">In</span>
         <select id="backup-repository" v-model="schedule.repository_id" @change="saved = false">
@@ -148,24 +137,37 @@ const tone = (b: Backup) => (b.state === 'failed' ? 'fault' : b.state === 'runni
       <span v-if="saved" class="muted" role="status">Saved.</span>
     </form>
     <p v-else-if="data?.schedule" class="muted">
-      Backed up {{ data.schedule.every }}, keeping the last {{ data.schedule.keep }}.
+      Backed up {{ data.schedule.every }}, keeping the last {{ data.schedule.keep }};
+      {{
+        data.schedule.full_every === 1
+          ? 'each one in full.'
+          : `a full backup every ${data.schedule.full_every}, incremental ones in between.`
+      }}
     </p>
 
     <ul v-if="data?.backups.length" class="list">
       <li v-for="b in data.backups" :key="b.id">
-        <StatusLed :tone="tone(b)" />
+        <StatusLed :tone="backupTone(b)" />
         <span class="main">
           <span class="when" :title="new Date(b.created_at).toLocaleString()">{{ ago(b.created_at) }}</span>
           <span v-if="b.state === 'ready'" class="mono muted">{{ gib(b.stored_bytes ?? 0) }}</span>
         </span>
         <span class="actions">
           <button v-if="b.state === 'ready' && canWrite" class="btn small" @click="restoring = b">Restore…</button>
-          <button v-if="b.state !== 'running' && canWrite" class="btn small danger" @click="deleting = b">
+          <button
+            v-if="b.state !== 'running' && (b.state !== 'deleting' || b.error) && canWrite"
+            class="btn small danger"
+            @click="deleting = b"
+          >
             Delete…
           </button>
         </span>
         <span class="meta">
           <span v-if="b.state === 'running'" class="tag">Taking</span>
+          <span v-if="b.state === 'deleting'" class="tag">Deleting</span>
+          <span v-if="b.state !== 'failed'" class="tag" :title="backupKind(b, data.backups).title">{{
+            backupKind(b, data.backups).label
+          }}</span>
           <span
             v-if="b.state === 'ready'"
             class="tag"
@@ -185,18 +187,19 @@ const tone = (b: Backup) => (b.state === 'failed' ? 'fault' : b.state === 'runni
     <p v-if="error" class="error-text" role="alert">{{ error }}</p>
 
     <RestoreBackupDialog v-if="restoring" :backup="restoring" @close="restoring = null" />
-    <ModalDialog v-if="deleting" title="Delete backup" @close="deleting = null">
-      <form class="form" @submit.prevent="remove">
-        <p>
-          Delete the backup of <strong>{{ deleting.vm_name }}</strong> taken {{ ago(deleting.created_at) }}? Its files
-          are removed from the repository; this can’t be undone.
-        </p>
-        <footer>
-          <button type="button" class="btn" @click="deleting = null">Cancel</button>
-          <button class="btn danger" :disabled="busy">Delete backup</button>
-        </footer>
-      </form>
-    </ModalDialog>
+    <DeleteBackupDialog
+      v-if="deleting && data"
+      :backup="deleting"
+      :backups="data.backups"
+      @close="deleting = null"
+    />
+    <BackUpDialog
+      v-if="backingUp && data"
+      :vm="vm"
+      :repos="repos"
+      :backups="data.backups"
+      @close="backingUp = false"
+    />
   </section>
 </template>
 

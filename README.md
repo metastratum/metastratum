@@ -21,8 +21,8 @@ controllers with PostgreSQL behind them, and an agent on each host.
 - **Live migration** between hosts, on shared storage (NFS, Ceph RBD) or
   local disks. Putting a host in maintenance moves its VMs elsewhere.
 - **Snapshots** to put a VM's disks back to, and **backups** of running
-  and stopped VMs to NFS, taken by hand or on a schedule and restored as
-  new VMs.
+  and stopped VMs to NFS, full or incremental (changed blocks tracked by
+  QEMU), taken by hand or on a schedule and restored as new VMs.
 - **Networks**: private networks with routers, floating IPs and outbound
   NAT, load balancers, and security groups, on OVN.
 - **Tenants** for teams or customers, each with quotas, roles, optionally
@@ -320,7 +320,10 @@ limits are checked from inside guests: a disk write and a transfer between
 two VMs run at the limits' pace, and speed up once they are lifted. Backups
 are taken of a running and a stopped VM into the lab's backup export, by hand
 and on a schedule, and restored as new VMs that find a file written before
-the backup; they outlive their VM. Snapshots are taken of a running and a
+the backup; they outlive their VM. A chain of incremental backups (taken
+across a migration, of the VM stopped, and after a snapshot revert, which
+takes the next one in full) restores the files as they were, also after
+the backups it built on are deleted and merged into it. Snapshots are taken of a running and a
 stopped VM on local disk, NFS and Ceph, reverted to, and deleted; on NFS the
 VM migrates with them. Resizing grows a running VM's disk (the guest sees
 it), and a stopped VM's CPUs, memory and disk (its file system grows at

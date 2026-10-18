@@ -113,6 +113,13 @@ pub const CAPABILITIES: &[&str] = &[
     "copy_volume",
 ];
 
+/// What this build's agent does beyond its commands' first versions,
+/// announced with its capabilities; older agents lack them.
+pub const FEATURES: &[&str] = &[
+    // BackupVm builds on a parent backup; DeleteBackup merges into children.
+    "incremental_backup",
+];
+
 #[cfg(test)]
 mod tests {
     #[test]

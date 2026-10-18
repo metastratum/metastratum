@@ -261,17 +261,28 @@ pub struct BackupView {
     vm_id: Option<VmId>,
     vm_name: String,
     repository_id: BackupRepositoryId,
-    /// `running`, `ready` or `failed`.
+    /// `running`, `ready`, `failed`, or `deleting` (being merged into the
+    /// backup built on it, and removed).
     state: String,
     /// Taken by the VM's schedule (which also deletes it in time).
     scheduled: bool,
+    /// `full`, or `incremental`: only what changed since the backup it
+    /// builds on. Restoring either gives the whole VM.
+    kind: String,
+    /// The backup it builds on now; null when it stands alone (a full one,
+    /// or an incremental one whose earlier backups were merged into it).
+    parent_id: Option<BackupId>,
+    /// Why it was taken in full although asked to be incremental.
+    full_reason: Option<String>,
     vcpus: u32,
     memory_mib: u64,
     /// Each disk's size.
     disks: Vec<u64>,
-    /// What it counts against quotas: its disks' sizes added up.
+    /// Its disks' sizes added up: what it counts against quotas while it
+    /// is taken.
     size_bytes: i64,
-    /// What it takes up in the repository.
+    /// What it takes up in the repository, and counts against quotas once
+    /// taken.
     stored_bytes: Option<i64>,
     /// Whether its file systems were consistent: the VM was stopped, or its
     /// guest agent (qemu-guest-agent) froze them. Otherwise it is as after a
@@ -296,6 +307,9 @@ impl From<mst_db::backups::Backup> for BackupView {
             repository_id: b.repository_id,
             state: b.state,
             scheduled: b.scheduled,
+            kind: b.kind,
+            parent_id: b.parent_id,
+            full_reason: b.full_reason,
             size_bytes: b.size_bytes,
             stored_bytes: b.stored_bytes,
             consistent: b.consistent,
@@ -313,6 +327,9 @@ pub struct ScheduleView {
     /// How many of its scheduled backups to keep; older ones are deleted.
     keep: u32,
     repository_id: BackupRepositoryId,
+    /// A full backup every this many; incremental ones in between (1: all
+    /// full).
+    full_every: u32,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -348,6 +365,7 @@ async fn vm_backups(
             every: s.every,
             keep: s.keep as u32,
             repository_id: s.repository_id,
+            full_every: s.full_every as u32,
         });
     let backups = mst_db::backups::of_vm(&state.db, vm.id)
         .await?
@@ -361,6 +379,23 @@ async fn vm_backups(
 pub struct CreateBackup {
     /// Where to keep it; the tenant's only repository by default.
     repository_id: Option<BackupRepositoryId>,
+    /// `incremental` (the default) or `full`.
+    #[serde(default)]
+    mode: BackupMode,
+}
+
+/// How to take a backup.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum BackupMode {
+    /// Only what changed since the VM's last backup in the repository, which
+    /// it builds on: quicker, and far smaller. Taken in full when there is
+    /// nothing to build on, or the VM's change tracking does not reach back
+    /// to it (the backup says why).
+    #[default]
+    Incremental,
+    /// Every disk copied whole: a backup that stands alone.
+    Full,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -372,7 +407,10 @@ pub struct BackupAccepted {
 
 /// Starts a backup of a VM, running or stopped. A running VM's backup is of
 /// the moment it starts, with its file systems frozen then if its guest
-/// agent answers; the VM carries on meanwhile.
+/// agent answers; the VM carries on meanwhile. An incremental one holds
+/// only what changed since the VM's last backup in the repository: a
+/// running VM's changes are tracked by QEMU, a stopped VM's found by
+/// comparing its disks with that backup. Disks on Ceph are copied in full.
 #[utoipa::path(post, path = "/vms/{id}/backups", tag = "backups", params(("id" = VmId, Path)),
     request_body = CreateBackup,
     responses((status = 202, body = BackupAccepted), (status = 400), (status = 404),
@@ -386,14 +424,14 @@ async fn create_backup(
     let vm = load_vm(&state, &p, id, Perm::VmWrite).await?;
     let req = body.map(|Json(b)| b).unwrap_or_default();
     let repo = repository_for(&state, vm.tenant_id, req.repository_id).await?;
-    let (task_id, backup) = start(&state, Some(p.user_id), &vm, &repo, false).await?;
+    let (task_id, backup) = start(&state, Some(p.user_id), &vm, &repo, false, req.mode).await?;
     audit(
         &state.db,
         Some(&p),
         Some(vm.tenant_id),
         "backup.create",
         Some(("vm", vm.id.0)),
-        json!({"backup": backup.id, "repository": repo.name}),
+        json!({"backup": backup.id, "repository": repo.name, "kind": backup.kind}),
     )
     .await;
     Ok((
@@ -413,6 +451,7 @@ pub async fn start(
     vm: &mst_db::vms::Vm,
     repo: &mst_db::backups::Repository,
     scheduled: bool,
+    mode: BackupMode,
 ) -> ApiResult<(TaskId, mst_db::backups::Backup)> {
     match vm.status.as_str() {
         "creating" | "deleting" | "migrating" | "error" => {
@@ -449,6 +488,28 @@ pub async fn start(
         .into_iter()
         .collect();
     mst_db::quotas::reserve(&mut tx, vm.tenant_id, &delta).await?;
+    // What it builds on: the VM's newest complete backup there.
+    let parent = match mode {
+        BackupMode::Full => None,
+        BackupMode::Incremental => mst_db::backups::newest_ready(&mut *tx, vm.id, repo.id).await?,
+    };
+    let older_agent = match (&parent, vm.host_id) {
+        (Some(_), Some(host)) => {
+            !mst_db::hosts::agent_supports(&mut *tx, host, crate::engine::INCREMENTAL_BACKUP)
+                .await?
+        }
+        _ => false,
+    };
+    let taking = match (mode, &parent) {
+        (BackupMode::Full, _) => mst_db::backups::Taking::Full { reason: None },
+        (BackupMode::Incremental, None) => mst_db::backups::Taking::Full {
+            reason: Some("there is no earlier backup of the VM in this repository to build on"),
+        },
+        (BackupMode::Incremental, Some(_)) if older_agent => mst_db::backups::Taking::Full {
+            reason: Some("the VM's host runs an older agent; upgrade it"),
+        },
+        (BackupMode::Incremental, Some(parent)) => mst_db::backups::Taking::Incremental { parent },
+    };
     let id = mst_db::backups::create(
         &mut *tx,
         vm.tenant_id,
@@ -458,6 +519,7 @@ pub async fn start(
         scheduled,
         spec,
         size as i64,
+        taking,
     )
     .await?;
     let task = mst_db::tasks::enqueue(
@@ -483,12 +545,16 @@ pub struct SetSchedule {
     keep: Option<u32>,
     /// Where to keep them; the tenant's only repository by default.
     repository_id: Option<BackupRepositoryId>,
+    /// A full backup every this many of the VM's backups, incremental ones
+    /// in between; 1 takes every one in full (default 7).
+    full_every: Option<u32>,
 }
 
 /// Sets a VM's backup schedule. The first scheduled backup follows within a
 /// minute or so; each later one when the last is a day (or a week) old.
-/// Beyond `keep`, the oldest scheduled backups are deleted; backups taken
-/// by hand are kept until deleted.
+/// Beyond `keep`, the oldest scheduled backups are deleted (merged into the
+/// backups built on them, which stay whole); backups taken by hand are
+/// kept until deleted.
 #[utoipa::path(put, path = "/vms/{id}/backup-schedule", tag = "backups", params(("id" = VmId, Path)),
     request_body = SetSchedule,
     responses((status = 200, body = VmBackups), (status = 400), (status = 404)))]
@@ -506,11 +572,22 @@ async fn set_schedule(
             if !(1..=365).contains(&keep) {
                 return Err(ApiError::bad_request("keep must be 1-365"));
             }
+            let full_every = req.full_every.unwrap_or(7);
+            if !(1..=365).contains(&full_every) {
+                return Err(ApiError::bad_request("full_every must be 1-365"));
+            }
             let repo = repository_for(&state, vm.tenant_id, req.repository_id).await?;
-            Some((every, keep as i32, repo.id))
+            Some(mst_db::backups::NewSchedule {
+                every,
+                keep: keep as i32,
+                repository_id: repo.id,
+                full_every: full_every as i32,
+            })
         }
         Some(_) => return Err(ApiError::bad_request("every must be daily or weekly")),
     };
+    let repository = schedule.as_ref().map(|s| s.repository_id);
+    let full_every = schedule.as_ref().map(|s| s.full_every);
     mst_db::backups::set_schedule(&state.db, vm.id, schedule).await?;
     audit(
         &state.db,
@@ -518,7 +595,7 @@ async fn set_schedule(
         Some(vm.tenant_id),
         "vm.backup_schedule",
         Some(("vm", vm.id.0)),
-        json!({"every": req.every, "keep": req.keep, "repository": schedule.map(|s| s.2)}),
+        json!({"every": req.every, "keep": req.keep, "repository": repository, "full_every": full_every}),
     )
     .await;
     vm_backups(State(state), p, Path(id)).await
@@ -573,10 +650,12 @@ pub struct DeleteAccepted {
     task_id: TaskId,
 }
 
-/// Deletes a backup and its files.
+/// Deletes a backup and its files. Backups built on it stay whole: it is
+/// merged into the one built on it first. A deletion that failed leaves it
+/// `deleting`; delete it again.
 #[utoipa::path(delete, path = "/backups/{id}", tag = "backups", params(("id" = BackupId, Path)),
     responses((status = 202, body = DeleteAccepted), (status = 404),
-        (status = 409, description = "It is being taken, or restored")))]
+        (status = 409, description = "It, or a backup built on it, is being taken or restored")))]
 async fn delete_backup(
     State(state): State<AppState>,
     p: Principal,
@@ -606,11 +685,21 @@ pub async fn queue_delete(
     if b.state == "running" {
         return Err(ApiError::conflict("the backup is being taken"));
     }
-    if mst_db::backups::being_restored(&state.db, b.id).await? {
-        return Err(ApiError::conflict("a VM is being restored from the backup"));
+    let mut tx = state.db.begin().await?;
+    if mst_db::backups::child_running(&mut *tx, b.id).await? {
+        return Err(ApiError::conflict(
+            "a backup being taken builds on it; delete it once that is done",
+        ));
     }
-    Ok(mst_db::tasks::enqueue(
-        &state.db,
+    if mst_db::backups::being_restored(&mut *tx, b.id).await? {
+        return Err(ApiError::conflict(
+            "a VM is being restored from the backup, or from one built on it",
+        ));
+    }
+    // From now on nothing builds on it, or restores from it.
+    mst_db::backups::set_deleting(&mut *tx, b.id).await?;
+    let task = mst_db::tasks::enqueue(
+        &mut *tx,
         mst_db::tasks::NewTask {
             tenant_id: b.tenant_id,
             kind: "backup.delete",
@@ -619,6 +708,7 @@ pub async fn queue_delete(
             created_by,
         },
     )
-    .await?
-    .id)
+    .await?;
+    tx.commit().await?;
+    Ok(task.id)
 }

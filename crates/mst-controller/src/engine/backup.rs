@@ -12,7 +12,6 @@ use crate::state::AppState;
 
 /// A large disk takes long to copy; the agent reports as soon as it is done.
 const BACKUP_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
-const QUICK: Duration = Duration::from_secs(120);
 /// How often the schedule looks for VMs due a backup.
 const SCHEDULE_EVERY: Duration = Duration::from_secs(60);
 
@@ -28,6 +27,11 @@ struct Taken {
     stored_bytes: u64,
     #[serde(default)]
     consistent: bool,
+    /// Some disk is stored as the changes since the parent.
+    #[serde(default)]
+    incremental: bool,
+    #[serde(default)]
+    full_reason: Option<String>,
 }
 
 /// Takes a backup on the VM's host.
@@ -35,13 +39,32 @@ pub async fn create(ctx: &TaskCtx) -> Result<()> {
     let db = &ctx.state.db;
     let id = target(ctx)?;
     let backup = mst_db::backups::get(db, id).await?;
+    // Built on another, it holds the chain while it is taken: what it
+    // builds on is not merged away meanwhile.
+    let lock = match backup.parent_id {
+        Some(_) => Some(mst_db::backups::ChainLock::take(db, backup.chain_id).await?),
+        None => None,
+    };
     let result = take(ctx, &backup).await;
     match &result {
-        Ok(t) => mst_db::backups::finish(db, id, t.stored_bytes as i64, t.consistent).await?,
+        Ok(t) => {
+            // An agent from before incremental backups took it in full.
+            let reason = match (backup.parent_id, t.incremental, &t.full_reason) {
+                (Some(_), false, None) => Some("the host's agent took it in full"),
+                (_, false, r) => r.as_deref(),
+                (_, true, _) => None,
+            };
+            let mut conn = db.acquire().await?;
+            mst_db::backups::finish(&mut conn, id, t.stored_bytes as i64, t.consistent, reason)
+                .await?
+        }
         Err(e) => mst_db::backups::fail(db, id, &format!("{e:#}")).await?,
     }
+    if let Some(lock) = lock {
+        lock.release().await;
+    }
     let taken = result?;
-    tracing::info!(backup = %id, vm = %backup.vm_name, stored = taken.stored_bytes, consistent = taken.consistent, "backup taken");
+    tracing::info!(backup = %id, vm = %backup.vm_name, stored = taken.stored_bytes, consistent = taken.consistent, incremental = taken.incremental, "backup taken");
     if backup.scheduled
         && let Some(vm) = backup.vm_id
     {
@@ -63,6 +86,16 @@ async fn take(ctx: &TaskCtx, backup: &mst_db::backups::Backup) -> Result<Taken> 
     if recorded != now {
         anyhow::bail!("the VM's disks changed since the backup was asked for: take it again");
     }
+    // What it may build on: each disk the parent has too, and checkpoints
+    // that have tracked the VM's changes since the parent was taken.
+    let (parent, checkpoints) = match backup.parent_id {
+        Some(p) => {
+            let parent = mst_db::backups::get(db, p).await?;
+            let checkpoints = mst_db::backups::taken_before(db, vm.id, &parent).await?;
+            (Some(parent), checkpoints)
+        }
+        None => (None, vec![]),
+    };
     let mut disks = vec![];
     let slots = vm.spec.0.disk_slots();
     for (i, (d, slot)) in vm.spec.0.disks.iter().zip(slots).enumerate() {
@@ -72,9 +105,25 @@ async fn take(ctx: &TaskCtx, backup: &mst_db::backups::Backup) -> Result<Taken> 
             volume_id: d.volume_id.to_string(),
             pool: Some(crate::api::agent_pool(&pool)?),
             target: slot.target,
+            parent_index: parent.as_ref().and_then(|p| {
+                p.spec
+                    .0
+                    .disks
+                    .iter()
+                    .position(|pd| pd.volume_id == d.volume_id)
+                    .map(|j| j as u32)
+            }),
         });
     }
-    ctx.step("copying disks", 0.1).await;
+    ctx.step(
+        if parent.is_some() {
+            "copying what changed"
+        } else {
+            "copying disks"
+        },
+        0.1,
+    )
+    .await;
     let out = send(
         &ctx.state,
         host,
@@ -83,6 +132,8 @@ async fn take(ctx: &TaskCtx, backup: &mst_db::backups::Backup) -> Result<Taken> 
             backup_id: backup.id.to_string(),
             repository: Some(crate::api::repository_pool(&repo)),
             disks,
+            parent_id: parent.map(|p| p.id.to_string()).unwrap_or_default(),
+            checkpoints: checkpoints.iter().map(ToString::to_string).collect(),
         }),
         BACKUP_TIMEOUT,
     )
@@ -112,7 +163,8 @@ pub(super) async fn send(
     }
 }
 
-/// Deletes a backup's files, then its record.
+/// Deletes a backup: merged into the backups built on it, which keep
+/// reading as they did, its files are removed, then its record.
 pub async fn delete(ctx: &TaskCtx) -> Result<()> {
     let state = &ctx.state;
     let id = target(ctx)?;
@@ -122,41 +174,113 @@ pub async fn delete(ctx: &TaskCtx) -> Result<()> {
         Err(mst_db::Error::Domain(mst_core::Error::NotFound { .. })) => return Ok(()),
         Err(e) => return Err(e.into()),
     };
+    // One change to a chain at a time: a neighbour's merge changes the
+    // files this one's reads.
+    let lock = mst_db::backups::ChainLock::take(&state.db, backup.chain_id).await?;
+    let result = delete_locked(ctx, id).await;
+    lock.release().await;
+    if let Err(e) = &result {
+        mst_db::backups::delete_failed(&state.db, id, &format!("{e:#}")).await?;
+    }
+    result
+}
+
+async fn delete_locked(ctx: &TaskCtx, id: BackupId) -> Result<()> {
+    let state = &ctx.state;
+    // As it is now: earlier merges may have moved it down its chain, or
+    // another deletion (waited for) removed it.
+    let backup = match mst_db::backups::get(&state.db, id).await {
+        Ok(b) => b,
+        Err(mst_db::Error::Domain(mst_core::Error::NotFound { .. })) => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    let children = mst_db::backups::children(&state.db, id).await?;
+    if children.iter().any(|c| c.state == "running") {
+        bail!("a backup being taken builds on it");
+    }
     let repo = mst_db::backups::get_repository(&state.db, backup.repository_id).await?;
-    let host = any_host(state, backup.vm_id).await?;
-    send(
+    // Merging takes an agent that knows how; removing files, any.
+    let host = any_host(state, backup.vm_id, !children.is_empty()).await?;
+    if !children.is_empty() {
+        ctx.step("merging into the backup built on it", 0.1).await;
+    }
+    let out = send(
         state,
         host,
         Cmd::DeleteBackup(DeleteBackup {
             repository: Some(crate::api::repository_pool(&repo)),
             backup_id: id.to_string(),
+            children: children.iter().map(|c| c.id.to_string()).collect(),
         }),
-        QUICK,
+        BACKUP_TIMEOUT,
     )
     .await
     .context("removing the backup's files")?;
-    mst_db::backups::delete(&state.db, id).await?;
+    #[derive(serde::Deserialize, Default)]
+    struct Merged {
+        #[serde(default)]
+        children: std::collections::HashMap<String, i64>,
+    }
+    let merged: Merged = serde_json::from_str(&out).unwrap_or_default();
+    let sizes: Vec<(BackupId, i64)> = children
+        .iter()
+        .map(|c| {
+            let stored = merged
+                .children
+                .get(&c.id.to_string())
+                .copied()
+                .or(c.stored_bytes)
+                .unwrap_or(0);
+            (c.id, stored)
+        })
+        .collect();
+    let mut tx = state.db.begin().await?;
+    mst_db::backups::merged(&mut tx, &backup, &sizes).await?;
+    tx.commit().await?;
     Ok(())
 }
 
-/// A host that can reach the repository: the VM's, or any connected one.
-async fn any_host(state: &AppState, vm: Option<mst_core::ids::VmId>) -> Result<HostId> {
+/// A host that can reach the repository: the VM's, or any connected one;
+/// with `merging`, one whose agent merges backups.
+async fn any_host(
+    state: &AppState,
+    vm: Option<mst_core::ids::VmId>,
+    merging: bool,
+) -> Result<HostId> {
+    let merges = match merging {
+        true => Some(mst_db::hosts::supporting(&state.db, INCREMENTAL).await?),
+        false => None,
+    };
+    let able = |h: &mst_db::hosts::Host| {
+        h.state != "decommissioned"
+            && h.connected_to.is_some()
+            && merges.as_ref().is_none_or(|m| m.contains(&h.id))
+    };
     if let Some(vm) = vm
         && let Ok(vm) = mst_db::vms::get(&state.db, vm).await
         && let Some(host) = vm.host_id
         && mst_db::hosts::get(&state.db, host)
             .await
-            .is_ok_and(|h| h.connected_to.is_some())
+            .is_ok_and(|h| able(&h))
     {
         return Ok(host);
     }
     mst_db::hosts::list(&state.db)
         .await?
         .into_iter()
-        .find(|h| h.state != "decommissioned" && h.connected_to.is_some())
+        .find(able)
         .map(|h| h.id)
-        .ok_or_else(|| anyhow!("no host is connected to reach the repository"))
+        .ok_or_else(|| {
+            anyhow!(if merging {
+                "no host is connected whose agent merges backups (upgrade one)"
+            } else {
+                "no host is connected to reach the repository"
+            })
+        })
 }
+
+/// The agent feature incremental backups (and merging them) take.
+pub const INCREMENTAL: &str = "incremental_backup";
 
 /// Deletes a VM's scheduled backups beyond what its schedule keeps.
 async fn prune(state: &AppState, vm: mst_core::ids::VmId) {
@@ -193,8 +317,15 @@ async fn schedule_once(state: &AppState) -> Result<()> {
     for due in mst_db::backups::due(&state.db).await? {
         let vm = mst_db::vms::get(&state.db, due.vm_id).await?;
         let repo = mst_db::backups::get_repository(&state.db, due.repository_id).await?;
-        match crate::api::start_backup(state, None, &vm, &repo, true).await {
-            Ok((_, b)) => tracing::info!(vm = %vm.name, backup = %b.id, "scheduled backup started"),
+        let mode = if due.full_due() {
+            crate::api::BackupMode::Full
+        } else {
+            crate::api::BackupMode::Incremental
+        };
+        match crate::api::start_backup(state, None, &vm, &repo, true, mode).await {
+            Ok((_, b)) => {
+                tracing::info!(vm = %vm.name, backup = %b.id, kind = %b.kind, "scheduled backup started")
+            }
             // A busy VM is backed up on a later round; anything else is
             // worth saying.
             Err(e) if e.status == axum::http::StatusCode::CONFLICT => {

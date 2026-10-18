@@ -18,6 +18,24 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for BackupMode.
+const (
+	Full        BackupMode = "full"
+	Incremental BackupMode = "incremental"
+)
+
+// Valid indicates whether the value is a known member of the BackupMode enum.
+func (e BackupMode) Valid() bool {
+	switch e {
+	case Full:
+		return true
+	case Incremental:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Firmware.
 const (
 	Bios Firmware = "bios"
@@ -249,22 +267,33 @@ type BackupAccepted struct {
 	CreatedAt  time.Time `json:"created_at"`
 
 	// Disks Each disk's size.
-	Disks        []int64            `json:"disks"`
-	Error        *string            `json:"error,omitempty"`
-	Id           BackupId           `json:"id"`
+	Disks []int64 `json:"disks"`
+	Error *string `json:"error,omitempty"`
+
+	// FullReason Why it was taken in full although asked to be incremental.
+	FullReason *string  `json:"full_reason,omitempty"`
+	Id         BackupId `json:"id"`
+
+	// Kind `full`, or `incremental`: only what changed since the backup it
+	// builds on. Restoring either gives the whole VM.
+	Kind         string             `json:"kind"`
 	MemoryMib    int64              `json:"memory_mib"`
+	ParentId     *BackupId          `json:"parent_id,omitempty"`
 	RepositoryId BackupRepositoryId `json:"repository_id"`
 
 	// Scheduled Taken by the VM's schedule (which also deletes it in time).
 	Scheduled bool `json:"scheduled"`
 
-	// SizeBytes What it counts against quotas: its disks' sizes added up.
+	// SizeBytes Its disks' sizes added up: what it counts against quotas while it
+	// is taken.
 	SizeBytes int64 `json:"size_bytes"`
 
-	// State `running`, `ready` or `failed`.
+	// State `running`, `ready`, `failed`, or `deleting` (being merged into the
+	// backup built on it, and removed).
 	State string `json:"state"`
 
-	// StoredBytes What it takes up in the repository.
+	// StoredBytes What it takes up in the repository, and counts against quotas once
+	// taken.
 	StoredBytes *int64   `json:"stored_bytes,omitempty"`
 	TaskId      TaskId   `json:"task_id"`
 	TenantId    TenantId `json:"tenant_id"`
@@ -282,6 +311,9 @@ type BackupCodes struct {
 // BackupId defines model for BackupId.
 type BackupId = openapi_types.UUID
 
+// BackupMode How to take a backup.
+type BackupMode string
+
 // BackupRepositoryId defines model for BackupRepositoryId.
 type BackupRepositoryId = openapi_types.UUID
 
@@ -296,22 +328,33 @@ type BackupView struct {
 	CreatedAt  time.Time `json:"created_at"`
 
 	// Disks Each disk's size.
-	Disks        []int64            `json:"disks"`
-	Error        *string            `json:"error,omitempty"`
-	Id           BackupId           `json:"id"`
+	Disks []int64 `json:"disks"`
+	Error *string `json:"error,omitempty"`
+
+	// FullReason Why it was taken in full although asked to be incremental.
+	FullReason *string  `json:"full_reason,omitempty"`
+	Id         BackupId `json:"id"`
+
+	// Kind `full`, or `incremental`: only what changed since the backup it
+	// builds on. Restoring either gives the whole VM.
+	Kind         string             `json:"kind"`
 	MemoryMib    int64              `json:"memory_mib"`
+	ParentId     *BackupId          `json:"parent_id,omitempty"`
 	RepositoryId BackupRepositoryId `json:"repository_id"`
 
 	// Scheduled Taken by the VM's schedule (which also deletes it in time).
 	Scheduled bool `json:"scheduled"`
 
-	// SizeBytes What it counts against quotas: its disks' sizes added up.
+	// SizeBytes Its disks' sizes added up: what it counts against quotas while it
+	// is taken.
 	SizeBytes int64 `json:"size_bytes"`
 
-	// State `running`, `ready` or `failed`.
+	// State `running`, `ready`, `failed`, or `deleting` (being merged into the
+	// backup built on it, and removed).
 	State string `json:"state"`
 
-	// StoredBytes What it takes up in the repository.
+	// StoredBytes What it takes up in the repository, and counts against quotas once
+	// taken.
 	StoredBytes *int64   `json:"stored_bytes,omitempty"`
 	TenantId    TenantId `json:"tenant_id"`
 	Vcpus       int32    `json:"vcpus"`
@@ -435,6 +478,8 @@ type ConsoleTicket struct {
 
 // CreateBackup defines model for CreateBackup.
 type CreateBackup struct {
+	// Mode `incremental` (the default) or `full`.
+	Mode         *BackupMode         `json:"mode,omitempty"`
 	RepositoryId *BackupRepositoryId `json:"repository_id,omitempty"`
 }
 
@@ -1349,6 +1394,10 @@ type ScheduleView struct {
 	// Every `daily` or `weekly`.
 	Every string `json:"every"`
 
+	// FullEvery A full backup every this many; incremental ones in between (1: all
+	// full).
+	FullEvery int32 `json:"full_every"`
+
 	// Keep How many of its scheduled backups to keep; older ones are deleted.
 	Keep         int32              `json:"keep"`
 	RepositoryId BackupRepositoryId `json:"repository_id"`
@@ -1404,6 +1453,10 @@ type SecurityRuleId = openapi_types.UUID
 type SetSchedule struct {
 	// Every `daily` or `weekly`; null stops scheduled backups (those taken stay).
 	Every *string `json:"every,omitempty"`
+
+	// FullEvery A full backup every this many of the VM's backups, incremental ones
+	// in between; 1 takes every one in full (default 7).
+	FullEvery *int32 `json:"full_every,omitempty"`
 
 	// Keep How many scheduled backups to keep (default 7).
 	Keep         *int32              `json:"keep,omitempty"`
@@ -2379,7 +2432,9 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/backups (the `ListBackups` operationId).
 	ListBackups(ctx context.Context, params *ListBackupsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// DeleteBackup Deletes a backup and its files.
+	// DeleteBackup Deletes a backup and its files. Backups built on it stay whole: it is
+	// merged into the one built on it first. A deletion that failed leaves it
+	// `deleting`; delete it again.
 	//
 	// Corresponds with DELETE /api/v1/backups/{id} (the `DeleteBackup` operationId).
 	DeleteBackup(ctx context.Context, id BackupId, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3193,8 +3248,9 @@ type ClientInterface interface {
 
 	// SetScheduleWithBody Sets a VM's backup schedule. The first scheduled backup follows within a
 	// minute or so; each later one when the last is a day (or a week) old.
-	// Beyond `keep`, the oldest scheduled backups are deleted; backups taken
-	// by hand are kept until deleted.
+	// Beyond `keep`, the oldest scheduled backups are deleted (merged into the
+	// backups built on them, which stay whole); backups taken by hand are
+	// kept until deleted.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -3203,8 +3259,9 @@ type ClientInterface interface {
 
 	// SetSchedule Sets a VM's backup schedule. The first scheduled backup follows within a
 	// minute or so; each later one when the last is a day (or a week) old.
-	// Beyond `keep`, the oldest scheduled backups are deleted; backups taken
-	// by hand are kept until deleted.
+	// Beyond `keep`, the oldest scheduled backups are deleted (merged into the
+	// backups built on them, which stay whole); backups taken by hand are
+	// kept until deleted.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -3218,7 +3275,10 @@ type ClientInterface interface {
 
 	// CreateBackupWithBody Starts a backup of a VM, running or stopped. A running VM's backup is of
 	// the moment it starts, with its file systems frozen then if its guest
-	// agent answers; the VM carries on meanwhile.
+	// agent answers; the VM carries on meanwhile. An incremental one holds
+	// only what changed since the VM's last backup in the repository: a
+	// running VM's changes are tracked by QEMU, a stopped VM's found by
+	// comparing its disks with that backup. Disks on Ceph are copied in full.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -3227,7 +3287,10 @@ type ClientInterface interface {
 
 	// CreateBackup Starts a backup of a VM, running or stopped. A running VM's backup is of
 	// the moment it starts, with its file systems frozen then if its guest
-	// agent answers; the VM carries on meanwhile.
+	// agent answers; the VM carries on meanwhile. An incremental one holds
+	// only what changed since the VM's last backup in the repository: a
+	// running VM's changes are tracked by QEMU, a stopped VM's found by
+	// comparing its disks with that backup. Disks on Ceph are copied in full.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -3665,7 +3728,9 @@ func (c *Client) ListBackups(ctx context.Context, params *ListBackupsParams, req
 	return c.Client.Do(req)
 }
 
-// DeleteBackup Deletes a backup and its files.
+// DeleteBackup Deletes a backup and its files. Backups built on it stay whole: it is
+// merged into the one built on it first. A deletion that failed leaves it
+// `deleting`; delete it again.
 //
 // Corresponds with DELETE /api/v1/backups/{id} (the `DeleteBackup` operationId).
 func (c *Client) DeleteBackup(ctx context.Context, id BackupId, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -6009,8 +6074,9 @@ func (c *Client) UpdateVm(ctx context.Context, id VmId, body UpdateVmJSONRequest
 
 // SetScheduleWithBody Sets a VM's backup schedule. The first scheduled backup follows within a
 // minute or so; each later one when the last is a day (or a week) old.
-// Beyond `keep`, the oldest scheduled backups are deleted; backups taken
-// by hand are kept until deleted.
+// Beyond `keep`, the oldest scheduled backups are deleted (merged into the
+// backups built on them, which stay whole); backups taken by hand are
+// kept until deleted.
 //
 // Takes any type of body and a specified content type.
 //
@@ -6029,8 +6095,9 @@ func (c *Client) SetScheduleWithBody(ctx context.Context, id VmId, contentType s
 
 // SetSchedule Sets a VM's backup schedule. The first scheduled backup follows within a
 // minute or so; each later one when the last is a day (or a week) old.
-// Beyond `keep`, the oldest scheduled backups are deleted; backups taken
-// by hand are kept until deleted.
+// Beyond `keep`, the oldest scheduled backups are deleted (merged into the
+// backups built on them, which stay whole); backups taken by hand are
+// kept until deleted.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -6064,7 +6131,10 @@ func (c *Client) VmBackups(ctx context.Context, id VmId, reqEditors ...RequestEd
 
 // CreateBackupWithBody Starts a backup of a VM, running or stopped. A running VM's backup is of
 // the moment it starts, with its file systems frozen then if its guest
-// agent answers; the VM carries on meanwhile.
+// agent answers; the VM carries on meanwhile. An incremental one holds
+// only what changed since the VM's last backup in the repository: a
+// running VM's changes are tracked by QEMU, a stopped VM's found by
+// comparing its disks with that backup. Disks on Ceph are copied in full.
 //
 // Takes any type of body and a specified content type.
 //
@@ -6083,7 +6153,10 @@ func (c *Client) CreateBackupWithBody(ctx context.Context, id VmId, contentType 
 
 // CreateBackup Starts a backup of a VM, running or stopped. A running VM's backup is of
 // the moment it starts, with its file systems frozen then if its guest
-// agent answers; the VM carries on meanwhile.
+// agent answers; the VM carries on meanwhile. An incremental one holds
+// only what changed since the VM's last backup in the repository: a
+// running VM's changes are tracked by QEMU, a stopped VM's found by
+// comparing its disks with that backup. Disks on Ceph are copied in full.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -12871,7 +12944,9 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/backups (the `ListBackups` operationId).
 	ListBackupsWithResponse(ctx context.Context, params *ListBackupsParams, reqEditors ...RequestEditorFn) (*ListBackupsResponse, error)
 
-	// DeleteBackupWithResponse Deletes a backup and its files.
+	// DeleteBackupWithResponse Deletes a backup and its files. Backups built on it stay whole: it is
+	// merged into the one built on it first. A deletion that failed leaves it
+	// `deleting`; delete it again.
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -13861,8 +13936,9 @@ type ClientWithResponsesInterface interface {
 
 	// SetScheduleWithBodyWithResponse Sets a VM's backup schedule. The first scheduled backup follows within a
 	// minute or so; each later one when the last is a day (or a week) old.
-	// Beyond `keep`, the oldest scheduled backups are deleted; backups taken
-	// by hand are kept until deleted.
+	// Beyond `keep`, the oldest scheduled backups are deleted (merged into the
+	// backups built on them, which stay whole); backups taken by hand are
+	// kept until deleted.
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -13871,8 +13947,9 @@ type ClientWithResponsesInterface interface {
 
 	// SetScheduleWithResponse Sets a VM's backup schedule. The first scheduled backup follows within a
 	// minute or so; each later one when the last is a day (or a week) old.
-	// Beyond `keep`, the oldest scheduled backups are deleted; backups taken
-	// by hand are kept until deleted.
+	// Beyond `keep`, the oldest scheduled backups are deleted (merged into the
+	// backups built on them, which stay whole); backups taken by hand are
+	// kept until deleted.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -13888,7 +13965,10 @@ type ClientWithResponsesInterface interface {
 
 	// CreateBackupWithBodyWithResponse Starts a backup of a VM, running or stopped. A running VM's backup is of
 	// the moment it starts, with its file systems frozen then if its guest
-	// agent answers; the VM carries on meanwhile.
+	// agent answers; the VM carries on meanwhile. An incremental one holds
+	// only what changed since the VM's last backup in the repository: a
+	// running VM's changes are tracked by QEMU, a stopped VM's found by
+	// comparing its disks with that backup. Disks on Ceph are copied in full.
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -13897,7 +13977,10 @@ type ClientWithResponsesInterface interface {
 
 	// CreateBackupWithResponse Starts a backup of a VM, running or stopped. A running VM's backup is of
 	// the moment it starts, with its file systems frozen then if its guest
-	// agent answers; the VM carries on meanwhile.
+	// agent answers; the VM carries on meanwhile. An incremental one holds
+	// only what changed since the VM's last backup in the repository: a
+	// running VM's changes are tracked by QEMU, a stopped VM's found by
+	// comparing its disks with that backup. Disks on Ceph are copied in full.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -20090,7 +20173,9 @@ func (c *ClientWithResponses) ListBackupsWithResponse(ctx context.Context, param
 	return ParseListBackupsResponse(rsp)
 }
 
-// DeleteBackupWithResponse Deletes a backup and its files.
+// DeleteBackupWithResponse Deletes a backup and its files. Backups built on it stay whole: it is
+// merged into the one built on it first. A deletion that failed leaves it
+// `deleting`; delete it again.
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -21998,8 +22083,9 @@ func (c *ClientWithResponses) UpdateVmWithResponse(ctx context.Context, id VmId,
 
 // SetScheduleWithBodyWithResponse Sets a VM's backup schedule. The first scheduled backup follows within a
 // minute or so; each later one when the last is a day (or a week) old.
-// Beyond `keep`, the oldest scheduled backups are deleted; backups taken
-// by hand are kept until deleted.
+// Beyond `keep`, the oldest scheduled backups are deleted (merged into the
+// backups built on them, which stay whole); backups taken by hand are
+// kept until deleted.
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -22014,8 +22100,9 @@ func (c *ClientWithResponses) SetScheduleWithBodyWithResponse(ctx context.Contex
 
 // SetScheduleWithResponse Sets a VM's backup schedule. The first scheduled backup follows within a
 // minute or so; each later one when the last is a day (or a week) old.
-// Beyond `keep`, the oldest scheduled backups are deleted; backups taken
-// by hand are kept until deleted.
+// Beyond `keep`, the oldest scheduled backups are deleted (merged into the
+// backups built on them, which stay whole); backups taken by hand are
+// kept until deleted.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -22043,7 +22130,10 @@ func (c *ClientWithResponses) VmBackupsWithResponse(ctx context.Context, id VmId
 
 // CreateBackupWithBodyWithResponse Starts a backup of a VM, running or stopped. A running VM's backup is of
 // the moment it starts, with its file systems frozen then if its guest
-// agent answers; the VM carries on meanwhile.
+// agent answers; the VM carries on meanwhile. An incremental one holds
+// only what changed since the VM's last backup in the repository: a
+// running VM's changes are tracked by QEMU, a stopped VM's found by
+// comparing its disks with that backup. Disks on Ceph are copied in full.
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -22058,7 +22148,10 @@ func (c *ClientWithResponses) CreateBackupWithBodyWithResponse(ctx context.Conte
 
 // CreateBackupWithResponse Starts a backup of a VM, running or stopped. A running VM's backup is of
 // the moment it starts, with its file systems frozen then if its guest
-// agent answers; the VM carries on meanwhile.
+// agent answers; the VM carries on meanwhile. An incremental one holds
+// only what changed since the VM's last backup in the repository: a
+// running VM's changes are tracked by QEMU, a stopped VM's found by
+// comparing its disks with that backup. Disks on Ceph are copied in full.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //

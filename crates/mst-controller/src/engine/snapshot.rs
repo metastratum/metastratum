@@ -37,6 +37,7 @@ async fn load(ctx: &TaskCtx) -> Result<(mst_db::snapshots::Snapshot, HostId, Vec
             volume_id: d.volume_id.to_string(),
             pool: Some(crate::api::agent_pool(&pool)?),
             target: slot.target,
+            parent_index: None,
         });
     }
     Ok((snap, host, disks))

@@ -370,6 +370,11 @@ async fn restore_backup(
     if backup.state != "ready" {
         return Err(ApiError::conflict("the backup is not complete"));
     }
+    if mst_db::backups::deleting_below(&state.db, backup.id).await? {
+        return Err(ApiError::conflict(
+            "a backup it builds on is being deleted (merged into it): restore it once that is done",
+        ));
+    }
     let spec = &backup.spec.0;
     let disk_bytes: u64 = spec.disks.iter().map(|d| d.size_bytes).sum();
     let create = CreateVm {
@@ -1619,6 +1624,7 @@ pub(crate) async fn grow_disk(
             volume_id: volume.to_string(),
             pool: Some(super::agent_pool(&pool).map_err(ApiError::internal)?),
             target: spec.disk_slots()[index].target.clone(),
+            parent_index: None,
         }),
         size_bytes: size,
     };

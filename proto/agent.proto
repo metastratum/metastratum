@@ -383,14 +383,31 @@ message RemovePool {
 // Back up a VM's disks into a repository (an NFS pool the host mounts), as
 // `backups/<backup_id>/<index>.qcow2`. A running VM is backed up live with
 // libvirt's backup job, its file systems frozen for the start when its guest
-// agent answers; a stopped one by copying its volumes. Returns JSON
-// {"stored_bytes": n}. Asked again, it waits for a backup in progress, and
-// answers for one already taken.
+// agent answers; a stopped one by copying its volumes. Asked again, it waits
+// for a backup in progress, and answers for one already taken.
+//
+// With a parent, a disk the parent has (`parent_index`) may be stored as
+// what changed since: a qcow2 file backed by the parent's copy
+// (`../<parent_id>/<parent_index>.qcow2`). A running VM's changes come from
+// the dirty bitmaps of its libvirt checkpoint (`mst-<backup id>`, one per
+// backup taken live, the latest kept); a stopped VM's by comparing its
+// volumes with the parent's copies. Ceph disks are copied in full.
+//
+// Returns JSON {"stored_bytes": n, "consistent": bool, "incremental": bool,
+// "full_reason": "..."}: whether any disk was stored as changes, and if
+// none was although a parent was given, why.
 message BackupVm {
   string vm_id = 1;
   string backup_id = 2;
   Pool repository = 3;
   repeated BackupDisk disks = 4;
+  // The backup this one may build on (in the same repository); empty for a
+  // full backup.
+  string parent_id = 5;
+  // Backups of the VM taken up to the parent (the parent included), newest
+  // first: a checkpoint of any of them has tracked the changes since the
+  // parent was taken.
+  repeated string checkpoints = 6;
 }
 
 message BackupDisk {
@@ -401,6 +418,8 @@ message BackupDisk {
   // Its target device in the VM's domain (vda, sdb...); from its index
   // (vda, vdb...) when empty, as older controllers send it.
   string target = 4;
+  // Its place in the parent backup, when the parent has it.
+  optional uint32 parent_index = 5;
 }
 
 // Create a volume from one of a backup's disks. An existing volume is left
@@ -414,10 +433,15 @@ message RestoreVolume {
   uint32 index = 6;
 }
 
-// Remove a backup's files from its repository.
+// Remove a backup's files from its repository. Backups built on it
+// (`children`) first take in what they need of it: each of their files
+// backed by one of its is merged with it (committed into it, which then
+// takes the child file's place). Returns JSON {"children": {"<id>": bytes}}:
+// what each child takes up afterwards.
 message DeleteBackup {
   Pool repository = 1;
   string backup_id = 2;
+  repeated string children = 3;
 }
 
 // Take a snapshot of a VM's disks, all at the same moment, in the disks
@@ -429,7 +453,10 @@ message SnapshotVm {
   repeated BackupDisk disks = 3;
 }
 
-// Put a stopped VM's disks back as they were in a snapshot.
+// Put a stopped VM's disks back as they were in a snapshot. Their change
+// tracking for incremental backups (dirty bitmaps, and the VM's libvirt
+// checkpoints) goes first: it would not account for the revert, and QEMU
+// refuses to revert disks that have it.
 message RevertSnapshot {
   string vm_id = 1;
   string snapshot_id = 2;

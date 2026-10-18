@@ -760,7 +760,13 @@ async fn backup_schedules_are_due_and_pruned(pool: PgPool) {
             .collect::<Vec<_>>()
     };
     assert!(due(pool.clone()).await.is_empty(), "no schedule yet");
-    backups::set_schedule(&pool, v.id, Some(("daily", 2, repo)))
+    let schedule = backups::NewSchedule {
+        every: "daily",
+        keep: 2,
+        repository_id: repo,
+        full_every: 1,
+    };
+    backups::set_schedule(&pool, v.id, Some(schedule))
         .await
         .unwrap();
     assert_eq!(due(pool.clone()).await, [v.id]);
@@ -769,15 +775,29 @@ async fn backup_schedules_are_due_and_pruned(pool: PgPool) {
     let take = |scheduled| {
         let (pool, spec) = (pool.clone(), v.spec.0.clone());
         async move {
-            backups::create(&pool, t.id, v.id, "web-1", repo, scheduled, &spec, 1 << 30)
-                .await
-                .unwrap()
+            let full = backups::Taking::Full { reason: None };
+            backups::create(
+                &pool,
+                t.id,
+                v.id,
+                "web-1",
+                repo,
+                scheduled,
+                &spec,
+                1 << 30,
+                full,
+            )
+            .await
+            .unwrap()
         }
     };
+    let mut conn = pool.acquire().await.unwrap();
     let first = take(true).await;
     assert!(backups::running_for(&pool, v.id).await.unwrap());
     assert!(due(pool.clone()).await.is_empty(), "one is running");
-    backups::finish(&pool, first, 1 << 20, true).await.unwrap();
+    backups::finish(&mut conn, first, 1 << 20, true, None)
+        .await
+        .unwrap();
     assert!(due(pool.clone()).await.is_empty(), "taken today");
     let age = |id: mst_core::ids::BackupId, days: i32| {
         let pool = pool.clone();
@@ -797,23 +817,193 @@ async fn backup_schedules_are_due_and_pruned(pool: PgPool) {
 
     // Beyond the newest two scheduled ones, the oldest go; manual ones stay.
     let second = take(true).await;
-    backups::finish(&pool, second, 1, true).await.unwrap();
+    backups::finish(&mut conn, second, 1, true, None)
+        .await
+        .unwrap();
     age(second, 2).await;
     let third = take(true).await;
-    backups::finish(&pool, third, 1, false).await.unwrap();
+    backups::finish(&mut conn, third, 1, false, None)
+        .await
+        .unwrap();
     let manual = take(false).await;
-    backups::finish(&pool, manual, 1, true).await.unwrap();
+    backups::finish(&mut conn, manual, 1, true, None)
+        .await
+        .unwrap();
     age(manual, 9).await;
     assert_eq!(backups::beyond_keep(&pool, v.id, 2).await.unwrap(), [first]);
 
     // A repository with backups stays; its last one gone, so do schedules.
-    let mut conn = pool.acquire().await.unwrap();
     assert!(!backups::delete_repository(&mut conn, repo).await.unwrap());
     for id in [first, second, third, manual] {
         backups::delete(&pool, id).await.unwrap();
     }
     assert!(backups::delete_repository(&mut conn, repo).await.unwrap());
     assert!(backups::schedule_of(&pool, v.id).await.unwrap().is_none());
+}
+
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn incremental_backups_form_chains(pool: PgPool) {
+    use mst_db::backups::{self, Taking};
+    let t = root(&pool).await;
+    let h = host(&pool).await;
+    let v = vm(&pool, &t, &h, "web-1").await;
+    let config = serde_json::json!({"server": "nfs1", "export": "/backups"});
+    let repo = backups::create_repository(&pool, "nfs1", "nfs", &config)
+        .await
+        .unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let schedule = backups::NewSchedule {
+        every: "daily",
+        keep: 7,
+        repository_id: repo,
+        full_every: 3,
+    };
+    backups::set_schedule(&pool, v.id, Some(schedule))
+        .await
+        .unwrap();
+    let full_due = |pool: PgPool| async move {
+        backups::schedule_of(&pool, v.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .full_due()
+    };
+    // Builds on the newest complete one; none yet.
+    assert!(
+        backups::newest_ready(&pool, v.id, repo)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let spec = v.spec.0.clone();
+    macro_rules! new {
+        ($taking:expr) => {
+            backups::create(
+                &pool,
+                t.id,
+                v.id,
+                "web-1",
+                repo,
+                true,
+                &spec,
+                1 << 30,
+                $taking,
+            )
+        };
+    }
+    let a = new!(Taking::Full { reason: None }).await.unwrap();
+    backups::finish(&mut conn, a, 100, true, None)
+        .await
+        .unwrap();
+    let a = backups::get(&pool, a).await.unwrap();
+    assert_eq!(
+        (a.kind.as_str(), a.parent_id, a.chain_id),
+        ("full", None, a.id)
+    );
+    assert!(!full_due(pool.clone()).await);
+
+    let parent = backups::newest_ready(&pool, v.id, repo)
+        .await
+        .unwrap()
+        .unwrap();
+    let b = new!(Taking::Incremental { parent: &parent }).await.unwrap();
+    assert!(backups::child_running(&pool, a.id).await.unwrap());
+    backups::finish(&mut conn, b, 10, true, None).await.unwrap();
+    let b = backups::get(&pool, b).await.unwrap();
+    assert_eq!(
+        (b.kind.as_str(), b.parent_id, b.chain_id),
+        ("incremental", Some(a.id), a.id)
+    );
+    assert!(
+        !full_due(pool.clone()).await,
+        "one incremental since the full one"
+    );
+    assert_eq!(
+        backups::taken_before(&pool, v.id, &b).await.unwrap(),
+        [b.id, a.id]
+    );
+
+    // Asked to be incremental, taken in full: it stands alone.
+    let c = new!(Taking::Incremental { parent: &b }).await.unwrap();
+    backups::finish(&mut conn, c, 100, true, Some("no tracking"))
+        .await
+        .unwrap();
+    let c = backups::get(&pool, c).await.unwrap();
+    assert_eq!(
+        (c.kind.as_str(), c.parent_id, c.chain_id),
+        ("full", None, c.id)
+    );
+    assert_eq!(c.full_reason.as_deref(), Some("no tracking"));
+    let d = new!(Taking::Incremental { parent: &c }).await.unwrap();
+    backups::finish(&mut conn, d, 5, true, None).await.unwrap();
+    let e = new!(Taking::Incremental {
+        parent: &backups::get(&pool, d).await.unwrap()
+    })
+    .await
+    .unwrap();
+    backups::finish(&mut conn, e, 5, true, None).await.unwrap();
+    assert!(
+        full_due(pool.clone()).await,
+        "two incremental ones since the last full one"
+    );
+
+    // Quotas count what complete backups take up: 100 + 10 + 100 + 5 + 5.
+    let used = mst_db::quotas::usage(&mut *conn, t.id).await.unwrap();
+    assert_eq!(used["backup_gib"], 1);
+
+    // Restoring from e reads d and c: neither may be merged away meanwhile,
+    // and a merge under way holds restores off.
+    sqlx::query(
+        "UPDATE vms SET status = 'creating', spec = jsonb_set(spec, '{disks}', $1) WHERE id = $2",
+    )
+    .bind(serde_json::json!([{"restored_from": {"backup_id": e.to_string(), "index": 0}}]))
+    .bind(v.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(backups::being_restored(&pool, c.id).await.unwrap());
+    assert!(
+        !backups::being_restored(&pool, a.id).await.unwrap(),
+        "another chain"
+    );
+    sqlx::query("UPDATE vms SET status = 'ready' WHERE id = $1")
+        .bind(v.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(!backups::deleting_below(&pool, e).await.unwrap());
+    backups::set_deleting(&pool, c.id).await.unwrap();
+    assert!(backups::deleting_below(&pool, e).await.unwrap());
+    assert!(
+        backups::newest_ready(&pool, v.id, repo)
+            .await
+            .unwrap()
+            .is_some_and(|n| n.id == e)
+    );
+
+    // c merged into d: d stands alone, takes what it now holds.
+    let children = backups::children(&pool, c.id).await.unwrap();
+    assert_eq!(children.iter().map(|b| b.id).collect::<Vec<_>>(), [d]);
+    backups::merged(&mut conn, &c, &[(d, 104)]).await.unwrap();
+    let d = backups::get(&pool, d).await.unwrap();
+    assert_eq!(
+        (d.parent_id, d.stored_bytes, d.chain_id),
+        (None, Some(104), c.id)
+    );
+    assert!(backups::get(&pool, c.id).await.is_err());
+    assert!(!backups::deleting_below(&pool, e).await.unwrap());
+
+    // A failed one builds on nothing, and holds nothing up.
+    let f = new!(Taking::Incremental { parent: &d }).await.unwrap();
+    backups::fail(&pool, f, "broke").await.unwrap();
+    assert_eq!(backups::get(&pool, f).await.unwrap().parent_id, None);
+    assert!(
+        backups::children(&pool, d.id)
+            .await
+            .unwrap()
+            .iter()
+            .all(|b| b.id == e)
+    );
 }
 
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]

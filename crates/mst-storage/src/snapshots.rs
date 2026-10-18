@@ -55,7 +55,14 @@ impl FilePool {
         self.snapshot_cmd("-c", id, snap).await
     }
 
+    /// Puts the volume back as it was in the snapshot. Its dirty bitmaps
+    /// (change tracking for incremental backups) go first: they would not
+    /// account for the revert, and qemu-img refuses to revert with them.
     pub async fn revert_snapshot(&self, id: &str, snap: &str) -> Result<()> {
+        let path = self.volume_path(id)?;
+        for bitmap in crate::backups::bitmaps(&path).await? {
+            crate::backups::remove_bitmap(&path, &bitmap).await?;
+        }
         self.snapshot_cmd("-a", id, snap).await
     }
 

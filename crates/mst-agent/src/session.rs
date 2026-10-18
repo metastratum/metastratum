@@ -148,6 +148,7 @@ impl Agent {
             protocol_version: mst_proto::PROTOCOL_VERSION,
             capabilities: mst_proto::CAPABILITIES
                 .iter()
+                .chain(mst_proto::FEATURES)
                 .map(|c| (*c).to_owned())
                 .collect(),
             facts: Some(facts),
@@ -570,7 +571,7 @@ impl Agent {
             }
             Cmd::BackupVm(c) => return crate::backup::backup(self, &c).await,
             Cmd::RestoreVolume(c) => crate::backup::restore(self, &c).await?,
-            Cmd::DeleteBackup(c) => crate::backup::delete(self, &c).await?,
+            Cmd::DeleteBackup(c) => return crate::backup::delete(self, &c).await,
             Cmd::SnapshotVm(c) => return crate::snapshot::snapshot(self, &c).await,
             Cmd::RevertSnapshot(c) => crate::snapshot::revert(self, &c).await?,
             Cmd::DeleteSnapshot(c) => crate::snapshot::delete(self, &c).await?,

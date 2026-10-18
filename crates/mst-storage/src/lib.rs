@@ -6,6 +6,7 @@
 //! every host attached to it sees the same images and volumes. [`Pools`]
 //! prepares pools on demand from the descriptions the controller sends.
 
+pub mod backups;
 mod fetch;
 mod pools;
 mod rbd;
@@ -486,7 +487,7 @@ pub async fn private_dir(dir: &Path) -> Result<()> {
 
 /// A qcow2 file's backing file name, read from its header (cheaper than
 /// `qemu-img info` for every volume). None for anything else.
-async fn qcow2_backing_file(path: &Path) -> std::io::Result<Option<String>> {
+pub(crate) async fn qcow2_backing_file(path: &Path) -> std::io::Result<Option<String>> {
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
     let mut f = tokio::fs::File::open(path).await?;
     let mut header = [0u8; 20];

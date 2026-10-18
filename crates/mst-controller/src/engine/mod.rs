@@ -12,7 +12,7 @@ mod recover;
 mod snapshot;
 mod vm;
 
-pub use backup::schedule as backup_schedule;
+pub use backup::{INCREMENTAL as INCREMENTAL_BACKUP, schedule as backup_schedule};
 pub use disk::sweep as sweep_disks;
 
 use std::sync::Arc;
