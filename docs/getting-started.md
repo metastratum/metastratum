@@ -48,7 +48,26 @@ sudo MST_JOIN_TOKEN=mstjoin.... bash install-agent.sh --controller https://10.0.
 
 `--help` shows the options of each (the web UI's domain name for a Let's
 Encrypt certificate, another external network, a particular release...).
-Both say what they will change and ask first, and can run again safely. On
+Both say what they will change and ask first, and can run again safely.
+
+They use what the machine runs already rather than replacing it. A
+PostgreSQL server gets a database and a user of its own, and a
+`pg_hba.conf` line for them if it needs one (it is reloaded, never
+restarted); `MST_DATABASE_URL` uses a database elsewhere instead. libvirt
+stays as it runs, as `libvirtd` or as its per-driver daemons.
+`--ovn-northbound` uses OVN's central databases elsewhere, and writes the
+certificates their servers need. Before changing anything, each looks for
+what it would clash with, reports all of it, and stops:
+
+- ports in use by other programs (8080, 8443, 6641, 6642, and 80 and 443
+  for the HTTPS proxy: `--no-proxy` leaves the proxy to you);
+- a database named `metastratum` left from an earlier installation whose
+  `controller.toml` and master key are gone (the database's secrets are
+  sealed with that key);
+- OVN databases another deployment uses, a host's Open vSwitch in another
+  OVN deployment, a bridge `br-ext` or physical network `external` in use,
+  and libvirt TLS certificates the agent would replace. `--force` goes
+  ahead with these. On
 Arch, OVN is not packaged: the installers build it from source, and upgrade
 the system first as Arch requires. On RHEL, Open vSwitch and OVN come from
 the Fast Datapath repository, which takes a subscription; Rocky Linux and

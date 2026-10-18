@@ -8,6 +8,12 @@
 # enrolls with that controller by itself. Safe to run again: what is set up
 # already is left as it is.
 #
+# What runs here already is used: libvirt stays as it runs (libvirtd, or
+# its per-driver daemons). Before changing anything, it looks for what it
+# would clash with (Open vSwitch in another OVN deployment, a physical
+# network or bridge of that name in use, libvirt TLS certificates it would
+# replace) and stops if it finds any.
+#
 # Supported: Debian 13, Fedora 43 and later, RHEL, Rocky Linux and
 # AlmaLinux 10, and Arch Linux, on x86-64 with hardware virtualisation. On
 # Arch, OVN is built from source (it is not packaged) and the system is
@@ -27,6 +33,9 @@
 #   --version VERSION     metastratum release to install (default: the latest)
 #   --packages DIR        install metastratum from the packages in DIR (as
 #                         built by deploy/packaging/build.sh) instead
+#   --force               go ahead although it would take over what someone
+#                         else set up (another OVN deployment's Open vSwitch,
+#                         a bridge br-ext, libvirt's TLS certificates)
 #   -y, --yes             do not ask before changing the system
 #
 # The join token (from the controller: mst-controller join-token, or
@@ -36,7 +45,7 @@ set -euo pipefail
 
 ROLE=agent
 
-address="" controllers="" ext_cidr=10.250.250.0/24 version="" packages="" assume_yes=0
+address="" controllers="" ext_cidr=10.250.250.0/24 version="" packages="" assume_yes=0 force=0
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -45,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     --external-cidr) ext_cidr=${2:?}; shift ;;
     --version) version=${2#v}; shift ;;
     --packages) packages=$(cd "${2:?}" && pwd); shift ;;
+    --force) force=1 ;;
     -y | --yes) assume_yes=1 ;;
     -h | --help) sed -n '/^# Usage:/,/^# needed/s/^# \{0,1\}//p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 1 ;;
@@ -119,6 +129,28 @@ chmod 700 "$STATE"
 # One installer at a time (both may run on one machine).
 exec 9>"$STATE/lock"
 flock -n 9 || die "another metastratum installer is running"
+
+# What is on the machine already that the installer would clash with,
+# found before it changes anything: problems stop it; takeovers (changing
+# what someone else set up) stop it unless --force; notes are said.
+problems=() takeovers=() notes=()
+problem() { problems+=("$*"); }
+takeover() { takeovers+=("$*"); }
+note() { notes+=("$*"); }
+report_conflicts() {
+  local p
+  for p in ${notes[@]+"${notes[@]}"}; do warn "$p"; done
+  for p in ${takeovers[@]+"${takeovers[@]}"}; do
+    if ((force)); then warn "going ahead (--force): $p"; fi
+  done
+  ((${#problems[@]} == 0 && (${#takeovers[@]} == 0 || force))) && return
+  {
+    echo "This machine has what the installer would clash with:"
+    for p in ${problems[@]+"${problems[@]}"}; do printf '  - %s\n' "$p"; done
+    for p in ${takeovers[@]+"${takeovers[@]}"}; do printf '  - %s (--force to go ahead anyway)\n' "$p"; done
+  } >&2
+  die "nothing was changed"
+}
 
 # Asks before going on, unless --yes.
 confirm() {
@@ -268,7 +300,39 @@ if [[ $ext_cidr != none ]]; then
 fi
 ((local_controller)) && controllers=https://$address:8443
 grep -qwE 'vmx|svm' /proc/cpuinfo ||
-  warn "this CPU shows no hardware virtualisation (VT-x/AMD-V): VMs will not start. Switch it on in the firmware settings."
+  note "this CPU shows no hardware virtualisation (VT-x/AMD-V): VMs will not start. Switch it on in the firmware settings."
+
+# What it would clash with, on a machine that is not a host yet.
+if [[ ! -e $CONF/agent.toml ]]; then
+  if command -v ovs-vsctl >/dev/null && ovs-vsctl --timeout=5 show >/dev/null 2>&1; then
+    remote=$(ovs-vsctl --if-exists get Open_vSwitch . external_ids:ovn-remote | tr -d '"')
+    [[ -n $remote ]] &&
+      takeover "Open vSwitch here is part of an OVN deployment (its southbound database is $remote): the agent would move it to metastratum's, and that deployment's ports here would lose their network"
+    if [[ $ext_cidr != none ]]; then
+      mappings=$(ovs-vsctl --if-exists get Open_vSwitch . external_ids:ovn-bridge-mappings | tr -d '"')
+      for m in ${mappings//,/ }; do
+        if [[ ${m%%:*} == external && ${m#*:} != br-ext ]]; then
+          problem "OVN's physical network \"external\" is on bridge ${m#*:} here already: leave metastratum's NATed one out (--external-cidr none), and declare an external network on that bridge instead"
+        fi
+      done
+      ovs-vsctl br-exists br-ext &&
+        takeover "an Open vSwitch bridge br-ext exists: it would get $ext_prefix.1/24, and NAT to the outside"
+    fi
+  fi
+  if [[ $ext_cidr != none ]] && ip link show br-ext >/dev/null 2>&1 &&
+    ! { command -v ovs-vsctl >/dev/null && ovs-vsctl br-exists br-ext; }; then
+    problem "a network interface br-ext exists (not an Open vSwitch bridge): metastratum's external network needs that name (or none: --external-cidr none)"
+  fi
+  if [[ -e /etc/pki/libvirt/servercert.pem ]]; then
+    takeover "libvirt has TLS certificates (/etc/pki/libvirt): the agent replaces them with its own, which other TLS clients of libvirt here do not trust"
+  fi
+  if command -v virsh >/dev/null; then
+    vms=$(virsh -q -c qemu:///system list --all --name 2>/dev/null | grep -c . || true)
+    ((vms > 0)) &&
+      note "$vms VMs here are not metastratum's: it leaves them alone, but its scheduler does not count the memory and CPUs they use"
+  fi
+fi
+report_conflicts
 
 cat <<EOF
 This installs a metastratum host on $host ($PRETTY_NAME), its VMs on local
@@ -345,12 +409,16 @@ start_services() {
     # ovsdb-server comes with ovs-vswitchd (its unit is static).
     arch) systemctl enable --now -q ovs-vswitchd ;;
   esac
-  if systemctl list-unit-files -q virtqemud.socket >/dev/null 2>&1; then
-    # libvirt's per-driver daemons, started on first use.
+  # libvirt as it runs: libvirtd where it is in use (Debian's default),
+  # else its per-driver daemons; never both, which would each manage QEMU.
+  if systemctl -q is-active libvirtd.service libvirtd.socket 2>/dev/null ||
+    systemctl -q is-enabled libvirtd.service libvirtd.socket 2>/dev/null ||
+    ! systemctl list-unit-files -q virtqemud.socket >/dev/null 2>&1; then
+    systemctl enable --now -q libvirtd
+  else
+    # Started on first use.
     systemctl enable --now -q virtqemud.socket virtsecretd.socket virtlogd.socket \
       virtnodedevd.socket virtstoraged.socket
-  else
-    systemctl enable --now -q libvirtd
   fi
   [[ -c /dev/kvm ]] || warn "there is no /dev/kvm: VMs will not start until hardware virtualisation works"
 }
