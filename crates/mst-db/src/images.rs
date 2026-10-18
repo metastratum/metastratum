@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use mst_core::ids::{ImageId, TenantId};
+use mst_core::ids::{HostId, ImageId, TenantId};
 use sqlx::PgExecutor;
 
 use crate::{Result, conflict_on_unique};
@@ -13,11 +13,22 @@ pub struct Image {
     pub format: String,
     pub shared: bool,
     pub created_at: DateTime<Utc>,
+    /// `downloading`, `ready` or `failed`.
+    pub state: String,
+    /// Why the download failed.
+    pub error: Option<String>,
+    /// The stored file's size.
+    pub size_bytes: Option<i64>,
+    /// The size of the disk it holds.
+    pub virtual_bytes: Option<i64>,
+    /// SHA-256 of the file downloaded from `source_url`.
+    pub sha256: Option<String>,
 }
 
 macro_rules! image_columns {
     () => {
-        "i.id, i.tenant_id, i.name, i.source_url, i.format, i.shared, i.created_at"
+        "i.id, i.tenant_id, i.name, i.source_url, i.format, i.shared, i.created_at,
+         i.state, i.error, i.size_bytes, i.virtual_bytes, i.sha256"
     };
 }
 
@@ -29,10 +40,11 @@ pub struct NewImage<'a> {
     pub shared: bool,
 }
 
+/// Adds an image, to be downloaded (see [`downloading`]).
 pub async fn create(db: impl PgExecutor<'_>, new: NewImage<'_>) -> Result<Image> {
     sqlx::query_as(concat!(
-        "INSERT INTO images AS i (id, tenant_id, name, source_url, format, shared)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING ",
+        "INSERT INTO images AS i (id, tenant_id, name, source_url, format, shared, state)
+         VALUES ($1, $2, $3, $4, $5, $6, 'downloading') RETURNING ",
         image_columns!()
     ))
     .bind(ImageId::new())
@@ -97,7 +109,8 @@ pub async fn is_usable_by(
     .await?)
 }
 
-/// Whether any volume is built on the image.
+/// Whether any volume is built on the image: has it as its backing file
+/// (made before the image store), or is being made from it.
 pub async fn in_use(db: impl PgExecutor<'_>, id: ImageId) -> Result<bool> {
     Ok(
         sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM volumes WHERE image_id = $1)")
@@ -107,7 +120,7 @@ pub async fn in_use(db: impl PgExecutor<'_>, id: ImageId) -> Result<bool> {
     )
 }
 
-/// Deletes an image no volume is built on.
+/// Deletes an image no volume is built on (see [`in_use`]).
 pub async fn delete(db: &mut sqlx::PgConnection, id: ImageId) -> Result<()> {
     let users: i64 = sqlx::query_scalar("SELECT count(*) FROM volumes WHERE image_id = $1")
         .bind(id)
@@ -120,7 +133,7 @@ pub async fn delete(db: &mut sqlx::PgConnection, id: ImageId) -> Result<()> {
             format!("{users} VM disks are")
         };
         return Err(mst_core::Error::Conflict(format!(
-            "{which} built on this image; delete those VMs first"
+            "{which} built on this image, or being made from it; delete those VMs first"
         ))
         .into());
     }
@@ -147,4 +160,169 @@ pub async fn all_ids(db: impl PgExecutor<'_>) -> Result<Vec<ImageId>> {
     Ok(sqlx::query_scalar("SELECT id FROM images")
         .fetch_all(db)
         .await?)
+}
+
+/// The image locked until the transaction ends.
+pub async fn get_for_update(db: &mut sqlx::PgConnection, id: ImageId) -> Result<Image> {
+    sqlx::query_as(concat!(
+        "SELECT ",
+        image_columns!(),
+        " FROM images i WHERE i.id = $1 FOR UPDATE"
+    ))
+    .bind(id)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| {
+        mst_core::Error::NotFound {
+            kind: "image",
+            id: id.to_string(),
+        }
+        .into()
+    })
+}
+
+/// Marks the image as being downloaded (again).
+pub async fn downloading(db: impl PgExecutor<'_>, id: ImageId) -> Result<()> {
+    sqlx::query("UPDATE images SET state = 'downloading', error = NULL WHERE id = $1")
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// What a host's store holds of an image.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct Stored {
+    pub size_bytes: i64,
+    pub virtual_bytes: i64,
+    /// Empty when the host had it already.
+    #[serde(default)]
+    pub sha256: String,
+}
+
+/// Records a host's copy of the image: it is ready, with what the copy
+/// says of it (a hash only when it was downloaded just now, and the first
+/// one recorded stays). Fails if the image is gone.
+pub async fn add_copy(
+    db: &mut sqlx::PgConnection,
+    id: ImageId,
+    host: HostId,
+    stored: &Stored,
+) -> Result<()> {
+    let found = sqlx::query(
+        "UPDATE images SET state = 'ready', error = NULL, size_bytes = $2, virtual_bytes = $3,
+                sha256 = coalesce(sha256, nullif($4, ''))
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(stored.size_bytes)
+    .bind(stored.virtual_bytes)
+    .bind(&stored.sha256)
+    .execute(&mut *db)
+    .await?
+    .rows_affected();
+    if found == 0 {
+        return Err(mst_core::Error::NotFound {
+            kind: "image",
+            id: id.to_string(),
+        }
+        .into());
+    }
+    sqlx::query(
+        "INSERT INTO image_copies (image_id, host_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+    )
+    .bind(id)
+    .bind(host)
+    .execute(&mut *db)
+    .await?;
+    Ok(())
+}
+
+/// Forgets a host's copy (found missing).
+pub async fn remove_copy(db: impl PgExecutor<'_>, id: ImageId, host: HostId) -> Result<()> {
+    sqlx::query("DELETE FROM image_copies WHERE image_id = $1 AND host_id = $2")
+        .bind(id)
+        .bind(host)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// Marks the download failed, saying why.
+pub async fn failed(db: impl PgExecutor<'_>, id: ImageId, error: &str) -> Result<()> {
+    sqlx::query("UPDATE images SET state = 'failed', error = $2 WHERE id = $1")
+        .bind(id)
+        .bind(error)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// The hosts holding a copy (decommissioned ones hold nothing).
+pub async fn copies(db: impl PgExecutor<'_>, id: ImageId) -> Result<Vec<HostId>> {
+    Ok(sqlx::query_scalar(
+        "SELECT c.host_id FROM image_copies c JOIN hosts h ON h.id = c.host_id
+         WHERE c.image_id = $1 AND h.state <> 'decommissioned' ORDER BY c.created_at",
+    )
+    .bind(id)
+    .fetch_all(db)
+    .await?)
+}
+
+/// The names of the hosts holding a copy of each of the images.
+pub async fn copy_hosts(
+    db: impl PgExecutor<'_>,
+    ids: &[ImageId],
+) -> Result<std::collections::HashMap<ImageId, Vec<String>>> {
+    let rows: Vec<(ImageId, String)> = sqlx::query_as(
+        "SELECT c.image_id, h.name FROM image_copies c JOIN hosts h ON h.id = c.host_id
+         WHERE c.image_id = ANY($1) AND h.state <> 'decommissioned' ORDER BY h.name",
+    )
+    .bind(ids.iter().map(|i| i.0).collect::<Vec<_>>())
+    .fetch_all(db)
+    .await?;
+    let mut out = std::collections::HashMap::<ImageId, Vec<String>>::new();
+    for (id, name) in rows {
+        out.entry(id).or_default().push(name);
+    }
+    Ok(out)
+}
+
+/// Where a tenant's images are in hosts' stores: its lineage, tenant IDs
+/// (simple hex form) separated by '/'.
+pub async fn store_path(db: impl PgExecutor<'_>, tenant: TenantId) -> Result<String> {
+    sqlx::query_scalar("SELECT replace(ltree2text(path), '.', '/') FROM tenants WHERE id = $1")
+        .bind(tenant)
+        .fetch_optional(db)
+        .await?
+        .ok_or_else(|| {
+            mst_core::Error::NotFound {
+                kind: "tenant",
+                id: tenant.to_string(),
+            }
+            .into()
+        })
+}
+
+/// Holds the lock serializing getting an image onto a host, on a connection
+/// of its own: released when dropped, or if this process dies.
+pub struct CopyLock(sqlx::PgConnection);
+
+impl CopyLock {
+    pub async fn take(pool: &sqlx::PgPool, id: ImageId, host: HostId) -> Result<Self> {
+        use sqlx::Connection;
+        let mut conn = sqlx::PgConnection::connect_with(&pool.connect_options()).await?;
+        sqlx::query("SELECT pg_advisory_lock(hashtextextended('image-copy:' || $1::text || ':' || $2::text, 0))")
+            .bind(id)
+            .bind(host)
+            .execute(&mut conn)
+            .await?;
+        Ok(Self(conn))
+    }
+
+    pub async fn release(self) {
+        use sqlx::Connection;
+        // Closing the session drops its advisory locks.
+        let _ = self.0.close().await;
+    }
 }

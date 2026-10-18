@@ -297,15 +297,9 @@ A storage pool that holds no VM disks can be removed two ways:
   there stay. If another pool uses the same storage (the same NFS export,
   or the same Ceph pool), the data stays: that pool needs it.
 
-An image is refused when it describes a disk larger than the one it is for
-(checked before it is unpacked: a small download can unpack into a huge
-disk). Copies of tenants' images are dropped from hosts once no VM disk is
-built on them any more; the provider's stay cached.
-
-Deleting an image (no VM disk may be built on it) removes its cached copy
-from every host and every shared pool. Hosts that are down at the time
-clean up when they reconnect. The outcome is in the audit log
-(`storage_pool.cleanup`, `image.cleanup`).
+Deleting an image removes every host's copy of it (see Images). Hosts that
+are down at the time clean up when they reconnect. The outcome is in the
+audit log (`storage_pool.cleanup`, `image.cleanup`).
 
 ### CPUs and clusters
 
@@ -382,6 +376,44 @@ A fenced host stays `fenced`, taking no VMs, until you bring it back:
 repair it and power it on; its agent reconnects by itself, and removes the
 domains of VMs that were restarted elsewhere. Then Manage → Save puts it
 back in service.
+
+## Images
+
+Adding an image downloads it at once, onto a connected host picked at
+random, into that host's image store: `images/<tenant>/<sub-tenant>/…/<image
+ID>.qcow2` under the agent's data directory, the tenants named by their
+IDs. The images page shows when it is there, its size, and which hosts hold
+it; a download that failed says why, and can be tried again (Download
+again). The SHA-256 of what was downloaded is recorded.
+
+A VM made from an image is made on its host from that host's copy. A host
+without one gets it from a host that has it: served read-only with
+`qemu-nbd` over TLS, with credentials for that copy alone, on a port of the
+migration range (49152-49215), as disks move. Hosts keep their copy, and
+each is a source for the next. The VM's disk is a copy of the image of its
+own, in its pool: it depends on nothing, so a VM migrates without its
+image, and keeps working once the image is deleted. VMs made while the
+image downloads wait for it.
+
+Should no host that holds an image be reachable (or every one be
+decommissioned), the host that needs it downloads it again, from its
+address; what it downloads must then be the file first downloaded (the same
+SHA-256), or the VM is not made.
+
+A tenant's image comes from a public internet address only, and may
+describe a disk of at most the host's largest download (`image_max_gib` in
+`agent.toml`, 64 GiB by default); the provider's may come from anywhere
+and describe disks up to 1 TiB. Both are checked before the download is
+unpacked: a small download can unpack into a huge disk. Images count
+against their tenant's image quota (Images, in GiB) at their stored size,
+once, however many hosts hold them; none is added where it is used up.
+
+Disks made before images were kept in the store (before 0.5) are overlays
+on a copy of their image cached in their pool (`images/<image ID>.qcow2`,
+or `img-*` on Ceph). Such an image cannot be deleted while they exist. A
+local one becomes a disk of its own when its VM migrates between hosts
+whose agents copy disks whole (0.5 and later); on NFS and Ceph it stays
+an overlay.
 
 ## Load balancers
 
@@ -510,8 +542,7 @@ new network interface. It boots as a new machine: cloud-init gives it its
 own network, host name and SSH host keys, and the password or keys given
 when cloning; the disks keep everything else. On local storage the clone
 is made on the same host; on NFS and Ceph anywhere the cluster has room.
-Copies on local and NFS storage keep sharing the image the original was
-made from, so they take only what differs from it; Ceph copies are whole.
+Copies are whole: they depend on nothing, as disks made from images do.
 
 Make a stopped VM a **template** (Details → Template) to keep it for
 cloning: a template is never started, and Create VM offers it next to the
@@ -698,6 +729,12 @@ until then its backups are taken in full, and say so. Keep to the order
 above: only upgraded controllers merge a backup into the ones built on it
 when deleting it, and upgraded agents refuse to delete a backup others
 build on for a controller that does not.
+
+From 0.5 on, images are downloaded as they are added, into hosts' image
+stores, and VMs' disks are copies of them (see Images). Images added before
+are downloaded by the first host that makes a disk from one. Hosts whose
+agents are older keep making disks as overlays on a cached download, and
+migrations involving them copy only local disks' top layer.
 
 From 0.4 on, the controller's default ports are 7820 (the API) and 7821
 (the agent endpoint), not 8080 and 8443. A controller whose configuration

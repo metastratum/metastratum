@@ -597,10 +597,26 @@ async fn create_inner(
     validate(&req, matches!(source, Source::Image))?;
     let tenant = req.tenant_id.unwrap_or(p.tenant_id);
     authorize(&state.db, &p, Perm::VmWrite, tenant).await?;
-    if matches!(source, Source::Image)
-        && !mst_db::images::is_usable_by(&state.db, req.image_id, tenant).await?
-    {
-        return Err(ApiError::not_found("image"));
+    if matches!(source, Source::Image) {
+        if !mst_db::images::is_usable_by(&state.db, req.image_id, tenant).await? {
+            return Err(ApiError::not_found("image"));
+        }
+        // One being downloaded is waited for.
+        let image = mst_db::images::get(&state.db, req.image_id).await?;
+        if image.state == "failed" {
+            return Err(ApiError::conflict(format!(
+                "the image could not be downloaded ({}); download it again first",
+                image.error.as_deref().unwrap_or("no reason given")
+            )));
+        }
+        if let Some(size) = image.virtual_bytes
+            && (req.disk_gib * GIB) < size as u64
+        {
+            return Err(ApiError::bad_request(format!(
+                "the disk must be at least as large as the image: {} GiB",
+                (size as u64).div_ceil(GIB)
+            )));
+        }
     }
     // A clone's disks are copied in their own pools: local ones on their
     // host, which pins the clone there.
@@ -692,8 +708,8 @@ async fn create_inner(
             unit: None,
             extra: Default::default(),
         }],
-        // Every disk the source has, at its size and on the image it was
-        // made from (file pools keep sharing it).
+        // Every disk the source has, at its size, made from the image it
+        // was made from (copies, which depend on no image).
         Source::Clone(vm) => vm
             .spec
             .0
@@ -803,7 +819,9 @@ async fn create_inner(
                 host_id: local.then_some(host.id),
                 pool_id: disk.pool_id,
                 size_bytes: disk.size_bytes as i64,
-                image_id: disk.image_id,
+                // Its image stays until the volume is made from it (then
+                // the volume depends on it no more). Clones depend on none.
+                image_id: disk.image_id.filter(|_| disk.cloned_from.is_none()),
             },
         )
         .await?;

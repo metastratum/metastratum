@@ -24,7 +24,7 @@ FIRST=(storage limits m5)
 LAST=(browser)
 # The slowest start first, so that none of them is left running alone at
 # the end.
-SLOW=(m4 resize backups load_balancers m3 balloon clone snapshots)
+SLOW=(m4 resize backups load_balancers m3 balloon clone snapshots images)
 JOBS=3
 CHANGED=
 LIST=
@@ -75,7 +75,8 @@ affects() {
       crates/mst-controller/src/crl.rs | crates/mst-controller/src/ca.rs) echo m5 ;;
     crates/mst-controller/src/migration.rs | crates/mst-controller/src/engine/migrate.rs) echo m4 balloon hotplug cpu browser ;;
     crates/mst-controller/src/cpu.rs) echo cpu m4 m5 ;;
-    crates/mst-storage/*) echo storage clone snapshots backups resize m4 disks ;;
+    crates/mst-storage/*) echo storage clone snapshots backups resize m4 disks images ;;
+    crates/mst-controller/src/api/images.rs | crates/mst-controller/src/engine/image.rs) echo images m5 browser ;;
     crates/mst-controller/src/api/disks.rs | crates/mst-controller/src/engine/disk.rs | \
       crates/mst-agent/src/transfer.rs) echo disks browser ;;
     *) echo all ;;

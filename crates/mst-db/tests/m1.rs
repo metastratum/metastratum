@@ -448,6 +448,86 @@ async fn images_visible_to_owner_and_shared_down_the_tree(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
+    let r = root(&pool).await;
+    let a = tenants::create(&pool, Some(r.id), "acme", "Acme")
+        .await
+        .unwrap();
+    let img = images::create(
+        &pool,
+        images::NewImage {
+            tenant_id: a.id,
+            name: "debian",
+            source_url: "http://x",
+            format: "qcow2",
+            shared: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(img.state, "downloading");
+    let hex = |id: uuid::Uuid| id.simple().to_string();
+    assert_eq!(
+        images::store_path(&pool, a.id).await.unwrap(),
+        format!("{}/{}", hex(r.id.0), hex(a.id.0))
+    );
+
+    images::failed(&pool, img.id, "HTTP 404").await.unwrap();
+    let got = images::get(&pool, img.id).await.unwrap();
+    assert_eq!(
+        (got.state.as_str(), got.error.as_deref()),
+        ("failed", Some("HTTP 404"))
+    );
+    images::downloading(&pool, img.id).await.unwrap();
+    assert_eq!(images::get(&pool, img.id).await.unwrap().error, None);
+
+    let h1 = host(&pool).await;
+    sqlx::query("UPDATE hosts SET name = 'other', address = '10.77.0.12', ovn_chassis = 'other'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let h2 = host(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let stored = |sha256: &str| images::Stored {
+        size_bytes: 400 << 20,
+        virtual_bytes: 3 << 30,
+        sha256: sha256.into(),
+    };
+    images::add_copy(&mut conn, img.id, h1.id, &stored("abc"))
+        .await
+        .unwrap();
+    // A copy has no hash of its own: the download's stays.
+    images::add_copy(&mut conn, img.id, h2.id, &stored(""))
+        .await
+        .unwrap();
+    images::add_copy(&mut conn, img.id, h2.id, &stored(""))
+        .await
+        .unwrap();
+    let got = images::get(&pool, img.id).await.unwrap();
+    assert_eq!(got.state, "ready");
+    assert_eq!(got.sha256.as_deref(), Some("abc"));
+    assert_eq!(got.virtual_bytes, Some(3 << 30));
+    assert_eq!(images::copies(&pool, img.id).await.unwrap(), [h1.id, h2.id]);
+    // Charged its stored size once, however many hosts hold it.
+    let used = mst_db::quotas::usage(&pool, a.id).await.unwrap();
+    assert_eq!(used["image_gib"], 1);
+    assert_eq!(
+        images::copy_hosts(&pool, &[img.id]).await.unwrap()[&img.id].len(),
+        2
+    );
+    images::remove_copy(&pool, img.id, h1.id).await.unwrap();
+    assert_eq!(images::copies(&pool, img.id).await.unwrap(), [h2.id]);
+
+    // Deleted meanwhile: nothing to record a copy on.
+    images::delete(&mut conn, img.id).await.unwrap();
+    assert!(
+        images::add_copy(&mut conn, img.id, h1.id, &stored(""))
+            .await
+            .is_err()
+    );
+}
+
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
 async fn vm_listing_by_subtree_and_power_observation(pool: PgPool) {
     let r = root(&pool).await;
     let a = tenants::create(&pool, Some(r.id), "acme", "Acme")

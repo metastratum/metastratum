@@ -539,7 +539,7 @@ pub async fn cleaned_up(
     outcome.finish(clean(api, run).await)
 }
 
-/// Removes what a run made: VMs and disks named after it, and its tenants
+/// Removes what a run made: VMs, disks and images named after it, and its tenants
 /// (those whose slug path starts with it) with what they hold (VMs, disks,
 /// images), deepest first. Says what it could not remove.
 pub async fn clean(api: &Api, run: &str) -> Result<()> {
@@ -610,6 +610,20 @@ pub async fn clean(api: &Api, run: &str) -> Result<()> {
                     failed.push(format!("image {}: {b}", i["name"]));
                 }
             }
+        }
+    }
+
+    // Images named after the run, in the caller's tenant.
+    let images = api.get("/images").await?;
+    for i in images.as_array().into_iter().flatten() {
+        if !i["name"].as_str().is_some_and(|n| n.starts_with(run)) {
+            continue;
+        }
+        let path = format!("/images/{}", i["id"].as_str().unwrap_or_default());
+        match api.try_send(reqwest::Method::DELETE, &path, None).await {
+            Ok((st, _)) if st < 300 || st == 404 => {}
+            Ok((_, b)) => failed.push(format!("image {}: {b}", i["name"])),
+            Err(e) => failed.push(format!("image {}: {e:#}", i["name"])),
         }
     }
 

@@ -644,6 +644,10 @@ export interface paths {
         /** Images usable by the tenant: its own and those shared by its ancestors. */
         get: operations["list_images"];
         put?: never;
+        /**
+         * Adds an image: a host picked at random downloads it into its image
+         *     store (the task), and hosts copy it from there to make VMs from it.
+         */
         post: operations["create_image"];
         delete?: never;
         options?: never;
@@ -661,7 +665,33 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
+        /**
+         * Deletes an image, and every host's copy. VMs made from it keep their
+         *     disks, which are copies; only disks made before the image store, built
+         *     on the image, keep it from going.
+         */
         delete: operations["delete_image"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/images/{id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Downloads the image again: after downloading it failed, or when no
+         *     host holds a copy any more (each was decommissioned). Downloaded again,
+         *     it must be the file first downloaded, if one was.
+         */
+        post: operations["download_image"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2204,7 +2234,7 @@ export interface components {
             format: string;
             name: string;
             shared?: boolean;
-            /** @description HTTP(S) URL hosts download the image from on first use. */
+            /** @description HTTP(S) URL a host downloads the image from, as it is added. */
             source_url: string;
             tenant_id?: components["schemas"]["TenantId"] | null;
         };
@@ -2345,6 +2375,10 @@ export interface components {
             name: string;
             tenant_id?: components["schemas"]["TenantId"] | null;
         };
+        CreatedImage: components["schemas"]["ImageView"] & {
+            /** @description The download. */
+            task_id: components["schemas"]["TaskId"];
+        };
         /** @description What decommissioning a host did. */
         DecommissionReport: {
             certificates_revoked: number;
@@ -2417,6 +2451,9 @@ export interface components {
             tenant_id: components["schemas"]["TenantId"];
             vm_id?: components["schemas"]["VmId"] | null;
             vm_name?: string | null;
+        };
+        DownloadTask: {
+            task_id: components["schemas"]["TaskId"];
         };
         EvacuateRef: {
             task_id: components["schemas"]["TaskId"];
@@ -2569,14 +2606,39 @@ export interface components {
         ImageView: {
             /** Format: date-time */
             created_at: string;
+            /** @description Why downloading it failed. */
+            error?: string | null;
             /** @description `qcow2` or `raw`. */
             format: string;
+            /**
+             * @description The hosts holding a copy (VMs made from it on other hosts copy it
+             *     from these).
+             */
+            hosts: string[];
             id: components["schemas"]["ImageId"];
             name: string;
+            /** @description SHA-256 of the file downloaded from `source_url`. */
+            sha256?: string | null;
             /** @description Usable by the owning tenant's descendants too. */
             shared: boolean;
+            /**
+             * Format: int64
+             * @description Its size, stored (qcow2).
+             */
+            size_bytes?: number | null;
             source_url: string;
+            /**
+             * @description `downloading` (VMs made from it meanwhile wait for it), `ready`, or
+             *     `failed` (see `error`; it can be downloaded again).
+             */
+            state: string;
             tenant_id: components["schemas"]["TenantId"];
+            /**
+             * Format: int64
+             * @description The size of the disk it holds: VMs' disks made from it are at least
+             *     as large.
+             */
+            virtual_bytes?: number | null;
         };
         InheritedLimit: {
             /** Format: int64 */
@@ -5126,7 +5188,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImageView"];
+                    "application/json": components["schemas"]["CreatedImage"];
                 };
             };
             400: {
@@ -5166,7 +5228,41 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description In use by volumes */
+            /** @description VM disks are built on it */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    download_image: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["ImageId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DownloadTask"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Being downloaded, or held by a host */
             409: {
                 headers: {
                     [name: string]: unknown;

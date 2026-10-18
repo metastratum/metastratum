@@ -191,8 +191,14 @@ pub async fn observe_power(
 }
 
 /// Moves a VM to the host it was migrated to: it runs there now, and its
-/// host-local volumes are there too.
-pub async fn moved(db: &mut sqlx::PgConnection, id: VmId, host: HostId) -> Result<()> {
+/// host-local volumes are there too; copied whole (`standalone`), they no
+/// longer have a backing image.
+pub async fn moved(
+    db: &mut sqlx::PgConnection,
+    id: VmId,
+    host: HostId,
+    standalone: bool,
+) -> Result<()> {
     sqlx::query(
         "UPDATE vms SET host_id = $2, status = 'ready', power = 'running', power_reason = NULL,
                 power_observed_at = now(), updated_at = now() WHERE id = $1",
@@ -201,10 +207,35 @@ pub async fn moved(db: &mut sqlx::PgConnection, id: VmId, host: HostId) -> Resul
     .bind(host)
     .execute(&mut *db)
     .await?;
-    sqlx::query("UPDATE volumes SET host_id = $2 WHERE vm_id = $1 AND host_id IS NOT NULL")
+    sqlx::query(
+        "UPDATE volumes SET host_id = $2, image_id = CASE WHEN $3 THEN NULL ELSE image_id END
+         WHERE vm_id = $1 AND host_id IS NOT NULL",
+    )
+    .bind(id)
+    .bind(host)
+    .bind(standalone)
+    .execute(&mut *db)
+    .await?;
+    Ok(())
+}
+
+/// The image a volume is backed by, if any (volumes made before the image
+/// store; see `images`).
+pub async fn volume_image(db: impl PgExecutor<'_>, id: VolumeId) -> Result<Option<ImageId>> {
+    Ok(
+        sqlx::query_scalar::<_, Option<ImageId>>("SELECT image_id FROM volumes WHERE id = $1")
+            .bind(id)
+            .fetch_optional(db)
+            .await?
+            .flatten(),
+    )
+}
+
+/// Records that a volume depends on no image (any more).
+pub async fn volume_standalone(db: impl PgExecutor<'_>, id: VolumeId) -> Result<()> {
+    sqlx::query("UPDATE volumes SET image_id = NULL WHERE id = $1")
         .bind(id)
-        .bind(host)
-        .execute(&mut *db)
+        .execute(db)
         .await?;
     Ok(())
 }

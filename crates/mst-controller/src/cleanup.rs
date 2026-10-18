@@ -143,9 +143,10 @@ pub async fn pool_deleted(
     .await;
 }
 
-/// After an image was deleted: every host drops its local copy, and one
-/// drops the copies in shared pools.
-pub async fn image_deleted(state: AppState, image: mst_db::images::Image) {
+/// After an image was deleted: every host drops its copies (in its store,
+/// and cached), and one drops the copies cached in shared pools. Hosts away
+/// now drop theirs when they are back.
+pub async fn image_deleted(state: AppState, image: mst_db::images::Image, tenant_path: String) {
     let shared: Vec<mst_proto::Pool> = mst_db::storage_pools::list(&state.db)
         .await
         .unwrap_or_default()
@@ -161,6 +162,7 @@ pub async fn image_deleted(state: AppState, image: mst_db::images::Image) {
         let cmd = Cmd::DeleteImage(mst_proto::DeleteImage {
             image_id: image.id.to_string(),
             pools: pools.clone(),
+            tenant_path: tenant_path.clone(),
         });
         match state.agents.call(h.id, cmd, Duration::from_secs(300)).await {
             Ok(()) => {

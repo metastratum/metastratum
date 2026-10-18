@@ -8,7 +8,7 @@ use mst_db::vms::Vm;
 use mst_proto::command::Cmd;
 use mst_proto::{
     CloneVolume, DefineVm, DeleteVolume, EnsureImage, EnsureVolume, RebootVm, RestoreVolume,
-    StartVm, StopVm, UndefineVm,
+    StartVm, StopVm, UndefineVm, VolumeFromImage,
 };
 
 use super::TaskCtx;
@@ -83,41 +83,70 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
     }
 
     ctx.step("image", 0.2).await;
+    // A disk made from an image is a copy of the host's copy of it, and
+    // depends on nothing. Hosts whose agents predate the image store put
+    // an overlay on a cached download instead.
+    let store = mst_db::hosts::agent_supports(db, host, "volume_from_image").await?;
+    let mut from_store = std::collections::BTreeSet::new();
     for disk in &spec.disks {
-        if let Some(image_id) = disk.image_id {
-            let image = mst_db::images::get(db, image_id).await?;
-            call(
-                ctx,
-                host,
-                Cmd::EnsureImage(EnsureImage {
-                    trusted: super::image_trusted(db, &image).await?,
-                    image_id: image.id.to_string(),
-                    source_url: image.source_url,
-                    format: image.format,
-                    pool: Some(pools[&disk.pool_id].clone()),
-                    // An image larger than the disk is refused before it
-                    // takes up any room.
-                    max_virtual_bytes: disk.size_bytes,
-                }),
-                SLOW,
-            )
-            .await
-            .context("fetching image")?;
+        let Some(image_id) = disk.image_id else {
+            continue;
+        };
+        if disk.cloned_from.is_some() || disk.restored_from.is_some() {
+            continue;
         }
+        // Made already (a resumed task): it no longer names its image.
+        if mst_db::vms::volume_image(db, disk.volume_id)
+            .await?
+            .is_none()
+        {
+            continue;
+        }
+        if store {
+            super::image::ensure_on(ctx, image_id, host)
+                .await
+                .context("getting the image onto the host")?;
+            from_store.insert(disk.volume_id);
+            continue;
+        }
+        let image = mst_db::images::get(db, image_id).await?;
+        call(
+            ctx,
+            host,
+            Cmd::EnsureImage(EnsureImage {
+                trusted: super::image_trusted(db, &image).await?,
+                image_id: image.id.to_string(),
+                source_url: image.source_url,
+                format: image.format,
+                pool: Some(pools[&disk.pool_id].clone()),
+                // An image larger than the disk is refused before it
+                // takes up any room.
+                max_virtual_bytes: disk.size_bytes,
+            }),
+            SLOW,
+        )
+        .await
+        .context("fetching image")?;
     }
 
     ctx.step("volumes", 0.6).await;
     for disk in &spec.disks {
+        if from_store.contains(&disk.volume_id) {
+            let image_id = disk.image_id.context("no image")?;
+            volume_from_image(ctx, host, disk, image_id, &pools[&disk.pool_id]).await?;
+            continue;
+        }
         let pool = Some(pools[&disk.pool_id].clone());
         let (cmd, timeout) = match disk.restored_from {
             // A copy of another VM's disk, which takes as long as its size.
+            // It depends on no image, whatever the source does.
             None if disk.cloned_from.is_some() => {
                 let cmd = Cmd::CloneVolume(CloneVolume {
                     pool,
                     source_volume_id: disk.cloned_from.map(|v| v.to_string()).unwrap_or_default(),
                     volume_id: disk.volume_id.to_string(),
                     size_bytes: disk.size_bytes,
-                    image_id: disk.image_id.map(|i| i.to_string()).unwrap_or_default(),
+                    image_id: String::new(),
                 });
                 (cmd, RESTORE)
             }
@@ -135,11 +164,14 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
                 });
                 (cmd, RESTORE)
             }
+            // Blank, or (made before the image store, or on a host without
+            // one) on its image.
             None => {
+                let backing = mst_db::vms::volume_image(db, disk.volume_id).await?;
                 let cmd = Cmd::EnsureVolume(EnsureVolume {
                     volume_id: disk.volume_id.to_string(),
                     size_bytes: disk.size_bytes,
-                    image_id: disk.image_id.map(|i| i.to_string()).unwrap_or_default(),
+                    image_id: backing.map(|i| i.to_string()).unwrap_or_default(),
                     pool,
                 });
                 (cmd, QUICK)
@@ -195,6 +227,41 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
         .await
         .context("starting VM")?;
     }
+    Ok(())
+}
+
+/// Makes the disk a copy of the image in the host's store. Should the store
+/// turn out not to hold it after all (removed by hand), the image gets
+/// there again, once.
+async fn volume_from_image(
+    ctx: &TaskCtx,
+    host: HostId,
+    disk: &mst_core::vm::DiskSpec,
+    image_id: mst_core::ids::ImageId,
+    pool: &mst_proto::Pool,
+) -> Result<()> {
+    let db = &ctx.state.db;
+    let image = mst_db::images::get(db, image_id).await?;
+    let cmd = Cmd::VolumeFromImage(VolumeFromImage {
+        volume_id: disk.volume_id.to_string(),
+        size_bytes: disk.size_bytes,
+        pool: Some(pool.clone()),
+        image_id: image_id.to_string(),
+        tenant_path: mst_db::images::store_path(db, image.tenant_id).await?,
+    });
+    match call(ctx, host, cmd.clone(), RESTORE).await {
+        Err(e) if super::image::missing_from_store(&e) => {
+            mst_db::images::remove_copy(db, image_id, host).await?;
+            super::image::ensure_on(ctx, image_id, host)
+                .await
+                .context("getting the image onto the host")?;
+            call(ctx, host, cmd, RESTORE)
+                .await
+                .context("creating volume")?;
+        }
+        r => r.context("creating volume")?,
+    }
+    mst_db::vms::volume_standalone(db, disk.volume_id).await?;
     Ok(())
 }
 
@@ -323,9 +390,11 @@ async fn drop_unused_images(
         {
             continue;
         }
+        // The cache only: the store's copy is the host's to give others.
         let cmd = Cmd::DeleteImage(mst_proto::DeleteImage {
             image_id: id.to_string(),
             pools,
+            tenant_path: String::new(),
         });
         match ctx.state.agents.call(host, cmd, QUICK).await {
             Ok(()) => tracing::info!(image = %id, "dropped an unused image's cached copies"),

@@ -11,7 +11,7 @@ use sqlx::{PgConnection, PgExecutor};
 
 use crate::Result;
 
-pub const RESOURCES: [&str; 9] = [
+pub const RESOURCES: [&str; 10] = [
     "vms",
     "vcpus",
     "memory_mib",
@@ -21,6 +21,7 @@ pub const RESOURCES: [&str; 9] = [
     "load_balancers",
     "vpcs",
     "snapshot_gib",
+    "image_gib",
 ];
 const GIB: i64 = 1 << 30;
 
@@ -30,7 +31,8 @@ pub type Amounts = BTreeMap<String, i64>;
 /// What a tenant's subtree currently uses.
 pub async fn usage(db: impl PgExecutor<'_>, tenant_id: TenantId) -> Result<Amounts> {
     #[allow(clippy::type_complexity)]
-    let (vms, vcpus, memory, disk, fips, backups, lbs, vpcs, snaps): (
+    let (vms, vcpus, memory, disk, fips, backups, lbs, vpcs, snaps, images): (
+        i64,
         i64,
         i64,
         i64,
@@ -51,7 +53,8 @@ pub async fn usage(db: impl PgExecutor<'_>, tenant_id: TenantId) -> Result<Amoun
            (SELECT coalesce(sum(CASE WHEN state = 'running' THEN size_bytes ELSE coalesce(stored_bytes, size_bytes) END), 0)::bigint FROM backups WHERE state <> 'failed' AND tenant_id IN (SELECT id FROM sub)),
            (SELECT count(*) FROM load_balancers WHERE tenant_id IN (SELECT id FROM sub)),
            (SELECT count(*) FROM vpcs WHERE tenant_id IN (SELECT id FROM sub)),
-           (SELECT coalesce(sum(size_bytes), 0)::bigint FROM snapshots WHERE state <> 'failed' AND tenant_id IN (SELECT id FROM sub))",
+           (SELECT coalesce(sum(size_bytes), 0)::bigint FROM snapshots WHERE state <> 'failed' AND tenant_id IN (SELECT id FROM sub)),
+           (SELECT coalesce(sum(size_bytes), 0)::bigint FROM images WHERE state = 'ready' AND tenant_id IN (SELECT id FROM sub))",
     )
     .bind(tenant_id)
     .fetch_one(db)
@@ -66,6 +69,7 @@ pub async fn usage(db: impl PgExecutor<'_>, tenant_id: TenantId) -> Result<Amoun
         ("load_balancers", lbs),
         ("vpcs", vpcs),
         ("snapshot_gib", (snaps + GIB - 1) / GIB),
+        ("image_gib", (images + GIB - 1) / GIB),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))

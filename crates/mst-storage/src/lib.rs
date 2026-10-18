@@ -11,6 +11,7 @@ mod fetch;
 mod pools;
 mod rbd;
 mod snapshots;
+mod store;
 mod transfer;
 
 pub use fetch::{FetchPolicy, PublicOnly, check_url, is_public};
@@ -18,6 +19,7 @@ pub use fetch::{FetchPolicy, PublicOnly, check_url, is_public};
 pub use pools::{Pool, PoolSpec, Pools};
 pub use rbd::RbdPool;
 pub use snapshots::snapshot_name;
+pub use store::{ImageStore, StoredImage};
 pub use transfer::{CopySource, NbdSource, copy_into};
 
 use std::collections::HashMap;
@@ -217,7 +219,7 @@ impl FilePool {
         let part = dest.with_extension(format!("{unique}.part"));
         let converted = dest.with_extension(format!("{unique}.tmp"));
         let result = async {
-            fetch(url, format, &part, &converted, "qcow2", policy).await?;
+            fetch(url, format, &part, &converted, "qcow2", policy, None).await?;
             set_mode(&converted, 0o600).await?;
             // Another host finished first: keep its copy, which running VMs
             // may already use as a backing file.
@@ -512,7 +514,8 @@ async fn set_mode(path: &Path, mode: u32) -> Result<()> {
 }
 
 /// Downloads `url` to `part`, checks it, and converts it to `out_format` at
-/// `out`. See [`fetch`] for what is refused.
+/// `out`. See [`fetch`] for what is refused. Returns the SHA-256 of what was
+/// downloaded (hex); with `sha256`, that must be it.
 pub(crate) async fn fetch(
     url: &str,
     format: &str,
@@ -520,12 +523,20 @@ pub(crate) async fn fetch(
     out: &Path,
     out_format: &str,
     policy: FetchPolicy,
-) -> Result<()> {
+    sha256: Option<&str>,
+) -> Result<String> {
     let declared = match format {
         "qcow2" | "raw" => format,
         other => return Err(Error::InvalidImage(format!("unsupported format {other}"))),
     };
-    fetch::download(url, part, policy).await?;
+    let hash = fetch::download(url, part, policy).await?;
+    if let Some(want) = sha256
+        && !hash.eq_ignore_ascii_case(want)
+    {
+        return Err(Error::Download(format!(
+            "{url} is no longer the image it was (its SHA-256 is {hash}, not {want})"
+        )));
+    }
     let size = fetch::check_untrusted(part, declared).await?;
     if size > policy.max_virtual_bytes {
         return Err(Error::InvalidImage(format!(
@@ -544,7 +555,7 @@ pub(crate) async fn fetch(
         Some(limit),
     )
     .await?;
-    Ok(())
+    Ok(hash)
 }
 
 #[cfg(test)]
@@ -648,14 +659,39 @@ mod tests {
             ..FetchPolicy::default()
         };
         let (part, out) = (dir.join("x.part"), dir.join("x.qcow2"));
-        let err = fetch(&url, "qcow2", &part, &out, "qcow2", policy(512 << 20))
+        let err = fetch(&url, "qcow2", &part, &out, "qcow2", policy(512 << 20), None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("larger than"), "{err}");
         assert!(!out.exists(), "nothing unpacked");
-        fetch(&url, "qcow2", &part, &out, "qcow2", policy(1 << 30))
+        let hash = fetch(&url, "qcow2", &part, &out, "qcow2", policy(1 << 30), None)
             .await
             .unwrap();
+        assert_eq!(hash.len(), 64);
+        // Downloaded again, it must be the same file.
+        let err = fetch(
+            &url,
+            "qcow2",
+            &part,
+            &out,
+            "qcow2",
+            policy(1 << 30),
+            Some(&"0".repeat(64)),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("no longer the image"), "{err}");
+        fetch(
+            &url,
+            "qcow2",
+            &part,
+            &out,
+            "qcow2",
+            policy(1 << 30),
+            Some(&hash),
+        )
+        .await
+        .unwrap();
         assert!(out.exists());
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }

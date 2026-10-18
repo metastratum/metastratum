@@ -67,6 +67,10 @@ pub fn capability(cmd: &command::Cmd) -> &'static str {
         ExportVolume(_) => "export_volume",
         EndExport(_) => "end_export",
         CopyVolume(_) => "copy_volume",
+        FetchImage(_) => "fetch_image",
+        ExportImage(_) => "export_image",
+        CopyImage(_) => "copy_image",
+        VolumeFromImage(_) => "volume_from_image",
     }
 }
 
@@ -111,6 +115,10 @@ pub const CAPABILITIES: &[&str] = &[
     "export_volume",
     "end_export",
     "copy_volume",
+    "fetch_image",
+    "export_image",
+    "copy_image",
+    "volume_from_image",
 ];
 
 /// What this build's agent does beyond its commands' first versions,
@@ -118,6 +126,8 @@ pub const CAPABILITIES: &[&str] = &[
 pub const FEATURES: &[&str] = &[
     // BackupVm builds on a parent backup; DeleteBackup merges into children.
     "incremental_backup",
+    // MigrationStep copies local disks whole (`full_copy`).
+    "full_disk_copy",
 ];
 
 #[cfg(test)]
@@ -126,7 +136,7 @@ mod tests {
     fn every_command_is_a_capability() {
         // A new command added to the protocol must be named here too; this
         // count is a reminder (prost has no variant list to check against).
-        assert_eq!(super::CAPABILITIES.len(), 39);
+        assert_eq!(super::CAPABILITIES.len(), 43);
         let unique: std::collections::HashSet<_> = super::CAPABILITIES.iter().collect();
         assert_eq!(unique.len(), super::CAPABILITIES.len());
     }

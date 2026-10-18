@@ -3,7 +3,7 @@ import { ref, watch } from 'vue'
 import { api, ApiError, ok, type Image } from '../api/client'
 import IdChip from '../components/IdChip.vue'
 import ModalDialog from '../components/ModalDialog.vue'
-import { ago } from '../state'
+import { ago, gib } from '../state'
 import { useLiveRefresh } from '../stores/live'
 import { useScope } from '../stores/scope'
 
@@ -46,8 +46,25 @@ async function remove() {
   } catch (e) {
     deleteError.value =
       e instanceof ApiError && e.status === 409
-        ? 'VM disks are still built on this image. Delete those VMs first.'
+        ? 'VM disks are built on this image, or being made from it. Delete those VMs first.'
         : 'Could not delete the image. Try again.'
+  }
+}
+
+// Downloading it again, after that failed.
+const retrying = ref('')
+const retryError = ref<Record<string, string>>({})
+async function downloadAgain(img: Image) {
+  retrying.value = img.id
+  retryError.value = { ...retryError.value, [img.id]: '' }
+  try {
+    await ok(api.POST('/api/v1/images/{id}/download', { params: { path: { id: img.id } } }))
+    await load()
+  } catch (e) {
+    const message = e instanceof ApiError ? e.message : 'The controller isn’t responding. Try again.'
+    retryError.value = { ...retryError.value, [img.id]: message }
+  } finally {
+    retrying.value = ''
   }
 }
 
@@ -61,8 +78,9 @@ const own = (img: Image) => img.tenant_id === scope.current
       <button v-if="scope.can('image.write')" class="btn primary" @click="adding = true">Add image</button>
     </header>
     <p class="intro">
-      Hosts download an image the first time a VM needs it, then reuse their copy. VM disks are thin copies of
-      the image, so an image can’t be deleted while disks still use it.
+      A host downloads an image as you add it. Hosts copy it from there to make VMs from it, and keep their copy
+      for the next. A VM’s disk is a copy of its own, so it doesn’t depend on the image: VMs keep working when the
+      image is gone.
     </p>
 
     <div v-if="images && !images.length" class="empty">
@@ -77,14 +95,32 @@ const own = (img: Image) => img.tenant_id === scope.current
           <span class="tag label">{{ img.format }}</span>
           <span v-if="img.shared && !scope.solo" class="tag label">Shared with sub-tenants</span>
           <span v-if="!own(img)" class="tag label">From parent tenant</span>
+          <span v-if="img.state === 'downloading'" class="tag label busy">Downloading…</span>
+          <span v-else-if="img.state === 'failed'" class="tag label failed">Download failed</span>
         </div>
         <div class="url mono">{{ img.source_url }}</div>
+        <p v-if="img.state === 'failed'" class="error-text" role="alert">{{ img.error ?? 'The download failed.' }}</p>
+        <p v-if="retryError[img.id]" class="error-text" role="alert">{{ retryError[img.id] }}</p>
+        <div v-if="img.state === 'ready' && img.virtual_bytes" class="facts muted">
+          <span>{{ gib(img.virtual_bytes) }} disk</span>
+          <span v-if="img.size_bytes">{{ gib(img.size_bytes) }} stored</span>
+          <span v-if="img.hosts.length">On {{ img.hosts.join(', ') }}</span>
+        </div>
         <div class="meta">
           <IdChip :value="img.id" short />
           <span class="muted">Added {{ ago(img.created_at) }}</span>
           <button
+            v-if="img.state === 'failed' && own(img) && scope.can('image.write')"
+            class="btn small push"
+            :disabled="retrying === img.id"
+            @click="downloadAgain(img)"
+          >
+            Download again
+          </button>
+          <button
             v-if="own(img) && scope.can('image.write')"
             class="btn danger small"
+            :class="{ push: img.state !== 'failed' }"
             @click="(deleteError = ''), (deleting = img)"
           >
             Delete…
@@ -99,11 +135,12 @@ const own = (img: Image) => img.tenant_id === scope.current
         <ul class="consequences">
           <li>New VMs can no longer be created from it.</li>
           <li v-if="deleting.shared">Sub-tenants it is shared with lose it too.</li>
-          <li class="error-text">
-            Every host deletes its downloaded copy, and so does every shared storage pool. Adding the image again
-            means downloading it again.
+          <li class="error-text">Every host deletes its copy. Adding the image again means downloading it again.</li>
+          <li>VMs made from it keep working: their disks are copies of their own.</li>
+          <li>
+            Disks made before images were kept on hosts are built on the image: while there are any, it can’t be
+            deleted.
           </li>
-          <li>It can’t be deleted while VM disks are built on it; those keep working.</li>
         </ul>
         <p v-if="deleteError" class="error-text" role="alert">{{ deleteError }}</p>
         <footer>
@@ -205,7 +242,21 @@ h1 {
 }
 .small {
   height: 26px;
+}
+.push {
   margin-left: auto;
+}
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.busy {
+  color: var(--muted);
+}
+.failed {
+  color: var(--led-fault);
+  border-color: currentColor;
 }
 .muted {
   color: var(--muted);

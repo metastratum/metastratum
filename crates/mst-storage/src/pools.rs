@@ -106,6 +106,27 @@ impl Pool {
         }
     }
 
+    /// Creates a volume as a copy of an image file (in the image store), of
+    /// at least `size` bytes, which depends on nothing. An existing volume
+    /// is left alone.
+    pub async fn volume_from_image(&self, id: &str, size: u64, image: &Path) -> Result<()> {
+        let exists = match self {
+            Pool::File(p) => tokio::fs::try_exists(p.volume_path(id)?).await?,
+            Pool::Rbd(p) => p.volume_size(id).await?.is_some(),
+        };
+        if exists {
+            return Ok(());
+        }
+        let virtual_size = crate::img_info(image, Some("qcow2")).await?.virtual_size;
+        if size < virtual_size {
+            return Err(crate::Error::TooSmall {
+                requested: size,
+                image: virtual_size,
+            });
+        }
+        crate::copy_into(self, id, size, &crate::CopySource::File(image)).await
+    }
+
     /// Grows a volume no VM is using; see each pool's `grow_volume`.
     pub async fn grow_volume(&self, id: &str, size: u64) -> Result<()> {
         match self {
@@ -234,6 +255,11 @@ impl Pools {
     /// The local pool's cache and files, for cleaning up after images.
     pub fn local(&self) -> FilePool {
         FilePool::new(&self.data_dir)
+    }
+
+    /// The local pool's image store.
+    pub fn store(&self) -> crate::ImageStore {
+        crate::ImageStore::new(&self.data_dir)
     }
 
     /// Shared pools can disappear underneath us (unmounted by hand).

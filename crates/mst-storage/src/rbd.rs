@@ -157,7 +157,7 @@ impl RbdPool {
         // hosts never see a half-imported image.
         let tmp_name = format!("{name}.tmp{}", random_suffix());
         let result = async {
-            fetch(url, format, &part, &raw, "raw", policy).await?;
+            fetch(url, format, &part, &raw, "raw", policy, None).await?;
             let _ = tokio::fs::remove_file(&part).await;
             let raw_s = raw.to_string_lossy();
             self.rbd(&[

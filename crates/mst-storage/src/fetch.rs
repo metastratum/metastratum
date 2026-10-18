@@ -149,7 +149,10 @@ fn client(policy: FetchPolicy) -> Result<reqwest::Client> {
     b.build().map_err(|e| Error::Download(e.to_string()))
 }
 
-pub(crate) async fn download(url: &str, dest: &Path, policy: FetchPolicy) -> Result<()> {
+/// Downloads `url` to `dest`. Returns the SHA-256 of what it downloaded
+/// (hex).
+pub(crate) async fn download(url: &str, dest: &Path, policy: FetchPolicy) -> Result<String> {
+    use sha2::Digest;
     let parsed = reqwest::Url::parse(url).map_err(|e| Error::Download(format!("{url}: {e}")))?;
     check_url(&parsed, policy).map_err(|e| Error::Download(format!("{url}: {e}")))?;
     let resp = client(policy)?
@@ -169,6 +172,7 @@ pub(crate) async fn download(url: &str, dest: &Path, policy: FetchPolicy) -> Res
     let mut file = tokio::fs::File::create(dest).await?;
     let mut body = resp.bytes_stream();
     let mut total = 0u64;
+    let mut hash = sha2::Sha256::new();
     while let Some(chunk) = body.next().await {
         let chunk = chunk.map_err(|e| Error::Download(chain(&e)))?;
         total += chunk.len() as u64;
@@ -178,11 +182,12 @@ pub(crate) async fn download(url: &str, dest: &Path, policy: FetchPolicy) -> Res
                 policy.max_bytes >> 30
             )));
         }
+        hash.update(&chunk);
         file.write_all(&chunk).await?;
     }
     file.flush().await?;
     file.sync_all().await?;
-    Ok(())
+    Ok(hex::encode(hash.finalize()))
 }
 
 fn chain(e: &dyn std::error::Error) -> String {

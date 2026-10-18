@@ -42,19 +42,24 @@ async fn tenant_images_are_not_fetched_from_internal_addresses() -> anyhow::Resu
                 json!({"tenant_id": t, "name": "internal", "source_url": "http://10.77.0.1:18080/healthz", "format": "raw"}),
             )
             .await?;
-        let vm = admin
-            .post(
+        let id = img["id"].as_str().unwrap();
+        admin.wait_task_end(img["task_id"].as_str().unwrap(), Duration::from_secs(120)).await?;
+        let images = admin.get(&format!("/images?tenant_id={t}")).await?;
+        let img = images.as_array().unwrap().iter().find(|i| i["id"] == id).unwrap();
+        assert_eq!(img["state"], "failed", "{img}");
+        let err = img["error"].as_str().unwrap_or("");
+        assert!(err.contains("not a public address"), "{err}");
+        // No VM is made from it.
+        let (status, _) = admin
+            .try_send(
+                Method::POST,
                 "/vms",
-                json!({"tenant_id": t, "name": "ssrf", "vcpus": 1, "memory_mib": 256, "disk_gib": 1,
-                       "image_id": img["id"], "migratable": false}),
+                Some(json!({"tenant_id": t, "name": "ssrf", "vcpus": 1, "memory_mib": 256, "disk_gib": 1,
+                            "image_id": id, "migratable": false})),
             )
             .await?;
-        let id = vm["id"].as_str().unwrap();
-        let vm = admin.wait_vm(id, Duration::from_secs(120), |v| v["status"] == "error").await?;
-        let err = vm["error"].as_str().unwrap_or("");
-        assert!(err.contains("not a public address"), "{err}");
-        let (_, task) = admin.try_send(Method::DELETE, &format!("/vms/{id}"), None).await?;
-        admin.wait_task(task["task_id"].as_str().unwrap(), Duration::from_secs(60)).await?;
+        assert_eq!(status, 409);
+        admin.send(Method::DELETE, &format!("/images/{id}"), None).await?;
         Ok(())
     })
     .await

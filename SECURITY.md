@@ -46,10 +46,12 @@ The boundaries metastratum enforces:
   add are fetched only from public internet addresses (checked when
   connecting, so redirects and DNS tricks do not get around it), capped in
   size, and refused if they refer to other files (backing files, external
-  data files) or describe a disk larger than the one they are for (checked
-  before unpacking); `qemu-img` runs under resource limits, its output
-  capped at that size. Tenants' images are dropped from hosts once no disk
-  is built on them. Identity providers
+  data files) or describe a disk larger than the host's largest download
+  (checked before unpacking); `qemu-img` runs under resource limits, its output
+  capped at that size. An image is downloaded once, as it is added; hosts
+  copy it from each other from then on, and should it ever be downloaded
+  again, it must be the same file (its SHA-256). VMs' disks are copies
+  of their own. Identity providers
   configured by sub-tenants likewise must be on public addresses.
 
 ## How it is protected
@@ -187,7 +189,7 @@ the code after two-factor sign-in was added. Fixed:
 | Parallel sign-in attempts all passed the per-account limit before any of them failed | the account's budget is taken first and given back on success |
 | Accounts signing in through an identity provider could give themselves a password, getting around its MFA and off-boarding | refused |
 | Tenants' networks could overlap external networks' ranges, putting addresses such as another tenant's floating IP or the external gateway on a tenant's router | refused, checked from both sides in the database |
-| A small qcow2 image could unpack into a huge one (compressed clusters), and cached images counted against nothing: a tenant could fill hosts' disks | images larger than their disk are refused before unpacking, the conversion's output is capped, and tenants' images are dropped from hosts once unused |
+| A small qcow2 image could unpack into a huge one (compressed clusters), and cached images counted against nothing: a tenant could fill hosts' disks | images describing disks larger than the host's largest download are refused before unpacking, the conversion's output is capped, and images count against an `image_gib` quota (their stored size) |
 | Snapshots, and VPCs (each taking an address from an external network's pool), counted against no quota | `snapshot_gib` (each at its VM's disk size) and `vpcs` quotas |
 | Hosts' own reports of their physical networks, capacity, name, address and chassis were taken as they came: a host taken over could make itself the gateway of other tenants' VPCs, or draw their VMs | taken at enrollment; later changes that would give the host more wait for an administrator |
 | A host could renew its certificate any number of times, and certificates replaced before use were never revoked | a renewal revokes any other certificate the host held but did not use |
@@ -290,12 +292,6 @@ the code after two-factor sign-in was added. Fixed:
   were before sealing existed).
   *Mitigation:* the database reachable by the controllers only, with
   credentials of their own.
-- **Migrating a VM on local disks fetches its image again**, from the
-  image's address: the copy on the destination is not checked to be the
-  same as on the source, so an image changed at its address meanwhile
-  changes what the migrated VM's unwritten blocks hold.
-  *Mitigation:* images at addresses whose content does not change
-  (versioned file names), or shared storage.
 - **QEMU before 9.0 (CVE-2024-4467)** can open files a crafted qcow2
   image names while `qemu-img info` reads it, before metastratum refuses
   the image.

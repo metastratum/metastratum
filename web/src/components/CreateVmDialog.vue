@@ -25,6 +25,9 @@ const name = ref('')
 // `image:<id>` or `template:<id>`.
 const from = ref('')
 const imageId = computed(() => (from.value.startsWith('image:') ? from.value.slice(6) : ''))
+const image = computed(() => images.value.find((i) => i.id === imageId.value))
+// The disk holds at least the image.
+const minDisk = computed(() => Math.max(1, Math.ceil((image.value?.virtual_bytes ?? 0) / 2 ** 30)))
 const template = computed(() =>
   from.value.startsWith('template:') ? templates.value.find((t) => `template:${t.id}` === from.value) : undefined,
 )
@@ -40,6 +43,9 @@ watch(memory, (m) => {
   if (maxMemory.value && maxMemory.value <= m) maxMemory.value = 0
 })
 const disk = ref(10)
+watch(minDisk, (m) => {
+  if (disk.value < m) disk.value = m
+})
 const sshKey = ref('')
 const password = ref('')
 const error = ref('')
@@ -64,6 +70,8 @@ onMounted(async () => {
   networkId.value = (nets.find((n) => n.name === 'default') ?? nets[0])?.id ?? null
   groupIds.value = groups.value.filter((g) => g.name === 'default').map((g) => g.id)
   templates.value = vms.filter((v) => v.template && v.tenant_id === tenantId)
+  // One that failed to download can't make disks until downloaded again.
+  images.value = images.value.filter((i) => i.state !== 'failed')
   from.value = images.value[0] ? `image:${images.value[0].id}` : templates.value[0] ? `template:${templates.value[0].id}` : ''
   poolId.value = pools.value.find((p) => p.kind === 'local')?.id ?? pools.value[0]?.id ?? null
   loaded.value = true
@@ -148,12 +156,17 @@ async function submit() {
         <span class="label">Start from</span>
         <select v-model="from" required>
           <optgroup label="Images">
-            <option v-for="i in images" :key="i.id" :value="`image:${i.id}`">{{ i.name }}</option>
+            <option v-for="i in images" :key="i.id" :value="`image:${i.id}`">
+              {{ i.name }}{{ i.state === 'downloading' ? ' (downloading)' : '' }}
+            </option>
           </optgroup>
           <optgroup v-if="templates.length" label="Templates">
             <option v-for="t in templates" :key="t.id" :value="`template:${t.id}`">{{ t.name }}</option>
           </optgroup>
         </select>
+        <span v-if="image?.state === 'downloading'" class="hint">
+          The image is still downloading; the VM is made once it is there.
+        </span>
         <span v-if="template" class="hint">
           A copy of {{ template.name }}’s disks, with its {{ template.vcpus }} vCPU{{ template.vcpus === 1 ? '' : 's' }}
           and {{ template.memory_mib >= 1024 ? `${template.memory_mib / 1024} GiB` : `${template.memory_mib} MiB` }}
@@ -211,7 +224,7 @@ async function submit() {
         </label>
         <label class="field">
           <span class="label">Disk (GiB)</span>
-          <input v-model.number="disk" type="number" min="1" max="16384" required />
+          <input v-model.number="disk" type="number" :min="minDisk" max="16384" required />
         </label>
       </div>
       <label v-if="!template" class="field">

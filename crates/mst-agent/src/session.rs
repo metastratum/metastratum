@@ -455,6 +455,7 @@ impl Agent {
                 let to = mst_libvirt::MigrateTo {
                     address: &c.dest_address,
                     copy_disks: &c.copy_disks,
+                    full_copy: false,
                     max_bandwidth_mib: None,
                 };
                 self.lv.migrate(&c.vm_id, &to).await?;
@@ -492,6 +493,7 @@ impl Agent {
                 let to = mst_libvirt::MigrateTo {
                     address: &c.dest_address,
                     copy_disks: &c.copy_disks,
+                    full_copy: c.full_copy,
                     max_bandwidth_mib: None,
                 };
                 let out = match (&c.tls, which) {
@@ -582,7 +584,48 @@ impl Agent {
             Cmd::CopyVolume(c) => crate::transfer::copy(self, &c).await?,
             Cmd::DeleteImage(c) => {
                 let shared = c.pools.iter().map(pool_spec).collect::<Result<Vec<_>>>()?;
-                crate::cleanup::delete_image(self, &c.image_id, &shared).await?;
+                let store = Some(c.tenant_path.as_str()).filter(|p| !p.is_empty());
+                crate::cleanup::delete_image(self, &c.image_id, &shared, store).await?;
+            }
+            Cmd::FetchImage(c) => {
+                tracing::info!(image = %c.image_id, url = %c.source_url, "downloading an image into the store");
+                let policy = mst_storage::FetchPolicy {
+                    allow_private: c.trusted,
+                    max_bytes: self.max_image_bytes,
+                    // A tenant's image is at most as large a disk as the
+                    // largest download: a small download may unpack into
+                    // a huge one, which the store would hold.
+                    max_virtual_bytes: if c.trusted {
+                        mst_storage::FetchPolicy::default().max_virtual_bytes
+                    } else {
+                        self.max_image_bytes
+                    },
+                };
+                let sha256 = Some(c.sha256.as_str()).filter(|s| !s.is_empty());
+                let stored = self
+                    .pools
+                    .store()
+                    .fetch(
+                        &c.tenant_path,
+                        &c.image_id,
+                        &c.source_url,
+                        &c.format,
+                        policy,
+                        sha256,
+                    )
+                    .await?;
+                return Ok(serde_json::to_string(&stored)?);
+            }
+            Cmd::ExportImage(c) => return crate::transfer::export_image(self, &c).await,
+            Cmd::CopyImage(c) => return crate::transfer::copy_image(self, &c).await,
+            Cmd::VolumeFromImage(c) => {
+                let image = self.pools.store().path(&c.tenant_path, &c.image_id)?;
+                if !tokio::fs::try_exists(&image).await? {
+                    bail!("image {} is not in this host's image store", c.image_id);
+                }
+                let pool = self.pool(c.pool.as_ref()).await?;
+                pool.volume_from_image(&c.volume_id, c.size_bytes, &image)
+                    .await?;
             }
             Cmd::Decommission(_) => {
                 tracing::warn!("decommissioning this host");

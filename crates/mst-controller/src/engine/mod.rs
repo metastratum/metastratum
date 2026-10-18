@@ -7,6 +7,7 @@
 
 mod backup;
 mod disk;
+mod image;
 mod migrate;
 mod recover;
 mod snapshot;
@@ -127,6 +128,7 @@ async fn execute(state: AppState, task: Task) {
         "disk.move" => disk::move_disk(&ctx).await,
         "disk.attach" => disk::attach(&ctx).await,
         "disk.detach" => disk::detach(&ctx).await,
+        "image.download" => image::download(&ctx).await,
         other => Err(anyhow::anyhow!("unknown task kind {other}")),
     };
     renew.abort();

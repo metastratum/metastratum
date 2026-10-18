@@ -142,6 +142,17 @@ async fn virtual_size(src: &ImageArgs) -> Result<u64> {
     Ok(info.virtual_size)
 }
 
+/// Writes a copy of `src` to `dest` as a qcow2 file of its own.
+pub(crate) async fn convert_to(src: &CopySource<'_>, dest: &Path) -> Result<()> {
+    let source = source_args(src).await?;
+    let mut args = vec!["convert".to_owned(), "-q".to_owned()];
+    args.extend(objects(&[&source]));
+    args.extend(source.image.iter().cloned());
+    args.extend(["-O".into(), "qcow2".into(), dest.to_string_lossy().into()]);
+    qemu_img(args).await?;
+    Ok(())
+}
+
 /// Makes volume `id` in `dest` a copy of `src` (with what its image held:
 /// the copy depends on nothing), of at least `size` bytes, replacing what
 /// is there under that name.

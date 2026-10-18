@@ -323,16 +323,19 @@ test('destructive operations say what they remove, and ask first', async ({ page
   await signIn(page)
   const run = Date.now().toString(36)
 
-  // An image (never downloaded): its dialog warns, then deletes it.
+  // An image that can't be downloaded: it says so and offers to try
+  // again; its dialog warns, then deletes it.
   const image = await page.request.post('/api/v1/images', {
     data: { name: `e2e-img-${run}`, source_url: 'https://example.invalid/never.qcow2', format: 'qcow2' },
   })
   expect(image.ok()).toBeTruthy()
   await page.goto('/images')
   const row = page.getByRole('listitem').filter({ hasText: `e2e-img-${run}` })
+  await expect(row.getByText('Download failed', { exact: true })).toBeVisible({ timeout: 60_000 })
+  await expect(row.getByRole('button', { name: 'Download again' })).toBeVisible()
   await row.getByRole('button', { name: 'Delete…' }).click()
   const imageDialog = page.getByRole('dialog')
-  await expect(imageDialog).toContainText('Every host deletes its downloaded copy')
+  await expect(imageDialog).toContainText('Every host deletes its copy')
   await imageDialog.getByRole('button', { name: `Delete e2e-img-${run}` }).click()
   await expect(page.getByText(`e2e-img-${run}`)).toHaveCount(0)
 

@@ -26,9 +26,17 @@ pub async fn remove_pool(agent: &Agent, spec: PoolSpec, remove_data: bool) -> Re
     Ok(serde_json::json!({ "removed": removed }).to_string())
 }
 
-/// Removes a deleted image's cached copies: the local one, and those in the
-/// given shared pools.
-pub async fn delete_image(agent: &Agent, id: &str, shared: &[PoolSpec]) -> Result<()> {
+/// Removes a deleted image's cached copies: the local one, those in the
+/// given shared pools, and with its tenant's path, the one in the store.
+pub async fn delete_image(
+    agent: &Agent,
+    id: &str,
+    shared: &[PoolSpec],
+    store: Option<&str>,
+) -> Result<()> {
+    if let Some(tenant_path) = store {
+        agent.pools.store().remove(tenant_path, id).await?;
+    }
     agent.pools.local().delete_image(id).await?;
     for spec in shared {
         agent
@@ -42,15 +50,17 @@ pub async fn delete_image(agent: &Agent, id: &str, shared: &[PoolSpec]) -> Resul
     tracing::info!(
         image = id,
         pools = shared.len(),
+        store = store.is_some(),
         "removed the image's cached copies"
     );
     Ok(())
 }
 
 /// Lets go of what was deleted while this agent was away: pools it still
-/// holds on to, their secrets, and cached copies of images that no longer
-/// exist (ones cached in the last hour stay: they may be newer than the
-/// inventory).
+/// holds on to, their secrets, and copies of images that no longer exist
+/// (cached or in the store; ones made in the last hour stay: they may be
+/// newer than the inventory). Downloads and copies into the store cut off
+/// (by a restart) more than a day ago go too.
 pub async fn reconcile(agent: &Agent, inventory: &mst_proto::Inventory) {
     let pools: HashSet<&str> = inventory.pool_ids.iter().map(String::as_str).collect();
     let images: HashSet<&str> = inventory.image_ids.iter().map(String::as_str).collect();
@@ -85,6 +95,16 @@ pub async fn reconcile(agent: &Agent, inventory: &mst_proto::Inventory) {
                 }
             }
         }
+    }
+    let store = agent.pools.store();
+    let yesterday = SystemTime::now() - Duration::from_secs(86400);
+    match store.prune(&images, recent, yesterday).await {
+        Ok(removed) => {
+            for id in removed {
+                tracing::info!(image = %id, "removed an image deleted meanwhile from the store");
+            }
+        }
+        Err(e) => tracing::warn!(error = %format!("{e:#}"), "pruning the image store"),
     }
 }
 
@@ -165,6 +185,16 @@ pub async fn decommission(agent: &Agent) -> Result<Report> {
         }
         Err(e) => report.step("listing libvirt secrets", Err(e.into())),
     }
+    report.step(
+        "removed the image store",
+        agent
+            .pools
+            .store()
+            .purge()
+            .await
+            .map(|n| format!("{n} files"))
+            .map_err(Into::into),
+    );
     report.step(
         "removed cached images and local volumes",
         agent

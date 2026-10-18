@@ -531,7 +531,7 @@ type CreateImage struct {
 	Name   string `json:"name"`
 	Shared *bool  `json:"shared,omitempty"`
 
-	// SourceUrl HTTP(S) URL hosts download the image from on first use.
+	// SourceUrl HTTP(S) URL a host downloads the image from, as it is added.
 	SourceUrl string    `json:"source_url"`
 	TenantId  *TenantId `json:"tenant_id,omitempty"`
 }
@@ -683,6 +683,45 @@ type CreateVpc struct {
 	TenantId          *TenantId          `json:"tenant_id,omitempty"`
 }
 
+// CreatedImage defines model for CreatedImage.
+type CreatedImage struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// Error Why downloading it failed.
+	Error *string `json:"error,omitempty"`
+
+	// Format `qcow2` or `raw`.
+	Format string `json:"format"`
+
+	// Hosts The hosts holding a copy (VMs made from it on other hosts copy it
+	// from these).
+	Hosts []string `json:"hosts"`
+	Id    ImageId  `json:"id"`
+	Name  string   `json:"name"`
+
+	// Sha256 SHA-256 of the file downloaded from `source_url`.
+	Sha256 *string `json:"sha256,omitempty"`
+
+	// Shared Usable by the owning tenant's descendants too.
+	Shared bool `json:"shared"`
+
+	// SizeBytes Its size, stored (qcow2).
+	SizeBytes *int64 `json:"size_bytes,omitempty"`
+	SourceUrl string `json:"source_url"`
+
+	// State `downloading` (VMs made from it meanwhile wait for it), `ready`, or
+	// `failed` (see `error`; it can be downloaded again).
+	State string `json:"state"`
+
+	// TaskId The download.
+	TaskId   TaskId   `json:"task_id"`
+	TenantId TenantId `json:"tenant_id"`
+
+	// VirtualBytes The size of the disk it holds: VMs' disks made from it are at least
+	// as large.
+	VirtualBytes *int64 `json:"virtual_bytes,omitempty"`
+}
+
 // DecommissionReport What decommissioning a host did.
 type DecommissionReport struct {
 	CertificatesRevoked int `json:"certificates_revoked"`
@@ -787,6 +826,11 @@ type DiskView struct {
 	TenantId        TenantId `json:"tenant_id"`
 	VmId            *VmId    `json:"vm_id,omitempty"`
 	VmName          *string  `json:"vm_name,omitempty"`
+}
+
+// DownloadTask defines model for DownloadTask.
+type DownloadTask struct {
+	TaskId TaskId `json:"task_id"`
 }
 
 // EvacuateRef defines model for EvacuateRef.
@@ -952,15 +996,36 @@ type ImageId = openapi_types.UUID
 type ImageView struct {
 	CreatedAt time.Time `json:"created_at"`
 
+	// Error Why downloading it failed.
+	Error *string `json:"error,omitempty"`
+
 	// Format `qcow2` or `raw`.
-	Format string  `json:"format"`
-	Id     ImageId `json:"id"`
-	Name   string  `json:"name"`
+	Format string `json:"format"`
+
+	// Hosts The hosts holding a copy (VMs made from it on other hosts copy it
+	// from these).
+	Hosts []string `json:"hosts"`
+	Id    ImageId  `json:"id"`
+	Name  string   `json:"name"`
+
+	// Sha256 SHA-256 of the file downloaded from `source_url`.
+	Sha256 *string `json:"sha256,omitempty"`
 
 	// Shared Usable by the owning tenant's descendants too.
-	Shared    bool     `json:"shared"`
-	SourceUrl string   `json:"source_url"`
-	TenantId  TenantId `json:"tenant_id"`
+	Shared bool `json:"shared"`
+
+	// SizeBytes Its size, stored (qcow2).
+	SizeBytes *int64 `json:"size_bytes,omitempty"`
+	SourceUrl string `json:"source_url"`
+
+	// State `downloading` (VMs made from it meanwhile wait for it), `ready`, or
+	// `failed` (see `error`; it can be downloaded again).
+	State    string   `json:"state"`
+	TenantId TenantId `json:"tenant_id"`
+
+	// VirtualBytes The size of the disk it holds: VMs' disks made from it are at least
+	// as large.
+	VirtualBytes *int64 `json:"virtual_bytes,omitempty"`
 }
 
 // InheritedLimit defines model for InheritedLimit.
@@ -2696,16 +2761,35 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/images (the `ListImages` operationId).
 	ListImages(ctx context.Context, params *ListImagesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CreateImageWithBody performs a POST /api/v1/images (the `CreateImage` operationId) request,
-	// with any type of body and a specified content type.
+	// CreateImageWithBody Adds an image: a host picked at random downloads it into its image
+	// store (the task), and hosts copy it from there to make VMs from it.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/images (the `CreateImage` operationId).
 	CreateImageWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CreateImage performs a POST /api/v1/images (the `CreateImage` operationId) request.
+	// CreateImage Adds an image: a host picked at random downloads it into its image
+	// store (the task), and hosts copy it from there to make VMs from it.
+	//
 	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/images (the `CreateImage` operationId).
 	CreateImage(ctx context.Context, body CreateImageJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// DeleteImage performs a DELETE /api/v1/images/{id} (the `DeleteImage` operationId) request.
+	// DeleteImage Deletes an image, and every host's copy. VMs made from it keep their
+	// disks, which are copies; only disks made before the image store, built
+	// on the image, keep it from going.
+	//
+	// Corresponds with DELETE /api/v1/images/{id} (the `DeleteImage` operationId).
 	DeleteImage(ctx context.Context, id ImageId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DownloadImage Downloads the image again: after downloading it failed, or when no
+	// host holds a copy any more (each was decommissioned). Downloaded again,
+	// it must be the file first downloaded, if one was.
+	//
+	// Corresponds with POST /api/v1/images/{id}/download (the `DownloadImage` operationId).
+	DownloadImage(ctx context.Context, id ImageId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListLoadBalancers performs a GET /api/v1/load-balancers (the `ListLoadBalancers` operationId) request.
 	ListLoadBalancers(ctx context.Context, params *ListLoadBalancersParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4472,8 +4556,12 @@ func (c *Client) ListImages(ctx context.Context, params *ListImagesParams, reqEd
 	return c.Client.Do(req)
 }
 
-// CreateImageWithBody performs a POST /api/v1/images (the `CreateImage` operationId) request,
-// with any type of body and a specified content type.
+// CreateImageWithBody Adds an image: a host picked at random downloads it into its image
+// store (the task), and hosts copy it from there to make VMs from it.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/images (the `CreateImage` operationId).
 func (c *Client) CreateImageWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewCreateImageRequestWithBody(c.Server, contentType, body)
 	if err != nil {
@@ -4486,8 +4574,12 @@ func (c *Client) CreateImageWithBody(ctx context.Context, contentType string, bo
 	return c.Client.Do(req)
 }
 
-// CreateImage performs a POST /api/v1/images (the `CreateImage` operationId) request.
+// CreateImage Adds an image: a host picked at random downloads it into its image
+// store (the task), and hosts copy it from there to make VMs from it.
+//
 // Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/images (the `CreateImage` operationId).
 func (c *Client) CreateImage(ctx context.Context, body CreateImageJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewCreateImageRequest(c.Server, body)
 	if err != nil {
@@ -4500,9 +4592,30 @@ func (c *Client) CreateImage(ctx context.Context, body CreateImageJSONRequestBod
 	return c.Client.Do(req)
 }
 
-// DeleteImage performs a DELETE /api/v1/images/{id} (the `DeleteImage` operationId) request.
+// DeleteImage Deletes an image, and every host's copy. VMs made from it keep their
+// disks, which are copies; only disks made before the image store, built
+// on the image, keep it from going.
+//
+// Corresponds with DELETE /api/v1/images/{id} (the `DeleteImage` operationId).
 func (c *Client) DeleteImage(ctx context.Context, id ImageId, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewDeleteImageRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DownloadImage Downloads the image again: after downloading it failed, or when no
+// host holds a copy any more (each was decommissioned). Downloaded again,
+// it must be the file first downloaded, if one was.
+//
+// Corresponds with POST /api/v1/images/{id}/download (the `DownloadImage` operationId).
+func (c *Client) DownloadImage(ctx context.Context, id ImageId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDownloadImageRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -8714,6 +8827,40 @@ func NewDeleteImageRequest(server string, id ImageId) (*http.Request, error) {
 	}
 
 	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewDownloadImageRequest constructs an http.Request for the DownloadImage method
+func NewDownloadImageRequest(server string, id ImageId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/images/%s/download", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -13266,20 +13413,39 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/images (the `ListImages` operationId).
 	ListImagesWithResponse(ctx context.Context, params *ListImagesParams, reqEditors ...RequestEditorFn) (*ListImagesResponse, error)
 
-	// CreateImageWithBodyWithResponse performs a POST /api/v1/images (the `CreateImage` operationId) request,
-	// with any type of body and a specified content type.
+	// CreateImageWithBodyWithResponse Adds an image: a host picked at random downloads it into its image
+	// store (the task), and hosts copy it from there to make VMs from it.
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/images (the `CreateImage` operationId).
 	CreateImageWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateImageResponse, error)
 
-	// CreateImageWithResponse performs a POST /api/v1/images (the `CreateImage` operationId) request.
+	// CreateImageWithResponse Adds an image: a host picked at random downloads it into its image
+	// store (the task), and hosts copy it from there to make VMs from it.
+	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/images (the `CreateImage` operationId).
 	CreateImageWithResponse(ctx context.Context, body CreateImageJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateImageResponse, error)
 
-	// DeleteImageWithResponse performs a DELETE /api/v1/images/{id} (the `DeleteImage` operationId) request.
+	// DeleteImageWithResponse Deletes an image, and every host's copy. VMs made from it keep their
+	// disks, which are copies; only disks made before the image store, built
+	// on the image, keep it from going.
 	//
 	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /api/v1/images/{id} (the `DeleteImage` operationId).
 	DeleteImageWithResponse(ctx context.Context, id ImageId, reqEditors ...RequestEditorFn) (*DeleteImageResponse, error)
+
+	// DownloadImageWithResponse Downloads the image again: after downloading it failed, or when no
+	// host holds a copy any more (each was decommissioned). Downloaded again,
+	// it must be the file first downloaded, if one was.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/images/{id}/download (the `DownloadImage` operationId).
+	DownloadImageWithResponse(ctx context.Context, id ImageId, reqEditors ...RequestEditorFn) (*DownloadImageResponse, error)
 
 	// ListLoadBalancersWithResponse performs a GET /api/v1/load-balancers (the `ListLoadBalancers` operationId) request.
 	//
@@ -16075,11 +16241,11 @@ type CreateImageResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
 	// JSON201 the response for an HTTP 201 `application/json` response
-	JSON201 *ImageView
+	JSON201 *CreatedImage
 }
 
 // GetJSON201 returns the response for an HTTP 201 `application/json` response
-func (r CreateImageResponse) GetJSON201() *ImageView {
+func (r CreateImageResponse) GetJSON201() *CreatedImage {
 	return r.JSON201
 }
 
@@ -16140,6 +16306,47 @@ func (r DeleteImageResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r DeleteImageResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DownloadImageResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON202 the response for an HTTP 202 `application/json` response
+	JSON202 *DownloadTask
+}
+
+// GetJSON202 returns the response for an HTTP 202 `application/json` response
+func (r DownloadImageResponse) GetJSON202() *DownloadTask {
+	return r.JSON202
+}
+
+// GetBody returns the raw response body bytes
+func (r DownloadImageResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DownloadImageResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DownloadImageResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DownloadImageResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -20783,10 +20990,12 @@ func (c *ClientWithResponses) ListImagesWithResponse(ctx context.Context, params
 	return ParseListImagesResponse(rsp)
 }
 
-// CreateImageWithBodyWithResponse performs a POST /api/v1/images (the `CreateImage` operationId) request,
-// with any type of body and a specified content type.
+// CreateImageWithBodyWithResponse Adds an image: a host picked at random downloads it into its image
+// store (the task), and hosts copy it from there to make VMs from it.
 //
-// Returns a wrapper object for the known response body format(s).
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/images (the `CreateImage` operationId).
 func (c *ClientWithResponses) CreateImageWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateImageResponse, error) {
 	rsp, err := c.CreateImageWithBody(ctx, contentType, body, reqEditors...)
 	if err != nil {
@@ -20795,8 +21004,12 @@ func (c *ClientWithResponses) CreateImageWithBodyWithResponse(ctx context.Contex
 	return ParseCreateImageResponse(rsp)
 }
 
-// CreateImageWithResponse performs a POST /api/v1/images (the `CreateImage` operationId) request.
+// CreateImageWithResponse Adds an image: a host picked at random downloads it into its image
+// store (the task), and hosts copy it from there to make VMs from it.
+//
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/images (the `CreateImage` operationId).
 func (c *ClientWithResponses) CreateImageWithResponse(ctx context.Context, body CreateImageJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateImageResponse, error) {
 	rsp, err := c.CreateImage(ctx, body, reqEditors...)
 	if err != nil {
@@ -20805,15 +21018,34 @@ func (c *ClientWithResponses) CreateImageWithResponse(ctx context.Context, body 
 	return ParseCreateImageResponse(rsp)
 }
 
-// DeleteImageWithResponse performs a DELETE /api/v1/images/{id} (the `DeleteImage` operationId) request.
+// DeleteImageWithResponse Deletes an image, and every host's copy. VMs made from it keep their
+// disks, which are copies; only disks made before the image store, built
+// on the image, keep it from going.
 //
 // Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /api/v1/images/{id} (the `DeleteImage` operationId).
 func (c *ClientWithResponses) DeleteImageWithResponse(ctx context.Context, id ImageId, reqEditors ...RequestEditorFn) (*DeleteImageResponse, error) {
 	rsp, err := c.DeleteImage(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
 	return ParseDeleteImageResponse(rsp)
+}
+
+// DownloadImageWithResponse Downloads the image again: after downloading it failed, or when no
+// host holds a copy any more (each was decommissioned). Downloaded again,
+// it must be the file first downloaded, if one was.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/images/{id}/download (the `DownloadImage` operationId).
+func (c *ClientWithResponses) DownloadImageWithResponse(ctx context.Context, id ImageId, reqEditors ...RequestEditorFn) (*DownloadImageResponse, error) {
+	rsp, err := c.DownloadImage(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDownloadImageResponse(rsp)
 }
 
 // ListLoadBalancersWithResponse performs a GET /api/v1/load-balancers (the `ListLoadBalancers` operationId) request.
@@ -23872,7 +24104,7 @@ func ParseCreateImageResponse(rsp *http.Response) (*CreateImageResponse, error) 
 
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
-		var dest ImageView
+		var dest CreatedImage
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
@@ -23900,6 +24132,38 @@ func ParseDeleteImageResponse(rsp *http.Response) (*DeleteImageResponse, error) 
 	response := &DeleteImageResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseDownloadImageResponse parses an HTTP response from a DownloadImageWithResponse call
+func ParseDownloadImageResponse(rsp *http.Response) (*DownloadImageResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DownloadImageResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
+		var dest DownloadTask
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON202 = &dest
+
+	case rsp.StatusCode == 404:
+		break // No content-type
+
+	case rsp.StatusCode == 409:
+		break // No content-type
+
 	}
 
 	return response, nil
