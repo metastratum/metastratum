@@ -291,24 +291,29 @@ install_rpm() {
 
 # ---- end of the shared part ----
 
-# The programs listening on TCP port <port> here, by name.
+# The programs listening on TCP port <port> here, one per line: name, and
+# the systemd service it runs in (none for one started from a shell).
 port_users() {
+  local prog pid
   # Nothing listening is no failure.
-  ss -Htlnp "sport = :$1" 2>/dev/null | grep -o 'users:(("[^"]*"' | sed 's/^users:(("//; s/"$//' |
-    sort -u | paste -sd' ' - || true
+  ss -Htlnp "sport = :$1" 2>/dev/null | grep -o '("[^"]*",pid=[0-9]*' | sed 's/^("//; s/",pid=/ /' |
+    sort -u | while read -r prog pid; do
+      printf '%s %s\n' "$prog" "$(sed -n 's|.*/\([^/]*\.service\)$|\1|p' "/proc/$pid/cgroup" 2>/dev/null | sed -n 1p)"
+    done || true
 }
 
-# check_port <port> <what it is for> <programs that may hold it...>
+# check_port <port> <what it is for> <services that may hold it...>: by the
+# service, not the program's name (a controller started by hand is not the
+# one this installs).
 check_port() {
-  local port=$1 what=$2 users u
+  local port=$1 what=$2 prog unit
   shift 2
-  users=$(port_users "$port")
-  for u in $users; do
-    if [[ " $* " != *" $u "* ]]; then
-      problem "port $port ($what) is in use by $users"
+  while read -r prog unit; do
+    if [[ -n $prog && " $* " != *" $unit "* ]]; then
+      problem "port $port ($what) is in use by $prog${unit:+ ($unit)}"
       return
     fi
-  done
+  done < <(port_users "$port")
 }
 
 # <n> random bytes, in hex (without pipelines head would cut short).
@@ -376,18 +381,22 @@ leftover_database() {
 # What it would clash with.
 first=1
 [[ -e $CONF/controller.toml ]] && first=0
-check_port 8080 "the controller's web UI and API" mst-controller
-check_port 8443 "the controller's endpoint for hosts" mst-controller
+check_port 8080 "the controller's web UI and API" mst-controller.service
+check_port 8443 "the controller's endpoint for hosts" mst-controller.service
 if ((proxy)); then
-  check_port 80 "the web UI's HTTPS proxy, for redirects and certificates" caddy
-  check_port 443 "the web UI's HTTPS proxy" caddy
+  check_port 80 "the web UI's HTTPS proxy, for redirects and certificates" caddy.service
+  check_port 443 "the web UI's HTTPS proxy" caddy.service
   if printf '%s\n' ${problems[@]+"${problems[@]}"} | grep -E '^port (80|443) ' >/dev/null; then
     note "with --no-proxy the web UI stays on 127.0.0.1:8080, for a proxy of your own"
   fi
 fi
 if ((local_ovn)); then
-  check_port 6641 "OVN's northbound database" ovsdb-server
-  check_port 6642 "OVN's southbound database" ovsdb-server
+  # OVN's database servers, as each distribution runs them.
+  ovn_units="ovn-central.service ovn-northd.service ovn-ovsdb-server-nb.service ovn-ovsdb-server-sb.service"
+  # shellcheck disable=SC2086 # one service each
+  check_port 6641 "OVN's northbound database" $ovn_units
+  # shellcheck disable=SC2086
+  check_port 6642 "OVN's southbound database" $ovn_units
   if [[ ! -e /etc/ovn/metastratum/nb.pem ]] && command -v ovn-nbctl >/dev/null &&
     ovn-nbctl --timeout=5 show >/dev/null 2>&1; then
     in_use=$(

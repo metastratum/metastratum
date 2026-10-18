@@ -9,7 +9,9 @@
 # already is left as it is.
 #
 # What runs here already is used: libvirt stays as it runs (libvirtd, or
-# its per-driver daemons). Before changing anything, it looks for what it
+# its per-driver daemons). With Docker, whose firewall drops traffic it does
+# not forward itself, a unit started with Docker lets the external network
+# through (metastratum-docker-forward.service). Before changing anything, it looks for what it
 # would clash with (Open vSwitch in another OVN deployment, a physical
 # network or bridge of that name in use, libvirt TLS certificates it would
 # replace) and stops if it finds any.
@@ -500,6 +502,9 @@ EOF
 [Unit]
 Description=metastratum's external network $ext_cidr, NATed to the outside
 After=network-online.target openvswitch-switch.service openvswitch.service ovs-vswitchd.service
+# Docker first: it keeps its firewall's protection (FORWARD policy DROP)
+# only where it switches IP forwarding on itself, before this does.
+After=docker.service
 Wants=network-online.target
 
 [Service]
@@ -511,7 +516,9 @@ ExecStop=/usr/local/lib/metastratum/external down
 [Install]
 WantedBy=multi-user.target
 EOF
-  printf 'net.ipv4.ip_forward = 1\n' >/etc/sysctl.d/90-metastratum.conf
+  # Forwarding comes on with the service (not at boot, ahead of Docker);
+  # earlier installers switched it on at boot.
+  rm -f /etc/sysctl.d/90-metastratum.conf
   systemctl daemon-reload
   systemctl enable -q metastratum-external
   systemctl restart metastratum-external
@@ -520,10 +527,55 @@ EOF
     firewall-cmd -q --permanent --add-masquerade
     firewall-cmd -q --reload
   fi
+  docker_forward
+}
+
+# Docker's firewall (iptables, with a FORWARD policy of DROP) drops what it
+# does not forward itself, the VMs' traffic too. Whenever Docker starts, a
+# unit of ours lets br-ext through the chain Docker keeps for such rules
+# (DOCKER-USER); installed with or without Docker, for one installed later.
+docker_forward() {
+  cat >/usr/local/lib/metastratum/docker-forward <<'EOF'
+#!/bin/sh
+# Written by metastratum's install-agent.sh: lets metastratum's external
+# network (bridge br-ext) through Docker's firewall, in the chain Docker
+# keeps for its users' rules. Run when Docker starts (and stops).
+set -eu
+# Docker with its nftables backend has no such chain, and drops nothing of
+# others'.
+iptables -n -L DOCKER-USER >/dev/null 2>&1 || exit 0
+# shellcheck disable=SC2086 # each rule's words
+for rule in "-i br-ext -j ACCEPT" \
+  "-o br-ext -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"; do
+  case ${1:-up} in
+    up) iptables -C DOCKER-USER $rule 2>/dev/null || iptables -I DOCKER-USER $rule ;;
+    down) iptables -D DOCKER-USER $rule 2>/dev/null || true ;;
+  esac
+done
+EOF
+  chmod 755 /usr/local/lib/metastratum/docker-forward
+  cat >/etc/systemd/system/metastratum-docker-forward.service <<EOF
+# Written by metastratum's install-agent.sh.
+[Unit]
+Description=metastratum's external network through Docker's firewall
+# Started with Docker, after it made its chains; stopped and started with it.
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/metastratum/docker-forward up
+ExecStop=/usr/local/lib/metastratum/docker-forward down
+
+[Install]
+WantedBy=docker.service
+EOF
+  systemctl daemon-reload
+  systemctl enable -q metastratum-docker-forward
   if systemctl -q is-active docker; then
-    warn "Docker runs here: its firewall rules (FORWARD policy DROP) may keep VMs from the outside. Allow br-ext:
-  iptables -I DOCKER-USER -i br-ext -j ACCEPT
-  iptables -I DOCKER-USER -o br-ext -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
+    log "letting $ext_cidr through Docker's firewall"
+    systemctl restart metastratum-docker-forward
   fi
 }
 

@@ -54,7 +54,10 @@ They use what the machine runs already rather than replacing it. A
 PostgreSQL server gets a database and a user of its own, and a
 `pg_hba.conf` line for them if it needs one (it is reloaded, never
 restarted); `MST_DATABASE_URL` uses a database elsewhere instead. libvirt
-stays as it runs, as `libvirtd` or as its per-driver daemons.
+stays as it runs, as `libvirtd` or as its per-driver daemons. Docker's
+firewall drops forwarded traffic that is not its own: whenever Docker
+starts, `metastratum-docker-forward.service` lets the external network's
+bridge through (Docker's `DOCKER-USER` chain).
 `--ovn-northbound` uses OVN's central databases elsewhere, and writes the
 certificates their servers need. Before changing anything, each looks for
 what it would clash with, reports all of it, and stops:

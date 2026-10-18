@@ -76,7 +76,7 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
             .run(
                 "debian",
                 "e2e-password",
-                "curl -sS -o /dev/null -w 'outside %{http_code}\\n' https://deb.debian.org/debian/",
+                "curl -sS --max-time 20 -o /dev/null -w 'outside %{http_code}\\n' https://deb.debian.org/debian/",
             )
             .await?;
         assert!(rc == 0 && out.contains("outside 200"), "no way out:\n{out}");
