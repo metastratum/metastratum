@@ -174,6 +174,8 @@ async fn ip_allocation_is_ordered_skips_gateway_and_exhausts(pool: PgPool) {
     );
 }
 
+/// Allocations at once, on plain connections and in transactions of their
+/// own (as the API makes them), all get an address, and never the same one.
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]
 async fn concurrent_ip_allocation_never_duplicates(pool: PgPool) {
     let t = root(&pool).await;
@@ -183,21 +185,27 @@ async fn concurrent_ip_allocation_never_duplicates(pool: PgPool) {
         .await
         .unwrap();
 
-    let tasks: Vec<_> = (0..20)
+    let tasks: Vec<_> = (0..40)
         .map(|i| {
             let pool = pool.clone();
             tokio::spawn(async move {
-                let mut conn = pool.acquire().await.unwrap();
-                networks::create_nic(
-                    &mut conn,
-                    NicId::new(),
-                    v.id,
-                    net.id,
-                    &format!("02:00:00:00:02:{i:02}"),
-                )
-                .await
-                .unwrap()
-                .ip
+                let mac = format!("02:00:00:00:02:{i:02}");
+                if i % 2 == 0 {
+                    let mut conn = pool.acquire().await.unwrap();
+                    networks::create_nic(&mut conn, NicId::new(), v.id, net.id, &mac)
+                        .await
+                        .unwrap()
+                        .ip
+                } else {
+                    let mut tx = pool.begin().await.unwrap();
+                    let ip = networks::create_nic(&mut tx, NicId::new(), v.id, net.id, &mac)
+                        .await
+                        .unwrap()
+                        .ip;
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    tx.commit().await.unwrap();
+                    ip
+                }
             })
         })
         .collect();
@@ -207,7 +215,7 @@ async fn concurrent_ip_allocation_never_duplicates(pool: PgPool) {
     }
     ips.sort();
     ips.dedup();
-    assert_eq!(ips.len(), 20);
+    assert_eq!(ips.len(), 40);
 }
 
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]

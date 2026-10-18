@@ -135,6 +135,50 @@ async fn default_networks_and_overlap_rules(pool: PgPool) {
     assert!(networks::delete_vpc(&pool, other.id).await.is_err());
 }
 
+/// Allocations at once, each in a transaction of its own as the API makes
+/// them, all get an address, and never the same one.
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn concurrent_external_allocations_never_collide(pool: PgPool) {
+    let (_, acme) = tenant(&pool).await;
+    let e = external::create(
+        &pool,
+        ExternalNetworkId::new(),
+        &external::ExternalSpec {
+            name: "wide",
+            physical_network: "external",
+            cidr: "198.51.100.0/24",
+            gateway: "198.51.100.1",
+            pool_start: "198.51.100.2",
+            pool_end: "198.51.100.200",
+        },
+    )
+    .await
+    .unwrap();
+    let tasks: Vec<_> = (0..20)
+        .map(|_| {
+            let pool = pool.clone();
+            tokio::spawn(async move {
+                let mut tx = pool.begin().await.unwrap();
+                let ip = external::allocate(&mut tx, e.id, acme.id, None)
+                    .await
+                    .unwrap()
+                    .ip;
+                // Held a while, as a request does more before committing.
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                tx.commit().await.unwrap();
+                ip
+            })
+        })
+        .collect();
+    let mut ips = vec![];
+    for t in tasks {
+        ips.push(t.await.unwrap());
+    }
+    ips.sort();
+    ips.dedup();
+    assert_eq!(ips.len(), 20);
+}
+
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]
 async fn external_addresses_come_from_the_pool_and_skip_the_gateway(pool: PgPool) {
     let (_, acme) = tenant(&pool).await;

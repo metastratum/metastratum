@@ -309,9 +309,8 @@ pub struct Nic {
 }
 
 /// Creates a NIC with the lowest free address in the network (skipping the
-/// network, gateway and broadcast addresses). Concurrent allocations that
-/// pick the same address are serialised by the unique constraint; the loser
-/// retries.
+/// network, gateway and broadcast addresses). Allocations in a network are
+/// serialised ([`lock_addresses`]).
 pub async fn create_nic(
     db: &mut PgConnection,
     id: NicId,
@@ -319,47 +318,42 @@ pub async fn create_nic(
     network_id: NetworkId,
     mac: &str,
 ) -> Result<Nic> {
-    lock_addresses(&mut *db, network_id).await?;
-    for _ in 0..8 {
-        let res = sqlx::query_as(
-            "INSERT INTO nics (id, vm_id, network_id, mac, ip)
-             SELECT $1, $2, n.id, $4, set_masklen(n.cidr::inet + s, 32)
-             FROM networks n, generate_series(1, (2 ^ (32 - masklen(n.cidr)))::bigint - 2) s
-             WHERE n.id = $3
-               AND set_masklen(n.cidr::inet + s, 32) <> set_masklen(n.gateway, 32)
-               AND NOT EXISTS (SELECT 1 FROM nics x
-                               WHERE x.network_id = n.id AND x.ip = set_masklen(n.cidr::inet + s, 32))
-               AND NOT EXISTS (SELECT 1 FROM network_addresses a
-                               WHERE a.network_id = n.id AND a.ip = set_masklen(n.cidr::inet + s, 32))
-             ORDER BY s LIMIT 1
-             RETURNING id, vm_id, network_id, mac, host(ip) AS ip",
-        )
-        .bind(id)
-        .bind(vm_id)
-        .bind(network_id)
-        .bind(mac)
-        .fetch_optional(&mut *db)
-        .await;
-        match res {
-            Ok(Some(nic)) => return Ok(nic),
-            Ok(None) => {
-                return Err(
-                    mst_core::Error::Conflict("network has no free addresses".into()).into(),
-                );
-            }
-            Err(sqlx::Error::Database(e))
-                if e.is_unique_violation() && e.constraint() == Some("nics_network_id_ip_key") =>
-            {
-                continue;
-            }
-            Err(e) => return Err(crate::conflict_on_unique(e, "nic")),
-        }
-    }
-    Err(mst_core::Error::Conflict("could not allocate an address; try again".into()).into())
+    use sqlx::Connection;
+    // Within the caller's transaction (a savepoint), or one of its own: the
+    // lock lasts until the outermost one ends, never just this statement.
+    let mut tx = db.begin().await?;
+    lock_addresses(&mut tx, network_id).await?;
+    let nic = sqlx::query_as(
+        "INSERT INTO nics (id, vm_id, network_id, mac, ip)
+         SELECT $1, $2, n.id, $4, set_masklen(n.cidr::inet + s, 32)
+         FROM networks n, generate_series(1, (2 ^ (32 - masklen(n.cidr)))::bigint - 2) s
+         WHERE n.id = $3
+           AND set_masklen(n.cidr::inet + s, 32) <> set_masklen(n.gateway, 32)
+           AND NOT EXISTS (SELECT 1 FROM nics x
+                           WHERE x.network_id = n.id AND x.ip = set_masklen(n.cidr::inet + s, 32))
+           AND NOT EXISTS (SELECT 1 FROM network_addresses a
+                           WHERE a.network_id = n.id AND a.ip = set_masklen(n.cidr::inet + s, 32))
+         ORDER BY s LIMIT 1
+         RETURNING id, vm_id, network_id, mac, host(ip) AS ip",
+    )
+    .bind(id)
+    .bind(vm_id)
+    .bind(network_id)
+    .bind(mac)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| crate::conflict_on_unique(e, "nic"))?
+    .ok_or_else(|| -> crate::Error {
+        mst_core::Error::Conflict("network has no free addresses".into()).into()
+    })?;
+    tx.commit().await?;
+    Ok(nic)
 }
 
 /// Serialises address allocation in a network until the transaction ends:
-/// NICs and reserved addresses come from different tables.
+/// NICs and reserved addresses come from different tables. Allocations
+/// lock first, so they never pick the same address. Callers are in a
+/// transaction: outside one, the lock would end with the statement.
 async fn lock_addresses(db: &mut PgConnection, network: NetworkId) -> Result<()> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('mst-addresses:' || $1::text, 0))")
         .bind(network)
@@ -375,7 +369,9 @@ pub async fn reserve_address(
     network: NetworkId,
     purpose: &str,
 ) -> Result<Ipv4Addr> {
-    lock_addresses(&mut *db, network).await?;
+    use sqlx::Connection;
+    let mut tx = db.begin().await?;
+    lock_addresses(&mut tx, network).await?;
     let ip: Option<String> = sqlx::query_scalar(
         "INSERT INTO network_addresses (network_id, ip, purpose)
          SELECT n.id, set_masklen(n.cidr::inet + s, 32), $2
@@ -391,10 +387,15 @@ pub async fn reserve_address(
     )
     .bind(network)
     .bind(purpose)
-    .fetch_optional(&mut *db)
+    .fetch_optional(&mut *tx)
     .await?;
-    ip.and_then(|ip| ip.parse().ok())
-        .ok_or_else(|| mst_core::Error::Conflict("network has no free addresses".into()).into())
+    let ip = ip
+        .and_then(|ip| ip.parse().ok())
+        .ok_or_else(|| -> crate::Error {
+            mst_core::Error::Conflict("network has no free addresses".into()).into()
+        })?;
+    tx.commit().await?;
+    Ok(ip)
 }
 
 /// The network's health check address, reserved on first use.

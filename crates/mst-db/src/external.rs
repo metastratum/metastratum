@@ -197,43 +197,40 @@ async fn allocate_as(
     vpc: Option<VpcId>,
     kind: &str,
 ) -> Result<ExternalIp> {
-    for _ in 0..8 {
-        let res = sqlx::query_as(concat!(
-            "INSERT INTO external_ips (id, external_network_id, ip, kind, tenant_id, vpc_id)
-             SELECT $1, e.id, e.pool_start + s, $3, $4, $5
-             FROM external_networks e, generate_series(0, e.pool_end - e.pool_start) s
-             WHERE e.id = $2 AND e.pool_start + s <> e.gateway
-               AND NOT EXISTS (SELECT 1 FROM external_ips x
-                               WHERE x.external_network_id = e.id AND x.ip = e.pool_start + s)
-             ORDER BY s LIMIT 1
-             RETURNING ",
-            ip_columns!()
-        ))
-        .bind(ExternalIpId::new())
-        .bind(network)
-        .bind(kind)
-        .bind(tenant)
-        .bind(vpc)
-        .fetch_optional(&mut *db)
-        .await;
-        match res {
-            Ok(Some(ip)) => return Ok(ip),
-            Ok(None) => {
-                return Err(mst_core::Error::Conflict(
-                    "the external network has no free addresses".into(),
-                )
-                .into());
-            }
-            Err(sqlx::Error::Database(e))
-                if e.is_unique_violation()
-                    && e.constraint() == Some("external_ips_external_network_id_ip_key") =>
-            {
-                continue;
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Err(mst_core::Error::Conflict("could not allocate an address; try again".into()).into())
+    use sqlx::Connection;
+    // Allocations in a network are serialised, so they never pick the same
+    // address: within the caller's transaction (a savepoint), or one of its
+    // own, until the outermost one ends.
+    let mut tx = db.begin().await?;
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('mst-external-addresses:' || $1::text, 0))",
+    )
+    .bind(network)
+    .execute(&mut *tx)
+    .await?;
+    let ip = sqlx::query_as(concat!(
+        "INSERT INTO external_ips (id, external_network_id, ip, kind, tenant_id, vpc_id)
+         SELECT $1, e.id, e.pool_start + s, $3, $4, $5
+         FROM external_networks e, generate_series(0, e.pool_end - e.pool_start) s
+         WHERE e.id = $2 AND e.pool_start + s <> e.gateway
+           AND NOT EXISTS (SELECT 1 FROM external_ips x
+                           WHERE x.external_network_id = e.id AND x.ip = e.pool_start + s)
+         ORDER BY s LIMIT 1
+         RETURNING ",
+        ip_columns!()
+    ))
+    .bind(ExternalIpId::new())
+    .bind(network)
+    .bind(kind)
+    .bind(tenant)
+    .bind(vpc)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| -> crate::Error {
+        mst_core::Error::Conflict("the external network has no free addresses".into()).into()
+    })?;
+    tx.commit().await?;
+    Ok(ip)
 }
 
 pub async fn get_ip(db: impl PgExecutor<'_>, id: ExternalIpId) -> Result<ExternalIp> {
