@@ -16,6 +16,8 @@ pub struct Model {
     pub load_balancers: Vec<LoadBalancer>,
     /// OVN chassis (hosts) and the physical networks they reach.
     pub chassis: Vec<Chassis>,
+    /// The name servers every network's DHCP hands out; none by default.
+    pub dns_servers: Vec<Ipv4Addr>,
 }
 
 /// An IPv4 prefix such as `10.0.0.0/24`.

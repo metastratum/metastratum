@@ -161,6 +161,7 @@ fn model() -> Model {
             name: "mst-host1".into(),
             physical_networks: vec!["external".into()],
         }],
+        dns_servers: vec!["192.0.2.53".parse().unwrap()],
     }
 }
 

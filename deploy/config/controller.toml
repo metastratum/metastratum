@@ -58,6 +58,11 @@ northbound = ["ssl:10.0.0.31:6641", "ssl:10.0.0.32:6641", "ssl:10.0.0.33:6641"]
 # it, hosts keep the remote they were set up with.
 #southbound = ["ssl:10.0.0.31:6642", "ssl:10.0.0.32:6642", "ssl:10.0.0.33:6642"]
 
+[network]
+# Name servers VMs get by DHCP, on every network. None by default: VMs then
+# resolve no names (unless their images bring a resolver of their own).
+#dns_servers = ["10.0.0.53", "10.0.1.53"]
+
 # Yubico OTP: YubiKeys typing one-time passwords as a second factor at
 # sign-in, checked by a validation service. Without this section YubiKeys
 # still work as security keys (WebAuthn), which needs no service.

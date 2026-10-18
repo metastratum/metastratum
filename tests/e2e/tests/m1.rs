@@ -58,10 +58,29 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
     // Serial console: log in and reach the other VM over the tenant network.
     let mut serial = api.console(a_id, "serial").await?;
     let (out, rc) = serial
-        .run("debian", "e2e-password", &format!("ping -c3 -W2 {b_ip}"))
+        .run(
+            "debian",
+            "e2e-password",
+            // B may still be bringing its network up: once it answers, every
+            // packet must get through.
+            &format!("ping -c1 -w60 {b_ip} >/dev/null; ping -c3 -W2 {b_ip}"),
+        )
         .await?;
     assert_eq!(rc, 0, "ping {b_ip} failed:\n{out}");
     assert!(out.contains(" 0% packet loss"), "{out}");
+    // With MST_E2E_OUTSIDE set (an installation whose default VPC has a way
+    // out, as install-controller.sh and install-agent.sh set up): the
+    // outside, by name.
+    if std::env::var_os("MST_E2E_OUTSIDE").is_some() {
+        let (out, rc) = serial
+            .run(
+                "debian",
+                "e2e-password",
+                "curl -sS -o /dev/null -w 'outside %{http_code}\\n' https://deb.debian.org/debian/",
+            )
+            .await?;
+        assert!(rc == 0 && out.contains("outside 200"), "no way out:\n{out}");
+    }
     drop(serial);
 
     // Power cycle.

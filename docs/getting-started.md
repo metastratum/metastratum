@@ -13,6 +13,49 @@ You need:
 - A network between them that guests and tenants cannot reach. The
   examples use `10.0.0.10` for the controller and `10.0.0.11` for the host.
 
+## The quick way: the installers
+
+Two scripts set everything up from scratch, on Debian 13, Fedora 43 or
+later, RHEL, Rocky Linux or AlmaLinux 10, or Arch Linux:
+
+- [`deploy/install-controller.sh`](../deploy/install-controller.sh)
+  installs PostgreSQL, OVN's central databases over TLS, the controller with
+  its first administrator, and Caddy as the web UI's HTTPS proxy. VMs get
+  the machine's own name servers by DHCP (`--dns` chooses others).
+- [`deploy/install-agent.sh`](../deploy/install-agent.sh) makes a machine a
+  host: libvirt and QEMU, Open vSwitch and OVN's host part, and the agent,
+  enrolled with the controller. It also gives the VMs a way out: an external
+  network (`10.250.250.0/24` by default) that the host NATs to its own
+  network.
+
+For everything on one machine, run both there; the agent enrolls with the
+controller beside it by itself:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/metastratum/metastratum/main/deploy/install-controller.sh
+curl -fsSLO https://raw.githubusercontent.com/metastratum/metastratum/main/deploy/install-agent.sh
+sudo bash install-controller.sh
+sudo bash install-agent.sh
+```
+
+For more hosts, run `install-agent.sh` on each with a join token from the
+controller (`mst-controller join-token --cluster default`, or Infrastructure
+→ Hosts → Add host):
+
+```sh
+sudo MST_JOIN_TOKEN=mstjoin.... bash install-agent.sh --controller https://10.0.0.10:8443
+```
+
+`--help` shows the options of each (the web UI's domain name for a Let's
+Encrypt certificate, another external network, a particular release...).
+Both say what they will change and ask first, and can run again safely. On
+Arch, OVN is not packaged: the installers build it from source, and upgrade
+the system first as Arch requires. On RHEL, Open vSwitch and OVN come from
+the Fast Datapath repository, which takes a subscription; Rocky Linux and
+AlmaLinux get them from the CentOS NFV SIG.
+
+The rest of this page does the same by hand.
+
 ## Packages
 
 Download `metastratum-controller` and `metastratum-agent`, as `.deb` or
@@ -23,7 +66,7 @@ static binaries, so the same package works on any recent distribution.
 ## The controller
 
 Install it with PostgreSQL and OVN's central databases (Debian and Ubuntu;
-on Fedora: `dnf install ./metastratum-controller-*.rpm postgresql-server ovn-central`):
+on Fedora: `dnf install ./metastratum-controller-*.rpm postgresql-server postgresql-contrib ovn-central`):
 
 ```sh
 apt install ./metastratum-controller_*.deb postgresql ovn-central

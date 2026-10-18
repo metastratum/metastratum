@@ -114,7 +114,7 @@ fn strs<I: IntoIterator<Item = S>, S: Into<String>>(v: I) -> Datum {
     Datum::Strs(v.into_iter().map(Into::into).collect())
 }
 
-fn map<const N: usize>(kv: [(&str, String); N]) -> Datum {
+fn map<'a>(kv: impl IntoIterator<Item = (&'a str, String)>) -> Datum {
     Datum::Map(kv.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
 }
 
@@ -162,6 +162,16 @@ fn acl_direction(d: Direction) -> &'static str {
         // Evaluated as traffic leaves the switch towards the port.
         Direction::Ingress => "to-lport",
         Direction::Egress => "from-lport",
+    }
+}
+
+/// OVN's DHCP option for name servers: one address, or `{a, b}`.
+fn dns_option(servers: &[Ipv4Addr]) -> Option<(&'static str, String)> {
+    let list: Vec<String> = servers.iter().map(ToString::to_string).collect();
+    match list.len() {
+        0 => None,
+        1 => Some(("dns_server", list[0].clone())),
+        _ => Some(("dns_server", format!("{{{}}}", list.join(", ")))),
     }
 }
 
@@ -513,7 +523,9 @@ pub fn compile(m: &Model) -> Desired {
                         ("lease_time", "3600".to_owned()),
                         ("router", n.gateway.to_string()),
                         ("mtu", n.mtu.to_string()),
-                    ]),
+                    ]
+                    .into_iter()
+                    .chain(dns_option(&m.dns_servers))),
                 ),
             ],
         );
@@ -868,7 +880,28 @@ mod tests {
                     physical_networks: vec!["external".into()],
                 })
                 .into(),
+            dns_servers: vec![],
         }
+    }
+
+    #[test]
+    fn dhcp_hands_out_the_name_servers_given() {
+        let dns = |m: &Model| {
+            let row = compile(m)
+                .find(&format!("dhcp/{}", m.networks[0].id))
+                .cloned()
+                .unwrap();
+            match row.get("options") {
+                Some(Datum::Map(o)) => o.get("dns_server").cloned(),
+                other => panic!("{other:?}"),
+            }
+        };
+        let mut m = model();
+        assert_eq!(dns(&m), None);
+        m.dns_servers = vec!["192.0.2.53".parse().unwrap()];
+        assert_eq!(dns(&m).as_deref(), Some("192.0.2.53"));
+        m.dns_servers.push("198.51.100.53".parse().unwrap());
+        assert_eq!(dns(&m).as_deref(), Some("{192.0.2.53, 198.51.100.53}"));
     }
 
     #[test]

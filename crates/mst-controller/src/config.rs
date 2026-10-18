@@ -7,7 +7,7 @@
 //!
 //! `deploy/config/controller.toml` lists every setting.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -38,6 +38,9 @@ pub struct Config {
     #[serde(default)]
     pub agents: Agents,
     pub ovn: Ovn,
+    /// Tenant networks: what their DHCP hands VMs.
+    #[serde(default)]
+    pub network: Network,
     /// A Yubico OTP validation service, for YubiKeys typing one-time
     /// passwords as a second factor. Without it they can still sign in as
     /// security keys.
@@ -131,6 +134,15 @@ pub struct Ovn {
     /// Southbound database servers for hosts' ovn-controller, `ssl:` only.
     #[serde(default)]
     pub southbound: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Network {
+    /// Name servers VMs get by DHCP (every network's); none by default, so
+    /// VMs resolve no names unless their images bring a resolver.
+    #[serde(default)]
+    pub dns_servers: Vec<Ipv4Addr>,
 }
 
 fn default_master_key_file() -> PathBuf {
@@ -287,6 +299,21 @@ northbound = ["ssl:10.0.0.31:6641"]
         assert!(Config::parse(&plain_sb, dir).is_err());
         let bad_proxy = format!("{MINIMAL}\n[api]\ntrusted_proxies = [\"10.0.0.0/33\"]\n");
         assert!(Config::parse(&bad_proxy, dir).is_err());
+    }
+
+    #[test]
+    fn name_servers_for_vms() {
+        let dir = Path::new("/etc/metastratum");
+        let parse = |extra: &str| {
+            let text = format!(
+                "database_url = \"postgres://db/m\"\n[ovn]\nnorthbound = [\"tcp:x:1\"]\n{extra}"
+            );
+            Config::parse(&text, dir).map(|c| c.network.dns_servers)
+        };
+        assert!(parse("").unwrap().is_empty());
+        let two = parse("[network]\ndns_servers = [\"192.0.2.53\", \"198.51.100.53\"]").unwrap();
+        assert_eq!(two.len(), 2);
+        assert!(parse("[network]\ndns_servers = [\"not-an-address\"]").is_err());
     }
 
     #[test]

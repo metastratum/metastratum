@@ -1,6 +1,9 @@
 # nfpm description of the host agent package; deploy/packaging/build.sh
 # builds it. The binary is static; the dependencies are what a hypervisor
-# host needs (named for Debian and Ubuntu, and for Fedora and RHEL).
+# host needs (named for Debian and Ubuntu, and for Fedora and RHEL). On
+# RHEL and its rebuilds, Open vSwitch and OVN come versioned
+# (openvswitch3.5, ovn26.09-host, from the NFV SIG or Fast Datapath), so
+# the RPM asks for their programs instead of their names.
 name: metastratum-agent
 arch: amd64
 platform: linux
@@ -20,7 +23,7 @@ depends:
   - libvirt-clients
   - openvswitch-switch
   - ovn-host
-  - genisoimage
+  - xorriso
   - ovmf
 recommends:
   - nfs-common
@@ -33,9 +36,9 @@ overrides:
       - qemu-img
       - libvirt-daemon-kvm
       - libvirt-client
-      - openvswitch
-      - ovn-host
-      - genisoimage
+      - /usr/bin/ovs-vsctl
+      - /usr/bin/ovn-controller
+      - xorriso
       - edk2-ovmf
     recommends:
       - nfs-utils

@@ -162,14 +162,22 @@ impl Bundle<'_> {
 #
 # A plain listener on either port is replaced. Other plain listeners stay;
 # remove them once nothing uses them (ovn-nbctl / ovn-sbctl list Connection).
-# The keys are readable by root only: if ovsdb-server runs as another user,
-# give them to it.
+# Each key is readable by the user its database server runs as only (root,
+# or openvswitch on Fedora and RHEL).
 set -eu
 cd "$(dirname "$0")"
 dir=/etc/ovn/metastratum
 install -d -m 755 "$dir"
 install -m 644 nb-ca.pem nb.pem sb-ca.pem sb.pem "$dir/"
 install -m 600 nb-key.pem sb-key.pem "$dir/"
+for db in nb sb; do
+  # Bracketed: it does not match a command line it is written in.
+  pid=$(pgrep -o -f "[o]vsdb-server.*ovn${{db}}_db" || true)
+  user=$(if [ -n "$pid" ]; then ps -o user= -p "$pid"; fi | tr -d ' ')
+  if [ -n "$user" ] && [ "$user" != root ]; then
+    chown "$user" "$dir/$db-key.pem"
+  fi
+done
 ovn-nbctl set-ssl "$dir/nb-key.pem" "$dir/nb.pem" "$dir/nb-ca.pem"
 ovn-sbctl set-ssl "$dir/sb-key.pem" "$dir/sb.pem" "$dir/sb-ca.pem"
 

@@ -216,6 +216,12 @@ new files up without restarting.
 
 `deploy/lab/lab.sh ovn-tls` installs the lab's bundle on `mst-ctl`.
 
+OVN answers VMs' DHCP itself: their address, gateway and MTU, and the name
+servers in the controllers' `[network] dns_servers` (the same on every
+controller). Without them, VMs resolve no names unless their images bring
+a resolver of their own. The servers must be reachable from the VMs: on
+an external network their VPC routes to, or beyond it.
+
 ## Hosts
 
 Hosts enroll with a single-use join token (Infrastructure → Hosts, or

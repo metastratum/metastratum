@@ -288,5 +288,7 @@ pub async fn load(db: &mut PgConnection, mtu: u32) -> Result<np::Model> {
         floating_ips,
         load_balancers,
         chassis,
+        // From the controller's configuration, not the database.
+        dns_servers: vec![],
     })
 }

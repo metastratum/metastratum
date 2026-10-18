@@ -33,28 +33,43 @@ async fn write_seed(path: &Path, vm_id: &str, hostname: &str, user_data: &str) -
     )
     .await?;
     let tmp = path.with_extension("tmp");
-    let out = tokio::process::Command::new("genisoimage")
-        .arg("-quiet")
-        .arg("-output")
-        .arg(&tmp)
-        .args(["-volid", "cidata", "-joliet", "-rock"])
-        .arg(work.join("user-data"))
-        .arg(work.join("meta-data"))
-        .output()
-        .await
-        .context("running genisoimage")?;
+    let made = make_iso(&tmp, &[work.join("user-data"), work.join("meta-data")]).await;
     let _ = tokio::fs::remove_dir_all(&work).await;
-    if !out.status.success() {
-        bail!(
-            "genisoimage: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
+    made?;
     // User data may hold secrets: for root, and the VM's QEMU (libvirt
     // hands it over while the VM runs), only.
     tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await?;
     tokio::fs::rename(&tmp, path).await?;
     Ok(())
+}
+
+/// Writes an ISO 9660 image (volume `cidata`, with Joliet and Rock Ridge)
+/// holding `files`: with xorriso's `xorrisofs`, which every distribution
+/// has, or `genisoimage` where that is all there is.
+async fn make_iso(out: &Path, files: &[std::path::PathBuf]) -> Result<()> {
+    let mut last = None;
+    for tool in ["xorrisofs", "genisoimage"] {
+        let run = tokio::process::Command::new(tool)
+            .arg("-quiet")
+            .arg("-output")
+            .arg(out)
+            .args(["-volid", "cidata", "-joliet", "-rock"])
+            .args(files)
+            .output()
+            .await;
+        match run {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => last = Some(tool),
+            Err(e) => return Err(anyhow::Error::from(e).context(format!("running {tool}"))),
+            Ok(o) if !o.status.success() => {
+                bail!("{tool}: {}", String::from_utf8_lossy(&o.stderr).trim())
+            }
+            Ok(_) => return Ok(()),
+        }
+    }
+    bail!(
+        "neither xorrisofs nor {} is installed: install xorriso",
+        last.unwrap_or("genisoimage")
+    )
 }
 
 /// libvirt's CPU model as metastratum stores it.
@@ -210,4 +225,28 @@ pub async fn clone_volume(agent: &crate::session::Agent, c: &mst_proto::CloneVol
         .await
         .context("copying the volume")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// A seed ISO cloud-init finds: volume `cidata`, with both files.
+    #[tokio::test]
+    async fn seeds_are_cidata_isos() {
+        let dir = std::env::temp_dir().join(format!("mst-seed-{}", std::process::id()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let iso = dir.join("vm.iso");
+        match super::write_seed(&iso, "vm-1", "web-1", "#cloud-config\n").await {
+            Err(e) if e.to_string().contains("install xorriso") => {
+                eprintln!("skipping: {e}");
+                return;
+            }
+            r => r.unwrap(),
+        }
+        let image = tokio::fs::read(&iso).await.unwrap();
+        // The primary volume descriptor, at sector 16: its volume ID.
+        assert!(image[16 * 2048 + 40..16 * 2048 + 46].eq_ignore_ascii_case(b"cidata"));
+        let text = String::from_utf8_lossy(&image);
+        assert!(text.contains("local-hostname: web-1"), "meta-data is in it");
+        tokio::fs::remove_dir_all(&dir).await.unwrap();
+    }
 }

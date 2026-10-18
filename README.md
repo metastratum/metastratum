@@ -39,8 +39,10 @@ controllers with PostgreSQL behind them, and an agent on each host.
 metastratum is young: expect things to change between
 [releases](https://github.com/metastratum/metastratum/releases).
 
-- [Getting started](docs/getting-started.md): packages, the first
-  controller and the first host
+- [Getting started](docs/getting-started.md): the installers
+  (`deploy/install-controller.sh` and `deploy/install-agent.sh`, for Debian,
+  Fedora, RHEL and its rebuilds, and Arch; both on one machine for a single
+  host), or packages by hand
 - [Running metastratum](docs/operations.md): controllers in several places,
   PostgreSQL and OVN underneath, host failure, two-factor sign-in, load
   balancers, resizing, templates, snapshots and backups, upgrades,

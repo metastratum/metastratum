@@ -324,7 +324,7 @@ async fn serve(db: mst_db::sqlx::PgPool, cfg: &config::Config) -> anyhow::Result
         ovn_ca,
         ovn_sb_remote: cfg.southbound().unwrap_or_default(),
         agents: Agents::default(),
-        net: net::Reconciler::new(db.clone(), nb),
+        net: net::Reconciler::new(db.clone(), nb, cfg.network.dns_servers.clone()),
         replica: replica.clone(),
         events: events::Hub::default(),
         limits: ratelimit::Limits::new(

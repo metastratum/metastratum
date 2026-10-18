@@ -26,16 +26,19 @@ pub struct Reconciler(Arc<Inner>);
 struct Inner {
     db: PgPool,
     nb: Arc<Northbound>,
+    /// Name servers for VMs' DHCP, from the configuration.
+    dns_servers: Vec<std::net::Ipv4Addr>,
     kick: Notify,
     /// One pass at a time within this replica.
     running: Mutex<Option<Vec<String>>>,
 }
 
 impl Reconciler {
-    pub fn new(db: PgPool, nb: Arc<Northbound>) -> Self {
+    pub fn new(db: PgPool, nb: Arc<Northbound>, dns_servers: Vec<std::net::Ipv4Addr>) -> Self {
         Self(Arc::new(Inner {
             db,
             nb,
+            dns_servers,
             kick: Notify::new(),
             running: Mutex::new(None),
         }))
@@ -77,9 +80,10 @@ impl Reconciler {
             .bind(LOCK)
             .execute(&mut *tx)
             .await?;
-        let model = mst_db::netmodel::load(&mut tx, mst_ovsdb::nb::DEFAULT_MTU)
+        let mut model = mst_db::netmodel::load(&mut tx, mst_ovsdb::nb::DEFAULT_MTU)
             .await
             .context("loading the network model")?;
+        model.dns_servers = self.0.dns_servers.clone();
         let desired = mst_netplan::compile(&model);
         if last_warnings.as_ref() != Some(&desired.warnings) {
             for w in &desired.warnings {
