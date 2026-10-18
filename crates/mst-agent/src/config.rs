@@ -91,7 +91,7 @@ mod tests {
     #[test]
     fn minimal_file_takes_the_defaults() {
         let c = Config::parse(
-            r#"controllers = ["https://ctl1.example.net:8443"]"#,
+            r#"controllers = ["https://ctl1.example.net:7821"]"#,
             Path::new("/etc/metastratum"),
         )
         .unwrap();
@@ -105,7 +105,7 @@ mod tests {
     fn mistakes_are_refused() {
         let dir = Path::new("/etc/metastratum");
         assert!(Config::parse("controllers = []", dir).is_err());
-        let typo = "controllers = [\"https://c:8443\"]\njoin_tokn = \"x\"";
+        let typo = "controllers = [\"https://c:7821\"]\njoin_tokn = \"x\"";
         assert!(format!("{:#}", Config::parse(typo, dir).unwrap_err()).contains("join_tokn"));
     }
 

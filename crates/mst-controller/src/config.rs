@@ -149,12 +149,14 @@ fn default_master_key_file() -> PathBuf {
     "master.key".into()
 }
 
+/// Ports out of the way of other services' usual ones (8080, 8443...):
+/// none registered for 7820-7830, nor commonly used.
 fn default_api_listen() -> SocketAddr {
-    ([127, 0, 0, 1], 8080).into()
+    ([127, 0, 0, 1], 7820).into()
 }
 
 fn default_agent_listen() -> SocketAddr {
-    ([0, 0, 0, 0], 8443).into()
+    ([0, 0, 0, 0], 7821).into()
 }
 
 impl Config {
@@ -266,8 +268,8 @@ northbound = ["ssl:10.0.0.31:6641"]
     fn minimal_file_takes_the_defaults() {
         let c = Config::parse(MINIMAL, Path::new("/etc/metastratum")).unwrap();
         assert_eq!(c.master_key_file, Path::new("/etc/metastratum/master.key"));
-        assert_eq!(c.api.listen.to_string(), "127.0.0.1:8080");
-        assert_eq!(c.agents.listen.to_string(), "0.0.0.0:8443");
+        assert_eq!(c.api.listen.to_string(), "127.0.0.1:7820");
+        assert_eq!(c.agents.listen.to_string(), "0.0.0.0:7821");
         assert_eq!(c.northbound(), "ssl:10.0.0.31:6641");
         assert_eq!(c.southbound(), None);
         assert!(c.metrics_listen.is_none() && c.api.redis_url.is_none());
@@ -290,7 +292,7 @@ northbound = ["ssl:10.0.0.31:6641"]
     fn mistakes_are_refused() {
         let dir = Path::new("/etc/metastratum");
         // A typo is an error, not a silently ignored setting.
-        let typo = format!("{MINIMAL}\n[api]\nlistn = \"0.0.0.0:8080\"\n");
+        let typo = format!("{MINIMAL}\n[api]\nlistn = \"0.0.0.0:7820\"\n");
         let err = format!("{:#}", Config::parse(&typo, dir).unwrap_err());
         assert!(err.contains("listn"), "{err}");
         let no_ovn = r#"database_url = "postgres://db/mst""#;
@@ -326,21 +328,21 @@ northbound = ["ssl:10.0.0.31:6641"]
         };
         assert_eq!(
             at(
-                "[agents]\npeer_address = \"10.0.0.21:8443\"",
+                "[agents]\npeer_address = \"10.0.0.21:7821\"",
                 "postgres://db/m"
             ),
-            "10.0.0.21:8443"
+            "10.0.0.21:7821"
         );
         assert_eq!(
             at("[agents]\nlisten = \"10.0.0.21:9443\"", "postgres://db/m"),
             "10.0.0.21:9443"
         );
         // A database on this machine says nothing about the network.
-        assert_eq!(at("", "postgres://localhost/m"), "ctl1:8443");
+        assert_eq!(at("", "postgres://localhost/m"), "ctl1:7821");
         // A remote one: the address the route to it leaves from.
         let towards = at("", "postgres://192.0.2.10/m");
         assert!(
-            towards.ends_with(":8443") && !towards.starts_with("ctl1"),
+            towards.ends_with(":7821") && !towards.starts_with("ctl1"),
             "{towards}"
         );
     }

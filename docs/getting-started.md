@@ -43,7 +43,7 @@ controller (`mst-controller join-token --cluster default`, or Infrastructure
 → Hosts → Add host):
 
 ```sh
-sudo MST_JOIN_TOKEN=mstjoin.... bash install-agent.sh --controller https://10.0.0.10:8443
+sudo MST_JOIN_TOKEN=mstjoin.... bash install-agent.sh --controller https://10.0.0.10:7821
 ```
 
 `--help` shows the options of each (the web UI's domain name for a Let's
@@ -62,8 +62,9 @@ bridge through (Docker's `DOCKER-USER` chain).
 certificates their servers need. Before changing anything, each looks for
 what it would clash with, reports all of it, and stops:
 
-- ports in use by other programs (8080, 8443, 6641, 6642, and 80 and 443
-  for the HTTPS proxy: `--no-proxy` leaves the proxy to you);
+- ports in use by other programs (7820, 7821, 6641, 6642, and 80 and 443
+  for the HTTPS proxy: `--https-port` serves the web UI on another port,
+  and `--no-proxy` leaves the proxy to you);
 - a database named `metastratum` left from an earlier installation whose
   `controller.toml` and master key are gone (the database's secrets are
   sealed with that key);
@@ -136,13 +137,13 @@ mst-controller bootstrap && unset MST_ADMIN_PASSWORD
 systemctl enable --now mst-controller
 ```
 
-The web UI and API listen on `127.0.0.1:8080`, for an HTTPS proxy in front
+The web UI and API listen on `127.0.0.1:7820`, for an HTTPS proxy in front
 ([Web traffic](operations.md#controllers) says what it needs). To look
 around before setting one up, forward the port over SSH and open
-http://localhost:8080:
+http://localhost:7820:
 
 ```sh
-ssh -L 8080:127.0.0.1:8080 root@10.0.0.10
+ssh -L 7820:127.0.0.1:7820 root@10.0.0.10
 ```
 
 Sign in as `admin` with the password you chose.
@@ -185,7 +186,7 @@ mst-controller join-token --cluster default
 Put it in `/etc/metastratum/agent.toml` on the host, and start the agent:
 
 ```toml
-controllers = ["https://10.0.0.10:8443"]
+controllers = ["https://10.0.0.10:7821"]
 join_token = "mstjoin...."
 ```
 
@@ -215,7 +216,7 @@ mst-controller doctor
 
 compares the installation with the deployment checklist in
 [SECURITY.md](../SECURITY.md#deployment-checklist) and says what to fix: the
-HTTPS proxy, per-VM limits, fencing and so on. Ports to open: 8443 on the
+HTTPS proxy, per-VM limits, fencing and so on. Ports to open: 7821 on the
 controller for hosts, 6642 on the OVN node for hosts (6641 for controllers
 only), UDP 6081 between hosts for OVN's tunnels, and 49152-49215 between
 hosts for live migration.

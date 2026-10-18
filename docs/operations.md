@@ -28,7 +28,7 @@ credentials, readable by the controller alone. A typical file:
 
 ```toml
 database_url = "postgres://metastratum:...@db.example.net/metastratum?sslmode=verify-full"
-metrics_listen = "10.0.0.21:9180"
+metrics_listen = "10.0.0.21:7822"
 
 [api]
 trusted_proxies = ["10.0.0.5", "10.0.0.6"]
@@ -39,8 +39,10 @@ northbound = ["ssl:10.0.0.31:6641", "ssl:10.0.0.32:6641", "ssl:10.0.0.33:6641"]
 southbound = ["ssl:10.0.0.31:6642", "ssl:10.0.0.32:6642", "ssl:10.0.0.33:6642"]
 ```
 
-Everything else has a default: the API on `127.0.0.1:8080` (for the proxy
-in front), the agent endpoint on port 8443. `deploy/config/controller.toml`
+Everything else has a default: the API on `127.0.0.1:7820` (for the proxy
+in front), the agent endpoint on port 7821. (They are out of the way of
+the ports other services usually take, such as 8080 and 8443; before 0.4
+those were the defaults.) `deploy/config/controller.toml`
 lists every setting. A setting the controller does not know is an error, so
 a typo is caught when it starts. The other commands (`bootstrap`,
 `join-token`, `ovn-certificate`) read the same file.
@@ -98,7 +100,7 @@ for the redirect URI above.
 replica's agent endpoint (`agents.listen`, gRPC with mutual TLS against the
 controller's own CA) and keeps one session open. Give the agents every
 replica in `/etc/metastratum/agent.toml`
-(`controllers = ["https://ctl1.example.net:8443", "https://ctl2.example.net:8443"]`,
+(`controllers = ["https://ctl1.example.net:7821", "https://ctl2.example.net:7821"]`,
 see `deploy/config/agent.toml`); an agent that loses its replica moves to
 the next. Agents check the endpoint's certificate against the controller's
 CA, not its name, so any name or address that reaches a replica will do.
@@ -692,6 +694,20 @@ above: only upgraded controllers merge a backup into the ones built on it
 when deleting it, and upgraded agents refuse to delete a backup others
 build on for a controller that does not.
 
+From 0.4 on, the controller's default ports are 7820 (the API) and 7821
+(the agent endpoint), not 8080 and 8443. A controller whose configuration
+sets neither `[api] listen` nor `[agents] listen` moves to the new ones
+when upgraded: its proxy, and its hosts (whose `agent.toml` names the
+endpoint's port), lose it. Before upgrading, set them to the ports in use:
+
+```toml
+[api]
+listen = "127.0.0.1:8080"
+
+[agents]
+listen = "0.0.0.0:8443"
+```
+
 The release notes say when a release drops support for an agent revision.
 
 ## Monitoring
@@ -704,7 +720,7 @@ tenants. Scrape every replica:
 scrape_configs:
   - job_name: metastratum
     static_configs:
-      - targets: ['ctl1.example.net:9180', 'ctl2.example.net:9180']
+      - targets: ['ctl1.example.net:7822', 'ctl2.example.net:7822']
 ```
 
 Counters (`mst_*_total`, histograms `mst_*_seconds`) are what that replica

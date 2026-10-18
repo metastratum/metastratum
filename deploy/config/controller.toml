@@ -20,11 +20,11 @@ database_url = "postgres://metastratum:secret@db.example.net/metastratum?sslmode
 
 # Prometheus metrics at /metrics. Off by default; keep it off the API's
 # address, as metrics name hosts and count every tenant's resources.
-#metrics_listen = "10.0.0.21:9180"
+#metrics_listen = "10.0.0.21:7822"
 
 [api]
 # The HTTP API and web UI. Put an HTTPS proxy in front of it.
-#listen = "127.0.0.1:8080"
+#listen = "127.0.0.1:7820"
 
 # The proxies' addresses or networks. Their X-Forwarded-For gives clients'
 # addresses for rate limits, X-Forwarded-Proto: https makes cookies Secure
@@ -41,12 +41,12 @@ database_url = "postgres://metastratum:secret@db.example.net/metastratum?sslmode
 
 [agents]
 # The endpoint hosts' agents connect to (gRPC over mutual TLS).
-#listen = "0.0.0.0:8443"
+#listen = "0.0.0.0:7821"
 
 # Where the other controllers reach this one's agent endpoint. Default: the
 # listen address if it names one, else this machine's address towards the
 # database's host.
-#peer_address = "10.0.0.21:8443"
+#peer_address = "10.0.0.21:7821"
 
 [ovn]
 # The northbound database's servers; the cluster's leader is used. Over

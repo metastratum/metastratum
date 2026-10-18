@@ -23,7 +23,7 @@
 # Datapath repository (Open vSwitch and OVN) through a subscription.
 #
 # Usage: install-agent.sh [options]
-#   --controller URL      the controller's agent endpoint (https://ADDRESS:8443),
+#   --controller URL      the controller's agent endpoint (https://ADDRESS:7821),
 #                         several comma-separated; default: the controller on
 #                         this machine
 #   --address IP          this machine's address, which the controller and
@@ -71,7 +71,7 @@ if [[ -z $controllers ]]; then
   if [[ -e /etc/metastratum/controller.toml ]] && command -v mst-controller >/dev/null; then
     local_controller=1
   elif [[ ! -e /etc/metastratum/agent.toml ]]; then
-    echo "no controller on this machine: give one with --controller https://ADDRESS:8443" >&2
+    echo "no controller on this machine: give one with --controller https://ADDRESS:7821" >&2
     exit 1
   fi
 elif [[ -z $address ]]; then
@@ -300,7 +300,12 @@ if [[ $ext_cidr != none ]]; then
     die "$ext_cidr is in use on this machine already; choose another with --external-cidr"
   fi
 fi
-((local_controller)) && controllers=https://$address:8443
+# The controller here: where it says other replicas reach it, else its
+# default port.
+if ((local_controller)); then
+  peer=$(sed -n 's/^peer_address = "\(.*\)"$/\1/p' /etc/metastratum/controller.toml)
+  controllers=https://${peer:-$address:7821}
+fi
 grep -qwE 'vmx|svm' /proc/cpuinfo ||
   note "this CPU shows no hardware virtualisation (VT-x/AMD-V): VMs will not start. Switch it on in the firmware settings."
 

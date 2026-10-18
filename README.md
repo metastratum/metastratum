@@ -256,7 +256,7 @@ leaves it there). That is the default when the VM's cluster has a single
 host. The setting can be changed while the VM is stopped and applies from
 its next start.
 
-Set `metrics_listen = "127.0.0.1:9180"` for Prometheus metrics. To try out
+Set `metrics_listen = "127.0.0.1:7822"` for Prometheus metrics. To try out
 several controllers, run a second one beside it from a copy of the file
 with other `api.listen` and `agents.listen` ports (the same database and
 master key), and give the agents both endpoints:

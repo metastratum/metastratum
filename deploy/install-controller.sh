@@ -26,7 +26,10 @@
 #                         from Let's Encrypt (NAME must resolve here, and ports
 #                         80 and 443 be reachable). Default: https://ADDRESS,
 #                         with a certificate from Caddy's own CA
-#   --no-proxy            no HTTPS proxy: the UI stays on 127.0.0.1:8080
+#   --https-port PORT     the web UI's port (default 443): another keeps clear
+#                         of a web server here, and needs no port 80 (unless
+#                         with --domain, for Let's Encrypt)
+#   --no-proxy            no HTTPS proxy: the UI stays on 127.0.0.1:7820
 #   --external-cidr CIDR  the external network VMs reach the outside through
 #                         (default 10.250.250.0/24, as install-agent.sh NATs
 #                         it on each host), or "none"
@@ -53,16 +56,17 @@
 set -euo pipefail
 
 ROLE=controller
-API=http://127.0.0.1:8080
+API=http://127.0.0.1:7820
 IMAGE_URL=https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
 
 address="" domain="" proxy=1 ext_cidr=10.250.250.0/24 dns="" image=1 version="" packages="" assume_yes=0
-ovn_nb="" ovn_sb="" force=0
+ovn_nb="" ovn_sb="" force=0 https_port=443
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     --address) address=${2:?}; shift ;;
     --domain) domain=${2:?}; shift ;;
+    --https-port) https_port=${2:?}; shift ;;
     --no-proxy) proxy=0 ;;
     --external-cidr) ext_cidr=${2:?}; shift ;;
     --dns) dns=${2:?}; shift ;;
@@ -381,15 +385,24 @@ leftover_database() {
 # What it would clash with.
 first=1
 [[ -e $CONF/controller.toml ]] && first=0
-check_port 8080 "the controller's web UI and API" mst-controller.service
-check_port 8443 "the controller's endpoint for hosts" mst-controller.service
+if ! [[ $https_port =~ ^[0-9]+$ ]] || ((https_port < 1 || https_port > 65535)); then
+  die "--https-port takes a port number"
+fi
+check_port 7820 "the controller's web UI and API" mst-controller.service
+check_port 7821 "the controller's endpoint for hosts" mst-controller.service
 if ((proxy)); then
-  check_port 80 "the web UI's HTTPS proxy, for redirects and certificates" caddy.service
-  check_port 443 "the web UI's HTTPS proxy" caddy.service
-  if printf '%s\n' ${problems[@]+"${problems[@]}"} | grep -E '^port (80|443) ' >/dev/null; then
-    note "with --no-proxy the web UI stays on 127.0.0.1:8080, for a proxy of your own"
+  check_port "$https_port" "the web UI's HTTPS proxy" caddy.service
+  # Port 80: for redirects to the UI on 443, and Let's Encrypt's checks.
+  if ((https_port == 443)) || [[ -n $domain ]]; then
+    check_port 80 "the web UI's HTTPS proxy, for redirects and certificates" caddy.service
+  fi
+  if printf '%s\n' ${problems[@]+"${problems[@]}"} | grep -E "^port (80|$https_port) " >/dev/null; then
+    note "--https-port serves the web UI on another port, and --no-proxy leaves it on 127.0.0.1:7820 for a proxy of your own"
   fi
 fi
+# The web UI's address.
+ui_url=https://${domain:-$address}
+((https_port == 443)) || ui_url+=:$https_port
 if ((local_ovn)); then
   # OVN's database servers, as each distribution runs them.
   ovn_units="ovn-central.service ovn-northd.service ovn-ovsdb-server-nb.service ovn-ovsdb-server-sb.service"
@@ -429,8 +442,8 @@ This installs a metastratum controller on $host ($PRETTY_NAME):
 esac)
   - OVN's central databases: $(if ((local_ovn)); then printf 'installed here, served over TLS'; else printf 'at %s' "$ovn_nb"; fi)$([[ $family == arch ]] && ((local_ovn)) && printf ' (built from source,\n    after a full system upgrade)')
   - metastratum-controller ${version:-(the latest release)}$([[ -n $packages ]] && printf ' from %s' "$packages")
-  - the web UI at $(if ((proxy)); then printf 'https://%s, through Caddy' "${domain:-$address}"; else printf 'http://127.0.0.1:8080'; fi)
-  - hosts reach it at $address (port 8443$( ((local_ovn)) && printf ', and 6642 for OVN'))
+  - the web UI at $(if ((proxy)); then printf '%s, through Caddy' "$ui_url"; else printf 'http://127.0.0.1:7820'; fi)
+  - hosts reach it at $address (port 7821$( ((local_ovn)) && printf ', and 6642 for OVN'))
   - VMs get ${dns:-no} name server(s) by DHCP
 EOF
 ((selinux)) && cat <<EOF
@@ -626,12 +639,12 @@ database_url = "$url"
 
 [api]
 # The web UI and API, behind the HTTPS proxy on this machine.
-listen = "127.0.0.1:8080"
+listen = "127.0.0.1:7820"
 trusted_proxies = ["127.0.0.1"]
 
 [agents]
-listen = "0.0.0.0:8443"
-peer_address = "$address:8443"
+listen = "0.0.0.0:7821"
+peer_address = "$address:7821"
 
 [ovn]
 northbound = [$(toml_list "$ovn_nb")]
@@ -669,7 +682,7 @@ EOF
   curl -fsS -o /dev/null "$API/healthz" || die "the controller does not answer; see: journalctl -u mst-controller"
   if systemctl -q is-active firewalld; then
     # Hosts' agents, and their ovn-controller.
-    firewall-cmd -q --permanent --add-port=8443/tcp
+    firewall-cmd -q --permanent --add-port=7821/tcp
     ((local_ovn)) && firewall-cmd -q --permanent --add-port=6642/tcp
     firewall-cmd -q --reload
   fi
@@ -695,7 +708,7 @@ ovn_bundles() {
 
 setup_proxy() {
   ((proxy)) || return 0
-  local site=${domain:-$address} file=/etc/caddy/Caddyfile
+  local file=/etc/caddy/Caddyfile
   if [[ -e $file ]] && ! grep -q 'metastratum' "$file"; then
     # The distributions' Caddyfile serves a placeholder page; anything else
     # is someone's, and stays.
@@ -703,23 +716,31 @@ setup_proxy() {
       mv "$file" "$file.orig"
     else
       warn "$file is in use: add this site to it yourself:
-  https://$site { reverse_proxy 127.0.0.1:8080 }"
+  $ui_url { reverse_proxy 127.0.0.1:7820 }"
       return
     fi
   fi
-  log "serving the web UI at https://$site"
+  log "serving the web UI at $ui_url"
   install -d /etc/caddy
   {
     printf '# metastratum'"'"'s web UI and API, written by install-controller.sh.\n'
-    printf '{\n\tskip_install_trust\n}\n\nhttps://%s {\n' "$site"
+    printf '{\n\tskip_install_trust\n'
+    # Off the HTTPS port, no redirects from port 80 (which may be another's).
+    ((https_port == 443)) || [[ -n $domain ]] || printf '\tauto_https disable_redirects\n'
+    printf '}\n\n%s {\n' "$ui_url"
     [[ -z $domain ]] && printf '\t# No name to get a certificate for: one from Caddy'"'"'s own CA.\n\ttls internal\n'
-    printf '\treverse_proxy 127.0.0.1:8080\n}\n'
+    printf '\treverse_proxy 127.0.0.1:7820\n}\n'
   } >"$file"
   ((selinux)) && setsebool -P httpd_can_network_connect 1
   systemctl enable -q caddy
   systemctl restart caddy
   if systemctl -q is-active firewalld; then
-    firewall-cmd -q --permanent --add-service=https --add-service=http
+    if ((https_port == 443)); then
+      firewall-cmd -q --permanent --add-service=https --add-service=http
+    else
+      firewall-cmd -q --permanent --add-port="$https_port/tcp"
+      [[ -z $domain ]] || firewall-cmd -q --permanent --add-service=http
+    fi
     firewall-cmd -q --reload
   fi
 }
@@ -781,7 +802,7 @@ echo
 log "the controller is installed"
 cat <<EOF
 
-  Web UI:  $(if ((proxy)); then printf 'https://%s' "${domain:-$address}"; else printf 'http://127.0.0.1:8080 (forward it: ssh -L 8080:127.0.0.1:8080 root@%s)' "$address"; fi)
+  Web UI:  $(if ((proxy)); then printf '%s' "$ui_url"; else printf 'http://127.0.0.1:7820 (forward it: ssh -L 7820:127.0.0.1:7820 root@%s)' "$address"; fi)
   Sign in: admin$([[ -e $admin_password_file ]] && printf ', with the password in %s' "$admin_password_file")
 EOF
 if ((proxy)) && [[ -z $domain ]]; then
@@ -807,7 +828,7 @@ Next, hosts: run install-agent.sh on each. On this machine it enrolls with
 this controller by itself; elsewhere give it a join token from here
 (mst-controller join-token --cluster default, or Infrastructure → Hosts):
 
-  MST_JOIN_TOKEN=... install-agent.sh --controller https://$address:8443
+  MST_JOIN_TOKEN=... install-agent.sh --controller https://$address:7821
 
 Keep copies of $CONF/controller.toml and master.key somewhere safe.
 Check the installation with: mst-controller doctor

@@ -21,7 +21,7 @@ const clusters = ref<Cluster[]>([])
 const joinCluster = ref<string | null>(null)
 const agentConfig = computed(() => {
   if (!token.value) return ''
-  const controllers = token.value.controllers.length ? token.value.controllers : ['https://CONTROLLER:8443']
+  const controllers = token.value.controllers.length ? token.value.controllers : ['https://CONTROLLER:7821']
   return `controllers = [${controllers.map((c) => JSON.stringify(c)).join(', ')}]\njoin_token = ${JSON.stringify(token.value.token)}`
 })
 

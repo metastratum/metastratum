@@ -7,7 +7,7 @@
 
 # The controllers' agent endpoints. With several, the agent moves to the
 # next when one is unreachable.
-controllers = ["https://ctl1.example.net:8443", "https://ctl2.example.net:8443"]
+controllers = ["https://ctl1.example.net:7821", "https://ctl2.example.net:7821"]
 
 # Single-use token from `mst-controller join-token` or the web UI
 # (Infrastructure -> Hosts); only needed for the first start.
