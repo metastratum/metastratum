@@ -668,9 +668,8 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * Deletes an image, and every host's copy. VMs made from it keep their
-         *     disks, which are copies; only disks made before the image store, built
-         *     on the image, keep it from going.
+         * Deletes an image, and every copy of it. VMs made from it keep their
+         *     disks, which are copies of their own.
          */
         delete: operations["delete_image"];
         options?: never;
@@ -2609,6 +2608,11 @@ export interface components {
         ImageView: {
             /** Format: date-time */
             created_at: string;
+            /**
+             * @description SHA-256 of the disk it holds, read as a raw disk: every copy, and a
+             *     download again, is checked against it.
+             */
+            digest?: string | null;
             /** @description Why downloading it failed. */
             error?: string | null;
             /** @description `qcow2` or `raw`. */
@@ -5233,13 +5237,6 @@ export interface operations {
                 content?: never;
             };
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description VM disks are built on it */
-            409: {
                 headers: {
                     [name: string]: unknown;
                 };

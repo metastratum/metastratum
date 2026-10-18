@@ -112,11 +112,9 @@ pub struct MigrateTo<'a> {
     /// The destination host's address; its daemon must accept TLS.
     pub address: &'a str,
     /// Disks (target names such as `vda`) on host-local storage, to copy
-    /// while the guest runs. Shared and network disks are not copied.
+    /// while the guest runs, whole (they stand on their own). Shared and
+    /// network disks are not copied.
     pub copy_disks: &'a [String],
-    /// Copy those disks whole, into standalone volumes on the destination,
-    /// rather than only their top layer onto its copy of their image.
-    pub full_copy: bool,
     pub max_bandwidth_mib: Option<u64>,
 }
 
@@ -1199,7 +1197,6 @@ const MIGRATE_PEER2PEER: u32 = 2;
 const MIGRATE_PERSIST_DEST: u32 = 8;
 const MIGRATE_UNDEFINE_SOURCE: u32 = 16;
 const MIGRATE_NON_SHARED_DISK: u32 = 64;
-const MIGRATE_NON_SHARED_INC: u32 = 128;
 const MIGRATE_ABORT_ON_ERROR: u32 = 4096;
 const MIGRATE_AUTO_CONVERGE: u32 = 8192;
 const MIGRATE_TLS: u32 = 65536;
@@ -1219,12 +1216,7 @@ fn migrate_flags(to: &MigrateTo<'_>) -> u32 {
         | MIGRATE_AUTO_CONVERGE
         | MIGRATE_TLS;
     if !to.copy_disks.is_empty() {
-        flags |= if to.full_copy {
-            MIGRATE_NON_SHARED_DISK
-        } else {
-            // Only the top layer: the destination has the base image.
-            MIGRATE_NON_SHARED_INC
-        };
+        flags |= MIGRATE_NON_SHARED_DISK;
     }
     flags
 }
@@ -1256,29 +1248,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn local_disks_are_copied_whole_or_their_top_layer() {
+    fn local_disks_are_copied_whole() {
         let disks = ["vda".to_owned()];
         let mut to = MigrateTo {
             address: "10.0.0.2",
             copy_disks: &disks,
             ..MigrateTo::default()
         };
-        let f = migrate_flags(&to);
-        assert_eq!(
-            f & (MIGRATE_NON_SHARED_INC | MIGRATE_NON_SHARED_DISK),
-            MIGRATE_NON_SHARED_INC
-        );
-        to.full_copy = true;
-        let f = migrate_flags(&to);
-        assert_eq!(
-            f & (MIGRATE_NON_SHARED_INC | MIGRATE_NON_SHARED_DISK),
-            MIGRATE_NON_SHARED_DISK
-        );
+        assert_ne!(migrate_flags(&to) & MIGRATE_NON_SHARED_DISK, 0);
         to.copy_disks = &[];
-        assert_eq!(
-            migrate_flags(&to) & (MIGRATE_NON_SHARED_INC | MIGRATE_NON_SHARED_DISK),
-            0
-        );
+        assert_eq!(migrate_flags(&to) & MIGRATE_NON_SHARED_DISK, 0);
     }
 
     #[test]

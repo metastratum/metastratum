@@ -26,44 +26,57 @@ pub async fn remove_pool(agent: &Agent, spec: PoolSpec, remove_data: bool) -> Re
     Ok(serde_json::json!({ "removed": removed }).to_string())
 }
 
-/// Removes a deleted image's cached copies: the local one, those in the
-/// given shared pools, and with its tenant's path, those in the image
-/// stores of both.
+/// Removes a deleted image's copies: the one in this host's image store,
+/// and those in the given shared pools' stores. Every pool is tried; the
+/// error names those that failed.
 pub async fn delete_image(
     agent: &Agent,
     id: &str,
     shared: &[PoolSpec],
-    store: Option<&str>,
+    tenant_path: &str,
 ) -> Result<()> {
-    if let Some(tenant_path) = store {
-        agent.pools.store().remove(tenant_path, id).await?;
+    let mut failed = vec![];
+    if let Err(e) = agent.pools.store().remove(tenant_path, id).await {
+        failed.push(format!("this host's store: {e:#}"));
     }
-    agent.pools.local().delete_image(id).await?;
     for spec in shared {
-        let pool = agent
-            .pools
-            .get(spec)
-            .await
-            .with_context(|| format!("reaching pool {}", spec.id))?;
-        if let Some(tenant_path) = store {
+        let removed = async {
+            let pool = agent.pools.get(spec).await.context("reaching it")?;
             pool.remove_stored(tenant_path, id).await?;
+            anyhow::Ok(())
         }
-        pool.delete_image(id).await?;
+        .await;
+        if let Err(e) = removed {
+            failed.push(format!("pool {}: {e:#}", spec.id));
+        }
+    }
+    if !failed.is_empty() {
+        bail!("removing image {id}: {}", failed.join("; "));
     }
     tracing::info!(
         image = id,
         pools = shared.len(),
-        store = store.is_some(),
-        "removed the image's cached copies"
+        "removed the image's copies"
     );
     Ok(())
 }
 
+/// Removes from a store the images that no longer exist (made an hour ago
+/// or more: newer ones may be newer than the list) and what downloads and
+/// copies cut off a day ago or more left.
+pub async fn prune_store(pool: &mst_storage::Pool, keep: &HashSet<&str>) -> Result<Vec<String>> {
+    let hour_ago = SystemTime::now() - Duration::from_secs(3600);
+    let yesterday = SystemTime::now() - Duration::from_secs(86400);
+    let removed = pool.prune_stored(keep, hour_ago, yesterday).await?;
+    for id in &removed {
+        tracing::info!(image = %id, "removed a deleted image from the store");
+    }
+    Ok(removed)
+}
+
 /// Lets go of what was deleted while this agent was away: pools it still
-/// holds on to, their secrets, and copies of images that no longer exist
-/// (cached or in the store; ones made in the last hour stay: they may be
-/// newer than the inventory). Downloads and copies into the store cut off
-/// (by a restart) more than a day ago go too.
+/// holds on to, their secrets, and copies in its store of images that no
+/// longer exist (see [`prune_store`]).
 pub async fn reconcile(agent: &Agent, inventory: &mst_proto::Inventory) {
     let pools: HashSet<&str> = inventory.pool_ids.iter().map(String::as_str).collect();
     let images: HashSet<&str> = inventory.image_ids.iter().map(String::as_str).collect();
@@ -87,26 +100,9 @@ pub async fn reconcile(agent: &Agent, inventory: &mst_proto::Inventory) {
             let _ = agent.lv.remove_secret(&id).await;
         }
     }
-    let recent = SystemTime::now() - Duration::from_secs(3600);
-    let local = agent.pools.local();
-    for (id, cached) in local.cached_images().await.unwrap_or_default() {
-        if !images.contains(id.as_str()) && cached < recent {
-            match local.delete_image(&id).await {
-                Ok(()) => tracing::info!(image = %id, "removed an image deleted meanwhile"),
-                Err(e) => {
-                    tracing::warn!(image = %id, error = %format!("{e:#}"), "removing a deleted image")
-                }
-            }
-        }
-    }
-    let store = agent.pools.store();
-    let yesterday = SystemTime::now() - Duration::from_secs(86400);
-    match store.prune(&images, recent, yesterday).await {
-        Ok(removed) => {
-            for id in removed {
-                tracing::info!(image = %id, "removed an image deleted meanwhile from the store");
-            }
-        }
+    let local = mst_storage::Pool::File(agent.pools.local());
+    match prune_store(&local, &images).await {
+        Ok(_) => {}
         Err(e) => tracing::warn!(error = %format!("{e:#}"), "pruning the image store"),
     }
 }

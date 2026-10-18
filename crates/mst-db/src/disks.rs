@@ -2,7 +2,7 @@
 //! one of its others) or on their own.
 
 use chrono::{DateTime, Utc};
-use mst_core::ids::{HostId, ImageId, StoragePoolId, TenantId, VmId, VolumeId};
+use mst_core::ids::{HostId, StoragePoolId, TenantId, VmId, VolumeId};
 use sqlx::{PgConnection, PgExecutor};
 
 use crate::{Result, conflict_on_unique};
@@ -28,7 +28,6 @@ pub struct Disk {
     /// Its VM's other disks sit on its SCSI controller (see
     /// `VmSpec::disk_hotplug`).
     pub vm_disk_hotplug: bool,
-    pub image_id: Option<ImageId>,
     /// `creating`, `ready`, `attaching`, `detaching`, `moving`, `deleting`
     /// or `failed`.
     pub state: String,
@@ -42,7 +41,7 @@ macro_rules! disk_select {
                 p.kind AS pool_kind, v.host_id, h.name AS host_name, v.vm_id, m.name AS vm_name,
                 coalesce(m.spec->'disks'->0->>'volume_id' = v.id::text, false) AS boot,
                 coalesce((m.spec->>'disk_hotplug')::boolean, false) AS vm_disk_hotplug,
-                v.image_id, v.state, v.error, v.created_at
+                v.state, v.error, v.created_at
          FROM volumes v
          JOIN storage_pools p ON p.id = v.pool_id
          LEFT JOIN hosts h ON h.id = v.host_id
@@ -174,7 +173,7 @@ pub async fn moved(
     host: Option<HostId>,
 ) -> Result<()> {
     sqlx::query(
-        "UPDATE volumes SET pool_id = $2, host_id = $3, image_id = NULL, updated_at = now()
+        "UPDATE volumes SET pool_id = $2, host_id = $3, updated_at = now()
          WHERE id = $1",
     )
     .bind(id)

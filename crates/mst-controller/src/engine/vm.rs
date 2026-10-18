@@ -7,15 +7,13 @@ use mst_core::ids::{HostId, VmId};
 use mst_db::vms::Vm;
 use mst_proto::command::Cmd;
 use mst_proto::{
-    CloneVolume, DefineVm, DeleteVolume, EnsureImage, EnsureVolume, RebootVm, RestoreVolume,
-    StartVm, StopVm, UndefineVm, VolumeFromImage,
+    CloneVolume, DefineVm, DeleteVolume, EnsureVolume, RebootVm, RestoreVolume, StartVm, StopVm,
+    UndefineVm, VolumeFromImage,
 };
 
 use super::TaskCtx;
 
 const QUICK: Duration = Duration::from_secs(60);
-/// Image downloads can be large.
-const SLOW: Duration = Duration::from_secs(30 * 60);
 /// So can disks restored from backups.
 const RESTORE: Duration = Duration::from_secs(12 * 3600);
 
@@ -50,7 +48,7 @@ async fn call(ctx: &TaskCtx, host: HostId, cmd: Cmd, timeout: Duration) -> Resul
 
 pub async fn create(ctx: &TaskCtx) -> Result<()> {
     let id = target(ctx)?;
-    let result = provision(ctx, id).await;
+    let result = provision(ctx, id, true).await;
     let db = &ctx.state.db;
     match &result {
         Ok(()) => mst_db::vms::set_status(db, id, "ready", None).await?,
@@ -59,7 +57,10 @@ pub async fn create(ctx: &TaskCtx) -> Result<()> {
     result
 }
 
-pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
+/// Puts the VM on its host: network, disks (`fresh`: made now; otherwise
+/// they exist, on shared storage, as when it is restarted after its host
+/// failed), definition, and power.
+pub(super) async fn provision(ctx: &TaskCtx, id: VmId, fresh: bool) -> Result<()> {
     let db = &ctx.state.db;
     let vm = mst_db::vms::get(db, id).await?;
     let host = host_of(&vm)?;
@@ -82,107 +83,8 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
         }
     }
 
-    ctx.step("image", 0.2).await;
-    // A disk made from an image is a copy of the host's copy of it, and
-    // depends on nothing. Hosts whose agents predate the image store put
-    // an overlay on a cached download instead.
-    let store = mst_db::hosts::agent_supports(db, host, "volume_from_image").await?;
-    // Volume → the shared pool whose store the host makes it from (None:
-    // its own).
-    let mut from_store = std::collections::BTreeMap::new();
-    for disk in &spec.disks {
-        let Some(image_id) = disk.image_id else {
-            continue;
-        };
-        if disk.cloned_from.is_some() || disk.restored_from.is_some() {
-            continue;
-        }
-        // Made already (a resumed task): it no longer names its image.
-        if mst_db::vms::volume_image(db, disk.volume_id)
-            .await?
-            .is_none()
-        {
-            continue;
-        }
-        if store {
-            let source = super::image::ensure_on(ctx, image_id, host)
-                .await
-                .context("getting the image onto the host")?;
-            from_store.insert(disk.volume_id, source);
-            continue;
-        }
-        let image = mst_db::images::get(db, image_id).await?;
-        call(
-            ctx,
-            host,
-            Cmd::EnsureImage(EnsureImage {
-                trusted: super::image_trusted(db, &image).await?,
-                image_id: image.id.to_string(),
-                source_url: image.source_url,
-                format: image.format,
-                pool: Some(pools[&disk.pool_id].clone()),
-                // An image larger than the disk is refused before it
-                // takes up any room.
-                max_virtual_bytes: disk.size_bytes,
-            }),
-            SLOW,
-        )
-        .await
-        .context("fetching image")?;
-    }
-
-    ctx.step("volumes", 0.6).await;
-    for disk in &spec.disks {
-        if let Some(source) = from_store.get(&disk.volume_id) {
-            let image_id = disk.image_id.context("no image")?;
-            let pool = &pools[&disk.pool_id];
-            volume_from_image(ctx, host, disk, image_id, pool, source.clone()).await?;
-            continue;
-        }
-        let pool = Some(pools[&disk.pool_id].clone());
-        let (cmd, timeout) = match disk.restored_from {
-            // A copy of another VM's disk, which takes as long as its size.
-            // It depends on no image, whatever the source does.
-            None if disk.cloned_from.is_some() => {
-                let cmd = Cmd::CloneVolume(CloneVolume {
-                    pool,
-                    source_volume_id: disk.cloned_from.map(|v| v.to_string()).unwrap_or_default(),
-                    volume_id: disk.volume_id.to_string(),
-                    size_bytes: disk.size_bytes,
-                    image_id: String::new(),
-                });
-                (cmd, RESTORE)
-            }
-            // A copy of a backup's disk, which takes as long as its size.
-            Some(from) => {
-                let backup = mst_db::backups::get(db, from.backup_id).await?;
-                let repo = mst_db::backups::get_repository(db, backup.repository_id).await?;
-                let cmd = Cmd::RestoreVolume(RestoreVolume {
-                    volume_id: disk.volume_id.to_string(),
-                    size_bytes: disk.size_bytes,
-                    pool,
-                    repository: Some(crate::api::repository_pool(&repo)),
-                    backup_id: from.backup_id.to_string(),
-                    index: from.index,
-                });
-                (cmd, RESTORE)
-            }
-            // Blank, or (made before the image store, or on a host without
-            // one) on its image.
-            None => {
-                let backing = mst_db::vms::volume_image(db, disk.volume_id).await?;
-                let cmd = Cmd::EnsureVolume(EnsureVolume {
-                    volume_id: disk.volume_id.to_string(),
-                    size_bytes: disk.size_bytes,
-                    image_id: backing.map(|i| i.to_string()).unwrap_or_default(),
-                    pool,
-                });
-                (cmd, QUICK)
-            }
-        };
-        call(ctx, host, cmd, timeout)
-            .await
-            .context("creating volume")?;
+    if fresh {
+        make_disks(ctx, host, &spec.disks, &pools).await?;
     }
 
     ctx.step("define", 0.8).await;
@@ -233,9 +135,83 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId) -> Result<()> {
     Ok(())
 }
 
+/// Makes the VM's disks on its host: copies of their image, a cloned VM's
+/// or a backup's disks, or blank. Disks there already are left alone (a
+/// resumed task).
+async fn make_disks(
+    ctx: &TaskCtx,
+    host: HostId,
+    disks: &[mst_core::vm::DiskSpec],
+    pools: &std::collections::BTreeMap<mst_core::ids::StoragePoolId, mst_proto::Pool>,
+) -> Result<()> {
+    let db = &ctx.state.db;
+    ctx.step("image", 0.2).await;
+    // Volume → where the host makes it from: a shared pool's store, or its
+    // own (None).
+    let mut from_image = std::collections::BTreeMap::new();
+    for disk in disks {
+        if let Some(image_id) = disk.image_id
+            && disk.cloned_from.is_none()
+            && disk.restored_from.is_none()
+        {
+            let source = super::image::ensure_on(ctx, image_id, host)
+                .await
+                .context("getting the image onto the host")?;
+            from_image.insert(disk.volume_id, (image_id, source));
+        }
+    }
+
+    ctx.step("volumes", 0.6).await;
+    for disk in disks {
+        let pool = Some(pools[&disk.pool_id].clone());
+        if let Some((image_id, source)) = from_image.get(&disk.volume_id) {
+            let pool = &pools[&disk.pool_id];
+            volume_from_image(ctx, host, disk, *image_id, pool, source.clone()).await?;
+            continue;
+        }
+        let (cmd, timeout) = match disk.restored_from {
+            // A copy of another VM's disk, which takes as long as its size.
+            None if disk.cloned_from.is_some() => {
+                let cmd = Cmd::CloneVolume(CloneVolume {
+                    pool,
+                    source_volume_id: disk.cloned_from.map(|v| v.to_string()).unwrap_or_default(),
+                    volume_id: disk.volume_id.to_string(),
+                    size_bytes: disk.size_bytes,
+                });
+                (cmd, RESTORE)
+            }
+            // A copy of a backup's disk, which takes as long as its size.
+            Some(from) => {
+                let backup = mst_db::backups::get(db, from.backup_id).await?;
+                let repo = mst_db::backups::get_repository(db, backup.repository_id).await?;
+                let cmd = Cmd::RestoreVolume(RestoreVolume {
+                    volume_id: disk.volume_id.to_string(),
+                    size_bytes: disk.size_bytes,
+                    pool,
+                    repository: Some(crate::api::repository_pool(&repo)),
+                    backup_id: from.backup_id.to_string(),
+                    index: from.index,
+                });
+                (cmd, RESTORE)
+            }
+            None => {
+                let cmd = Cmd::EnsureVolume(EnsureVolume {
+                    volume_id: disk.volume_id.to_string(),
+                    size_bytes: disk.size_bytes,
+                    pool,
+                });
+                (cmd, QUICK)
+            }
+        };
+        call(ctx, host, cmd, timeout)
+            .await
+            .context("creating volume")?;
+    }
+    Ok(())
+}
+
 /// Makes the disk a copy of the image in the host's store, or `source`'s
-/// (a shared pool's). Should the host's store turn out not to hold it after
-/// all (removed by hand), the image gets there again, once.
+/// (a shared pool's).
 async fn volume_from_image(
     ctx: &TaskCtx,
     host: HostId,
@@ -255,8 +231,15 @@ async fn volume_from_image(
         source_pool: source.clone(),
     });
     match call(ctx, host, cmd.clone(), RESTORE).await {
-        Err(e) if source.is_none() && super::image::missing_from_store(&e) => {
-            let at = mst_db::images::Copy::local(host);
+        Err(e) if super::image::missing_from_store(&e) => {
+            // Not where it was recorded (removed by hand): forgotten there,
+            // and got onto the host anew, once.
+            let at = match &source {
+                Some(p) => {
+                    mst_db::images::Copy::shared(p.id.parse().map(mst_core::ids::StoragePoolId)?)
+                }
+                None => mst_db::images::Copy::local(host),
+            };
             mst_db::images::remove_copy(db, image_id, at).await?;
             let source = super::image::ensure_on(ctx, image_id, host)
                 .await
@@ -271,7 +254,6 @@ async fn volume_from_image(
         }
         r => r.context("creating volume")?,
     }
-    mst_db::vms::volume_standalone(db, disk.volume_id).await?;
     Ok(())
 }
 
@@ -379,40 +361,6 @@ pub async fn reboot(ctx: &TaskCtx) -> Result<()> {
     .await
 }
 
-/// Drops the copies of tenants' images cached for a VM just deleted, if no
-/// volume is built on them any more: they count against nothing, so they
-/// must not pile up (an image can unpack to the size of the disk it was
-/// for). The provider's images stay cached for the next VM. Where a volume
-/// still is built on one after all (a VM being created meanwhile), the host
-/// keeps it.
-async fn drop_unused_images(
-    ctx: &TaskCtx,
-    host: HostId,
-    images: std::collections::BTreeMap<mst_core::ids::ImageId, Vec<mst_proto::Pool>>,
-) {
-    let db = &ctx.state.db;
-    for (id, pools) in images {
-        let Ok(image) = mst_db::images::get(db, id).await else {
-            continue;
-        };
-        if super::image_trusted(db, &image).await.unwrap_or(true)
-            || mst_db::images::in_use(db, id).await.unwrap_or(true)
-        {
-            continue;
-        }
-        // The cache only: the store's copy is the host's to give others.
-        let cmd = Cmd::DeleteImage(mst_proto::DeleteImage {
-            image_id: id.to_string(),
-            pools,
-            tenant_path: String::new(),
-        });
-        match ctx.state.agents.call(host, cmd, QUICK).await {
-            Ok(()) => tracing::info!(image = %id, "dropped an unused image's cached copies"),
-            Err(e) => tracing::info!(image = %id, error = %e, "kept an image's cached copies"),
-        }
-    }
-}
-
 pub async fn delete(ctx: &TaskCtx) -> Result<()> {
     let db = &ctx.state.db;
     let id = target(ctx)?;
@@ -445,7 +393,6 @@ pub async fn delete(ctx: &TaskCtx) -> Result<()> {
             .get("delete_disks")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-        let mut images: std::collections::BTreeMap<_, Vec<mst_proto::Pool>> = Default::default();
         let disks = mst_db::disks::of_vm(db, id).await?;
         // Disks kept lose the VM's snapshots, which go with it.
         let mut kept = vec![];
@@ -479,12 +426,6 @@ pub async fn delete(ctx: &TaskCtx) -> Result<()> {
             }
             let stored = mst_db::storage_pools::get(db, vol.pool_id).await?;
             let pool = crate::api::agent_pool(&stored)?;
-            if let Some(image) = vol.image_id {
-                let shared = images.entry(image).or_default();
-                if stored.kind != "local" {
-                    shared.push(pool.clone());
-                }
-            }
             call(
                 ctx,
                 host,
@@ -498,7 +439,6 @@ pub async fn delete(ctx: &TaskCtx) -> Result<()> {
             .context("deleting volume")?;
             mst_db::vms::delete_volume(db, vol.id).await?;
         }
-        drop_unused_images(ctx, host, images).await;
     }
 
     ctx.step("network", 0.8).await;

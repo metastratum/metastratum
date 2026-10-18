@@ -125,7 +125,7 @@ pub async fn recover(ctx: &TaskCtx) -> Result<()> {
             .await;
         let mut attempt = 1;
         loop {
-            match super::vm::provision(ctx, vm.id).await {
+            match super::vm::provision(ctx, vm.id, false).await {
                 Ok(()) => {
                     tracing::warn!(vm = %vm.id, to = %dest_name, "restarted after host failure");
                     moved.push(format!("{} → {dest_name}", vm.name));

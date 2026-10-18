@@ -499,25 +499,50 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
         .unwrap();
     let h2 = host(&pool).await;
     let mut conn = pool.acquire().await.unwrap();
-    let stored = |sha256: &str| images::Stored {
-        size_bytes: 400 << 20,
+    let stored = |size_bytes: i64| images::Stored {
+        size_bytes,
         virtual_bytes: 3 << 30,
-        sha256: sha256.into(),
+        sha256: "abc".into(),
+        digest: "def".into(),
     };
-    images::add_copy(&mut conn, img.id, Copy::local(h1.id), &stored("abc"))
+    images::set_download_host(&pool, img.id, h1.id)
         .await
         .unwrap();
-    // A copy has no hash of its own: the download's stays.
-    images::add_copy(&mut conn, img.id, Copy::local(h2.id), &stored(""))
+    images::downloaded(&mut conn, img.id, Copy::local(h1.id), &stored(400 << 20))
         .await
         .unwrap();
-    images::add_copy(&mut conn, img.id, Copy::local(h2.id), &stored(""))
+    // Copies change nothing of what was downloaded; neither does a second
+    // report of the download.
+    images::add_copy(&mut conn, img.id, Copy::local(h2.id))
+        .await
+        .unwrap();
+    images::add_copy(&mut conn, img.id, Copy::local(h2.id))
+        .await
+        .unwrap();
+    images::downloaded(&mut conn, img.id, Copy::local(h1.id), &stored(9 << 30))
         .await
         .unwrap();
     let got = images::get(&pool, img.id).await.unwrap();
     assert_eq!(got.state, "ready");
-    assert_eq!(got.sha256.as_deref(), Some("abc"));
-    assert_eq!(got.virtual_bytes, Some(3 << 30));
+    assert_eq!(
+        (got.sha256.as_deref(), got.digest.as_deref()),
+        (Some("abc"), Some("def"))
+    );
+    assert_eq!(
+        (got.size_bytes, got.virtual_bytes),
+        (Some(400 << 20), Some(3 << 30))
+    );
+    assert_eq!(got.download_host_id, Some(h1.id));
+    // Downloading again starts on a host yet to pick.
+    images::downloading(&pool, img.id).await.unwrap();
+    assert_eq!(
+        images::get(&pool, img.id).await.unwrap().download_host_id,
+        None
+    );
+    assert_eq!(images::downloading_count(&pool, a.id).await.unwrap(), 1);
+    images::downloaded(&mut conn, img.id, Copy::local(h1.id), &stored(400 << 20))
+        .await
+        .unwrap();
     assert_eq!(
         images::copies(&pool, img.id).await.unwrap(),
         [Copy::local(h1.id), Copy::local(h2.id)]
@@ -547,7 +572,7 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
     .await
     .unwrap();
     for _ in 0..2 {
-        images::add_copy(&mut conn, img.id, Copy::shared(nfs), &stored(""))
+        images::add_copy(&mut conn, img.id, Copy::shared(nfs))
             .await
             .unwrap();
     }
@@ -562,10 +587,10 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
     );
 
     // Deleted meanwhile: nothing to record a copy on.
-    images::delete(&mut conn, img.id).await.unwrap();
+    images::delete(&pool, img.id).await.unwrap();
     assert_eq!(images::count_in_pool(&pool, nfs).await.unwrap(), 0);
     assert!(
-        images::add_copy(&mut conn, img.id, Copy::local(h1.id), &stored(""))
+        images::add_copy(&mut conn, img.id, Copy::local(h1.id))
             .await
             .is_err()
     );
@@ -769,7 +794,7 @@ async fn active_tasks_by_target(pool: PgPool) {
         vec![(v.id.0, "vm.stop".to_owned())]
     );
 
-    let claimed = mst_db::tasks::claim(&pool, "w", std::time::Duration::from_secs(30))
+    let claimed = mst_db::tasks::claim(&pool, "w", std::time::Duration::from_secs(30), &[], false)
         .await
         .unwrap()
         .unwrap();

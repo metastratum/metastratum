@@ -392,6 +392,7 @@ async fn serve(db: mst_db::sqlx::PgPool, cfg: &config::Config) -> anyhow::Result
                     engine::backup_schedule(state.clone()),
                     port_watch::watch(state.clone(), southbound),
                     engine::sweep_disks(state.clone()),
+                    engine::prune_images(state.clone()),
                     cpu::learn(state),
                 );
             }

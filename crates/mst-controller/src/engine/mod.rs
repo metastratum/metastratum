@@ -15,6 +15,7 @@ mod vm;
 
 pub use backup::{INCREMENTAL as INCREMENTAL_BACKUP, schedule as backup_schedule};
 pub use disk::sweep as sweep_disks;
+pub use image::{deleted as image_deleted, prune as prune_images};
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,6 +29,10 @@ const LEASE: Duration = Duration::from_secs(60);
 const RENEW_EVERY: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(500);
 const MAX_CONCURRENT: usize = 16;
+/// Downloads run beside other tasks, in slots of their own: slow ones never
+/// hold up VMs' lifecycles, migrations or recovery.
+const MAX_DOWNLOADS: usize = 4;
+const DOWNLOADS: &[&str] = &["image.download"];
 
 /// Whether an image was published by the provider (the root tenant), whose
 /// downloads may come from internal addresses; tenants' may not.
@@ -45,9 +50,27 @@ pub(crate) async fn image_trusted(
 pub struct TaskCtx {
     pub state: AppState,
     pub task: Task,
+    /// The task's slot among those running here, and where it came from.
+    slot: tokio::sync::Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
+    slots: Arc<Semaphore>,
 }
 
 impl TaskCtx {
+    /// Waits for `fut` without holding a slot: a task waiting on something
+    /// else (an image downloading) does not keep others from running.
+    pub async fn idle<T>(&self, fut: impl std::future::Future<Output = T>) -> T {
+        drop(self.slot.lock().await.take());
+        let out = fut.await;
+        let permit = self
+            .slots
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("semaphore never closes");
+        *self.slot.lock().await = Some(permit);
+        out
+    }
+
     /// Records the current step for display. Failures are logged, not fatal.
     pub async fn step(&self, step: &str, progress: f32) {
         if let Err(e) =
@@ -59,14 +82,22 @@ impl TaskCtx {
 }
 
 pub async fn run(state: AppState) {
-    let slots = Arc::new(Semaphore::new(MAX_CONCURRENT));
+    tokio::spawn(work(state.clone(), MAX_DOWNLOADS, DOWNLOADS, true));
+    work(state, MAX_CONCURRENT, DOWNLOADS, false).await;
+}
+
+/// Claims and runs tasks of `kinds` (`only`), or of any other kind, up to
+/// `max` at once.
+async fn work(state: AppState, max: usize, kinds: &'static [&'static str], only: bool) {
+    let slots = Arc::new(Semaphore::new(max));
     loop {
         let permit = slots
             .clone()
             .acquire_owned()
             .await
             .expect("semaphore never closes");
-        let task = match mst_db::tasks::claim(&state.db, &state.replica, LEASE).await {
+        let claimed = mst_db::tasks::claim(&state.db, &state.replica, LEASE, kinds, only).await;
+        let task = match claimed {
             Ok(Some(t)) => t,
             Ok(None) => {
                 drop(permit);
@@ -81,14 +112,19 @@ pub async fn run(state: AppState) {
             }
         };
         let state = state.clone();
+        let slots = slots.clone();
         tokio::spawn(async move {
-            execute(state, task).await;
-            drop(permit);
+            execute(state, task, permit, slots).await;
         });
     }
 }
 
-async fn execute(state: AppState, task: Task) {
+async fn execute(
+    state: AppState,
+    task: Task,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    slots: Arc<Semaphore>,
+) {
     let (id, kind) = (task.id, task.kind.clone());
     let started = std::time::Instant::now();
     tracing::info!(task = %id, %kind, attempt = task.attempts, "running task");
@@ -110,6 +146,8 @@ async fn execute(state: AppState, task: Task) {
     let ctx = TaskCtx {
         state: state.clone(),
         task,
+        slot: tokio::sync::Mutex::new(Some(permit)),
+        slots,
     };
     let outcome = match kind.as_str() {
         "vm.create" => vm::create(&ctx).await,

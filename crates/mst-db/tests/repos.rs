@@ -117,10 +117,21 @@ async fn tasks_claim_lease_and_finish(pool: PgPool) {
     let t2 = tasks::enqueue(&pool, new()).await.unwrap();
 
     let lease = Duration::from_secs(30);
-    let c1 = tasks::claim(&pool, "w1", lease).await.unwrap().unwrap();
-    let c2 = tasks::claim(&pool, "w2", lease).await.unwrap().unwrap();
+    let c1 = tasks::claim(&pool, "w1", lease, &[], false)
+        .await
+        .unwrap()
+        .unwrap();
+    let c2 = tasks::claim(&pool, "w2", lease, &[], false)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!((c1.id, c2.id), (t1.id, t2.id));
-    assert!(tasks::claim(&pool, "w3", lease).await.unwrap().is_none());
+    assert!(
+        tasks::claim(&pool, "w3", lease, &[], false)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     // Only the lease owner may checkpoint or finish.
     let state = serde_json::json!({"n": 1});
@@ -145,7 +156,10 @@ async fn tasks_claim_lease_and_finish(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    let taken = tasks::claim(&pool, "w3", lease).await.unwrap().unwrap();
+    let taken = tasks::claim(&pool, "w3", lease, &[], false)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!((taken.id, taken.attempts), (t2.id, 2));
     assert!(
         !tasks::finish(&pool, t2.id, "w2", Err("late".into()))
@@ -183,24 +197,72 @@ async fn tasks_for_one_target_run_in_order(pool: PgPool) {
 
     let lease = Duration::from_secs(30);
     assert_eq!(
-        tasks::claim(&pool, "w", lease).await.unwrap().unwrap().id,
+        tasks::claim(&pool, "w", lease, &[], false)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
         first.id
     );
     // `second` waits for `first`; untargeted work is not held up.
     assert_eq!(
-        tasks::claim(&pool, "w", lease).await.unwrap().unwrap().id,
+        tasks::claim(&pool, "w", lease, &[], false)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
         other.id
     );
-    assert!(tasks::claim(&pool, "w", lease).await.unwrap().is_none());
+    assert!(
+        tasks::claim(&pool, "w", lease, &[], false)
+            .await
+            .unwrap()
+            .is_none()
+    );
     tasks::finish(&pool, first.id, "w", Ok(())).await.unwrap();
     assert_eq!(
-        tasks::claim(&pool, "w", lease).await.unwrap().unwrap().id,
+        tasks::claim(&pool, "w", lease, &[], false)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
         second.id
     );
 }
 
 /// During a rolling upgrade, an older controller restarting against a schema
 /// a newer one migrated must still start.
+/// Workers claim the kinds they run (downloads have slots of their own).
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn tasks_are_claimed_by_kind(pool: PgPool) {
+    let root = tenants::create(&pool, None, "provider", "Provider")
+        .await
+        .unwrap();
+    let new = |kind| tasks::NewTask {
+        tenant_id: root.id,
+        kind,
+        target: None,
+        params: serde_json::json!({}),
+        created_by: None,
+    };
+    let download = tasks::enqueue(&pool, new("image.download")).await.unwrap();
+    let create = tasks::enqueue(&pool, new("vm.create")).await.unwrap();
+    let lease = Duration::from_secs(30);
+    let kinds = ["image.download"];
+    let other = tasks::claim(&pool, "w", lease, &kinds, false)
+        .await
+        .unwrap();
+    assert_eq!(other.unwrap().id, create.id);
+    assert!(
+        tasks::claim(&pool, "w", lease, &kinds, false)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let only = tasks::claim(&pool, "w", lease, &kinds, true).await.unwrap();
+    assert_eq!(only.unwrap().id, download.id);
+}
+
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]
 async fn migrations_from_newer_controllers_are_tolerated(pool: PgPool) {
     sqlx::query(

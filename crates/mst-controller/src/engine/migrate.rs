@@ -4,9 +4,7 @@
 //! resumed by another controller (or after a crash) continues where it was:
 //!
 //! - `preparing`: the destination gets the VM's local volumes (blank, to be
-//!   copied whole; with older agents, disks built on an image get that
-//!   image there, and only their top layer is copied), its storage pools
-//!   and its cloud-init seed.
+//!   copied whole), its storage pools and its cloud-init seed.
 //! - `running`: the VM's port may bind on both hosts, and the VM is
 //!   migrated, copying memory and local disks while the guest runs.
 //!   Progress is polled from the source; a cancel aborts the job.
@@ -32,18 +30,14 @@ use mst_db::migrations::Migration;
 use mst_proto::command::Cmd;
 use mst_proto::migration_step::Step;
 use mst_proto::{
-    AbortMigration, DefineVm, DeleteVolume, DomainInfo, EnsureImage, EnsureVolume, MigrationStats,
+    AbortMigration, DefineVm, DeleteVolume, DomainInfo, EnsureVolume, MigrationStats,
     MigrationStep, PrepareMigration, UndefineVm,
 };
 use serde::{Deserialize, Serialize};
 
 use super::TaskCtx;
 
-/// Agents that copy local disks whole announce this.
-const FULL_COPY: &str = "full_disk_copy";
-
 const QUICK: Duration = Duration::from_secs(60);
-const IMAGE: Duration = Duration::from_secs(30 * 60);
 /// The agent's migrate call returns when libvirt is done; progress is
 /// watched separately, so this only bounds a hung host.
 const TRANSFER: Duration = Duration::from_secs(6 * 3600);
@@ -264,40 +258,12 @@ async fn prepare(ctx: &TaskCtx, m: &Migration) -> Result<()> {
     let vm = mst_db::vms::get(db, m.vm_id).await?;
     let agents = &ctx.state.agents;
     let dest = m.dest_host_id;
-    // Local disks are copied whole, into standalone volumes, where both
-    // agents can: the destination then needs no image. Otherwise a disk
-    // built on an image (made before the image store) gets the image on
-    // the destination, and only its top layer is copied.
-    let full = mst_db::hosts::agent_supports(db, m.source_host_id, FULL_COPY).await?
-        && mst_db::hosts::agent_supports(db, dest, FULL_COPY).await?;
-    mst_db::migrations::set_full_copy(db, m.vm_id, full).await?;
+    // Blank: the local disks are copied in whole while the VM runs.
     for (_, d, pool) in local_disks(ctx, &vm).await? {
-        let p = crate::api::agent_pool(&pool)?;
-        let backing = match full {
-            true => None,
-            false => mst_db::vms::volume_image(db, d.volume_id).await?,
-        };
-        if let Some(image) = backing {
-            let image = mst_db::images::get(db, image).await?;
-            let cmd = EnsureImage {
-                trusted: super::image_trusted(db, &image).await?,
-                image_id: image.id.to_string(),
-                source_url: image.source_url,
-                format: image.format,
-                pool: Some(p.clone()),
-                max_virtual_bytes: d.size_bytes,
-            };
-            agents
-                .call(dest, Cmd::EnsureImage(cmd), IMAGE)
-                .await
-                .map_err(|e| anyhow!(e))
-                .context("fetching the image")?;
-        }
         let cmd = EnsureVolume {
             volume_id: d.volume_id.to_string(),
             size_bytes: d.size_bytes,
-            image_id: backing.map(|i| i.to_string()).unwrap_or_default(),
-            pool: Some(p),
+            pool: Some(crate::api::agent_pool(&pool)?),
         };
         agents
             .call(dest, Cmd::EnsureVolume(cmd), QUICK)
@@ -389,8 +355,6 @@ async fn transfer_driven(ctx: &TaskCtx, m: &Migration, span: Span) -> Result<()>
             .into_iter()
             .map(|(t, _, _)| t)
             .collect(),
-        // As prepared (`m` may predate that).
-        full_copy: latest(ctx, m).await.is_some_and(|m| m.full_copy),
         ..MigrationStep::default()
     };
     let run = |host: HostId, step: Step, fill: &dyn Fn(&mut MigrationStep), timeout: Duration| {

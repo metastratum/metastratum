@@ -210,6 +210,9 @@ async fn serve(
 
 /// Stops serving the volume (or image serving), if it still is.
 pub fn end(name: &str) {
+    if export_name(name).is_err() {
+        return;
+    }
     let served = EXPORTS.lock().unwrap().remove(name);
     if let Some((_, pid_file)) = served {
         // Only that qemu-nbd (it exits after its client, and its pid may be
@@ -265,10 +268,15 @@ pub async fn copy(agent: &Agent, c: &CopyVolume) -> Result<()> {
 /// as JSON.
 pub async fn copy_image(agent: &Agent, c: &CopyImage) -> Result<String> {
     let store = agent.pools.store();
+    let digest = Some(c.digest.as_str()).filter(|d| !d.is_empty());
     if let Some(source) = &c.source_pool {
         let from = agent.pool(Some(source)).await?;
         let stored =
-            in_shared_pool(|| from.copy_stored_to(&store, &c.tenant_path, &c.image_id)).await?;
+            in_shared_pool(|| from.copy_stored_to(&store, &c.tenant_path, &c.image_id, digest))
+                .await?;
+        return Ok(serde_json::to_string(&stored)?);
+    }
+    if let Some(stored) = store.held(&c.tenant_path, &c.image_id, digest).await? {
         return Ok(serde_json::to_string(&stored)?);
     }
     let name = export_name(&c.export_id)?;
@@ -286,6 +294,7 @@ pub async fn copy_image(agent: &Agent, c: &CopyImage) -> Result<String> {
             &c.tenant_path,
             &c.image_id,
             &mst_storage::CopySource::Nbd(&source),
+            digest,
         )
         .await;
     let _ = std::fs::remove_dir_all(&dir);

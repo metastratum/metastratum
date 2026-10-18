@@ -23,6 +23,11 @@ pub struct Image {
     pub virtual_bytes: Option<i64>,
     /// SHA-256 of the file downloaded from `source_url`.
     pub sha256: Option<String>,
+    /// SHA-256 of the disk it holds, read as a raw disk: what every copy,
+    /// and a download again, must hold.
+    pub digest: Option<String>,
+    /// The host downloading it (or that did).
+    pub download_host_id: Option<HostId>,
     /// Where it is kept: a host's local disk (the local pool), or a shared
     /// pool.
     pub storage_pool_id: StoragePoolId,
@@ -31,7 +36,8 @@ pub struct Image {
 macro_rules! image_columns {
     () => {
         "i.id, i.tenant_id, i.name, i.source_url, i.format, i.shared, i.created_at,
-         i.state, i.error, i.size_bytes, i.virtual_bytes, i.sha256, i.storage_pool_id"
+         i.state, i.error, i.size_bytes, i.virtual_bytes, i.sha256, i.digest,
+         i.download_host_id, i.storage_pool_id"
     };
 }
 
@@ -114,49 +120,12 @@ pub async fn is_usable_by(
     .await?)
 }
 
-/// Whether any volume is built on the image: has it as its backing file
-/// (made before the image store), or is being made from it.
-pub async fn in_use(db: impl PgExecutor<'_>, id: ImageId) -> Result<bool> {
-    Ok(
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM volumes WHERE image_id = $1)")
-            .bind(id)
-            .fetch_one(db)
-            .await?,
-    )
-}
-
-/// Deletes an image no volume is built on (see [`in_use`]).
-pub async fn delete(db: &mut sqlx::PgConnection, id: ImageId) -> Result<()> {
-    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM volumes WHERE image_id = $1")
-        .bind(id)
-        .fetch_one(&mut *db)
-        .await?;
-    if users > 0 {
-        let which = if users == 1 {
-            "a VM disk is".to_owned()
-        } else {
-            format!("{users} VM disks are")
-        };
-        return Err(mst_core::Error::Conflict(format!(
-            "{which} built on this image, or being made from it; delete those VMs first"
-        ))
-        .into());
-    }
+/// Deletes an image. VMs made from it keep their disks: copies of their own.
+pub async fn delete(db: impl PgExecutor<'_>, id: ImageId) -> Result<()> {
     sqlx::query("DELETE FROM images WHERE id = $1")
         .bind(id)
-        .execute(&mut *db)
-        .await
-        .map_err(|e| -> crate::Error {
-            match &e {
-                // A volume created meanwhile (RESTRICT: 23001).
-                sqlx::Error::Database(d)
-                    if d.is_foreign_key_violation() || d.code().as_deref() == Some("23001") =>
-                {
-                    mst_core::Error::Conflict("VM disks are built on this image".into()).into()
-                }
-                _ => e.into(),
-            }
-        })?;
+        .execute(db)
+        .await?;
     Ok(())
 }
 
@@ -186,23 +155,59 @@ pub async fn get_for_update(db: &mut sqlx::PgConnection, id: ImageId) -> Result<
     })
 }
 
-/// Marks the image as being downloaded (again).
+/// Marks the image as being downloaded (again), on a host yet to pick.
 pub async fn downloading(db: impl PgExecutor<'_>, id: ImageId) -> Result<()> {
-    sqlx::query("UPDATE images SET state = 'downloading', error = NULL WHERE id = $1")
+    sqlx::query(
+        "UPDATE images SET state = 'downloading', error = NULL, download_host_id = NULL
+         WHERE id = $1",
+    )
+    .bind(id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Records the host downloading the image.
+pub async fn set_download_host(db: impl PgExecutor<'_>, id: ImageId, host: HostId) -> Result<()> {
+    sqlx::query("UPDATE images SET download_host_id = $2 WHERE id = $1")
         .bind(id)
+        .bind(host)
         .execute(db)
         .await?;
     Ok(())
 }
 
-/// What a host's store holds of an image.
+/// How many of a tenant's own images are being downloaded.
+pub async fn downloading_count(db: impl PgExecutor<'_>, tenant: TenantId) -> Result<i64> {
+    Ok(sqlx::query_scalar(
+        "SELECT count(*) FROM images WHERE tenant_id = $1 AND state = 'downloading'",
+    )
+    .bind(tenant)
+    .fetch_one(db)
+    .await?)
+}
+
+/// Whether a task is downloading the image (pending or running).
+pub async fn download_under_way(db: impl PgExecutor<'_>, id: ImageId) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM tasks WHERE target_id = $1 AND kind = 'image.download'
+                        AND state IN ('pending', 'running'))",
+    )
+    .bind(id)
+    .fetch_one(db)
+    .await?)
+}
+
+/// What a store holds of an image, as the host reports it.
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct Stored {
     pub size_bytes: i64,
     pub virtual_bytes: i64,
-    /// Empty when the host had it already.
+    /// Of the file downloaded; empty when it was not downloaded there.
     #[serde(default)]
     pub sha256: String,
+    #[serde(default)]
+    pub digest: String,
 }
 
 /// Where a copy of an image is: in a host's local image store, or in a
@@ -229,43 +234,64 @@ impl Copy {
     }
 }
 
-/// Records a copy of the image: it is ready, with what the copy says of
-/// it (a hash only when it was downloaded just now, and the first one
-/// recorded stays). Fails if the image is gone.
-pub async fn add_copy(
+/// Records the image downloaded, and its first copy: it is ready, with the
+/// sizes, hash and digest of what was downloaded. Only an image being
+/// downloaded becomes so. Fails if the image is gone.
+pub async fn downloaded(
     db: &mut sqlx::PgConnection,
     id: ImageId,
     at: Copy,
     stored: &Stored,
 ) -> Result<()> {
-    let found = sqlx::query(
+    sqlx::query(
         "UPDATE images SET state = 'ready', error = NULL, size_bytes = $2, virtual_bytes = $3,
-                sha256 = coalesce(sha256, nullif($4, ''))
-         WHERE id = $1",
+                sha256 = nullif($4, ''), digest = $5
+         WHERE id = $1 AND state = 'downloading'",
     )
     .bind(id)
     .bind(stored.size_bytes)
     .bind(stored.virtual_bytes)
     .bind(&stored.sha256)
+    .bind(&stored.digest)
     .execute(&mut *db)
-    .await?
-    .rows_affected();
-    if found == 0 {
-        return Err(mst_core::Error::NotFound {
-            kind: "image",
-            id: id.to_string(),
-        }
-        .into());
-    }
-    sqlx::query(
-        "INSERT INTO image_copies (image_id, pool_id, host_id) VALUES ($1, $2, $3)
+    .await?;
+    add_copy(db, id, at).await
+}
+
+/// Records a copy of the image. Fails if the image is gone.
+pub async fn add_copy(db: &mut sqlx::PgConnection, id: ImageId, at: Copy) -> Result<()> {
+    let found = sqlx::query(
+        "INSERT INTO image_copies (image_id, pool_id, host_id)
+         SELECT id, $2, $3 FROM images WHERE id = $1
          ON CONFLICT DO NOTHING",
     )
     .bind(id)
     .bind(at.pool_id)
     .bind(at.host_id)
     .execute(&mut *db)
-    .await?;
+    .await?
+    .rows_affected();
+    let exists: bool = match found {
+        1 => true,
+        _ => {
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM images WHERE id = $1)")
+                .bind(id)
+                .fetch_one(&mut *db)
+                .await?
+        }
+    };
+    if !exists {
+        return Err(mst_core::Error::NotFound {
+            kind: "image",
+            id: id.to_string(),
+        }
+        .into());
+    }
+    // Live updates: its holders changed.
+    sqlx::query("UPDATE images SET state = state WHERE id = $1")
+        .bind(id)
+        .execute(&mut *db)
+        .await?;
     Ok(())
 }
 

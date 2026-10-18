@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use mst_core::ids::{HostId, ImageId, StoragePoolId, TenantId, UserId, VmId, VolumeId};
+use mst_core::ids::{HostId, StoragePoolId, TenantId, UserId, VmId, VolumeId};
 use mst_core::vm::VmSpec;
 use sqlx::PgExecutor;
 use sqlx::types::Json;
@@ -191,14 +191,8 @@ pub async fn observe_power(
 }
 
 /// Moves a VM to the host it was migrated to: it runs there now, and its
-/// host-local volumes are there too; copied whole (`standalone`), they no
-/// longer have a backing image.
-pub async fn moved(
-    db: &mut sqlx::PgConnection,
-    id: VmId,
-    host: HostId,
-    standalone: bool,
-) -> Result<()> {
+/// host-local volumes are there too.
+pub async fn moved(db: &mut sqlx::PgConnection, id: VmId, host: HostId) -> Result<()> {
     sqlx::query(
         "UPDATE vms SET host_id = $2, status = 'ready', power = 'running', power_reason = NULL,
                 power_observed_at = now(), updated_at = now() WHERE id = $1",
@@ -207,35 +201,10 @@ pub async fn moved(
     .bind(host)
     .execute(&mut *db)
     .await?;
-    sqlx::query(
-        "UPDATE volumes SET host_id = $2, image_id = CASE WHEN $3 THEN NULL ELSE image_id END
-         WHERE vm_id = $1 AND host_id IS NOT NULL",
-    )
-    .bind(id)
-    .bind(host)
-    .bind(standalone)
-    .execute(&mut *db)
-    .await?;
-    Ok(())
-}
-
-/// The image a volume is backed by, if any (volumes made before the image
-/// store; see `images`).
-pub async fn volume_image(db: impl PgExecutor<'_>, id: VolumeId) -> Result<Option<ImageId>> {
-    Ok(
-        sqlx::query_scalar::<_, Option<ImageId>>("SELECT image_id FROM volumes WHERE id = $1")
-            .bind(id)
-            .fetch_optional(db)
-            .await?
-            .flatten(),
-    )
-}
-
-/// Records that a volume depends on no image (any more).
-pub async fn volume_standalone(db: impl PgExecutor<'_>, id: VolumeId) -> Result<()> {
-    sqlx::query("UPDATE volumes SET image_id = NULL WHERE id = $1")
+    sqlx::query("UPDATE volumes SET host_id = $2 WHERE vm_id = $1 AND host_id IS NOT NULL")
         .bind(id)
-        .execute(db)
+        .bind(host)
+        .execute(&mut *db)
         .await?;
     Ok(())
 }
@@ -287,13 +256,12 @@ pub struct Volume {
     pub host_id: Option<HostId>,
     pub pool_id: StoragePoolId,
     pub size_bytes: i64,
-    pub image_id: Option<ImageId>,
 }
 
 pub async fn create_volume(db: impl PgExecutor<'_>, v: &Volume) -> Result<()> {
     sqlx::query(
-        "INSERT INTO volumes (id, tenant_id, vm_id, host_id, pool_id, size_bytes, image_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "INSERT INTO volumes (id, tenant_id, vm_id, host_id, pool_id, size_bytes)
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(v.id)
     .bind(v.tenant_id)
@@ -301,7 +269,6 @@ pub async fn create_volume(db: impl PgExecutor<'_>, v: &Volume) -> Result<()> {
     .bind(v.host_id)
     .bind(v.pool_id)
     .bind(v.size_bytes)
-    .bind(v.image_id)
     .execute(db)
     .await?;
     Ok(())
@@ -309,7 +276,7 @@ pub async fn create_volume(db: impl PgExecutor<'_>, v: &Volume) -> Result<()> {
 
 pub async fn volumes_for_vm(db: impl PgExecutor<'_>, vm_id: VmId) -> Result<Vec<Volume>> {
     Ok(sqlx::query_as(
-        "SELECT id, tenant_id, vm_id, host_id, pool_id, size_bytes, image_id FROM volumes
+        "SELECT id, tenant_id, vm_id, host_id, pool_id, size_bytes FROM volumes
          WHERE vm_id = $1 ORDER BY created_at",
     )
     .bind(vm_id)

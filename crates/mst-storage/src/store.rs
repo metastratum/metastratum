@@ -2,22 +2,25 @@
 //! from host to host from then on. Each is a qcow2 file of its own (no
 //! backing file) in a pool of files (the local pool, or a shared one an
 //! image is kept in), under its tenant's lineage:
-//! `images/<tenant>/<sub-tenant>/.../<image id>.qcow2`, tenants named by ID.
-//! Ceph pools keep them as RBD images (see [`crate::RbdPool::store_name`]).
-//! VMs' disks are copies of them, so an image here is only ever read, to
-//! make a disk or another host's copy.
+//! `images/<tenant>/<sub-tenant>/.../<image id>.qcow2`, tenants named by ID,
+//! with `<image id>.json` beside it: the SHA-256 of the file downloaded,
+//! and the image's digest (the SHA-256 of the disk it holds, as a raw disk),
+//! which every copy is checked against. Ceph pools keep them as RBD images
+//! (see [`crate::RbdPool::store_name`]). VMs' disks are copies of them, so
+//! an image here is only ever read, to make a disk or another copy.
 //!
-//! Volumes made before the store have a cached image as their backing file,
-//! directly in `images/` (see [`crate::FilePool::ensure_image`]); those files
-//! are left to that cache.
+//! An image in a store is never replaced: hosts sharing a pool may store
+//! the same one at once, and the first to finish keeps it.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::SystemTime;
 
+use serde::{Deserialize, Serialize};
+
 use crate::transfer::CopySource;
-use crate::{Error, FetchPolicy, Result, img_info, random_suffix, safe_id, set_mode};
+use crate::{Error, FetchPolicy, Result, img_info, random_suffix, run, safe_id, set_mode};
 
 /// One fetch or copy at a time per image, on this host.
 static LOCKS: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
@@ -33,15 +36,26 @@ fn lock(id: &str) -> Arc<tokio::sync::Mutex<()>> {
 }
 
 /// An image in the store.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct StoredImage {
     /// The file's size.
     pub size_bytes: u64,
     /// The size of the disk it holds.
     pub virtual_bytes: u64,
     /// SHA-256 of the file downloaded from the image's URL (hex); empty when
-    /// not downloaded just now.
+    /// it was not downloaded into this store.
     pub sha256: String,
+    /// SHA-256 of the disk it holds, read as a raw disk (hex).
+    pub digest: String,
+}
+
+/// What is kept beside an image.
+#[derive(Default, Serialize, Deserialize)]
+pub(crate) struct Meta {
+    #[serde(default)]
+    pub(crate) sha256: String,
+    #[serde(default)]
+    pub(crate) digest: String,
 }
 
 /// A tenant's lineage (see [`ImageStore`]), checked.
@@ -60,18 +74,101 @@ pub(crate) fn tenant_labels(tenant_path: &str) -> Result<Vec<&str>> {
     Ok(labels)
 }
 
+/// Refuses an image that does not hold what it should.
+pub(crate) fn check_digest(id: &str, got: &str, want: Option<&str>) -> Result<()> {
+    match want {
+        Some(want) if !got.eq_ignore_ascii_case(want) => Err(Error::InvalidImage(format!(
+            "image {id} does not hold what was first downloaded (its digest is {got}, not {want})"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// SHA-256 of a qcow2 file's disk, read as a raw disk: converted to a
+/// (sparse) raw file in `scratch`, which is then read.
+pub(crate) async fn digest_file(path: &Path, scratch: &Path) -> Result<String> {
+    use std::os::unix::fs::DirBuilderExt;
+    let s = scratch.to_owned();
+    tokio::task::spawn_blocking(move || {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(s)
+    })
+    .await
+    .map_err(|e| Error::Io(std::io::Error::other(e)))??;
+    let raw = scratch.join(format!("{}.raw", random_suffix()));
+    let (p, r) = (path.to_string_lossy(), raw.to_string_lossy());
+    let result = async {
+        run(
+            "qemu-img",
+            &["convert", "-q", "-f", "qcow2", "-O", "raw", &p, &r],
+        )
+        .await?;
+        hash_reader(tokio::fs::File::open(&raw).await?).await
+    }
+    .await;
+    let _ = tokio::fs::remove_file(&raw).await;
+    result
+}
+
+/// SHA-256 of what a reader yields (hex).
+pub(crate) async fn hash_reader(mut r: impl tokio::io::AsyncRead + Unpin) -> Result<String> {
+    use sha2::Digest;
+    use tokio::io::AsyncReadExt;
+    let mut hash = sha2::Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = r.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buf[..n]);
+    }
+    Ok(hex::encode(hash.finalize()))
+}
+
+/// Puts `tmp` in place as `dest` unless something is there already (the
+/// first to finish keeps it). Returns whether it was put in place.
+async fn publish(tmp: &Path, dest: &Path) -> Result<bool> {
+    let won = match tokio::fs::hard_link(tmp, dest).await {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(e) => return Err(e.into()),
+    };
+    let _ = tokio::fs::remove_file(tmp).await;
+    Ok(won)
+}
+
 #[derive(Clone, Debug)]
 pub struct ImageStore {
     root: PathBuf,
+    /// Where digests are worked out: a raw copy of a disk, sparse, is read
+    /// there. On the host's own disk.
+    scratch: PathBuf,
 }
 
 impl ImageStore {
     /// The store of the pool of files at `root` (the local pool's is the
     /// agent's data directory).
     pub fn new(root: impl AsRef<Path>) -> Self {
+        let root = root.as_ref().join("images");
         Self {
-            root: root.as_ref().join("images"),
+            scratch: root.join(".scratch"),
+            root,
         }
+    }
+
+    /// The same store, working out digests in `dir` (for a shared pool's:
+    /// on the host's own disk).
+    pub fn scratch_in(mut self, dir: &Path) -> Self {
+        self.scratch = dir.to_owned();
+        self
+    }
+
+    /// Where this store works out digests.
+    pub fn scratch(&self) -> &Path {
+        &self.scratch
     }
 
     /// The directory of a tenant's images; `tenant_path` is its lineage,
@@ -88,6 +185,12 @@ impl ImageStore {
             .join(format!("{}.qcow2", safe_id(id)?)))
     }
 
+    fn meta_path(&self, tenant_path: &str, id: &str) -> Result<PathBuf> {
+        Ok(self
+            .tenant_dir(tenant_path)?
+            .join(format!("{}.json", safe_id(id)?)))
+    }
+
     async fn make_dir(&self, tenant_path: &str) -> Result<PathBuf> {
         use std::os::unix::fs::DirBuilderExt;
         let dir = self.tenant_dir(tenant_path)?;
@@ -100,11 +203,41 @@ impl ImageStore {
         Ok(dir)
     }
 
-    async fn stored(path: &Path, sha256: String) -> Result<StoredImage> {
+    async fn write_meta(&self, tenant_path: &str, id: &str, meta: &Meta) -> Result<()> {
+        let path = self.meta_path(tenant_path, id)?;
+        let tmp = path.with_extension(format!("{}.tmp", random_suffix()));
+        let json = serde_json::to_vec(meta).map_err(|e| Error::Io(std::io::Error::other(e)))?;
+        tokio::fs::write(&tmp, json).await?;
+        set_mode(&tmp, 0o600).await?;
+        tokio::fs::rename(&tmp, &path).await?;
+        Ok(())
+    }
+
+    /// What the store holds of an image: its sizes, and what is kept beside
+    /// it (worked out again, should that be missing).
+    async fn stored(&self, tenant_path: &str, id: &str) -> Result<StoredImage> {
+        let path = self.path(tenant_path, id)?;
+        let meta: Option<Meta> = tokio::fs::read(self.meta_path(tenant_path, id)?)
+            .await
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .filter(|m: &Meta| !m.digest.is_empty());
+        let meta = match meta {
+            Some(m) => m,
+            None => {
+                let m = Meta {
+                    sha256: String::new(),
+                    digest: digest_file(&path, &self.scratch).await?,
+                };
+                self.write_meta(tenant_path, id, &m).await?;
+                m
+            }
+        };
         Ok(StoredImage {
-            size_bytes: tokio::fs::metadata(path).await?.len(),
-            virtual_bytes: img_info(path, Some("qcow2")).await?.virtual_size,
-            sha256,
+            size_bytes: tokio::fs::metadata(&path).await?.len(),
+            virtual_bytes: img_info(&path, Some("qcow2")).await?.virtual_size,
+            sha256: meta.sha256,
+            digest: meta.digest,
         })
     }
 
@@ -113,9 +246,26 @@ impl ImageStore {
         Ok(tokio::fs::try_exists(self.path(tenant_path, id)?).await?)
     }
 
+    /// The image, if it is here; with `digest`, it must hold that.
+    pub async fn held(
+        &self,
+        tenant_path: &str,
+        id: &str,
+        digest: Option<&str>,
+    ) -> Result<Option<StoredImage>> {
+        let lock = lock(id);
+        let _held = lock.lock().await;
+        if !tokio::fs::try_exists(self.path(tenant_path, id)?).await? {
+            return Ok(None);
+        }
+        let stored = self.stored(tenant_path, id).await?;
+        check_digest(id, &stored.digest, digest)?;
+        Ok(Some(stored))
+    }
+
     /// Downloads an image into the store, converted to qcow2, unless it is
     /// here already. See [`crate::fetch`] for what downloads may not do.
-    /// With `sha256`, the download must be that file.
+    /// With `digest`, the image must hold that.
     pub async fn fetch(
         &self,
         tenant_path: &str,
@@ -123,25 +273,34 @@ impl ImageStore {
         url: &str,
         format: &str,
         policy: FetchPolicy,
-        sha256: Option<&str>,
+        digest: Option<&str>,
     ) -> Result<StoredImage> {
         let dest = self.path(tenant_path, id)?;
         let lock = lock(id);
         let _held = lock.lock().await;
         if tokio::fs::try_exists(&dest).await? {
-            return Self::stored(&dest, String::new()).await;
+            let stored = self.stored(tenant_path, id).await?;
+            check_digest(id, &stored.digest, digest)?;
+            return Ok(stored);
         }
         self.make_dir(tenant_path).await?;
         let unique = random_suffix();
         let part = dest.with_extension(format!("{unique}.part"));
         let converted = dest.with_extension(format!("{unique}.tmp"));
         let result = async {
-            let hash =
-                crate::fetch(url, format, &part, &converted, "qcow2", policy, sha256).await?;
+            let sha256 = crate::fetch(url, format, &part, &converted, "qcow2", policy).await?;
             let _ = tokio::fs::remove_file(&part).await;
+            let got = digest_file(&converted, &self.scratch).await?;
+            check_digest(id, &got, digest)?;
             set_mode(&converted, 0o600).await?;
-            tokio::fs::rename(&converted, &dest).await?;
-            Self::stored(&dest, hash).await
+            if publish(&converted, &dest).await? {
+                let meta = Meta {
+                    sha256,
+                    digest: got,
+                };
+                self.write_meta(tenant_path, id, &meta).await?;
+            }
+            self.stored(tenant_path, id).await
         }
         .await;
         let _ = tokio::fs::remove_file(&part).await;
@@ -153,31 +312,42 @@ impl ImageStore {
     }
 
     /// Copies an image into the store (from another host serving it, or
-    /// a shared pool's store), unless it is here already.
+    /// a shared pool's store), unless it is here already. With `digest`,
+    /// the copy must hold that, or it is thrown away.
     pub async fn copy_in(
         &self,
         tenant_path: &str,
         id: &str,
         src: &CopySource<'_>,
+        digest: Option<&str>,
     ) -> Result<StoredImage> {
         let dest = self.path(tenant_path, id)?;
         let lock = lock(id);
         let _held = lock.lock().await;
         if tokio::fs::try_exists(&dest).await? {
-            return Self::stored(&dest, String::new()).await;
+            let stored = self.stored(tenant_path, id).await?;
+            check_digest(id, &stored.digest, digest)?;
+            return Ok(stored);
         }
         self.make_dir(tenant_path).await?;
         let tmp = dest.with_extension(format!("{}.tmp", random_suffix()));
         let result = async {
             crate::transfer::convert_to(src, &tmp).await?;
+            let got = digest_file(&tmp, &self.scratch).await?;
+            check_digest(id, &got, digest)?;
             set_mode(&tmp, 0o600).await?;
-            tokio::fs::rename(&tmp, &dest).await?;
-            Self::stored(&dest, String::new()).await
+            if publish(&tmp, &dest).await? {
+                let meta = Meta {
+                    sha256: String::new(),
+                    digest: got,
+                };
+                self.write_meta(tenant_path, id, &meta).await?;
+            }
+            self.stored(tenant_path, id).await
         }
         .await;
-        if result.is_err() {
-            let _ = tokio::fs::remove_file(&tmp).await;
-        } else {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        if result.is_ok() {
             tracing::info!(image = id, "image copied into the store");
         }
         result
@@ -188,13 +358,18 @@ impl ImageStore {
     /// (they cache that it is gone), so they go only as the store is
     /// pruned or purged.
     pub async fn remove(&self, tenant_path: &str, id: &str) -> Result<()> {
-        let path = self.path(tenant_path, id)?;
         let lock = lock(id);
         let _held = lock.lock().await;
-        match tokio::fs::remove_file(&path).await {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
-            _ => Ok(()),
+        for path in [
+            self.path(tenant_path, id)?,
+            self.meta_path(tenant_path, id)?,
+        ] {
+            match tokio::fs::remove_file(&path).await {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            }
         }
+        Ok(())
     }
 
     /// Removes the tenants' directories left empty.
@@ -222,13 +397,12 @@ impl ImageStore {
         Ok(())
     }
 
-    /// Every file in the tenants' directories: (path, image ID if it is an
-    /// image rather than a download or copy under way, when last written).
+    /// Every file in the store's directories: (path, the image ID it is of,
+    /// unless a download, copy or digest under way, when last written).
     async fn files(&self) -> Result<Vec<(PathBuf, Option<String>, SystemTime)>> {
         let mut out = vec![];
         let mut dirs = vec![];
-        // Tenants' directories only: files directly in images/ are the old
-        // cache's.
+        // Directories only: files directly in images/ are not the store's.
         match tokio::fs::read_dir(&self.root).await {
             Ok(mut d) => {
                 while let Some(e) = d.next_entry().await? {
@@ -254,6 +428,7 @@ impl ImageStore {
                     let name = e.file_name().to_string_lossy().into_owned();
                     let id = name
                         .strip_suffix(".qcow2")
+                        .or_else(|| name.strip_suffix(".json"))
                         .filter(|id| safe_id(id).is_ok())
                         .map(str::to_owned);
                     let modified = e.metadata().await?.modified()?;
@@ -265,8 +440,8 @@ impl ImageStore {
     }
 
     /// Removes images not in `keep` written before `before`, and the files
-    /// of downloads or copies cut off, written before `leftovers_before`.
-    /// Returns the IDs of the images removed.
+    /// of downloads, copies or digests cut off, written before
+    /// `leftovers_before`. Returns the IDs of the images removed.
     pub async fn prune(
         &self,
         keep: &HashSet<&str>,
@@ -291,7 +466,11 @@ impl ImageStore {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
                 _ => {}
             }
-            removed.extend(id);
+            if let Some(id) = id
+                && path.extension().is_some_and(|e| e == "qcow2")
+            {
+                removed.push(id);
+            }
         }
         self.remove_empty_dirs().await?;
         Ok(removed)
@@ -439,7 +618,49 @@ mod tests {
 
         // Copied into the local store, and made from there.
         let store = ImageStore::new(local.root());
-        shared_pool.copy_stored_to(&store, T, ID).await.unwrap();
+        // A copy that is not the image is thrown away.
+        let wrong = "0".repeat(64);
+        assert!(matches!(
+            shared_pool
+                .copy_stored_to(&store, T, ID, Some(&wrong))
+                .await,
+            Err(Error::InvalidImage(_))
+        ));
+        assert!(!store.has(T, ID).await.unwrap());
+        let kept_digest = ImageStore::new(shared.root())
+            .held(T, ID, None)
+            .await
+            .unwrap()
+            .unwrap()
+            .digest;
+        let copied = shared_pool
+            .copy_stored_to(&store, T, ID, Some(&kept_digest))
+            .await
+            .unwrap();
+        assert_eq!(copied.digest, kept_digest);
+        // The digest is kept beside it, and checked when asked again.
+        assert!(store.meta_path(T, ID).unwrap().exists());
+        assert!(matches!(
+            shared_pool
+                .copy_stored_to(&store, T, ID, Some(&wrong))
+                .await,
+            Err(Error::InvalidImage(_))
+        ));
+        // Never replaced: a second copy, finished later, is thrown away.
+        let other = root.join("other.qcow2");
+        crate::convert(&raw, "raw", &other, "qcow2").await.unwrap();
+        let before = tokio::fs::metadata(store.path(T, ID).unwrap())
+            .await
+            .unwrap();
+        let tmp = root.join("late.tmp");
+        tokio::fs::copy(&other, &tmp).await.unwrap();
+        assert!(!publish(&tmp, &store.path(T, ID).unwrap()).await.unwrap());
+        assert!(!tmp.exists());
+        use std::os::unix::fs::MetadataExt;
+        let after = tokio::fs::metadata(store.path(T, ID).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(before.ino(), after.ino());
         assert!(local_pool.has_stored(T, ID).await.unwrap());
         let other = "0199f0a2-7b3c-7d00-8000-0000000000b2";
         local_pool
@@ -450,8 +671,9 @@ mod tests {
         // The image can go: the volumes keep its data.
         shared_pool.remove_stored(T, ID).await.unwrap();
         local_pool.remove_stored(T, ID).await.unwrap();
+        let fresh = ImageStore::new(root.join("fresh"));
         assert!(matches!(
-            shared_pool.copy_stored_to(&store, T, ID).await,
+            shared_pool.copy_stored_to(&fresh, T, ID, None).await,
             Err(Error::MissingImage(_))
         ));
         for v in [vol, other] {

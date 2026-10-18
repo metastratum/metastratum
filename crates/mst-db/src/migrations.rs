@@ -19,13 +19,11 @@ pub struct Migration {
     /// For migrations the controller drives: the step reached and what it
     /// handed on.
     pub handoff: sqlx::types::Json<serde_json::Value>,
-    /// Local disks are copied whole, into standalone volumes.
-    pub full_copy: bool,
 }
 
 macro_rules! columns {
     () => {
-        "vm_id, task_id, source_host_id, dest_host_id, state, cancel_requested, started_at, handoff, full_copy"
+        "vm_id, task_id, source_host_id, dest_host_id, state, cancel_requested, started_at, handoff"
     };
 }
 
@@ -102,16 +100,6 @@ pub async fn set_state(db: impl PgExecutor<'_>, vm: VmId, state: &str) -> Result
     Ok(())
 }
 
-/// Records that the migration copies local disks whole.
-pub async fn set_full_copy(db: impl PgExecutor<'_>, vm: VmId, full: bool) -> Result<()> {
-    sqlx::query("UPDATE migrations SET full_copy = $2 WHERE vm_id = $1")
-        .bind(vm)
-        .bind(full)
-        .execute(db)
-        .await?;
-    Ok(())
-}
-
 /// Records how far a driven migration has got.
 pub async fn set_handoff(
     db: impl PgExecutor<'_>,
@@ -153,13 +141,7 @@ pub async fn rolled_back(db: &mut PgConnection, vm: VmId) -> Result<()> {
 
 /// Ends tracking: the VM now lives on the destination.
 pub async fn committed(db: &mut PgConnection, vm: VmId, dest: HostId) -> Result<()> {
-    let full_copy: bool = sqlx::query_scalar(
-        "SELECT coalesce((SELECT full_copy FROM migrations WHERE vm_id = $1), false)",
-    )
-    .bind(vm)
-    .fetch_one(&mut *db)
-    .await?;
-    crate::vms::moved(db, vm, dest, full_copy).await?;
+    crate::vms::moved(db, vm, dest).await?;
     sqlx::query("DELETE FROM migrations WHERE vm_id = $1")
         .bind(vm)
         .execute(&mut *db)

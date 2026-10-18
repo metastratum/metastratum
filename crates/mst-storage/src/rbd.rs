@@ -1,10 +1,9 @@
 //! Ceph RBD pools, driven with the `rbd` tool (package `ceph-common`).
 //!
-//! Images kept in the pool are in its image store (`store_*`, see
-//! [`RbdPool::store_name`]); volumes made from them are copies. Volumes made
-//! before the store are copy-on-write clones (`vol-<id>`) of an image
-//! imported as `img-<id>` with a protected `base` snapshot. QEMU reaches the
-//! volumes directly over the network, authenticating with a libvirt secret.
+//! Volumes are RBD images (`vol-<id>`); images kept in the pool are in its
+//! image store (`store_*`, see [`RbdPool::store_name`]), and volumes made
+//! from them are copies. QEMU reaches the volumes directly over the network,
+//! authenticating with a libvirt secret.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -75,10 +74,6 @@ impl RbdPool {
         })
     }
 
-    pub fn image_name(id: &str) -> Result<String> {
-        Ok(format!("img-{}", safe(id)?))
-    }
-
     pub fn volume_name(id: &str) -> Result<String> {
         Ok(format!("vol-{}", safe(id)?))
     }
@@ -132,92 +127,6 @@ impl RbdPool {
         format!("{}/{}", self.pool, name)
     }
 
-    /// Imports an image (once) as a protected snapshot volumes clone from.
-    pub async fn ensure_image(
-        &self,
-        id: &str,
-        url: &str,
-        format: &str,
-        policy: crate::FetchPolicy,
-    ) -> Result<()> {
-        let name = Self::image_name(id)?;
-        let lock = self
-            .image_locks
-            .lock()
-            .unwrap()
-            .entry(id.to_owned())
-            .or_default()
-            .clone();
-        let _guard = lock.lock().await;
-        if self.exists(&format!("{}@base", self.spec(&name))).await? {
-            return Ok(());
-        }
-        let unique = format!("{}.{}", std::process::id(), random_suffix());
-        let part = self.work_dir.join(format!("{id}.{unique}.part"));
-        let raw = self.work_dir.join(format!("{id}.{unique}.raw"));
-        // Import under a temporary name and rename once complete, so other
-        // hosts never see a half-imported image.
-        let tmp_name = format!("{name}.tmp{}", random_suffix());
-        let result = async {
-            fetch(url, format, &part, &raw, "raw", policy, None).await?;
-            let _ = tokio::fs::remove_file(&part).await;
-            let raw_s = raw.to_string_lossy();
-            self.rbd(&[
-                "import",
-                "--image-format",
-                "2",
-                &raw_s,
-                &self.spec(&tmp_name),
-            ])
-            .await?;
-            self.rbd(&["snap", "create", &format!("{}@base", self.spec(&tmp_name))])
-                .await?;
-            self.rbd(&["snap", "protect", &format!("{}@base", self.spec(&tmp_name))])
-                .await?;
-            match self
-                .rbd(&["rename", &self.spec(&tmp_name), &self.spec(&name)])
-                .await
-            {
-                Ok(_) => Ok(()),
-                // Another host won the race: use its image, drop ours.
-                Err(_) if self.exists(&self.spec(&name)).await? => {
-                    self.remove_image(&tmp_name).await;
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
-        }
-        .await;
-        let _ = tokio::fs::remove_file(&part).await;
-        let _ = tokio::fs::remove_file(&raw).await;
-        if result.is_err() {
-            self.remove_image(&tmp_name).await;
-        } else {
-            tracing::info!(image = id, pool = %self.pool, "image imported into RBD");
-        }
-        result
-    }
-
-    /// Removes an imported image (and its snapshot). Fails while volumes
-    /// are cloned from it.
-    pub async fn delete_image(&self, id: &str) -> Result<()> {
-        let name = Self::image_name(id)?;
-        if !self.exists(&self.spec(&name)).await? {
-            return Ok(());
-        }
-        let snap = format!("{}@base", self.spec(&name));
-        let children = self.rbd(&["children", &snap]).await.unwrap_or_default();
-        if !String::from_utf8_lossy(&children).trim().is_empty() {
-            return Err(Error::Pool(format!(
-                "{name} still has volumes cloned from it"
-            )));
-        }
-        let _ = self.rbd(&["snap", "unprotect", &snap]).await;
-        self.rbd(&["snap", "purge", &self.spec(&name)]).await?;
-        self.rbd(&["rm", &self.spec(&name)]).await?;
-        Ok(())
-    }
-
     /// The store's name for an image (see [`crate::ImageStore`]):
     /// `store_<tenant>_<sub-tenant>_..._<image id>`, a raw RBD image.
     pub fn store_name(tenant_path: &str, id: &str) -> Result<String> {
@@ -234,7 +143,41 @@ impl RbdPool {
             .clone()
     }
 
-    async fn stored(&self, name: &str, sha256: String) -> Result<crate::StoredImage> {
+    async fn meta_get(&self, spec: &str, key: &str) -> Option<String> {
+        let out = self.rbd(&["image-meta", "get", spec, key]).await.ok()?;
+        Some(String::from_utf8_lossy(&out).trim().to_owned()).filter(|v| !v.is_empty())
+    }
+
+    pub(crate) async fn meta_set(&self, spec: &str, key: &str, value: &str) -> Result<()> {
+        self.rbd(&["image-meta", "set", spec, key, value]).await?;
+        Ok(())
+    }
+
+    /// The SHA-256 of an RBD image's contents (hex).
+    async fn digest_of(&self, spec: &str) -> Result<String> {
+        let keyring = self.keyring.to_string_lossy().into_owned();
+        let mons = self.monitors.join(",");
+        let mut child = tokio::process::Command::new("rbd")
+            .args(["--id", &self.user, "--keyring", &keyring, "-m", &mons])
+            .args(["--no-mon-config", "export", "--no-progress", spec, "-"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        let stdout = child.stdout.take().expect("piped");
+        let digest = crate::store::hash_reader(stdout).await;
+        let out = child.wait_with_output().await?;
+        if !out.status.success() {
+            return Err(Error::Tool {
+                tool: "rbd",
+                stderr: String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+            });
+        }
+        digest
+    }
+
+    /// What the store holds of an image: its sizes, and what is kept with
+    /// it (worked out again, should that be missing).
+    async fn stored(&self, name: &str) -> Result<crate::StoredImage> {
         #[derive(Deserialize)]
         struct Du {
             images: Vec<DuImage>,
@@ -252,10 +195,19 @@ impl RbdPool {
             .ok()
             .and_then(|out| serde_json::from_slice::<Du>(&out).ok())
             .and_then(|du| du.images.first().map(|i| i.used_size));
+        let digest = match self.meta_get(&spec, "mst.digest").await {
+            Some(d) => d,
+            None => {
+                let d = self.digest_of(&spec).await?;
+                self.meta_set(&spec, "mst.digest", &d).await?;
+                d
+            }
+        };
         Ok(crate::StoredImage {
             size_bytes: used.unwrap_or(virtual_bytes),
             virtual_bytes,
-            sha256,
+            sha256: self.meta_get(&spec, "mst.sha256").await.unwrap_or_default(),
+            digest,
         })
     }
 
@@ -275,7 +227,9 @@ impl RbdPool {
     }
 
     /// Downloads an image into the store (see [`crate::ImageStore::fetch`]):
-    /// checked and converted on this host first, then copied in.
+    /// checked, converted and its digest worked out on this host first,
+    /// then copied in, unless another host stored it meanwhile (that one
+    /// stays).
     pub async fn fetch_stored(
         &self,
         tenant_path: &str,
@@ -283,23 +237,31 @@ impl RbdPool {
         url: &str,
         format: &str,
         policy: crate::FetchPolicy,
-        sha256: Option<&str>,
+        digest: Option<&str>,
     ) -> Result<crate::StoredImage> {
         let name = Self::store_name(tenant_path, id)?;
         let lock = self.store_lock(id);
         let _held = lock.lock().await;
         if self.exists(&self.spec(&name)).await? {
-            return self.stored(&name, String::new()).await;
+            let stored = self.stored(&name).await?;
+            crate::store::check_digest(id, &stored.digest, digest)?;
+            return Ok(stored);
         }
         let unique = format!("{}.{}", std::process::id(), random_suffix());
         let part = self.work_dir.join(format!("{id}.{unique}.part"));
         let converted = self.work_dir.join(format!("{id}.{unique}.qcow2"));
         let result = async {
-            let hash = fetch(url, format, &part, &converted, "qcow2", policy, sha256).await?;
+            let sha256 = fetch(url, format, &part, &converted, "qcow2", policy).await?;
             let _ = tokio::fs::remove_file(&part).await;
+            let got = crate::store::digest_file(&converted, &self.work_dir).await?;
+            crate::store::check_digest(id, &got, digest)?;
             let src = crate::CopySource::File(&converted);
-            crate::transfer::copy_to_rbd_name(self, &name, 0, &src).await?;
-            self.stored(&name, hash).await
+            let meta = [
+                ("mst.sha256", sha256.as_str()),
+                ("mst.digest", got.as_str()),
+            ];
+            crate::transfer::copy_to_rbd_name(self, &name, 0, &src, &meta).await?;
+            self.stored(&name).await
         }
         .await;
         let _ = tokio::fs::remove_file(&part).await;
@@ -321,32 +283,94 @@ impl RbdPool {
         }
     }
 
-    /// Removes metastratum's images from the Ceph pool (`img-*`, and the
-    /// store's `store_*`; volumes are gone before a pool is removed, and
-    /// anything else is not ours).
-    /// Returns how many were removed.
-    pub async fn purge(&self) -> Result<usize> {
+    /// The store's RBD images: (name, image ID, whether a copy cut off).
+    async fn store_images(&self) -> Result<Vec<(String, String, bool)>> {
         let list = self.rbd(&["ls", &self.pool]).await?;
-        let mut removed = 0;
-        for name in String::from_utf8_lossy(&list).lines() {
-            let name = name.trim();
-            if let Some(id) = name.strip_prefix("img-") {
-                self.delete_image(id).await?;
-                removed += 1;
-            } else if name.starts_with("store_") {
-                self.rbd(&["rm", "--no-progress", &self.spec(safe(name)?)])
-                    .await?;
-                removed += 1;
+        Ok(String::from_utf8_lossy(&list)
+            .lines()
+            .filter_map(|n| {
+                let name = n.trim();
+                let (id, part) = store_id(name)?;
+                Some((name.to_owned(), id, part))
+            })
+            .collect())
+    }
+
+    /// Removes images not in `keep` stored before `before`, and copies cut
+    /// off before `leftovers_before` (and their files here). Returns the IDs
+    /// of the images removed.
+    pub async fn prune_stored(
+        &self,
+        keep: &std::collections::HashSet<&str>,
+        before: std::time::SystemTime,
+        leftovers_before: std::time::SystemTime,
+    ) -> Result<Vec<String>> {
+        let secs = |t: std::time::SystemTime| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        };
+        let mut removed = vec![];
+        for (name, id, part) in self.store_images().await? {
+            let spec = self.spec(&name);
+            // Images without their time are not ours to judge.
+            let Some(created) = self
+                .meta_get(&spec, "mst.created")
+                .await
+                .and_then(|c| c.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            let gone = match part {
+                true => created < secs(leftovers_before),
+                false => created < secs(before) && !keep.contains(id.as_str()),
+            };
+            if !gone {
+                continue;
+            }
+            let lock = self.store_lock(&id);
+            let _held = lock.lock().await;
+            match self.rbd(&["rm", "--no-progress", &spec]).await {
+                Err(Error::Tool { stderr, .. }) if stderr.contains("No such file") => {}
+                r => {
+                    r?;
+                }
+            }
+            if !part {
+                removed.push(id);
+            }
+        }
+        // Downloads into the store cut off here.
+        if let Ok(mut dir) = tokio::fs::read_dir(&self.work_dir).await {
+            while let Ok(Some(e)) = dir.next_entry().await {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let ours = [".part", ".qcow2", ".raw"]
+                    .iter()
+                    .any(|s| name.ends_with(s));
+                let old = e
+                    .metadata()
+                    .await
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|m| m < leftovers_before);
+                if ours && old {
+                    let _ = tokio::fs::remove_file(e.path()).await;
+                }
             }
         }
         Ok(removed)
     }
 
-    async fn remove_image(&self, name: &str) {
-        let snap = format!("{}@base", self.spec(name));
-        let _ = self.rbd(&["snap", "unprotect", &snap]).await;
-        let _ = self.rbd(&["snap", "rm", &snap]).await;
-        let _ = self.rbd(&["rm", &self.spec(name)]).await;
+    /// Removes metastratum's images from the Ceph pool (the store's; volumes
+    /// are gone before a pool is removed, and anything else is not ours).
+    /// Returns how many were removed.
+    pub async fn purge(&self) -> Result<usize> {
+        let mut removed = 0;
+        for (name, _, _) in self.store_images().await? {
+            self.rbd(&["rm", "--no-progress", &self.spec(&name)])
+                .await?;
+            removed += 1;
+        }
+        Ok(removed)
     }
 
     async fn size_of(&self, spec: &str) -> Result<u64> {
@@ -360,34 +384,14 @@ impl RbdPool {
             .size)
     }
 
-    /// Creates a volume, as a clone of an image if given. Existing volumes
-    /// are left alone.
-    pub async fn ensure_volume(&self, id: &str, size: u64, image: Option<&str>) -> Result<()> {
+    /// Creates a blank volume. Existing volumes are left alone.
+    pub async fn ensure_volume(&self, id: &str, size: u64) -> Result<()> {
         let vol = self.spec(&Self::volume_name(id)?);
         if self.exists(&vol).await? {
             return Ok(());
         }
         let mib = size.div_ceil(1 << 20).to_string();
-        match image {
-            Some(img) => {
-                let base = self.spec(&Self::image_name(img)?);
-                if !self.exists(&format!("{base}@base")).await? {
-                    return Err(Error::MissingImage(img.into()));
-                }
-                let image_size = self.size_of(&base).await?;
-                if size < image_size {
-                    return Err(Error::TooSmall {
-                        requested: size,
-                        image: image_size,
-                    });
-                }
-                self.rbd(&["clone", &format!("{base}@base"), &vol]).await?;
-                self.rbd(&["resize", "--size", &mib, &vol]).await?;
-            }
-            None => {
-                self.rbd(&["create", "--size", &mib, &vol]).await?;
-            }
-        }
+        self.rbd(&["create", "--size", &mib, &vol]).await?;
         Ok(())
     }
 
@@ -491,5 +495,56 @@ impl RbdPool {
             return Ok(None);
         }
         Ok(Some(self.size_of(&vol).await?))
+    }
+}
+
+/// The image ID in a store name (`store_<tenant>_..._<id>`, see
+/// [`RbdPool::store_name`]), and whether it is a copy under way
+/// (`<name>-part-<suffix>`); None for any other name.
+fn store_id(name: &str) -> Option<(String, bool)> {
+    let rest = name.strip_prefix("store_")?;
+    let (base, part) = match rest.split_once("-part-") {
+        Some((b, sfx)) if !sfx.is_empty() && sfx.bytes().all(|c| c.is_ascii_hexdigit()) => {
+            (b, true)
+        }
+        Some(_) => return None,
+        None => (rest, false),
+    };
+    let (labels, id) = base.rsplit_once('_')?;
+    let hex = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+    };
+    let uuid = id.len() == 36
+        && id.split('-').map(str::len).eq([8, 4, 4, 4, 12])
+        && id.split('-').all(hex);
+    (uuid && labels.split('_').all(hex)).then(|| (id.to_owned(), part))
+}
+
+#[cfg(test)]
+mod store_name_tests {
+    use super::*;
+
+    #[test]
+    fn store_names_round_trip_and_nothing_else_matches() {
+        let id = "0199f0a2-7b3c-7d00-8000-0000000000a1";
+        let name = RbdPool::store_name("01a1/02b2", id).unwrap();
+        assert_eq!(name, format!("store_01a1_02b2_{id}"));
+        assert_eq!(store_id(&name), Some((id.to_owned(), false)));
+        assert_eq!(
+            store_id(&format!("{name}-part-0123456789abcdef")),
+            Some((id.to_owned(), true))
+        );
+        for other in [
+            "store_x",
+            "vol-1",
+            "store_01a1_notanid",
+            "store__",
+            "store_01a1_ID",
+        ] {
+            assert_eq!(store_id(other), None, "{other}");
+        }
+        assert!(RbdPool::store_name("01a1/../x", id).is_err());
     }
 }

@@ -39,23 +39,11 @@ pub enum Pool {
 }
 
 impl Pool {
-    pub async fn ensure_image(
-        &self,
-        id: &str,
-        url: &str,
-        format: &str,
-        policy: crate::FetchPolicy,
-    ) -> Result<()> {
+    /// Creates a blank volume; an existing one is left alone.
+    pub async fn ensure_volume(&self, id: &str, size: u64) -> Result<()> {
         match self {
-            Pool::File(p) => p.ensure_image(id, url, format, policy).await,
-            Pool::Rbd(p) => p.ensure_image(id, url, format, policy).await,
-        }
-    }
-
-    pub async fn ensure_volume(&self, id: &str, size: u64, image: Option<&str>) -> Result<()> {
-        match self {
-            Pool::File(p) => p.ensure_volume(id, size, image).await,
-            Pool::Rbd(p) => p.ensure_volume(id, size, image).await,
+            Pool::File(p) => p.ensure_volume(id, size).await,
+            Pool::Rbd(p) => p.ensure_volume(id, size).await,
         }
     }
 
@@ -93,21 +81,18 @@ impl Pool {
 
     /// Creates a volume as a copy of another; see each pool's
     /// `clone_volume`.
-    pub async fn clone_volume(
-        &self,
-        source: &str,
-        id: &str,
-        size: u64,
-        image: Option<&str>,
-    ) -> Result<()> {
+    pub async fn clone_volume(&self, source: &str, id: &str, size: u64) -> Result<()> {
         match self {
-            Pool::File(p) => p.clone_volume(source, id, size, image).await,
+            Pool::File(p) => p.clone_volume(source, id, size).await,
             Pool::Rbd(p) => p.clone_volume(source, id, size).await,
         }
     }
 
     /// Downloads an image into the pool's image store (see
-    /// [`crate::ImageStore::fetch`]), unless it is there already.
+    /// [`crate::ImageStore::fetch`]), unless it is there already. Digests
+    /// are worked out in `scratch`, on the host's own disk. With `digest`,
+    /// the image must hold that.
+    #[allow(clippy::too_many_arguments)]
     pub async fn fetch_stored(
         &self,
         tenant_path: &str,
@@ -115,16 +100,18 @@ impl Pool {
         url: &str,
         format: &str,
         policy: crate::FetchPolicy,
-        sha256: Option<&str>,
+        digest: Option<&str>,
+        scratch: &Path,
     ) -> Result<crate::StoredImage> {
         match self {
             Pool::File(p) => {
                 crate::ImageStore::new(p.root())
-                    .fetch(tenant_path, id, url, format, policy, sha256)
+                    .scratch_in(scratch)
+                    .fetch(tenant_path, id, url, format, policy, digest)
                     .await
             }
             Pool::Rbd(p) => {
-                p.fetch_stored(tenant_path, id, url, format, policy, sha256)
+                p.fetch_stored(tenant_path, id, url, format, policy, digest)
                     .await
             }
         }
@@ -151,13 +138,18 @@ impl Pool {
     }
 
     /// Copies an image in the pool's image store into `store` (a host's
-    /// local one), unless it is there already.
+    /// local one), unless it is there already. With `digest`, the copy must
+    /// hold that.
     pub async fn copy_stored_to(
         &self,
         store: &crate::ImageStore,
         tenant_path: &str,
         id: &str,
+        digest: Option<&str>,
     ) -> Result<crate::StoredImage> {
+        if let Some(stored) = store.held(tenant_path, id, digest).await? {
+            return Ok(stored);
+        }
         match self {
             Pool::File(p) => {
                 let path = crate::ImageStore::new(p.root()).path(tenant_path, id)?;
@@ -165,7 +157,7 @@ impl Pool {
                     return Err(crate::Error::MissingImage(id.into()));
                 }
                 store
-                    .copy_in(tenant_path, id, &crate::CopySource::File(&path))
+                    .copy_in(tenant_path, id, &crate::CopySource::File(&path), digest)
                     .await
             }
             Pool::Rbd(p) => {
@@ -174,7 +166,7 @@ impl Pool {
                     return Err(crate::Error::MissingImage(id.into()));
                 }
                 store
-                    .copy_in(tenant_path, id, &crate::CopySource::Rbd(p, &name))
+                    .copy_in(tenant_path, id, &crate::CopySource::Rbd(p, &name), digest)
                     .await
             }
         }
@@ -229,18 +221,29 @@ impl Pool {
         }
     }
 
+    /// Removes images not in `keep` from the pool's image store; see
+    /// [`crate::ImageStore::prune`].
+    pub async fn prune_stored(
+        &self,
+        keep: &std::collections::HashSet<&str>,
+        before: std::time::SystemTime,
+        leftovers_before: std::time::SystemTime,
+    ) -> Result<Vec<String>> {
+        match self {
+            Pool::File(p) => {
+                crate::ImageStore::new(p.root())
+                    .prune(keep, before, leftovers_before)
+                    .await
+            }
+            Pool::Rbd(p) => p.prune_stored(keep, before, leftovers_before).await,
+        }
+    }
+
     /// Grows a volume no VM is using; see each pool's `grow_volume`.
     pub async fn grow_volume(&self, id: &str, size: u64) -> Result<()> {
         match self {
             Pool::File(p) => p.grow_volume(id, size).await,
             Pool::Rbd(p) => p.grow_volume(id, size).await,
-        }
-    }
-
-    pub async fn delete_image(&self, id: &str) -> Result<()> {
-        match self {
-            Pool::File(p) => p.delete_image(id).await,
-            Pool::Rbd(p) => p.delete_image(id).await,
         }
     }
 
@@ -429,7 +432,10 @@ mod tests {
 
         let files = FilePool::new(dir.join("shared"));
         files.init().await.unwrap();
-        let image = dir.join("shared/images/0199f0a2-7b3c-7d00-8000-000000000001.qcow2");
+        // An image in the store, and a volume.
+        let tenant = dir.join("shared/images/01a1");
+        std::fs::create_dir_all(&tenant).unwrap();
+        let image = tenant.join("0199f0a2-7b3c-7d00-8000-000000000001.qcow2");
         std::fs::write(&image, "x").unwrap();
         std::fs::write(
             dir.join("shared/volumes/0199f0a2-7b3c-7d00-8000-000000000002.qcow2"),
@@ -437,20 +443,8 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.join("shared/images/notes.txt"), "someone else's").unwrap();
-        let cached = files.cached_images().await.unwrap();
-        assert_eq!(cached.len(), 1);
-        assert_eq!(cached[0].0, "0199f0a2-7b3c-7d00-8000-000000000001");
-
-        files
-            .delete_image("0199f0a2-7b3c-7d00-8000-000000000001")
-            .await
-            .unwrap();
-        assert!(!image.exists());
-        files
-            .delete_image("0199f0a2-7b3c-7d00-8000-000000000001")
-            .await
-            .unwrap();
-        assert_eq!(files.purge().await.unwrap(), 1);
+        assert_eq!(files.purge().await.unwrap(), 2);
+        assert!(!image.exists() && !tenant.exists());
         assert!(
             dir.join("shared/images/notes.txt").exists(),
             "not ours: kept"

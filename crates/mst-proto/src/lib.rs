@@ -15,20 +15,20 @@ pub use v1::*;
 /// and the controller's welcome. 3: migrations the controller drives
 /// (`MigrationStep`), so hosts' libvirt need not listen for each other.
 /// 4: credentials of their own for each migration (`MigrationStep.tls`).
-pub const PROTOCOL_VERSION: u32 = 4;
+/// 5: the image store; local disks always migrate whole.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// The oldest agent protocol a controller of this build still serves.
 /// Upgrades go controllers first, then agents; agents between this and
-/// [`PROTOCOL_VERSION`] keep working meanwhile. 4 is what the first release
-/// (0.1.0) speaks; older revisions migrated with hosts' libvirt listening
-/// for each other, or with credentials any host had, and are refused.
-pub const MIN_AGENT_PROTOCOL: u32 = 4;
+/// [`PROTOCOL_VERSION`] keep working meanwhile. 5 is what 0.5 speaks:
+/// older agents put disks on cached images, which this build no longer
+/// does, and are refused.
+pub const MIN_AGENT_PROTOCOL: u32 = 5;
 
 /// A command's name, as agents list them among their capabilities.
 pub fn capability(cmd: &command::Cmd) -> &'static str {
     use command::Cmd::*;
     match cmd {
-        EnsureImage(_) => "ensure_image",
         EnsureVolume(_) => "ensure_volume",
         DeleteVolume(_) => "delete_volume",
         DefineVm(_) => "define_vm",
@@ -71,12 +71,12 @@ pub fn capability(cmd: &command::Cmd) -> &'static str {
         ExportImage(_) => "export_image",
         CopyImage(_) => "copy_image",
         VolumeFromImage(_) => "volume_from_image",
+        PruneStore(_) => "prune_store",
     }
 }
 
 /// Every command this build's agent handles.
 pub const CAPABILITIES: &[&str] = &[
-    "ensure_image",
     "ensure_volume",
     "delete_volume",
     "define_vm",
@@ -119,6 +119,7 @@ pub const CAPABILITIES: &[&str] = &[
     "export_image",
     "copy_image",
     "volume_from_image",
+    "prune_store",
 ];
 
 /// What this build's agent does beyond its commands' first versions,
@@ -126,8 +127,6 @@ pub const CAPABILITIES: &[&str] = &[
 pub const FEATURES: &[&str] = &[
     // BackupVm builds on a parent backup; DeleteBackup merges into children.
     "incremental_backup",
-    // MigrationStep copies local disks whole (`full_copy`).
-    "full_disk_copy",
 ];
 
 #[cfg(test)]

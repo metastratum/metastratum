@@ -57,6 +57,7 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
     let img = image(api, &id).await?;
     assert_eq!(img["state"], "ready", "{img}");
     assert_eq!(img["sha256"].as_str().map(str::len), Some(64), "{img}");
+    assert_eq!(img["digest"].as_str().map(str::len), Some(64), "{img}");
     let virtual_bytes = img["virtual_bytes"].as_u64().unwrap();
     assert!(virtual_bytes > 1 << 30, "{img}");
     let first = img["hosts"].as_array().unwrap().clone();

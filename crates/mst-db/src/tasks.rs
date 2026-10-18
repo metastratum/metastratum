@@ -83,13 +83,22 @@ pub async fn get(db: impl PgExecutor<'_>, id: TaskId) -> Result<Task> {
 /// lease has expired (its previous owner is presumed dead).
 /// Tasks for the same target run in creation order: a task is not claimable
 /// while an older one for its target is unfinished.
-pub async fn claim(db: impl PgExecutor<'_>, owner: &str, lease: Duration) -> Result<Option<Task>> {
+/// Claims the oldest task that can run, of the given kinds (`only`) or of
+/// any other kind.
+pub async fn claim(
+    db: impl PgExecutor<'_>,
+    owner: &str,
+    lease: Duration,
+    kinds: &[&str],
+    only: bool,
+) -> Result<Option<Task>> {
     Ok(sqlx::query_as(concat!("UPDATE tasks SET state = 'running', lease_owner = $1,
                 lease_expires_at = now() + $2 * interval '1 millisecond',
                 attempts = attempts + 1, started_at = coalesce(started_at, now()), updated_at = now()
          WHERE id = (
              SELECT t.id FROM tasks t
              WHERE (t.state = 'pending' OR (t.state = 'running' AND t.lease_expires_at < now()))
+               AND (t.kind = ANY($3)) = $4
                AND NOT EXISTS (
                    SELECT 1 FROM tasks o
                    WHERE t.target_id IS NOT NULL AND o.target_id = t.target_id
@@ -101,6 +110,8 @@ pub async fn claim(db: impl PgExecutor<'_>, owner: &str, lease: Duration) -> Res
          RETURNING ", task_columns!()))
     .bind(owner)
     .bind(lease.as_millis() as f64)
+    .bind(kinds)
+    .bind(only)
     .fetch_optional(db)
     .await?)
 }

@@ -54,10 +54,7 @@ async function remove() {
     deleting.value = null
     await load()
   } catch (e) {
-    deleteError.value =
-      e instanceof ApiError && e.status === 409
-        ? 'VM disks are built on this image, or being made from it. Delete those VMs first.'
-        : 'Could not delete the image. Try again.'
+    deleteError.value = e instanceof ApiError ? e.message : 'Could not delete the image. Try again.'
   }
 }
 
@@ -148,10 +145,6 @@ const own = (img: Image) => img.tenant_id === scope.current
           <li v-if="deleting.shared">Sub-tenants it is shared with lose it too.</li>
           <li class="error-text">Every host deletes its copy. Adding the image again means downloading it again.</li>
           <li>VMs made from it keep working: their disks are copies of their own.</li>
-          <li>
-            Disks made before images were kept on hosts are built on the image: while there are any, it can’t be
-            deleted.
-          </li>
         </ul>
         <p v-if="deleteError" class="error-text" role="alert">{{ deleteError }}</p>
         <footer>

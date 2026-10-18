@@ -688,6 +688,10 @@ type CreateVpc struct {
 type CreatedImage struct {
 	CreatedAt time.Time `json:"created_at"`
 
+	// Digest SHA-256 of the disk it holds, read as a raw disk: every copy, and a
+	// download again, is checked against it.
+	Digest *string `json:"digest,omitempty"`
+
 	// Error Why downloading it failed.
 	Error *string `json:"error,omitempty"`
 
@@ -1002,6 +1006,10 @@ type ImageId = openapi_types.UUID
 // ImageView defines model for ImageView.
 type ImageView struct {
 	CreatedAt time.Time `json:"created_at"`
+
+	// Digest SHA-256 of the disk it holds, read as a raw disk: every copy, and a
+	// download again, is checked against it.
+	Digest *string `json:"digest,omitempty"`
 
 	// Error Why downloading it failed.
 	Error *string `json:"error,omitempty"`
@@ -2794,9 +2802,8 @@ type ClientInterface interface {
 	// Corresponds with POST /api/v1/images (the `CreateImage` operationId).
 	CreateImage(ctx context.Context, body CreateImageJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// DeleteImage Deletes an image, and every host's copy. VMs made from it keep their
-	// disks, which are copies; only disks made before the image store, built
-	// on the image, keep it from going.
+	// DeleteImage Deletes an image, and every copy of it. VMs made from it keep their
+	// disks, which are copies of their own.
 	//
 	// Corresponds with DELETE /api/v1/images/{id} (the `DeleteImage` operationId).
 	DeleteImage(ctx context.Context, id ImageId, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4613,9 +4620,8 @@ func (c *Client) CreateImage(ctx context.Context, body CreateImageJSONRequestBod
 	return c.Client.Do(req)
 }
 
-// DeleteImage Deletes an image, and every host's copy. VMs made from it keep their
-// disks, which are copies; only disks made before the image store, built
-// on the image, keep it from going.
+// DeleteImage Deletes an image, and every copy of it. VMs made from it keep their
+// disks, which are copies of their own.
 //
 // Corresponds with DELETE /api/v1/images/{id} (the `DeleteImage` operationId).
 func (c *Client) DeleteImage(ctx context.Context, id ImageId, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -13454,9 +13460,8 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with POST /api/v1/images (the `CreateImage` operationId).
 	CreateImageWithResponse(ctx context.Context, body CreateImageJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateImageResponse, error)
 
-	// DeleteImageWithResponse Deletes an image, and every host's copy. VMs made from it keep their
-	// disks, which are copies; only disks made before the image store, built
-	// on the image, keep it from going.
+	// DeleteImageWithResponse Deletes an image, and every copy of it. VMs made from it keep their
+	// disks, which are copies of their own.
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -21047,9 +21052,8 @@ func (c *ClientWithResponses) CreateImageWithResponse(ctx context.Context, body 
 	return ParseCreateImageResponse(rsp)
 }
 
-// DeleteImageWithResponse Deletes an image, and every host's copy. VMs made from it keep their
-// disks, which are copies; only disks made before the image store, built
-// on the image, keep it from going.
+// DeleteImageWithResponse Deletes an image, and every copy of it. VMs made from it keep their
+// disks, which are copies of their own.
 //
 // Returns a wrapper object for the known response body format(s).
 //

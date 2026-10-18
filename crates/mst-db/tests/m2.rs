@@ -124,7 +124,6 @@ async fn allocate(
         host_id: Some(host),
         pool_id: mst_core::ids::LOCAL_POOL,
         size_bytes: disk_gib << 30,
-        image_id: None,
     };
     vms::create_volume(&mut *tx, &vol).await?;
     tx.commit().await.unwrap();

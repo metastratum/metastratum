@@ -68,7 +68,7 @@ async fn live_hosts(state: &AppState) -> Vec<mst_db::hosts::Host> {
         .collect()
 }
 
-async fn record(
+pub(crate) async fn record(
     state: &AppState,
     action: &str,
     target: (&str, uuid::Uuid),
@@ -139,55 +139,6 @@ pub async fn pool_deleted(
         "storage_pool.cleanup",
         ("storage_pool", pool.id.0),
         json!({"name": pool.name, "hosts": done, "failed": failed, "data": data}),
-    )
-    .await;
-}
-
-/// After an image was deleted: every host drops its copies (in its store,
-/// and cached), and one drops those in shared pools (stored, and cached). Hosts away
-/// now drop theirs when they are back.
-pub async fn image_deleted(state: AppState, image: mst_db::images::Image, tenant_path: String) {
-    let shared: Vec<mst_proto::Pool> = mst_db::storage_pools::list(&state.db)
-        .await
-        .unwrap_or_default()
-        .iter()
-        .filter(|p| p.kind != "local")
-        .filter_map(|p| crate::api::agent_pool(p).ok())
-        .collect();
-    let mut done = vec![];
-    let mut failed = vec![];
-    let mut shared_done = shared.is_empty();
-    // A host that reaches the pool the image was kept in cleans up the
-    // shared pools.
-    let home = mst_db::storage_pools::get(&state.db, image.storage_pool_id)
-        .await
-        .ok();
-    let mut hosts = live_hosts(&state).await;
-    hosts.sort_by_key(|h| {
-        !home
-            .as_ref()
-            .is_some_and(|p| h.cluster_id.is_some_and(|c| p.clusters.contains(&c)))
-    });
-    for h in hosts {
-        let pools = if shared_done { vec![] } else { shared.clone() };
-        let cmd = Cmd::DeleteImage(mst_proto::DeleteImage {
-            image_id: image.id.to_string(),
-            pools: pools.clone(),
-            tenant_path: tenant_path.clone(),
-        });
-        match state.agents.call(h.id, cmd, Duration::from_secs(300)).await {
-            Ok(()) => {
-                done.push(h.name.clone());
-                shared_done = true;
-            }
-            Err(e) => failed.push(format!("{}: {e}", h.name)),
-        }
-    }
-    record(
-        &state,
-        "image.cleanup",
-        ("image", image.id.0),
-        json!({"name": image.name, "hosts": done, "failed": failed, "shared_pools_cleaned": shared_done}),
     )
     .await;
 }

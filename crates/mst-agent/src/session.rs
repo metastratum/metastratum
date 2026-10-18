@@ -358,25 +358,9 @@ impl Agent {
         client: AgentControlClient<Channel>,
     ) -> Result<String> {
         match cmd {
-            Cmd::EnsureImage(c) => {
-                tracing::info!(image = %c.image_id, url = %c.source_url, "ensuring image");
-                let pool = self.pool(c.pool.as_ref()).await?;
-                let policy = mst_storage::FetchPolicy {
-                    allow_private: c.trusted,
-                    max_bytes: self.max_image_bytes,
-                    max_virtual_bytes: match c.max_virtual_bytes {
-                        0 => mst_storage::FetchPolicy::default().max_virtual_bytes,
-                        n => n,
-                    },
-                };
-                pool.ensure_image(&c.image_id, &c.source_url, &c.format, policy)
-                    .await?;
-            }
             Cmd::EnsureVolume(c) => {
-                let image = Some(c.image_id.as_str()).filter(|s| !s.is_empty());
                 let pool = self.pool(c.pool.as_ref()).await?;
-                pool.ensure_volume(&c.volume_id, c.size_bytes, image)
-                    .await?;
+                pool.ensure_volume(&c.volume_id, c.size_bytes).await?;
             }
             Cmd::DeleteVolume(c) => {
                 let pool = self.pool(c.pool.as_ref()).await?;
@@ -467,7 +451,6 @@ impl Agent {
                 let to = mst_libvirt::MigrateTo {
                     address: &c.dest_address,
                     copy_disks: &c.copy_disks,
-                    full_copy: false,
                     max_bandwidth_mib: None,
                 };
                 self.lv.migrate(&c.vm_id, &to).await?;
@@ -505,7 +488,6 @@ impl Agent {
                 let to = mst_libvirt::MigrateTo {
                     address: &c.dest_address,
                     copy_disks: &c.copy_disks,
-                    full_copy: c.full_copy,
                     max_bandwidth_mib: None,
                 };
                 let out = match (&c.tls, which) {
@@ -596,8 +578,7 @@ impl Agent {
             Cmd::CopyVolume(c) => crate::transfer::copy(self, &c).await?,
             Cmd::DeleteImage(c) => {
                 let shared = c.pools.iter().map(pool_spec).collect::<Result<Vec<_>>>()?;
-                let store = Some(c.tenant_path.as_str()).filter(|p| !p.is_empty());
-                crate::cleanup::delete_image(self, &c.image_id, &shared, store).await?;
+                crate::cleanup::delete_image(self, &c.image_id, &shared, &c.tenant_path).await?;
             }
             Cmd::FetchImage(c) => {
                 tracing::info!(image = %c.image_id, url = %c.source_url, "downloading an image into the store");
@@ -613,7 +594,7 @@ impl Agent {
                         self.max_image_bytes
                     },
                 };
-                let sha256 = Some(c.sha256.as_str()).filter(|s| !s.is_empty());
+                let digest = Some(c.digest.as_str()).filter(|s| !s.is_empty());
                 let stored = self
                     .store_pool(c.pool.as_ref())
                     .await?
@@ -623,12 +604,19 @@ impl Agent {
                         &c.source_url,
                         &c.format,
                         policy,
-                        sha256,
+                        digest,
+                        self.pools.store().scratch(),
                     )
                     .await?;
                 return Ok(serde_json::to_string(&stored)?);
             }
             Cmd::ExportImage(c) => return crate::transfer::export_image(self, &c).await,
+            Cmd::PruneStore(c) => {
+                let pool = self.store_pool(c.pool.as_ref()).await?;
+                let keep = c.image_ids.iter().map(String::as_str).collect();
+                let removed = crate::cleanup::prune_store(&pool, &keep).await?;
+                return Ok(serde_json::json!({ "removed": removed }).to_string());
+            }
             Cmd::CopyImage(c) => return crate::transfer::copy_image(self, &c).await,
             Cmd::VolumeFromImage(c) => {
                 let from = self.store_pool(c.source_pool.as_ref()).await?;

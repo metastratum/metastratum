@@ -392,7 +392,10 @@ pool it is kept in (Keep it in, among the pools the tenant may use):
 
 The images page shows when it is there, its size, where it is kept and
 which hosts hold a copy; a download that failed says why, and can be tried
-again (Download again). The SHA-256 of what was downloaded is recorded.
+again (Download again). Two of a tenant's images download at a time, and a
+server that sends nothing for a minute, or takes over two hours, is given
+up on. Two hashes are recorded: the SHA-256 of the file downloaded, and the
+image's digest, the SHA-256 of the disk it holds (read as a raw disk).
 
 A VM made from an image is made on its host from that host's copy, or
 straight from the shared pool keeping it when the host is attached to that
@@ -400,16 +403,21 @@ pool. A host without either gets a copy from a host that has one (a host
 attached to the shared pool first copies it into its own store): served
 read-only with
 `qemu-nbd` over TLS, with credentials for that copy alone, on a port of the
-migration range (49152-49215), as disks move. Hosts keep their copy, and
-each is a source for the next. The VM's disk is a copy of the image of its
+migration range (49152-49215), as disks move. The host copying it checks
+the copy holds the image's digest, and throws it away otherwise: a host
+handing over something else (a compromised one) spreads nothing. Hosts
+keep their copy, and each is a source for the next. The VM's disk is a copy of the image of its
 own, in its pool: it depends on nothing, so a VM migrates without its
 image, and keeps working once the image is deleted. VMs made while the
 image downloads wait for it.
 
 Should no copy of an image be reachable (its hosts are down or
 decommissioned, say), the host that needs it downloads it again, from its
-address; what it downloads must then be the file first downloaded (the same
-SHA-256), or the VM is not made.
+address; what it downloads must then hold the same disk (the same digest),
+or the VM is not made. An image in a store is never replaced: hosts
+storing the same one in a shared pool at once keep the first. Every hour,
+each host's store, and each shared pool's, lets go of images that no longer
+exist, and of what downloads and copies cut off left.
 
 A tenant's image comes from a public internet address only, and may
 describe a disk of at most the host's largest download (`image_max_gib` in
@@ -418,13 +426,6 @@ and describe disks up to 1 TiB. Both are checked before the download is
 unpacked: a small download can unpack into a huge disk. Images count
 against their tenant's image quota (Images, in GiB) at their stored size,
 once, however many hosts hold them; none is added where it is used up.
-
-Disks made before images were kept in the store (before 0.5) are overlays
-on a copy of their image cached in their pool (`images/<image ID>.qcow2`,
-or `img-*` on Ceph). Such an image cannot be deleted while they exist. A
-local one becomes a disk of its own when its VM migrates between hosts
-whose agents copy disks whole (0.5 and later); on NFS and Ceph it stays
-an overlay.
 
 ## Load balancers
 
@@ -741,11 +742,9 @@ above: only upgraded controllers merge a backup into the ones built on it
 when deleting it, and upgraded agents refuse to delete a backup others
 build on for a controller that does not.
 
-From 0.5 on, images are downloaded as they are added, into hosts' image
-stores, and VMs' disks are copies of them (see Images). Images added before
-are downloaded by the first host that makes a disk from one. Hosts whose
-agents are older keep making disks as overlays on a cached download, and
-migrations involving them copy only local disks' top layer.
+0.5 cannot upgrade an installation of 0.4 or older: install it afresh.
+Disks used to be overlays on images cached on hosts, which 0.5 no longer
+keeps (see Images); its controllers refuse agents older than 0.5.
 
 From 0.4 on, the controller's default ports are 7820 (the API) and 7821
 (the agent endpoint), not 8080 and 8443. A controller whose configuration

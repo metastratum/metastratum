@@ -47,6 +47,10 @@ pub struct ImageView {
     /// SHA-256 of the file downloaded from `source_url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     sha256: Option<String>,
+    /// SHA-256 of the disk it holds, read as a raw disk: every copy, and a
+    /// download again, is checked against it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    digest: Option<String>,
     /// The hosts holding a copy on their local disk (VMs made from it on
     /// other hosts copy it from these).
     hosts: Vec<String>,
@@ -74,6 +78,7 @@ impl ImageView {
             size_bytes: i.size_bytes,
             virtual_bytes: i.virtual_bytes,
             sha256: i.sha256,
+            digest: i.digest,
             hosts,
         }
     }
@@ -170,10 +175,7 @@ async fn create_image(
         return Err(ApiError::not_found("storage pool"));
     }
     let mut tx = state.db.begin().await?;
-    // Images are charged what they take once downloaded (`image_gib`);
-    // none is downloaded where the quota is used up.
-    let some = [("image_gib".to_owned(), 1)].into_iter().collect();
-    mst_db::quotas::reserve(&mut tx, tenant, &some).await?;
+    may_download(&mut tx, tenant).await?;
     let image = mst_db::images::create(
         &mut *tx,
         mst_db::images::NewImage {
@@ -204,6 +206,25 @@ async fn create_image(
             image: ImageView::new(image, vec![], pool.name),
         }),
     ))
+}
+
+/// How many of a tenant's images may download at once: each can take up
+/// to the host's largest download before it is charged.
+const DOWNLOADS_AT_ONCE: i64 = 2;
+
+/// Refuses a download where the tenant's image quota is used up (an image
+/// is charged what it takes once downloaded, `image_gib`), or two of its
+/// images are downloading already. Locks the tenant's lineage (see
+/// `quotas::reserve`) until the transaction ends.
+async fn may_download(tx: &mut mst_db::sqlx::PgConnection, tenant: TenantId) -> ApiResult<()> {
+    let some = [("image_gib".to_owned(), 1)].into_iter().collect();
+    mst_db::quotas::reserve(&mut *tx, tenant, &some).await?;
+    if mst_db::images::downloading_count(&mut *tx, tenant).await? >= DOWNLOADS_AT_ONCE {
+        return Err(ApiError::conflict(format!(
+            "{DOWNLOADS_AT_ONCE} of the tenant's images are downloading; add more once they are done"
+        )));
+    }
+    Ok(())
 }
 
 async fn enqueue_download(
@@ -246,12 +267,16 @@ async fn download_image(
     let mut tx = state.db.begin().await?;
     let image = mst_db::images::get_for_update(&mut tx, id).await?;
     match image.state.as_str() {
-        "downloading" => return Err(ApiError::conflict("the image is being downloaded")),
+        // Unless what was downloading it ended without saying how.
+        "downloading" if mst_db::images::download_under_way(&mut *tx, id).await? => {
+            return Err(ApiError::conflict("the image is being downloaded"));
+        }
         "ready" if !mst_db::images::copies(&mut *tx, id).await?.is_empty() => {
             return Err(ApiError::conflict("hosts hold the image already"));
         }
         _ => {}
     }
+    may_download(&mut tx, image.tenant_id).await?;
     mst_db::images::downloading(&mut *tx, id).await?;
     let task_id = enqueue_download(&mut tx, &p, &image).await?;
     tx.commit().await?;
@@ -261,17 +286,16 @@ async fn download_image(
         Some(image.tenant_id),
         "image.download",
         Some(("image", id.0)),
-        json!({"name": image.name, "url": image.source_url}),
+        json!({"name": image.name, "url": image.source_url, "storage_pool_id": image.storage_pool_id}),
     )
     .await;
     Ok((StatusCode::ACCEPTED, Json(DownloadTask { task_id })))
 }
 
-/// Deletes an image, and every host's copy. VMs made from it keep their
-/// disks, which are copies; only disks made before the image store, built
-/// on the image, keep it from going.
+/// Deletes an image, and every copy of it. VMs made from it keep their
+/// disks, which are copies of their own.
 #[utoipa::path(delete, path = "/images/{id}", tag = "images", params(("id" = ImageId, Path)),
-    responses((status = 204), (status = 404), (status = 409, description = "VM disks are built on it")))]
+    responses((status = 204), (status = 404)))]
 async fn delete_image(
     State(state): State<AppState>,
     p: Principal,
@@ -280,11 +304,19 @@ async fn delete_image(
     let image = mst_db::images::get(&state.db, id).await?;
     authorize_resource(&state.db, &p, Perm::ImageWrite, image.tenant_id, "image").await?;
     let tenant_path = mst_db::images::store_path(&state.db, image.tenant_id).await?;
-    mst_db::images::delete(&mut *state.db.acquire().await?, id).await?;
-    tokio::spawn(crate::cleanup::image_deleted(
+    // The shared pools holding it: their copies go too.
+    let shared: Vec<StoragePoolId> = mst_db::images::copies(&state.db, id)
+        .await?
+        .into_iter()
+        .filter(|c| c.host_id.is_none())
+        .map(|c| c.pool_id)
+        .collect();
+    mst_db::images::delete(&state.db, id).await?;
+    tokio::spawn(crate::engine::image_deleted(
         state.clone(),
         image.clone(),
         tenant_path,
+        shared,
     ));
     audit(
         &state.db,

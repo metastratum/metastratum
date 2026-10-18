@@ -819,9 +819,6 @@ async fn create_inner(
                 host_id: local.then_some(host.id),
                 pool_id: disk.pool_id,
                 size_bytes: disk.size_bytes as i64,
-                // Its image stays until the volume is made from it (then
-                // the volume depends on it no more). Clones depend on none.
-                image_id: disk.image_id.filter(|_| disk.cloned_from.is_none()),
             },
         )
         .await?;

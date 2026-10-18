@@ -17,6 +17,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::StreamExt;
 use serde::Deserialize;
@@ -130,10 +131,18 @@ pub fn check_url(url: &reqwest::Url, policy: FetchPolicy) -> std::result::Result
     }
 }
 
+/// A server that sends nothing for this long is given up on.
+const STALLED: Duration = Duration::from_secs(60);
+/// No download takes longer than this, however slowly a server sends.
+const LONGEST: Duration = Duration::from_secs(2 * 3600);
+
 fn client(policy: FetchPolicy) -> Result<reqwest::Client> {
     let mut b = reqwest::Client::builder()
         // Never via a proxy from the environment: it would do the connecting.
         .no_proxy()
+        .connect_timeout(Duration::from_secs(30))
+        .read_timeout(STALLED)
+        .timeout(LONGEST)
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() >= 10 {
                 attempt.error("too many redirects")

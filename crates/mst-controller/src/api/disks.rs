@@ -289,7 +289,6 @@ async fn create_disk(
     let cmd = mst_proto::EnsureVolume {
         volume_id: id.to_string(),
         size_bytes: size,
-        image_id: String::new(),
         pool: Some(super::agent_pool(&pool).map_err(ApiError::internal)?),
     };
     if let Err(e) = state
@@ -695,7 +694,7 @@ pub async fn begin_attach(
         volume_id: disk.id,
         pool_id: disk.pool_id,
         size_bytes: disk.size_bytes as u64,
-        image_id: disk.image_id,
+        image_id: None,
         restored_from: None,
         cloned_from: None,
         unit: Some(unit),

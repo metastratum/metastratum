@@ -48,10 +48,11 @@ The boundaries metastratum enforces:
   size, and refused if they refer to other files (backing files, external
   data files) or describe a disk larger than the host's largest download
   (checked before unpacking); `qemu-img` runs under resource limits, its output
-  capped at that size. An image is downloaded once, as it is added; hosts
-  copy it from each other from then on, and should it ever be downloaded
-  again, it must be the same file (its SHA-256). VMs' disks are copies
-  of their own. Identity providers
+  capped at that size. An image is downloaded once, as it is added (two
+  of a tenant's at a time, with time limits); hosts copy it from each
+  other from then on, each copy checked against the digest of the disk
+  first downloaded, as is a download again. VMs' disks are copies of
+  their own. Identity providers
   configured by sub-tenants likewise must be on public addresses.
 
 ## How it is protected

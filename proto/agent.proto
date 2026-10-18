@@ -170,7 +170,6 @@ message Inventory {
 message Command {
   string request_id = 1;
   oneof cmd {
-    EnsureImage ensure_image = 10;
     EnsureVolume ensure_volume = 11;
     DeleteVolume delete_volume = 12;
     DefineVm define_vm = 13;
@@ -213,7 +212,10 @@ message Command {
     ExportImage export_image = 50;
     CopyImage copy_image = 51;
     VolumeFromImage volume_from_image = 52;
+    PruneStore prune_store = 53;
   }
+  // 10: EnsureImage, before the image store.
+  reserved 10;
 }
 
 message CommandResult {
@@ -233,28 +235,13 @@ message Pool {
   string config_json = 3;
 }
 
-// Make an image available in a pool (download and convert it once).
-message EnsureImage {
-  string image_id = 1;
-  string source_url = 2;
-  // "qcow2" or "raw": the format of the downloaded file.
-  string format = 3;
-  Pool pool = 4;
-  // Published by the provider: may come from internal (non-public)
-  // addresses. Tenants' images are only fetched from public ones.
-  bool trusted = 5;
-  // The size of the disk the image is for: an image describing a larger
-  // disk is refused before it is unpacked. 0: no such limit.
-  uint64 max_virtual_bytes = 6;
-}
-
-// Create a volume, optionally as a copy-on-write clone of an image in the
-// same pool.
+// Create a blank volume. An existing volume is left alone.
 message EnsureVolume {
   string volume_id = 1;
   uint64 size_bytes = 2;
-  string image_id = 3;
   Pool pool = 4;
+  // 3: an image to put it on, before the image store.
+  reserved 3;
 }
 
 message DeleteVolume {
@@ -361,10 +348,8 @@ message MigrationStep {
   // from a CA made for it alone. QEMU on each side trusts only that CA for
   // it, so only the source can send the VM in.
   MigrationTls tls = 10;
-  // Copy local disks whole (their images' data too), into standalone
-  // volumes, rather than only their top layer onto the destination's copy
-  // of their image. Agents announcing feature "full_disk_copy" do.
-  bool full_copy = 11;
+  // 11: whether local disks were copied whole, before they always were.
+  reserved 11;
 }
 
 message MigrationTls {
@@ -496,7 +481,8 @@ message CloneVolume {
   string source_volume_id = 2;
   string volume_id = 3;
   uint64 size_bytes = 4;
-  string image_id = 5;
+  // 5: an image the copy kept sharing, before the image store.
+  reserved 5;
 }
 
 // Give a running VM this much memory, through its balloon (its definition
@@ -519,12 +505,9 @@ message MemoryStats {
   string vm_id = 1;
 }
 
-// An image was deleted: remove its cached copy from the local pool, and from
-// these shared pools.
-// Remove an image's cached copies: the local pool's, and those in `pools`
-// (as backing files of volumes made before the image store, see
-// FetchImage). With `tenant_path`, the copies in the image stores of the
-// local pool and of `pools` too.
+// An image was deleted: remove its copies from this host's image store, and
+// from those of `pools` (shared pools this host reaches). Every pool is
+// tried; the error names those that failed.
 message DeleteImage {
   string image_id = 1;
   repeated Pool pools = 2;
@@ -648,10 +631,11 @@ message CopyVolume {
 // tenant's lineage (tenant IDs in simple hex form, root first, separated by
 // '/'). Tenants' images come from public addresses only, and
 // describe disks of at most the host's largest download (`image_max_gib`).
-// With `sha256`, what is downloaded must be that file (a copy downloaded
-// again). One already in the store is kept. Returns {"size_bytes": N,
-// "virtual_bytes": N, "sha256": "..."} (the hash of what was downloaded;
-// empty for a copy that was in the store already).
+// With `digest`, the disk must hold that (an image downloaded again). An
+// image already in the store is kept, never replaced. Returns {"size_bytes":
+// N, "virtual_bytes": N, "sha256": "...", "digest": "..."}: the SHA-256 of
+// the file downloaded, and of the disk it holds (its contents as a raw
+// disk), which copies are checked against.
 message FetchImage {
   string image_id = 1;
   string tenant_path = 2;
@@ -659,7 +643,7 @@ message FetchImage {
   // "qcow2" or "raw": the format of the downloaded file.
   string format = 4;
   bool trusted = 5;
-  string sha256 = 6;
+  string digest = 6;
   Pool pool = 7;
 }
 
@@ -675,8 +659,9 @@ message ExportImage {
 }
 
 // Copy an image into this host's store from another host serving it
-// (ExportImage), or with `source_pool` from that pool's store. One already
-// in the store is kept. Returns as FetchImage.
+// (ExportImage), or with `source_pool` from that pool's store. The copy must
+// hold `digest` (see FetchImage), or it is thrown away. One already in the
+// store is kept. Returns as FetchImage.
 message CopyImage {
   string image_id = 1;
   string tenant_path = 2;
@@ -685,6 +670,7 @@ message CopyImage {
   MigrationTls tls = 5;
   string export_id = 6;
   Pool source_pool = 7;
+  string digest = 8;
 }
 
 // Create a volume as a copy of an image in this host's store (or with
@@ -697,4 +683,13 @@ message VolumeFromImage {
   string image_id = 4;
   string tenant_path = 5;
   Pool source_pool = 6;
+}
+
+// Remove from an image store (this host's, or with `pool` that shared
+// pool's) the images not among `image_ids` that are an hour old or more,
+// and downloads or copies cut off a day ago or more. Returns {"removed":
+// [image ids]}.
+message PruneStore {
+  Pool pool = 1;
+  repeated string image_ids = 2;
 }

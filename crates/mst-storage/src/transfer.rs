@@ -161,7 +161,9 @@ pub async fn copy_into(dest: &Pool, id: &str, size: u64, src: &CopySource<'_>) -
     let source = source_args(src).await?;
     match dest {
         Pool::File(pool) => copy_to_file(pool, id, size, src, &source).await,
-        Pool::Rbd(pool) => copy_to_rbd(pool, &RbdPool::volume_name(id)?, size, &source).await,
+        Pool::Rbd(pool) => copy_to_rbd(pool, &RbdPool::volume_name(id)?, size, &source, None)
+            .await
+            .map(|_| ()),
     }
 }
 
@@ -208,25 +210,46 @@ async fn copy_to_file(
     result
 }
 
-/// Makes RBD image `name` a copy of `src`, of at least `size` bytes,
-/// replacing what is there under that name.
+/// Makes RBD image `name` (in an image store) a copy of `src` with `meta`,
+/// unless an image is there under that name already (another host's copy,
+/// which stays). Returns whether this copy was put in place.
 pub(crate) async fn copy_to_rbd_name(
     pool: &RbdPool,
     name: &str,
     size: u64,
     src: &CopySource<'_>,
-) -> Result<()> {
+    meta: &[(&str, &str)],
+) -> Result<bool> {
     let source = source_args(src).await?;
-    copy_to_rbd(pool, name, size, &source).await
+    copy_to_rbd(pool, name, size, &source, Some(meta)).await
 }
 
-async fn copy_to_rbd(pool: &RbdPool, vol: &str, size: u64, source: &ImageArgs) -> Result<()> {
+/// Copies `source` into RBD image `vol`: in place of what is there (a
+/// volume, `store` None), or, for an image store, with `store`'s metadata
+/// and only where nothing is (returns whether it was put in place).
+async fn copy_to_rbd(
+    pool: &RbdPool,
+    vol: &str,
+    size: u64,
+    source: &ImageArgs,
+    store: Option<&[(&str, &str)]>,
+) -> Result<bool> {
     let tmp = format!("{vol}-part-{}", random_suffix());
     let bytes = virtual_size(source).await?.max(size);
     let mib = bytes.div_ceil(1 << 20).to_string();
     pool.rbd(&["create", "--no-progress", "--size", &mib, &pool.spec(&tmp)])
         .await?;
     let result = async {
+        if store.is_some() {
+            // Its age, for pruning a copy cut off (and the image, once
+            // deleted).
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .to_string();
+            pool.meta_set(&pool.spec(&tmp), "mst.created", &now).await?;
+        }
         let key = KeyFile::new(pool).await?;
         let target = ImageArgs {
             objects: vec![format!(
@@ -248,12 +271,29 @@ async fn copy_to_rbd(pool: &RbdPool, vol: &str, size: u64, source: &ImageArgs) -
         args.extend(["--target-image-opts".into(), rbd_opts(pool, &tmp, "dstkey")]);
         qemu_img(args).await?;
         drop(key);
-        if pool.exists(&pool.spec(vol)).await? {
-            pool.rbd(&["rm", "--no-progress", &pool.spec(vol)]).await?;
+        let Some(meta) = store else {
+            if pool.exists(&pool.spec(vol)).await? {
+                pool.rbd(&["rm", "--no-progress", &pool.spec(vol)]).await?;
+            }
+            pool.rbd(&["rename", &pool.spec(&tmp), &pool.spec(vol)])
+                .await?;
+            return Ok(true);
+        };
+        for (k, v) in meta {
+            pool.meta_set(&pool.spec(&tmp), k, v).await?;
         }
-        pool.rbd(&["rename", &pool.spec(&tmp), &pool.spec(vol)])
-            .await?;
-        Ok(())
+        // Never in place of another host's copy: readers may be using it.
+        match pool
+            .rbd(&["rename", &pool.spec(&tmp), &pool.spec(vol)])
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(_) if pool.exists(&pool.spec(vol)).await? => {
+                pool.rbd(&["rm", "--no-progress", &pool.spec(&tmp)]).await?;
+                Ok(false)
+            }
+            Err(e) => Err(e),
+        }
     }
     .await;
     if result.is_err() {
