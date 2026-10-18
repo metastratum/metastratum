@@ -120,10 +120,6 @@ chmod 700 "$STATE"
 exec 9>"$STATE/lock"
 flock -n 9 || die "another metastratum installer is running"
 
-# <n> random bytes, in hex (without pipelines head would cut short).
-# shellcheck disable=SC2329 # shared: not every installer needs it
-random_hex() { od -An -tx1 -N"$1" /dev/urandom | tr -d ' \n'; }
-
 # Asks before going on, unless --yes.
 confirm() {
   ((assume_yes)) && return
