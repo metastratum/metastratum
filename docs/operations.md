@@ -2,7 +2,7 @@
 
 How to run metastratum beyond a single dev machine: the pieces, controllers in
 more than one place, the databases underneath, what happens when a host
-dies, upgrades, and monitoring. The [README](../README.md) covers building
+dies, upgrades, and monitoring. [Development](development.md) covers building
 and the lab; [SECURITY.md](../SECURITY.md) covers the security model.
 
 ## The pieces
@@ -327,6 +327,11 @@ Fit those to the cluster (Details → CPU → Fit to cluster, while stopped):
 they get the model all hosts run now, from their next start, and may see
 fewer CPU features. VMs from before CPU models get theirs at their next
 start from stopped.
+
+A VM can also be made non-migratable, as it is created or later while it
+is stopped (from its next start): it gets its host's CPU as it is, its
+disks use the host's page cache, and it stays on its host (evacuating the
+host leaves it there). That is the default in a cluster of one host.
 
 ### Limits
 
