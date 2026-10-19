@@ -28,7 +28,7 @@ pub mod protocol {
     include!(concat!(env!("OUT_DIR"), "/remote_protocol.rs"));
 }
 
-/// The one procedure of libvirt's QEMU program metastratum needs
+/// The procedures of libvirt's QEMU program metastratum needs
 /// (`qemu_protocol.x`, written out by hand).
 pub mod qemu {
     use crate::protocol::NonnullDomain;
@@ -60,6 +60,62 @@ pub mod qemu {
                 dom: NonnullDomain::decode(r)?,
                 cmd: xdr::get_string(r, STRING_MAX)?,
                 flags: xdr::get_i32(r)?,
+            })
+        }
+    }
+
+    /// `QEMU_PROC_DOMAIN_AGENT_COMMAND`.
+    pub const PROC_DOMAIN_AGENT_COMMAND: i32 = 3;
+
+    /// Passes a command (JSON) to the domain's guest agent, as `virsh
+    /// qemu-agent-command` does, waiting `timeout` seconds at most (or
+    /// libvirt's: -2 its default, -1 for ever).
+    pub struct DomainAgentCommandArgs {
+        pub dom: NonnullDomain,
+        pub cmd: String,
+        pub timeout: i32,
+        pub flags: u32,
+    }
+
+    impl Xdr for DomainAgentCommandArgs {
+        fn encode(&self, w: &mut Vec<u8>) -> xdr::Result<()> {
+            self.dom.encode(w)?;
+            xdr::put_string(w, &self.cmd, STRING_MAX)?;
+            xdr::put_i32(w, self.timeout);
+            xdr::put_u32(w, self.flags);
+            Ok(())
+        }
+
+        fn decode(r: &mut xdr::Reader<'_>) -> xdr::Result<Self> {
+            Ok(Self {
+                dom: NonnullDomain::decode(r)?,
+                cmd: xdr::get_string(r, STRING_MAX)?,
+                timeout: xdr::get_i32(r)?,
+                flags: xdr::get_u32(r)?,
+            })
+        }
+    }
+
+    /// The guest agent's reply, as JSON (`remote_string`: may be absent).
+    pub struct DomainAgentCommandRet {
+        pub result: Option<String>,
+    }
+
+    impl Xdr for DomainAgentCommandRet {
+        fn encode(&self, w: &mut Vec<u8>) -> xdr::Result<()> {
+            xdr::put_bool(w, self.result.is_some());
+            match &self.result {
+                Some(s) => xdr::put_string(w, s, STRING_MAX),
+                None => Ok(()),
+            }
+        }
+
+        fn decode(r: &mut xdr::Reader<'_>) -> xdr::Result<Self> {
+            Ok(Self {
+                result: match xdr::get_bool(r)? {
+                    true => Some(xdr::get_string(r, STRING_MAX)?),
+                    false => None,
+                },
             })
         }
     }

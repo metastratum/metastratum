@@ -6,7 +6,9 @@
 # certificates, reconnecting every agent) and image_relay (moves a host
 # without VMs into a cluster of its own for the while). The browser tests
 # run last, on their own too: they migrate a large VM, which needs room on
-# another host.
+# another host. So does windows (MST_E2E_WINDOWS_IMAGE: an image built with
+# deploy/images/windows/build.sh), whose tens of GB of copies would slow
+# hosts' agents past other suites' timeouts.
 #
 # Usage: deploy/lab/e2e.sh [-j N] [-n] [--changed [REV]] [suite...]
 #   suite      an e2e test file (m1, balloon...) or "browser"; default: all
@@ -23,7 +25,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIRST=(storage limits m5 image_relay)
-LAST=(browser)
+LAST=(windows browser)
 # The slowest start first, so that none of them is left running alone at
 # the end.
 SLOW=(m4 resize backups load_balancers m3 balloon clone snapshots images)
@@ -78,7 +80,8 @@ affects() {
     crates/mst-controller/src/migration.rs | crates/mst-controller/src/engine/migrate.rs) echo m4 balloon hotplug cpu browser ;;
     crates/mst-controller/src/cpu.rs) echo cpu m4 m5 ;;
     crates/mst-storage/*) echo storage clone snapshots backups resize m4 disks images image_relay ;;
-    crates/mst-controller/src/api/images.rs | crates/mst-controller/src/engine/image.rs) echo images image_relay m5 browser ;;
+    crates/mst-controller/src/api/images.rs | crates/mst-controller/src/engine/image.rs) echo images image_relay m5 windows browser ;;
+    crates/mst-controller/src/guest.rs | deploy/images/*) echo windows ;;
     crates/mst-controller/src/api/disks.rs | crates/mst-controller/src/engine/disk.rs | \
       crates/mst-agent/src/transfer.rs) echo disks images image_relay browser ;;
     *) echo all ;;

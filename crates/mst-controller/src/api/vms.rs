@@ -8,7 +8,7 @@ use mst_core::ids::{
     BackupId, ClusterId, ExternalIpId, HostId, ImageId, LOCAL_POOL, NetworkId, NicId,
     SecurityGroupId, StoragePoolId, TaskId, TenantId, VmId, VolumeId,
 };
-use mst_core::vm::{CloudInit, DiskSpec, Firmware, NicSpec, VmSpec, mac_for};
+use mst_core::vm::{CloudInit, DiskSpec, Firmware, GuestOs, NicSpec, VmSpec, mac_for};
 use mst_db::vms::Vm;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -81,6 +81,11 @@ pub struct VmView {
     /// The guest hands memory it frees back to its host.
     free_page_reporting: bool,
     firmware: Firmware,
+    /// What it runs (from its image).
+    guest_os: GuestOs,
+    /// A Windows VM's first boot has yet to set its password: the
+    /// controller keeps it (sealed) until then.
+    first_boot_pending: bool,
     /// Can live-migrate; otherwise it has its host's CPU and disk caching.
     migratable: bool,
     /// The CPU model the guest sees: its cluster's (a model all its hosts
@@ -203,6 +208,11 @@ fn view(vm: Vm, ctx: &Context) -> VmView {
         max_memory_mib: spec.reserved_memory_mib(),
         free_page_reporting: spec.free_page_reporting,
         firmware: spec.firmware,
+        guest_os: spec.guest_os,
+        first_boot_pending: spec
+            .cloud_init
+            .as_ref()
+            .is_some_and(|c| c.first_boot_password.is_some()),
         migratable: spec.migratable,
         cpu_model: spec.cpu.as_ref().map(|c| c.model.clone()),
         disks: spec.disks,
@@ -542,6 +552,58 @@ fn sha512_crypt(password: &str, salt: &[u8; 12]) -> ApiResult<String> {
 /// A udev rule that brings CPUs plugged into a running guest online.
 pub const CPU_HOTPLUG_RULE: &str = "SUBSYSTEM==\"cpu\", ACTION==\"add\", TEST==\"online\", ATTR{online}==\"0\", ATTR{online}=\"1\"\n";
 
+/// The VM's cloud-init seed: the user data given, or made from the
+/// convenience fields. A Windows guest's password (which Windows takes as it
+/// is, not hashed) is kept sealed until its first boot (see `crate::guest`).
+fn cloud_init(req: &CreateVm, vm_id: VmId, guest_os: GuestOs) -> ApiResult<CloudInit> {
+    let hostname = req.name.clone();
+    let (user_data, first_boot_password) = match (&req.user_data, guest_os) {
+        (Some(ud), _) => (ud.clone(), None),
+        (None, GuestOs::Linux) => (user_data(req)?, None),
+        (None, GuestOs::Windows) => {
+            if !req.ssh_authorized_keys.is_empty() {
+                return Err(ApiError::bad_request(
+                    "Windows VMs take a password (the Administrator's), not SSH keys",
+                ));
+            }
+            if let Some(pw) = &req.password {
+                windows_password(pw)?;
+            }
+            let sealed = req
+                .password
+                .as_deref()
+                .map(|pw| crate::guest::seal_password(vm_id, pw));
+            (crate::guest::windows_user_data(), sealed)
+        }
+    };
+    Ok(CloudInit {
+        hostname,
+        user_data,
+        first_boot_password,
+    })
+}
+
+/// Refuses a password Windows would not take (its default policy): it sets
+/// none then, and the VM could not be signed in to.
+fn windows_password(pw: &str) -> ApiResult<()> {
+    let kinds = [
+        pw.chars().any(|c| c.is_uppercase()),
+        pw.chars().any(|c| c.is_lowercase()),
+        pw.chars().any(|c| c.is_ascii_digit()),
+        pw.chars().any(|c| !c.is_alphanumeric()),
+    ];
+    if pw.chars().count() < 8
+        || kinds.iter().filter(|k| **k).count() < 3
+        || pw.to_lowercase().contains("administrator")
+    {
+        return Err(ApiError::bad_request(
+            "Windows needs a password of 8 characters or more, with three of: upper case, \
+             lower case, digits, symbols (and not the account name, Administrator)",
+        ));
+    }
+    Ok(())
+}
+
 fn user_data(req: &CreateVm) -> ApiResult<String> {
     let mut doc = serde_json::Map::new();
     if !req.ssh_authorized_keys.is_empty() {
@@ -597,12 +659,21 @@ async fn create_inner(
     validate(&req, matches!(source, Source::Image))?;
     let tenant = req.tenant_id.unwrap_or(p.tenant_id);
     authorize(&state.db, &p, Perm::VmWrite, tenant).await?;
+    // What it runs: what its image holds, or what the VM it is a copy of ran.
+    let mut guest_os = match source {
+        Source::Image => GuestOs::Linux,
+        Source::Backup(b) => b.spec.0.guest_os,
+        Source::Clone(vm) => vm.spec.0.guest_os,
+    };
     if matches!(source, Source::Image) {
         if !mst_db::images::is_usable_by(&state.db, req.image_id, tenant).await? {
             return Err(ApiError::not_found("image"));
         }
         // One being downloaded is waited for.
         let image = mst_db::images::get(&state.db, req.image_id).await?;
+        if image.os == "windows" {
+            guest_os = GuestOs::Windows;
+        }
         if image.state == "failed" {
             return Err(ApiError::conflict(format!(
                 "the image could not be downloaded ({}); download it again first",
@@ -774,15 +845,10 @@ async fn create_inner(
         max_memory_mib: req.max_memory_mib.filter(|m| *m > req.memory_mib),
         free_page_reporting: req.free_page_reporting.unwrap_or(true),
         firmware: req.firmware,
+        guest_os,
         disks: disks.clone(),
         nics: vec![],
-        cloud_init: Some(CloudInit {
-            hostname: req.name.clone(),
-            user_data: match &req.user_data {
-                Some(ud) => ud.clone(),
-                None => user_data(&req)?,
-            },
-        }),
+        cloud_init: Some(cloud_init(&req, vm_id, guest_os)?),
     };
     let desired = if req.start.unwrap_or(true) {
         "running"
@@ -1388,7 +1454,7 @@ pub async fn definition(
         tenant_id: vm.tenant_id.to_string(),
         name: vm.name.clone(),
         generation: generation as u64,
-        spec_json: serde_json::to_string(spec).map_err(ApiError::internal)?,
+        spec_json: crate::guest::host_spec_json(vm.id, spec).map_err(ApiError::internal)?,
         pools: pools.into_values().collect(),
         disk_limits: crate::limits::disk_limits(&state.db, host).await?,
     })
@@ -1836,6 +1902,68 @@ mod tests {
         assert!(ShaCrypt::SHA512.verify_password(b"wrong", hash).is_err());
         assert_eq!(body["chpasswd"]["expire"], false);
         assert_eq!(body["ssh_authorized_keys"][0], "ssh-ed25519 AAAA x");
+    }
+
+    #[test]
+    fn windows_passwords_reach_hosts_only_until_the_first_boot() {
+        crate::secrets::init_for_tests();
+        let req = |extra: serde_json::Value| -> CreateVm {
+            let mut v = json!({"name": "w", "vcpus": 2, "memory_mib": 2048, "disk_gib": 40,
+                               "image_id": ImageId::new(), "password": "Sw0rdfish!"});
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value(v).unwrap()
+        };
+        let vm = VmId::new();
+        let ci = cloud_init(&req(json!({})), vm, GuestOs::Windows).unwrap();
+        // Kept sealed (to this VM), never in the user data as stored.
+        assert!(!ci.user_data.contains("Sw0rdfish"), "{}", ci.user_data);
+        let sealed = ci.first_boot_password.clone().unwrap();
+        assert!(mst_pki::sealing::is_sealed(&sealed), "{sealed}");
+        let spec = VmSpec {
+            vcpus: 2,
+            max_vcpus: None,
+            memory_mib: 2048,
+            max_memory_mib: None,
+            free_page_reporting: true,
+            firmware: Firmware::Uefi,
+            guest_os: GuestOs::Windows,
+            disks: vec![],
+            nics: vec![],
+            cloud_init: Some(ci),
+            cpu: None,
+            migratable: false,
+            extra: Default::default(),
+        };
+        // Hosts get it in the user data, as Windows takes it, and never sealed.
+        let host = crate::guest::host_spec_json(vm, &spec).unwrap();
+        let host: VmSpec = serde_json::from_str(&host).unwrap();
+        let ud = &host.cloud_init.as_ref().unwrap().user_data;
+        assert!(ud.contains("\"passwd\":\"Sw0rdfish!\""), "{ud}");
+        assert!(host.cloud_init.unwrap().first_boot_password.is_none());
+        // It opens for its own VM only.
+        assert!(crate::guest::host_spec_json(VmId::new(), &spec).is_err());
+        // Once dropped, it is gone from what hosts get.
+        let mut done = spec.clone();
+        done.cloud_init.as_mut().unwrap().first_boot_password = None;
+        let host = crate::guest::host_spec_json(vm, &done).unwrap();
+        assert!(!host.contains("Sw0rdfish"), "{host}");
+
+        // Windows takes no SSH keys, nor passwords it would refuse.
+        let keys = req(json!({"ssh_authorized_keys": ["ssh-ed25519 AAAA x"]}));
+        assert!(cloud_init(&keys, vm, GuestOs::Windows).is_err());
+        for weak in ["short1!", "alllowercase", "administrator1A!"] {
+            let r = req(json!({ "password": weak }));
+            assert!(cloud_init(&r, vm, GuestOs::Windows).is_err(), "{weak}");
+        }
+        // Someone's own user data is kept as given, and holds no password.
+        let own = req(json!({"user_data": "#ps1_sysnative\nwhoami"}));
+        let ci = cloud_init(&own, vm, GuestOs::Windows).unwrap();
+        assert_eq!(
+            (ci.user_data.as_str(), ci.first_boot_password),
+            ("#ps1_sysnative\nwhoami", None)
+        );
     }
 
     /// Reference output of `openssl passwd -6` (crypt(3)'s SHA-512 scheme) for

@@ -14,6 +14,18 @@ pub enum Firmware {
     Uefi,
 }
 
+/// The operating system a VM runs, from its image: Windows guests get
+/// Hyper-V enlightenments, and their password the way cloudbase-init takes
+/// it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum GuestOs {
+    #[default]
+    Linux,
+    Windows,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct VmSpec {
@@ -40,6 +52,9 @@ pub struct VmSpec {
     pub free_page_reporting: bool,
     #[serde(default)]
     pub firmware: Firmware,
+    /// What it runs (VMs made before this was kept run Linux).
+    #[serde(default)]
+    pub guest_os: GuestOs,
     /// Boot disk first.
     pub disks: Vec<DiskSpec>,
     pub nics: Vec<NicSpec>,
@@ -196,6 +211,13 @@ pub struct CloudInit {
     pub hostname: String,
     /// Complete `#cloud-config` (or script) user data.
     pub user_data: String,
+    /// A Windows guest's password, sealed with the controller's master key,
+    /// until its first boot has set it: Windows takes it as it is (no
+    /// hash), so the controller opens it into the user data it hands the
+    /// host for that boot, and then lets go of it. Never sent to hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "utoipa", schema(ignore))]
+    pub first_boot_password: Option<String>,
 }
 
 /// Locally administered unicast MAC in metastratum's prefix, derived from the

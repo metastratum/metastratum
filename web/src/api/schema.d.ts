@@ -1907,8 +1907,15 @@ export interface components {
             disks: components["schemas"]["DiskSpec"][];
             error?: string | null;
             firmware: components["schemas"]["Firmware"];
+            /**
+             * @description A Windows VM's first boot has yet to set its password: the
+             *     controller keeps it (sealed) until then.
+             */
+            first_boot_pending: boolean;
             /** @description The guest hands memory it frees back to its host. */
             free_page_reporting: boolean;
+            /** @description What it runs (from its image). */
+            guest_os: components["schemas"]["GuestOs"];
             /**
              * @description Whether the VM's host is connected and reporting. When it is not,
              *     `power` is the last state reported and may be out of date.
@@ -2234,6 +2241,12 @@ export interface components {
             /** @description `qcow2` or `raw`. */
             format: string;
             name: string;
+            /**
+             * @description What VMs made from it run: `linux` (the default) or `windows`, an
+             *     image with cloudbase-init (see `deploy/images/windows`): VMs get
+             *     Hyper-V enlightenments, and their password as Windows takes it.
+             */
+            os?: string | null;
             shared?: boolean;
             /** @description HTTP(S) URL a host downloads the image from, as it is added. */
             source_url: string;
@@ -2538,6 +2551,13 @@ export interface components {
             external_networks?: string[];
             storage_pools: string[];
         };
+        /**
+         * @description The operating system a VM runs, from its image: Windows guests get
+         *     Hyper-V enlightenments, and their password the way cloudbase-init takes
+         *     it.
+         * @enum {string}
+         */
+        GuestOs: "linux" | "windows";
         /** Format: uuid */
         HostId: string;
         HostView: {
@@ -2621,6 +2641,8 @@ export interface components {
             hosts: string[];
             id: components["schemas"]["ImageId"];
             name: string;
+            /** @description What VMs made from it run: `linux` or `windows`. */
+            os: string;
             /** @description SHA-256 of the file downloaded from `source_url`. */
             sha256?: string | null;
             /** @description Usable by the owning tenant's descendants too. */
@@ -3464,8 +3486,15 @@ export interface components {
             disks: components["schemas"]["DiskSpec"][];
             error?: string | null;
             firmware: components["schemas"]["Firmware"];
+            /**
+             * @description A Windows VM's first boot has yet to set its password: the
+             *     controller keeps it (sealed) until then.
+             */
+            first_boot_pending: boolean;
             /** @description The guest hands memory it frees back to its host. */
             free_page_reporting: boolean;
+            /** @description What it runs (from its image). */
+            guest_os: components["schemas"]["GuestOs"];
             /**
              * @description Whether the VM's host is connected and reporting. When it is not,
              *     `power` is the last state reported and may be out of date.

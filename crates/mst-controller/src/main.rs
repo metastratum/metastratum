@@ -13,6 +13,7 @@ mod engine;
 mod error;
 mod events;
 mod fence;
+mod guest;
 mod ha;
 mod limits;
 mod metrics;
@@ -390,6 +391,7 @@ async fn serve(db: mst_db::sqlx::PgPool, cfg: &config::Config) -> anyhow::Result
                     port_watch::watch(state.clone(), southbound),
                     engine::sweep_disks(state.clone()),
                     engine::prune_images(state.clone()),
+                    guest::first_boots(state.clone()),
                     cpu::learn(state),
                 );
             }

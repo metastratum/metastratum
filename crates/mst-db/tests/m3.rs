@@ -277,6 +277,7 @@ async fn the_model_snapshot_has_everything_the_compiler_needs(pool: PgPool) {
                 max_vcpus: None,
                 free_page_reporting: true,
                 firmware: Default::default(),
+                guest_os: Default::default(),
                 disks: vec![],
                 nics: vec![],
                 cloud_init: None,

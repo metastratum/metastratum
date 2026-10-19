@@ -25,6 +25,7 @@ fn def(uuid: &str) -> DomainDef {
         cpu: None,
         host_cache: false,
         disk_limits: Default::default(),
+        hyperv: false,
     }
 }
 

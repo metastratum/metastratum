@@ -63,6 +63,7 @@ async fn vm(pool: &PgPool, tenant: &tenants::Tenant, host: &hosts::Host, name: &
         max_vcpus: None,
         free_page_reporting: true,
         firmware: Default::default(),
+        guest_os: Default::default(),
         disks: vec![],
         nics: vec![],
         cloud_init: None,
@@ -446,6 +447,7 @@ async fn images_visible_to_owner_and_shared_down_the_tree(pool: PgPool) {
         format: "qcow2",
         shared,
         storage_pool_id: mst_core::ids::LOCAL_POOL,
+        os: "linux",
     };
 
     let public = images::create(&pool, img(r.id, "debian", true))
@@ -497,11 +499,15 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
             format: "qcow2",
             shared: false,
             storage_pool_id: mst_core::ids::LOCAL_POOL,
+            os: "windows",
         },
     )
     .await
     .unwrap();
-    assert_eq!(img.state, "downloading");
+    assert_eq!(
+        (img.state.as_str(), img.os.as_str()),
+        ("downloading", "windows")
+    );
     let hex = |id: uuid::Uuid| id.simple().to_string();
     assert_eq!(
         images::store_path(&pool, a.id).await.unwrap(),
@@ -720,6 +726,7 @@ async fn scheduling_snapshot_reports_allocations_and_liveness(pool: PgPool) {
         max_vcpus: None,
         free_page_reporting: true,
         firmware: Default::default(),
+        guest_os: Default::default(),
         disks: vec![],
         nics: vec![],
         cloud_init: None,

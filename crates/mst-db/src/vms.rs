@@ -244,6 +244,16 @@ pub async fn moved(db: &mut sqlx::PgConnection, id: VmId, host: HostId) -> Resul
 }
 
 /// The VM, locked until the transaction ends.
+/// VMs whose first boot is pending: a Windows VM's password is kept for it
+/// (see `CloudInit::first_boot_password`).
+pub async fn first_boots_pending(db: impl PgExecutor<'_>) -> Result<Vec<VmId>> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM vms WHERE spec->'cloud_init' ? 'first_boot_password' ORDER BY created_at",
+    )
+    .fetch_all(db)
+    .await?)
+}
+
 pub async fn get_for_update(db: &mut sqlx::PgConnection, id: VmId) -> Result<Vm> {
     sqlx::query_as(concat!(
         "SELECT ",

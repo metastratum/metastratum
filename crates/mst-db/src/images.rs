@@ -31,13 +31,15 @@ pub struct Image {
     /// Where it is kept: a host's local disk (the local pool), or a shared
     /// pool.
     pub storage_pool_id: StoragePoolId,
+    /// `linux` or `windows`: what VMs made from it run.
+    pub os: String,
 }
 
 macro_rules! image_columns {
     () => {
         "i.id, i.tenant_id, i.name, i.source_url, i.format, i.shared, i.created_at,
          i.state, i.error, i.size_bytes, i.virtual_bytes, i.sha256, i.digest,
-         i.download_host_id, i.storage_pool_id"
+         i.download_host_id, i.storage_pool_id, i.os"
     };
 }
 
@@ -48,13 +50,15 @@ pub struct NewImage<'a> {
     pub format: &'a str,
     pub shared: bool,
     pub storage_pool_id: StoragePoolId,
+    pub os: &'a str,
 }
 
 /// Adds an image, to be downloaded (see [`downloading`]).
 pub async fn create(db: impl PgExecutor<'_>, new: NewImage<'_>) -> Result<Image> {
     sqlx::query_as(concat!(
-        "INSERT INTO images AS i (id, tenant_id, name, source_url, format, shared, state, storage_pool_id)
-         VALUES ($1, $2, $3, $4, $5, $6, 'downloading', $7) RETURNING ",
+        "INSERT INTO images AS i (id, tenant_id, name, source_url, format, shared, state,
+                                  storage_pool_id, os)
+         VALUES ($1, $2, $3, $4, $5, $6, 'downloading', $7, $8) RETURNING ",
         image_columns!()
     ))
     .bind(ImageId::new())
@@ -64,6 +68,7 @@ pub async fn create(db: impl PgExecutor<'_>, new: NewImage<'_>) -> Result<Image>
     .bind(new.format)
     .bind(new.shared)
     .bind(new.storage_pool_id)
+    .bind(new.os)
     .fetch_one(db)
     .await
     .map_err(|e| conflict_on_unique(e, "image"))

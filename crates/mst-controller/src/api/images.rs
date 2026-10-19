@@ -28,6 +28,8 @@ pub struct ImageView {
     source_url: String,
     /// `qcow2` or `raw`.
     format: String,
+    /// What VMs made from it run: `linux` or `windows`.
+    os: String,
     /// Usable by the owning tenant's descendants too.
     shared: bool,
     created_at: DateTime<Utc>,
@@ -75,6 +77,7 @@ impl ImageView {
             name: i.name,
             source_url: i.source_url,
             format: i.format,
+            os: i.os,
             shared: i.shared,
             created_at: i.created_at,
             state: i.state,
@@ -138,6 +141,11 @@ pub struct CreateImage {
     source_url: String,
     /// `qcow2` or `raw`.
     format: String,
+    /// What VMs made from it run: `linux` (the default) or `windows`, an
+    /// image with cloudbase-init (see `deploy/images/windows`): VMs get
+    /// Hyper-V enlightenments, and their password as Windows takes it.
+    #[serde(default)]
+    os: Option<String>,
     #[serde(default)]
     shared: bool,
     /// The pool to keep it in (one the tenant may use): by default the
@@ -175,6 +183,10 @@ async fn create_image(
     if !matches!(req.format.as_str(), "qcow2" | "raw") {
         return Err(ApiError::bad_request("format must be qcow2 or raw"));
     }
+    let os = req.os.as_deref().unwrap_or("linux");
+    if !matches!(os, "linux" | "windows") {
+        return Err(ApiError::bad_request("os must be linux or windows"));
+    }
     let pool =
         mst_db::storage_pools::get(&state.db, req.storage_pool_id.unwrap_or(LOCAL_POOL)).await?;
     if !super::storage_pools::may_use(&state, tenant, &pool).await? {
@@ -191,6 +203,7 @@ async fn create_image(
             format: &req.format,
             shared: req.shared,
             storage_pool_id: pool.id,
+            os,
         },
     )
     .await?;
@@ -202,7 +215,7 @@ async fn create_image(
         Some(tenant),
         "image.create",
         Some(("image", image.id.0)),
-        json!({"name": image.name, "url": image.source_url, "storage_pool": pool.name}),
+        json!({"name": image.name, "url": image.source_url, "storage_pool": pool.name, "os": image.os}),
     )
     .await;
     Ok((

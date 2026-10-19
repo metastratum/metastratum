@@ -286,6 +286,15 @@ and copied between hosts; earlier releases' compatibility removed). Fixed:
   data.)
   *Mitigation:* put no secrets in user data; use SSH keys or the password
   field.
+- **A Windows VM's password reaches its host and guest in plain text, once.**
+  Windows (cloudbase-init) takes no hash: the password is kept sealed in the
+  database, and put in the VM's seed image (root and the VM's QEMU only) for
+  its first boot; once the guest reports that boot done the seed is made
+  again without it. A deleted seed file stays readable by that VM's QEMU
+  until it stops. A VM whose image has no guest agent keeps the password in
+  its seed.
+  *Mitigation:* change the password after the first sign-in where that
+  matters.
 - **Per-VM limits are opt-in.** Without them, a VM can slow down others on
   the same host or storage; CPU and memory are shared by the overcommit
   ratios alone.

@@ -48,6 +48,9 @@ watch(minDisk, (m) => {
 })
 const sshKey = ref('')
 const password = ref('')
+// Windows takes a password, its Administrator's, and no SSH keys.
+const windows = computed(() => (template.value ? template.value.guest_os : image.value?.os) === 'windows')
+const sshKeys = () => (windows.value ? [] : sshKey.value.split('\n').map((k) => k.trim()).filter(Boolean))
 const error = ref('')
 const busy = ref(false)
 
@@ -87,7 +90,7 @@ async function submit() {
       // Leave the choice to the server when the tenant has no groups yet.
       security_group_ids: groups.value.length ? groupIds.value : null,
       name: name.value,
-      ssh_authorized_keys: sshKey.value.split('\n').map((k) => k.trim()).filter(Boolean),
+      ssh_authorized_keys: sshKeys(),
       password: password.value || null,
     }
     if (template.value) {
@@ -114,7 +117,7 @@ async function submit() {
           memory_mib: memory.value,
           max_memory_mib: maxMemory.value || null,
           disk_gib: disk.value,
-          ssh_authorized_keys: sshKey.value.split('\n').map((k) => k.trim()).filter(Boolean),
+          ssh_authorized_keys: sshKeys(),
           password: password.value || null,
         },
       }),
@@ -265,11 +268,20 @@ async function submit() {
           <template v-else>The VM stays on its host and gets the host’s full CPU and disk caching.</template>
         </span>
       </label>
-      <label class="field">
+      <label v-if="!windows" class="field">
         <span class="label">SSH public keys</span>
         <textarea v-model="sshKey" rows="3" placeholder="ssh-ed25519 AAAA… one per line" />
       </label>
-      <label class="field">
+      <label v-if="windows" class="field">
+        <span class="label">Administrator password</span>
+        <input v-model="password" type="password" autocomplete="new-password" :required="!template" minlength="8" />
+        <span class="hint">
+          <template v-if="template">Optional: the copy keeps {{ template.name }}’s otherwise.</template>
+          For signing in on the console or with Remote Desktop: at least 8 characters, with three of upper case, lower
+          case, digits and symbols. Windows sets it as it first starts; until then it is kept encrypted.
+        </span>
+      </label>
+      <label v-else class="field">
         <span class="label">Console password</span>
         <input v-model="password" type="password" autocomplete="new-password" />
         <span class="hint">Optional. Lets you sign in on the serial console as the image’s default user.</span>

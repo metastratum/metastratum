@@ -181,6 +181,7 @@ pub async fn domain(
         cpu: spec.cpu.as_ref().filter(|_| spec.migratable).map(cpu_model),
         host_cache: !spec.migratable,
         disk_limits,
+        hyperv: spec.guest_os == mst_core::vm::GuestOs::Windows,
         nics: spec
             .nics
             .iter()
@@ -195,6 +196,31 @@ pub async fn domain(
 
 /// Grows one of a VM's disks: through libvirt while the VM runs, so the
 /// guest sees it at once; otherwise the volume itself.
+/// Whether a file exists in the guest, asked through its guest agent:
+/// "true" or "false". Fails while the guest agent does not answer.
+pub async fn guest_file_exists(
+    agent: &crate::session::Agent,
+    c: &mst_proto::GuestFileExists,
+) -> Result<String> {
+    let open = serde_json::json!({
+        "execute": "guest-file-open", "arguments": { "path": c.path, "mode": "r" },
+    });
+    let reply = match agent.lv.guest_agent(&c.vm_id, &open.to_string(), 10).await {
+        Ok(r) => r,
+        // The agent answered: it could not open it.
+        Err(e) if e.to_string().contains("guest-file-open") => return Ok("false".into()),
+        Err(e) => return Err(e).context("asking the guest agent"),
+    };
+    let reply: serde_json::Value = serde_json::from_str(&reply)?;
+    if let Some(handle) = reply["return"].as_i64() {
+        let close = serde_json::json!({
+            "execute": "guest-file-close", "arguments": { "handle": handle },
+        });
+        let _ = agent.lv.guest_agent(&c.vm_id, &close.to_string(), 10).await;
+    }
+    Ok("true".into())
+}
+
 pub async fn resize_disk(agent: &crate::session::Agent, c: &mst_proto::ResizeDisk) -> Result<()> {
     let disk = c.disk.as_ref().context("no disk given")?;
     let pool = agent.pool(disk.pool.as_ref()).await?;

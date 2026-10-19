@@ -283,7 +283,7 @@ async fn prepare(ctx: &TaskCtx, m: &Migration) -> Result<()> {
         tenant_id: vm.tenant_id.to_string(),
         name: vm.name.clone(),
         generation: vm.generation as u64,
-        spec_json: serde_json::to_string(&vm.spec.0)?,
+        spec_json: crate::guest::host_spec_json(vm.id, &vm.spec.0)?,
         pools: pools.into_values().collect(),
         disk_limits: crate::limits::disk_limits(db, dest).await?,
     };

@@ -208,6 +208,7 @@ message Command {
     CopyImage copy_image = 51;
     VolumeFromImage volume_from_image = 52;
     PruneStore prune_store = 53;
+    GuestFileExists guest_file_exists = 54;
   }
   // 10: EnsureImage, before the image store. 21: MigrateVm, peer to peer.
   // 27: LibvirtTls, which opened libvirt to other hosts for that. 28:
@@ -667,6 +668,13 @@ message VolumeFromImage {
 // pool's) the images not among `image_ids` that are an hour old or more,
 // and downloads or copies cut off a day ago or more. Returns {"removed":
 // [image ids]}.
+// Whether a file exists in the VM's guest, asked through its guest agent.
+// Returns "true" or "false"; fails while the guest agent does not answer.
+message GuestFileExists {
+  string vm_id = 1;
+  string path = 2;
+}
+
 message PruneStore {
   Pool pool = 1;
   repeated string image_ids = 2;

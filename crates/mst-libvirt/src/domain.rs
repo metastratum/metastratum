@@ -97,6 +97,10 @@ pub struct DomainDef {
     pub host_cache: bool,
     /// Throttling for each disk (not CD-ROMs).
     pub disk_limits: DiskLimits,
+    /// A Windows guest: Hyper-V enlightenments (what Windows uses when it
+    /// knows it runs virtualized, for timers, interrupts and spinlocks), and
+    /// the timers Windows expects. All of them migrate.
+    pub hyperv: bool,
 }
 
 /// Disk throttling; `None`: no limit.
@@ -299,7 +303,8 @@ impl DomainDef {
             .child(
                 El::new("features")
                     .child(El::new("acpi"))
-                    .child(El::new("apic")),
+                    .child(El::new("apic"))
+                    .maybe(self.hyperv.then(hyperv)),
             )
             .child(match &self.cpu {
                 Some(cpu) => El::new("cpu")
@@ -313,7 +318,10 @@ impl DomainDef {
                     })),
                 None => El::new("cpu").attr("mode", "host-passthrough"),
             })
-            .child(El::new("clock").attr("offset", "utc"))
+            .child(match self.hyperv {
+                true => windows_clock(),
+                false => El::new("clock").attr("offset", "utc"),
+            })
             .child(El::new("on_poweroff").text("destroy"))
             .child(El::new("on_reboot").text("restart"))
             .child(El::new("on_crash").text("destroy"))
@@ -422,6 +430,37 @@ fn attr(xml: &str, name: &str) -> Option<String> {
     None
 }
 
+/// Hyper-V enlightenments for Windows guests: those that migrate (no
+/// passthrough of the host's, no TSC frequency).
+fn hyperv() -> El {
+    let on = |name: &str| El::new(name).attr("state", "on");
+    El::new("hyperv")
+        .attr("mode", "custom")
+        .child(on("relaxed"))
+        .child(on("vapic"))
+        .child(on("spinlocks").attr("retries", 8191))
+        .child(on("vpindex"))
+        .child(on("runtime"))
+        .child(on("synic"))
+        .child(on("stimer"))
+        .child(on("reset"))
+        .child(on("tlbflush"))
+        .child(on("ipi"))
+}
+
+/// The clock a Windows guest runs best with: Hyper-V's own clock, no HPET,
+/// and ticks caught up after a pause rather than lost. UTC still: images
+/// built for metastratum keep their real-time clock in UTC.
+fn windows_clock() -> El {
+    let timer = |name: &str| El::new("timer").attr("name", name);
+    El::new("clock")
+        .attr("offset", "utc")
+        .child(timer("rtc").attr("tickpolicy", "catchup"))
+        .child(timer("pit").attr("tickpolicy", "delay"))
+        .child(timer("hpet").attr("present", "no"))
+        .child(timer("hypervclock").attr("present", "yes"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,6 +533,7 @@ mod tests {
                 bridge: "br-int".into(),
                 interface_id: "0199f0a2-7b3c-7d00-8000-0000000000b1".into(),
             }],
+            hyperv: false,
         }
     }
 
@@ -519,6 +559,30 @@ mod tests {
         let flat = |x: &str| x.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(flat(&xml).contains(&flat(&disk)), "{disk}");
         assert!(d.disk_xml("sdz").is_none());
+    }
+
+    #[test]
+    fn windows_guests_get_hyperv_and_its_clock() {
+        let linux = sample().to_xml();
+        assert!(!linux.contains("hyperv"));
+        // Its lines put together, indentation gone.
+        let flat = |x: &str| x.lines().map(str::trim).collect::<String>();
+        let xml = flat(
+            &DomainDef {
+                hyperv: true,
+                ..sample()
+            }
+            .to_xml(),
+        );
+        for want in [
+            "<apic/><hyperv mode='custom'><relaxed state='on'/>",
+            "<spinlocks state='on' retries='8191'/>",
+            "<synic state='on'/><stimer state='on'/>",
+            "<clock offset='utc'><timer name='rtc' tickpolicy='catchup'/>",
+            "<timer name='hpet' present='no'/><timer name='hypervclock' present='yes'/></clock>",
+        ] {
+            assert!(xml.contains(want), "{want} not in {xml}");
+        }
     }
 
     #[test]

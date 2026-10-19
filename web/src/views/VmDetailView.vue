@@ -378,6 +378,15 @@ async function remove() {
             <dt>VM ID</dt><dd><IdChip :value="vm.id" /></dd>
             <template v-if="!scope.solo"><dt>Tenant</dt><dd><IdChip :value="vm.tenant_id" /></dd></template>
             <dt>Firmware</dt><dd>{{ vm.firmware === 'uefi' ? 'UEFI' : 'BIOS' }}</dd>
+            <template v-if="vm.guest_os === 'windows'">
+              <dt>System</dt>
+              <dd>
+                Windows
+                <span v-if="vm.first_boot_pending" class="muted">
+                  · first start pending: Windows sets the Administrator password then</span
+                >
+              </dd>
+            </template>
             <dt>Live migration</dt>
             <dd class="migratable">
               {{ vm.migratable ? 'Allowed' : 'Off: host CPU and disk caching' }}

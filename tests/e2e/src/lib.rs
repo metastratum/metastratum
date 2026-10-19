@@ -335,6 +335,59 @@ impl Console {
         Ok((out, code))
     }
 
+    /// Signs in on a Windows guest's serial console (its Special
+    /// Administration Console) with a command channel, runs `cmd` there, and
+    /// reads until `until` appears in what it prints (the console redraws
+    /// itself, so prompts say little). Fails if the password is refused.
+    pub async fn sac_run(
+        &mut self,
+        user: &str,
+        password: &str,
+        cmd: &str,
+        until: &str,
+    ) -> Result<String> {
+        self.send(b"\r").await?;
+        self.expect("SAC>", Duration::from_secs(600)).await?;
+        self.send(b"cmd\r").await?;
+        // The channel comes a moment later, announced by name.
+        self.expect("Channel: ", Duration::from_secs(120)).await?;
+        let channel = self.expect("SAC>", Duration::from_secs(30)).await?;
+        let channel = channel
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        self.send(format!("ch -sn {channel}\r").as_bytes()).await?;
+        self.expect("any other key", Duration::from_secs(30))
+            .await?;
+        self.send(b"\r").await?;
+        self.expect("Username:", Duration::from_secs(60)).await?;
+        self.send(format!("{user}\r").as_bytes()).await?;
+        self.expect("Domain", Duration::from_secs(30)).await?;
+        self.send(b"\r").await?;
+        self.expect("Password:", Duration::from_secs(30)).await?;
+        self.send(format!("{password}\r").as_bytes()).await?;
+        let signed_in = self
+            .expect_any(
+                &["System32>", "Unable to authenticate"],
+                Duration::from_secs(120),
+            )
+            .await?;
+        if signed_in.contains("Unable to authenticate") {
+            bail!("the console refused the password");
+        }
+        // What is typed while the new session still draws its screen is
+        // lost: typed again until it shows.
+        for _ in 0..5 {
+            self.send(format!("{cmd}\r").as_bytes()).await?;
+            if let Ok(out) = self.expect(until, Duration::from_secs(10)).await {
+                return Ok(out);
+            }
+        }
+        self.send(format!("{cmd}\r").as_bytes()).await?;
+        self.expect(until, Duration::from_secs(30)).await
+    }
+
     /// Reads until `parse` succeeds on what has been read since the call.
     async fn expect_with<T>(
         &mut self,

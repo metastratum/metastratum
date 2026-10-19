@@ -11,7 +11,7 @@ const scope = useScope()
 const images = ref<Image[] | null>(null)
 const adding = ref(false)
 const LOCAL_POOL = '00000000-0000-0000-0000-000000000001'
-const blank = () => ({ name: '', source_url: '', format: 'qcow2', shared: false, storage_pool_id: LOCAL_POOL })
+const blank = () => ({ name: '', source_url: '', format: 'qcow2', os: 'linux', shared: false, storage_pool_id: LOCAL_POOL })
 const form = ref(blank())
 // Where images can be kept: the pools the tenant may use.
 const pools = ref<Schemas['UsablePool'][]>([])
@@ -101,6 +101,7 @@ const own = (img: Image) => img.tenant_id === scope.current
         <div class="main">
           <strong>{{ img.name }}</strong>
           <span class="tag label">{{ img.format }}</span>
+          <span v-if="img.os === 'windows'" class="tag label">Windows</span>
           <span v-if="img.shared && !scope.solo" class="tag label">Shared with sub-tenants</span>
           <span v-if="!own(img)" class="tag label">From parent tenant</span>
           <span v-if="img.stuck" class="tag label failed">Download stopped</span>
@@ -173,6 +174,17 @@ const own = (img: Image) => img.tenant_id === scope.current
             <option value="qcow2">qcow2</option>
             <option value="raw">raw</option>
           </select>
+        </label>
+        <label class="field">
+          <span class="label">Operating system</span>
+          <select v-model="form.os">
+            <option value="linux">Linux (cloud-init)</option>
+            <option value="windows">Windows (cloudbase-init)</option>
+          </select>
+          <span v-if="form.os === 'windows'" class="hint">
+            An image built with <code>deploy/images/windows/build.sh</code>: VMs get their Administrator password at
+            first boot, and run with Hyper-V enlightenments.
+          </span>
         </label>
         <label v-if="pools.length > 1" class="field">
           <span class="label">Keep it in</span>

@@ -1026,6 +1026,29 @@ impl Libvirt {
         Ok(r.result)
     }
 
+    /// Sends a command (JSON) to the domain's guest agent and returns its
+    /// reply's `return` (JSON). Fails when the guest has no agent running,
+    /// or it does not answer within `timeout_secs`.
+    pub async fn guest_agent(&self, uuid: &str, cmd: &str, timeout_secs: i32) -> Result<String> {
+        use mst_virtrpc::qemu::{
+            DomainAgentCommandArgs, DomainAgentCommandRet, PROC_DOMAIN_AGENT_COMMAND,
+        };
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        let r: DomainAgentCommandRet = c
+            .call_qemu(
+                PROC_DOMAIN_AGENT_COMMAND,
+                &DomainAgentCommandArgs {
+                    dom,
+                    cmd: cmd.to_owned(),
+                    timeout: timeout_secs,
+                    flags: 0,
+                },
+            )
+            .await?;
+        Ok(r.result.unwrap_or_default())
+    }
+
     /// Grows a running domain's disk (`vda`, ...) to `bytes`; the guest sees
     /// the new size at once.
     pub async fn block_resize(&self, uuid: &str, disk: &str, bytes: u64) -> Result<()> {

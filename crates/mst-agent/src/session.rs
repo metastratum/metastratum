@@ -547,6 +547,7 @@ impl Agent {
             Cmd::RevertSnapshot(c) => crate::snapshot::revert(self, &c).await?,
             Cmd::DeleteSnapshot(c) => crate::snapshot::delete(self, &c).await?,
             Cmd::ResizeDisk(c) => crate::vm::resize_disk(self, &c).await?,
+            Cmd::GuestFileExists(c) => return crate::vm::guest_file_exists(self, &c).await,
             Cmd::CloneVolume(c) => crate::vm::clone_volume(self, &c).await?,
             Cmd::ExportVolume(c) => return crate::transfer::export(self, &c).await,
             Cmd::EndExport(c) => crate::transfer::end(&c.volume_id),

@@ -28,6 +28,12 @@ pub fn init(key_file: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// A master key of their own, for unit tests.
+#[cfg(test)]
+pub fn init_for_tests() {
+    let _ = SEALER.set(Sealer::from_base64(&Sealer::generate_key()).unwrap());
+}
+
 fn sealer() -> &'static Sealer {
     SEALER.get().expect("secrets::init runs at startup")
 }

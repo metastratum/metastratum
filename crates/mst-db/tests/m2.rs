@@ -99,6 +99,7 @@ async fn allocate(
         max_vcpus: None,
         free_page_reporting: true,
         firmware: Default::default(),
+        guest_os: Default::default(),
         disks: vec![],
         nics: vec![],
         cloud_init: None,

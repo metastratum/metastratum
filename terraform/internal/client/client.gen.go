@@ -54,6 +54,24 @@ func (e Firmware) Valid() bool {
 	}
 }
 
+// Defines values for GuestOs.
+const (
+	Linux   GuestOs = "linux"
+	Windows GuestOs = "windows"
+)
+
+// Valid indicates whether the value is a known member of the GuestOs enum.
+func (e GuestOs) Valid() bool {
+	switch e {
+	case Linux:
+		return true
+	case Windows:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Kind.
 const (
 	Serial Kind = "serial"
@@ -120,8 +138,15 @@ type AcceptedVmView struct {
 	Error        *string    `json:"error,omitempty"`
 	Firmware     Firmware   `json:"firmware"`
 
+	// FirstBootPending A Windows VM's first boot has yet to set its password: the
+	// controller keeps it (sealed) until then.
+	FirstBootPending bool `json:"first_boot_pending"`
+
 	// FreePageReporting The guest hands memory it frees back to its host.
 	FreePageReporting bool `json:"free_page_reporting"`
+
+	// GuestOs What it runs (from its image).
+	GuestOs GuestOs `json:"guest_os"`
 
 	// HostConnected Whether the VM's host is connected and reporting. When it is not,
 	// `power` is the last state reported and may be out of date.
@@ -529,7 +554,12 @@ type CreateImage struct {
 	// Format `qcow2` or `raw`.
 	Format string `json:"format"`
 	Name   string `json:"name"`
-	Shared *bool  `json:"shared,omitempty"`
+
+	// Os What VMs made from it run: `linux` (the default) or `windows`, an
+	// image with cloudbase-init (see `deploy/images/windows`): VMs get
+	// Hyper-V enlightenments, and their password as Windows takes it.
+	Os     *string `json:"os,omitempty"`
+	Shared *bool   `json:"shared,omitempty"`
 
 	// SourceUrl HTTP(S) URL a host downloads the image from, as it is added.
 	SourceUrl     string         `json:"source_url"`
@@ -703,6 +733,9 @@ type CreatedImage struct {
 	Hosts []string `json:"hosts"`
 	Id    ImageId  `json:"id"`
 	Name  string   `json:"name"`
+
+	// Os What VMs made from it run: `linux` or `windows`.
+	Os string `json:"os"`
 
 	// Sha256 SHA-256 of the file downloaded from `source_url`.
 	Sha256 *string `json:"sha256,omitempty"`
@@ -945,6 +978,11 @@ type Grants struct {
 	StoragePools     []openapi_types.UUID  `json:"storage_pools"`
 }
 
+// GuestOs The operating system a VM runs, from its image: Windows guests get
+// Hyper-V enlightenments, and their password the way cloudbase-init takes
+// it.
+type GuestOs string
+
 // HostId defines model for HostId.
 type HostId = openapi_types.UUID
 
@@ -1025,6 +1063,9 @@ type ImageView struct {
 	Hosts []string `json:"hosts"`
 	Id    ImageId  `json:"id"`
 	Name  string   `json:"name"`
+
+	// Os What VMs made from it run: `linux` or `windows`.
+	Os string `json:"os"`
 
 	// Sha256 SHA-256 of the file downloaded from `source_url`.
 	Sha256 *string `json:"sha256,omitempty"`
@@ -1953,8 +1994,15 @@ type VmView struct {
 	Error        *string    `json:"error,omitempty"`
 	Firmware     Firmware   `json:"firmware"`
 
+	// FirstBootPending A Windows VM's first boot has yet to set its password: the
+	// controller keeps it (sealed) until then.
+	FirstBootPending bool `json:"first_boot_pending"`
+
 	// FreePageReporting The guest hands memory it frees back to its host.
 	FreePageReporting bool `json:"free_page_reporting"`
+
+	// GuestOs What it runs (from its image).
+	GuestOs GuestOs `json:"guest_os"`
 
 	// HostConnected Whether the VM's host is connected and reporting. When it is not,
 	// `power` is the last state reported and may be out of date.
