@@ -328,8 +328,19 @@ pub async fn reboot(ctx: &TaskCtx) -> Result<()> {
 }
 
 pub async fn delete(ctx: &TaskCtx) -> Result<()> {
-    let db = &ctx.state.db;
     let id = target(ctx)?;
+    let result = remove(ctx, id).await;
+    // A delete that failed (its host was away, say) leaves the VM in
+    // error with the reason, so it can be deleted again.
+    if let Err(e) = &result {
+        let error = format!("deleting it failed: {e:#}");
+        mst_db::vms::set_status(&ctx.state.db, id, "error", Some(&error)).await?;
+    }
+    result
+}
+
+async fn remove(ctx: &TaskCtx, id: VmId) -> Result<()> {
+    let db = &ctx.state.db;
     let vm = match mst_db::vms::get(db, id).await {
         Ok(vm) => vm,
         // Already gone: a previous attempt finished the job.

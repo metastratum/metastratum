@@ -630,6 +630,7 @@ impl ReplicaControlService {
 fn agent_status(e: super::AgentError) -> Status {
     match e {
         super::AgentError::NotConnected => Status::unavailable(super::peers::NOT_CONNECTED),
+        super::AgentError::Closed => Status::unavailable(super::peers::CLOSED),
         super::AgentError::Timeout(_) => Status::deadline_exceeded(e.to_string()),
         e => Status::unavailable(e.to_string()),
     }
@@ -815,5 +816,23 @@ mod tests {
         assert!(pending.is_none());
         assert_eq!((f.cpu_count, f.memory_mib), (4, 8192));
         assert!(f.physical_networks.is_empty());
+    }
+
+    #[test]
+    fn agent_errors_survive_forwarding() {
+        use super::super::{AgentError, peers::from_status};
+        let t = std::time::Duration::from_secs(5);
+        let back = |e| from_status(agent_status(e), t);
+        assert!(matches!(
+            back(AgentError::NotConnected),
+            AgentError::NotConnected
+        ));
+        assert!(matches!(back(AgentError::Closed), AgentError::Closed));
+        assert!(matches!(
+            back(AgentError::Timeout(t)),
+            AgentError::Timeout(_)
+        ));
+        let failed = back(AgentError::Failed("no such volume".into())).to_string();
+        assert_eq!(failed, "via another controller: no such volume");
     }
 }

@@ -139,13 +139,16 @@ impl Peers {
 }
 
 /// How the other replica's answers map back. It says `unavailable` when the
-/// agent has no session there (any more).
+/// agent has no session there (any more), or the session closed while the
+/// command ran: both are worth sending again once the agent is back.
 pub fn from_status(s: tonic::Status, timeout: Duration) -> AgentError {
     match s.code() {
         tonic::Code::Unavailable if s.message() == NOT_CONNECTED => AgentError::NotConnected,
+        tonic::Code::Unavailable if s.message() == CLOSED => AgentError::Closed,
         tonic::Code::DeadlineExceeded => AgentError::Timeout(timeout),
         _ => AgentError::Failed(format!("via another controller: {}", s.message())),
     }
 }
 
 pub const NOT_CONNECTED: &str = "host not connected here";
+pub const CLOSED: &str = "agent session closed";
