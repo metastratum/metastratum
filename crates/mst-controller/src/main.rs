@@ -22,6 +22,7 @@ mod net;
 mod ovn_tls;
 mod port_watch;
 mod ratelimit;
+mod receive;
 mod secrets;
 mod state;
 mod tpm;

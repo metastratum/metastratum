@@ -53,10 +53,8 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
                    "image_id": id, "password": PW}),
         )
         .await?;
-    api.wait_task(added["task_id"].as_str().unwrap(), Duration::from_secs(900))
-        .await?;
-    let img = image(api, &id).await?;
-    assert_eq!(img["state"], "ready", "{img}");
+    let img = api.wait_image_ready(&id, Duration::from_secs(900)).await?;
+    assert_eq!(img["origin"], "download", "{img}");
     assert_eq!(img["sha256"].as_str().map(str::len), Some(64), "{img}");
     assert_eq!(img["digest"].as_str().map(str::len), Some(64), "{img}");
     let virtual_bytes = img["virtual_bytes"].as_u64().unwrap();
@@ -174,10 +172,10 @@ async fn scenario(api: &Api, run: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// An image that cannot be downloaded says why, makes no VMs, and can be
-/// downloaded again.
+/// An image that cannot be downloaded says why, and makes no VMs. It has
+/// failed for good: its URL is gone, and nothing downloads it again.
 #[tokio::test]
-async fn failed_downloads_say_why_and_can_be_tried_again() -> anyhow::Result<()> {
+async fn failed_downloads_say_why_and_are_final() -> anyhow::Result<()> {
     let Some(api) = mst_e2e::connect().await? else {
         return Ok(());
     };
@@ -191,11 +189,10 @@ async fn failed_downloads_say_why_and_can_be_tried_again() -> anyhow::Result<()>
             )
             .await?;
         let id = added["id"].as_str().unwrap();
-        api.wait_task_end(added["task_id"].as_str().unwrap(), Duration::from_secs(120))
-            .await?;
-        let img = image(&api, id).await?;
+        let img = api.wait_image(id, Duration::from_secs(120)).await?;
         assert_eq!(img["state"], "failed", "{img}");
         assert!(img["error"].as_str().unwrap_or("").contains("404"), "{img}");
+        assert!(img.get("source_url").is_none(), "no URL is kept: {img}");
 
         let (status, body) = api
             .try_send(
@@ -209,12 +206,15 @@ async fn failed_downloads_say_why_and_can_be_tried_again() -> anyhow::Result<()>
             .await?;
         assert_eq!(status, 409, "{body}");
 
-        let t = api
-            .post(&format!("/images/{id}/download"), json!({}))
+        // There is no downloading it again.
+        let (status, body) = api
+            .try_send(
+                Method::POST,
+                &format!("/images/{id}/download"),
+                Some(json!({})),
+            )
             .await?;
-        api.wait_task_end(t["task_id"].as_str().unwrap(), Duration::from_secs(120))
-            .await?;
-        assert_eq!(image(&api, id).await?["state"], "failed");
+        assert!(matches!(status, 404 | 405), "{status} {body}");
         Ok(())
     })
     .await
@@ -248,7 +248,7 @@ async fn upload(
 /// An uploaded image: in parts (one out of turn is refused, saying where to
 /// go on), then checked and stored as a download is, and the same as the
 /// download of the same file. VMs boot from it. A file that is no image
-/// fails as it is checked, and is uploaded again from the start.
+/// fails as it is checked, for good.
 #[tokio::test]
 async fn uploaded_images_are_checked_and_boot_like_downloaded_ones() -> anyhow::Result<()> {
     let Some(api) = mst_e2e::connect().await? else {
@@ -294,12 +294,8 @@ async fn upload_scenario(api: &Api, run: &str) -> anyhow::Result<()> {
         .await?;
     let id = added["id"].as_str().unwrap().to_owned();
     assert_eq!(
-        (
-            &added["state"],
-            &added["uploaded_bytes"],
-            added.get("task_id")
-        ),
-        (&json!("uploading"), &json!(0), None),
+        (&added["state"], &added["received_bytes"], &added["origin"]),
+        (&json!("uploading"), &json!(0), &json!("upload")),
         "{added}"
     );
     // Not before it is all there.
@@ -334,10 +330,10 @@ async fn upload_scenario(api: &Api, run: &str) -> anyhow::Result<()> {
             "{v}"
         );
     }
-    assert_eq!(image(api, &id).await?["uploaded_bytes"], 2 * part);
+    assert_eq!(image(api, &id).await?["received_bytes"], 2 * part);
     let last = upload(api, &id, &file, 2 * part, 32 << 20).await?;
-    assert_eq!(last["state"], "downloading", "{last}");
-    let img = wait_image(api, &id).await?;
+    assert_eq!(last["state"], "storing", "{last}");
+    let img = api.wait_image(&id, Duration::from_secs(900)).await?;
     assert_eq!(img["state"], "ready", "{img}");
     assert_eq!(img["sha256"], sha256, "the file as uploaded: {img}");
     // The same disk the download of the same file holds.
@@ -360,7 +356,7 @@ async fn upload_scenario(api: &Api, run: &str) -> anyhow::Result<()> {
     let (out, code) = serial.run("debian", PW, "true").await?;
     assert_eq!(code, 0, "it boots: {out}");
 
-    // Not an image: fails as it is checked; then uploaded again from 0.
+    // Not an image: fails as it is checked, for good.
     let junk = vec![b'x'; 3 << 20];
     let bad = api
         .post(
@@ -370,54 +366,16 @@ async fn upload_scenario(api: &Api, run: &str) -> anyhow::Result<()> {
         .await?;
     let bad_id = bad["id"].as_str().unwrap().to_owned();
     upload(api, &bad_id, &junk, 0, part).await?;
-    let img = wait_image(api, &bad_id).await?;
+    let img = api.wait_image(&bad_id, Duration::from_secs(900)).await?;
     assert_eq!(img["state"], "failed", "{img}");
-    let (st, v) = api
-        .put_bytes(
-            &format!("/images/{bad_id}/upload?offset=16"),
-            junk[16..32].to_vec(),
-        )
-        .await?;
-    assert_eq!(st, 409, "only from the start: {v}");
     let (st, v) = api
         .put_bytes(
             &format!("/images/{bad_id}/upload?offset=0"),
             junk[..16].to_vec(),
         )
         .await?;
-    assert_eq!(st, 200, "{v}");
-    assert_eq!(
-        (&v["state"], &v["uploaded_bytes"]),
-        (&json!("uploading"), &json!(16)),
-        "{v}"
-    );
-    // An upload is not downloaded again.
-    let (st, v) = api
-        .try_send(
-            Method::POST,
-            &format!("/images/{bad_id}/download"),
-            Some(json!({})),
-        )
-        .await?;
-    assert_eq!(st, 409, "{v}");
+    assert_eq!(st, 409, "not uploaded again: {v}");
     Ok(())
-}
-
-/// Waits for an image to be done being added (ready or failed).
-async fn wait_image(api: &Api, id: &str) -> anyhow::Result<Value> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(900);
-    loop {
-        let img = image(api, id).await?;
-        if matches!(img["state"].as_str(), Some("ready" | "failed")) {
-            return Ok(img);
-        }
-        anyhow::ensure!(
-            std::time::Instant::now() < deadline,
-            "image still {}",
-            img["state"]
-        );
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
 }
 
 /// Images kept in a shared pool (the storage tests' NFS and Ceph pools):
@@ -458,10 +416,7 @@ async fn images_kept_in_shared_pools() -> anyhow::Result<()> {
                 .await?;
             let id = added["id"].as_str().unwrap().to_owned();
             assert_eq!(added["storage_pool_name"], *name);
-            api.wait_task(added["task_id"].as_str().unwrap(), Duration::from_secs(900))
-                .await?;
-            let img = image(&api, &id).await?;
-            assert_eq!(img["state"], "ready", "{img}");
+            let img = api.wait_image_ready(&id, Duration::from_secs(900)).await?;
             assert_eq!(img["hosts"], json!([]), "kept in {name} alone: {img}");
 
             // On hosts that reach the pool, a disk in each pool: made from

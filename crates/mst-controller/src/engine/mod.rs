@@ -15,7 +15,9 @@ mod vm;
 
 pub use backup::schedule as backup_schedule;
 pub use disk::sweep as sweep_disks;
-pub use image::{deleted as image_deleted, prune as prune_images, reaches, store_hosts};
+pub use image::{
+    deleted as image_deleted, prune as prune_images, reaches, remove_leftover, store_hosts,
+};
 pub(crate) use recover::another_host;
 
 use std::sync::Arc;
@@ -33,7 +35,7 @@ const MAX_CONCURRENT: usize = 16;
 /// Downloads run beside other tasks, in slots of their own: slow ones never
 /// hold up VMs' lifecycles, migrations or recovery.
 const MAX_DOWNLOADS: usize = 4;
-const DOWNLOADS: &[&str] = &["image.download"];
+const DOWNLOADS: &[&str] = &["image.store"];
 /// Copies of images onto hosts (for VMs made from them) run in slots of
 /// their own too, given up by the task for the while: many VMs made at once
 /// from an image no host has yet keep no other task from running.
@@ -203,7 +205,7 @@ async fn execute(
         "disk.move" => disk::move_disk(&ctx).await,
         "disk.attach" => disk::attach(&ctx).await,
         "disk.detach" => disk::detach(&ctx).await,
-        "image.download" => image::download(&ctx).await,
+        "image.store" => image::store(&ctx).await,
         other => Err(anyhow::anyhow!("unknown task kind {other}")),
     };
     renew.abort();

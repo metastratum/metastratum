@@ -1,16 +1,17 @@
-//! Images: downloaded once, when they are added (`image.download`), into
-//! the image store of the pool they are kept in: a host's local disk (a
-//! host picked at random), or a shared pool. Hosts attached to a shared
+//! Images: their file comes to a host as they are added (uploaded, or
+//! downloaded by the controller: see `crate::receive`), which adds it to
+//! the image store of the pool they are kept in (`image.store`): its own
+//! local disk (the host picked at random), or a shared pool. Hosts attached to a shared
 //! pool make disks from its copy directly; others get a copy in their local
 //! store, from a host that has one (a host attached to the shared pool
 //! first copies it into its own). Every copy is recorded (`image_copies`),
 //! and each serves as a source for the next.
 //!
-//! The download records the image's digest: the SHA-256 of the disk it
+//! Storing it records the image's digest: the SHA-256 of the disk it
 //! holds. Every copy is checked against it where it is made, so a host
-//! handing over something else (a compromised one) spreads nothing. With
-//! no copy reachable, a host downloads the image again, which must then
-//! hold the same.
+//! handing over something else (a compromised one) spreads nothing. An
+//! image comes to a host only as it is added: with no copy reachable, no
+//! VM is made from it (nothing downloads it again).
 
 use std::time::Duration;
 
@@ -21,15 +22,15 @@ use mst_db::images::{Copy, Image, Stored};
 use mst_db::storage_pools::Pool;
 use mst_proto::command::Cmd;
 use mst_proto::{
-    CopyImage, DeleteImage, EndExport, ExportImage, FetchImage, MigrationTls, PruneStore,
+    CopyImage, DeleteImage, EndExport, ExportImage, MigrationTls, PruneStore, StoreImage,
 };
 
 use super::TaskCtx;
 use super::backup::send;
 use crate::state::AppState;
 
-/// Downloads can be large, and slow (the agent gives up after two hours).
-const DOWNLOAD: Duration = Duration::from_secs(3 * 3600);
+/// Storing an image (checking and converting it) can take a while.
+const STORE: Duration = Duration::from_secs(3 * 3600);
 /// So can copies.
 const COPY: Duration = Duration::from_secs(3 * 3600);
 const QUICK: Duration = Duration::from_secs(60);
@@ -64,8 +65,8 @@ pub fn reaches(h: &Host, pool: &Pool) -> bool {
     h.cluster_id.is_some_and(|c| pool.clusters.contains(&c))
 }
 
-/// Downloads an image into the pool it is kept in.
-pub async fn download(ctx: &TaskCtx) -> Result<()> {
+/// Has the host an image's file came to add it to the pool it is kept in.
+pub async fn store(ctx: &TaskCtx) -> Result<()> {
     let db = &ctx.state.db;
     let id = target(ctx)?;
     let image = match mst_db::images::get(db, id).await {
@@ -74,28 +75,30 @@ pub async fn download(ctx: &TaskCtx) -> Result<()> {
         Err(mst_db::Error::Domain(mst_core::Error::NotFound { .. })) => return Ok(()),
         Err(e) => return Err(e.into()),
     };
-    if image.state != "downloading" {
+    if image.state != "storing" {
         // Done already (a resumed task).
         return Ok(());
     }
-    let result = first_download(ctx, &image).await;
+    let result = first_store(ctx, &image).await;
     if let Err(e) = &result {
         match mst_db::images::failed(db, id, &format!("{e:#}")).await {
-            // What the download left (it may have gone on, cut off from
-            // here as its agent reconnected) goes: recorded nowhere, it
-            // would only hold up copies to that host.
+            // What it left (it may have gone on, cut off from here as its
+            // agent reconnected) goes: recorded nowhere, it would only hold
+            // up copies to that host.
             Ok(true) => remove_leftover(&ctx.state, id).await,
-            // Made ready by another run of this download meanwhile.
+            // Made ready by another run of this task meanwhile.
             Ok(false) => {}
-            // The API lets it be downloaded again: no task is under way.
-            Err(f) => tracing::warn!(image = %id, error = %f, "recording a failed download"),
+            // It shows as stopped (no task is under way), and fails within
+            // minutes (see `prune`).
+            Err(f) => tracing::warn!(image = %id, error = %f, "recording a failed store"),
         }
     }
     result
 }
 
-/// Has the host a failed download was on remove what it left there.
-async fn remove_leftover(state: &AppState, id: ImageId) {
+/// Has the host an image's file came to remove what it left there (the
+/// file, or a store cut off).
+pub async fn remove_leftover(state: &AppState, id: ImageId) {
     let left = async {
         let image = mst_db::images::get(&state.db, id).await?;
         let Some(host) = image.download_host_id else {
@@ -111,15 +114,15 @@ async fn remove_leftover(state: &AppState, id: ImageId) {
         Ok(())
     };
     if let Err(e) = left.await {
-        tracing::info!(image = %id, error = %format!("{e:#}"), "removing what a failed download left");
+        tracing::info!(image = %id, error = %format!("{e:#}"), "removing what a failed image left");
     }
 }
 
-async fn first_download(ctx: &TaskCtx, image: &Image) -> Result<()> {
+async fn first_store(ctx: &TaskCtx, image: &Image) -> Result<()> {
     let state = &ctx.state;
     let db = &state.db;
     let pool = mst_db::storage_pools::get(db, image.storage_pool_id).await?;
-    // The tenant may have lost the pool since (resumed, or downloaded again).
+    // The tenant may have lost the pool since (a resumed task).
     if !crate::api::may_use_pool(state, image.tenant_id, &pool)
         .await
         .map_err(|e| anyhow!("{}", e.message))?
@@ -127,53 +130,30 @@ async fn first_download(ctx: &TaskCtx, image: &Image) -> Result<()> {
         bail!("the tenant may no longer use storage pool {}", pool.name);
     }
     let shared = pool.kind != "local";
-    let hosts: Vec<Host> = store_hosts(state)
+    // Where its file came to.
+    let host = store_hosts(state)
         .await?
         .into_iter()
-        .filter(|h| !shared || reaches(h, &pool))
-        .collect();
-    if hosts.is_empty() {
-        match shared {
-            true => bail!("no connected host reaches {}", pool.name),
-            false => bail!("no connected host to download it on"),
-        }
-    }
-    // Resumed (a controller restarted): on the host it was downloading on,
-    // which has it, or will; another would download it all over again. An
-    // upload is where it was uploaded to.
-    let host = match hosts.iter().find(|h| Some(h.id) == image.download_host_id) {
-        Some(h) => h,
-        None if image.uploaded() => bail!("the host the image was uploaded to is not connected"),
-        None => {
-            let h = &hosts[rand::random_range(0..hosts.len())];
-            mst_db::images::set_download_host(db, image.id, h.id).await?;
-            h
-        }
-    };
-    let doing = match image.uploaded() {
-        true => "adding the upload on",
-        false => "downloading on",
-    };
-    ctx.step(&format!("{doing} {}", host.name), 0.1).await;
+        .find(|h| Some(h.id) == image.download_host_id)
+        .context("the host the image's file came to is not connected")?;
+    ctx.step(&format!("storing on {}", host.name), 0.1).await;
     let path = mst_db::images::store_path(db, image.tenant_id).await?;
     let (at, into) = match shared {
         true => (Copy::shared(pool.id), Some(crate::api::agent_pool(&pool)?)),
         false => (Copy::local(host.id), None),
     };
-    // Downloaded again (no copy was left): it must hold what it did.
-    let digest = image.digest.as_deref();
-    let stored = fetch(state, image, &path, host.id, into, digest).await?;
+    let stored = store_on(state, image, &path, host.id, into).await?;
     if stored.digest.is_empty() {
         bail!("{} reported no digest for the image", host.name);
     }
 
-    // Recorded only while it is being downloaded (which locks it): not
-    // over what another run of this download recorded, or after it was
-    // deleted. Then charged what it takes, stored (`image_gib`).
+    // Recorded only while it is being stored (which locks it): not over
+    // what another run of this task recorded, or after it was deleted.
+    // Then charged what it takes, stored (`image_gib`).
     let gib = (stored.size_bytes + (1 << 30) - 1) >> 30;
     let delta = [("image_gib".to_owned(), gib)].into_iter().collect();
     let mut tx = db.begin().await?;
-    let recorded = match mst_db::images::downloaded(&mut tx, image.id, at, &stored).await {
+    let recorded = match mst_db::images::stored(&mut tx, image.id, at, &stored).await {
         Ok(true) => mst_db::quotas::reserve(&mut tx, image.tenant_id, &delta)
             .await
             .map(|()| true),
@@ -187,33 +167,29 @@ async fn first_download(ctx: &TaskCtx, image: &Image) -> Result<()> {
         // Gone, or recorded by another run: what the host holds is (or
         // was) the image's, which is not this run's to remove.
         Ok(false) => Ok(()),
-        // Not kept (over quota): the host lets go of it as the download
-        // fails (see `download`).
+        // Not kept (over quota): the host lets go of it as storing it
+        // fails (see `store`).
         Err(e) => Err(e.into()),
     }
 }
 
-/// Has the host download the image into its store, or `pool`'s. With
-/// `digest`, the image must hold that.
-async fn fetch(
+/// Has the host the image's file came to add it to its store, or
+/// `pool`'s.
+async fn store_on(
     state: &AppState,
     image: &Image,
     tenant_path: &str,
     host: HostId,
     pool: Option<mst_proto::Pool>,
-    digest: Option<&str>,
 ) -> Result<Stored> {
-    let cmd = Cmd::FetchImage(FetchImage {
+    let cmd = Cmd::StoreImage(StoreImage {
         pool,
         image_id: image.id.to_string(),
         tenant_path: tenant_path.to_owned(),
-        source_url: image.source_url.clone(),
         format: image.format.clone(),
         trusted: super::image_trusted(&state.db, image).await?,
-        digest: digest.unwrap_or_default().to_owned(),
-        uploaded: image.uploaded(),
     });
-    let out = send(state, host, cmd, DOWNLOAD).await?;
+    let out = send(state, host, cmd, STORE).await?;
     Ok(serde_json::from_str(&out)?)
 }
 
@@ -251,7 +227,7 @@ async fn remove(
 
 /// Makes sure the host can make disks for VM `vm` from the image: from a
 /// shared pool it reaches that keeps a copy (returned), or from its own
-/// store (None), copied there from another host or downloaded again.
+/// store (None), copied there from another host.
 /// Waiting (for the image to download, or for another task getting it onto
 /// the host) holds no task slot, and ends should the VM be deleted
 /// meanwhile; copying holds a transfer slot (see [`TaskCtx::transfer`]).
@@ -304,25 +280,21 @@ async fn unless_deleted<T>(
     }
 }
 
-/// The image once downloaded.
+/// The image, once it is added (its file came, and the host stored it).
 async fn ready(state: &AppState, id: ImageId) -> Result<Image> {
-    let deadline = tokio::time::Instant::now() + DOWNLOAD;
+    let deadline = tokio::time::Instant::now() + STORE;
     loop {
         let image = mst_db::images::get(&state.db, id).await?;
         match image.state.as_str() {
             "ready" => return Ok(image),
             "failed" => bail!(
-                "the image could not be {}: {}",
-                match image.uploaded() {
-                    true => "uploaded",
-                    false => "downloaded",
-                },
+                "the image could not be added: {}",
                 image.error.as_deref().unwrap_or("no reason given")
             ),
             // Its upload stopped: it may not go on.
             "uploading" => bail!("the image is not all uploaded"),
             _ if tokio::time::Instant::now() > deadline => {
-                bail!("the image is still being downloaded")
+                bail!("the image is still being added")
             }
             _ => tokio::time::sleep(POLL).await,
         }
@@ -351,12 +323,41 @@ async fn available(
     Ok(None)
 }
 
-/// Copies the image into the host's store: from another host's, a shared
-/// pool's (through a host reaching it), or downloaded again.
+/// Copies the images whose only copy is on `host` (being evacuated) to
+/// other hosts, one each: nothing downloads an image again, so they would
+/// go with it. Returns what could not be copied.
+pub(super) async fn keep_elsewhere(ctx: &TaskCtx, host: HostId) -> Result<Vec<String>> {
+    let state = &ctx.state;
+    let mut failures = vec![];
+    let images = mst_db::images::only_on_host(&state.db, host).await?;
+    let others: Vec<Host> = store_hosts(state)
+        .await?
+        .into_iter()
+        .filter(|h| h.id != host && h.state == "ready")
+        .collect();
+    for (i, image) in images.iter().enumerate() {
+        if others.is_empty() {
+            failures.push(format!("{}: no other host to keep it", image.name));
+            continue;
+        }
+        let to = &others[i % others.len()];
+        ctx.step(
+            &format!("copying image {} to {}", image.name, to.name),
+            0.95,
+        )
+        .await;
+        if let Err(e) = copy_to(ctx, image, to.id).await {
+            failures.push(format!("{} to {}: {e:#}", image.name, to.name));
+        }
+    }
+    Ok(failures)
+}
+
+/// Copies the image into the host's store: from another host's, or a
+/// shared pool's (through a host reaching it).
 async fn copy_to(ctx: &TaskCtx, image: &Image, host: HostId) -> Result<Option<mst_proto::Pool>> {
     let state = &ctx.state;
     let db = &state.db;
-    let digest = image.digest.as_deref();
     let copies = mst_db::images::copies(db, image.id).await?;
     let target = mst_db::hosts::get(db, host).await?;
     let mut shared = vec![];
@@ -427,30 +428,15 @@ async fn copy_to(ctx: &TaskCtx, image: &Image, host: HostId) -> Result<Option<ms
             }
         }
     }
-    // No copy could be handed over: downloaded again, it must hold what
-    // was first downloaded. An upload is not to be had again but from who
-    // uploaded it.
-    if image.uploaded() {
-        bail!(
-            "no copy of the uploaded image could be had{}; upload it again (as a new image)",
-            match failures.is_empty() {
-                true => String::new(),
-                false => format!(" ({})", failures.join("; ")),
-            }
-        );
-    }
-    ctx.step("downloading the image", 0.2).await;
-    if let Err(e) = fetch(state, image, &path, host, None, digest).await {
-        return Err(match failures.is_empty() {
-            true => e.context("downloading the image"),
-            false => e.context(format!(
-                "downloading the image, as copying it failed ({})",
-                failures.join("; ")
-            )),
-        });
-    }
-    record(state, image, &path, host).await?;
-    Ok(None)
+    // No copy could be handed over. The image is not downloaded again:
+    // once a host or pool holding it is back, it can be.
+    bail!(
+        "no copy of the image could be had{}: once a host or pool holding one is back, try again",
+        match failures.is_empty() {
+            true => String::new(),
+            false => format!(" ({})", failures.join("; ")),
+        }
+    );
 }
 
 /// Has `host` copy the image from a shared pool's store into its own.
@@ -610,30 +596,61 @@ pub async fn deleted(
     .await;
 }
 
-/// Every hour (on the leader): every host's store, and every shared pool's
-/// (through a host that reaches it), let go of images that no longer exist,
-/// and of what downloads and copies cut off left.
+/// On the leader: images whose adding stopped fail (every few minutes), and
+/// every hour every host's store, and every shared pool's (through a host
+/// that reaches it), let go of images that no longer exist, and of what
+/// stores and copies cut off left.
 pub async fn prune(state: AppState) {
+    let mut last = tokio::time::Instant::now();
     loop {
-        tokio::time::sleep(PRUNE_EVERY).await;
-        if let Err(e) = prune_once(&state).await {
-            tracing::warn!(error = %format!("{e:#}"), "pruning image stores");
+        tokio::time::sleep(STALLED_EVERY).await;
+        if let Err(e) = fail_stalled(&state).await {
+            tracing::warn!(error = %format!("{e:#}"), "looking for images whose adding stopped");
+        }
+        if last.elapsed() >= PRUNE_EVERY {
+            last = tokio::time::Instant::now();
+            if let Err(e) = prune_once(&state).await {
+                tracing::warn!(error = %format!("{e:#}"), "pruning image stores");
+            }
         }
     }
 }
 
-/// An upload no part reached for this long fails (what arrived goes).
-const UPLOAD_STALE: Duration = Duration::from_secs(24 * 3600);
+/// How often images whose adding stopped are looked for.
+const STALLED_EVERY: Duration = Duration::from_secs(120);
+/// A download no part of which came for this long fails: the controller
+/// downloading it went away (nothing else will go on with it).
+const DOWNLOAD_STALLED: Duration = Duration::from_secs(10 * 60);
+/// An upload no part reached for this long fails.
+const UPLOAD_STALLED: Duration = Duration::from_secs(24 * 3600);
 
-async fn prune_once(state: &AppState) -> Result<()> {
-    let before = chrono::Utc::now() - UPLOAD_STALE;
-    for image in mst_db::images::stale_uploads(&state.db, before).await? {
-        let why = "the upload stopped: no part of it arrived for a day";
+/// Fails images whose file stopped coming, or whose store stopped without
+/// saying how: nothing goes on with them. What came goes.
+async fn fail_stalled(state: &AppState) -> Result<()> {
+    let now = chrono::Utc::now();
+    let stalled =
+        mst_db::images::stalled(&state.db, now - DOWNLOAD_STALLED, now - UPLOAD_STALLED).await?;
+    for image in stalled {
+        let why = match image.uploaded() {
+            true => "the upload stopped: no part of it arrived for a day",
+            false => "the download stopped (cut off as a controller went away)",
+        };
         if mst_db::images::failed(&state.db, image.id, why).await? {
-            tracing::info!(image = %image.id, "an upload stopped");
+            tracing::info!(image = %image.id, why, "adding an image stopped");
             remove_leftover(state, image.id).await;
         }
     }
+    for id in mst_db::images::stopped_stores(&state.db).await? {
+        let why = "storing it stopped without saying why";
+        if mst_db::images::failed(&state.db, id, why).await? {
+            tracing::info!(image = %id, "storing an image stopped");
+            remove_leftover(state, id).await;
+        }
+    }
+    Ok(())
+}
+
+async fn prune_once(state: &AppState) -> Result<()> {
     let listed_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();

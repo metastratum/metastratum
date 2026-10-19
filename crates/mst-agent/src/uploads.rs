@@ -1,7 +1,8 @@
-//! Images uploaded to this host: a file per image in `<data dir>/uploads`,
-//! written as its parts arrive (ReceiveImage), until it is added to a store
-//! (FetchImage, `uploaded`) or the image is deleted. Uploads left behind
-//! (cut off, their image gone while this host was away) are pruned.
+//! Images coming to this host (uploaded, or downloaded by the controller):
+//! a file per image in `<data dir>/uploads`, written as its parts arrive
+//! (ReceiveImage), until it is added to a store (StoreImage) or the image is
+//! deleted. Files left behind (cut off, their image gone while this host
+//! was away) are pruned.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -23,9 +24,10 @@ pub fn path(data_dir: &Path, image_id: &str) -> Result<PathBuf> {
     Ok(dir(data_dir).join(format!("{}.upload", id.hyphenated())))
 }
 
-/// Writes a part of the image's upload at `offset`: one at 0 starts it
-/// over, one beyond what is here is not written (a part was lost: the
-/// controller sends from what is here). Returns how much of it is here.
+/// Writes a part of the image's file at `offset` (`total`: its size, or 0
+/// when not known): one at 0 starts it over, one beyond what is here is not
+/// written (a part was lost: the controller sends from what is here).
+/// Returns how much of it is here.
 pub async fn receive(
     data_dir: &Path,
     image_id: &str,
@@ -34,15 +36,15 @@ pub async fn receive(
     total: u64,
     max_bytes: u64,
 ) -> Result<u64> {
-    if total > max_bytes {
+    let end = offset + data.len() as u64;
+    if total > max_bytes || end > max_bytes {
         bail!(
             "the image is larger than the {} GiB this host takes",
             max_bytes >> 30
         );
     }
-    let end = offset + data.len() as u64;
-    if end > total {
-        bail!("a part beyond the upload's {total} bytes");
+    if total > 0 && end > total {
+        bail!("a part beyond the file's {total} bytes");
     }
     let path = path(data_dir, image_id)?;
     {
@@ -135,6 +137,9 @@ mod tests {
         // Past the end, or too large for this host.
         assert!(receive(&dir, &id, 9, b"kl", 10, max).await.is_err());
         assert!(receive(&dir, &id, 0, b"a", max + 1, max).await.is_err());
+        // Of a size not known: up to what this host takes.
+        assert_eq!(receive(&dir, &id, 10, b"k", 0, max).await.unwrap(), 11);
+        assert!(receive(&dir, &id, max, b"z", 0, max).await.is_err());
         // Started over.
         assert_eq!(receive(&dir, &id, 0, b"xy", 3, max).await.unwrap(), 2);
         assert_eq!(tokio::fs::read(&p).await.unwrap(), b"xy");

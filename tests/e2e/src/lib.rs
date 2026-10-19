@@ -221,6 +221,40 @@ impl Api {
         }
     }
 
+    /// Waits for an image being added to be done: ready, or failed. Its
+    /// file comes to a host (downloaded by the controller, or uploaded),
+    /// which then stores it.
+    pub async fn wait_image(&self, id: &str, timeout: Duration) -> Result<Value> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let images = self.get("/images").await?;
+            let img = images
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|i| i["id"] == id)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no image {id}"))?;
+            if matches!(img["state"].as_str(), Some("ready" | "failed")) {
+                return Ok(img);
+            }
+            if Instant::now() > deadline {
+                bail!("image {id} still {} after {timeout:?}", img["state"]);
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    /// Waits for an image being added to be ready (failing if adding it
+    /// failed).
+    pub async fn wait_image_ready(&self, id: &str, timeout: Duration) -> Result<Value> {
+        let img = self.wait_image(id, timeout).await?;
+        if img["state"] != "ready" {
+            bail!("adding image {id} failed: {img}");
+        }
+        Ok(img)
+    }
+
     /// Polls a VM until `pred` holds.
     pub async fn wait_vm(
         &self,

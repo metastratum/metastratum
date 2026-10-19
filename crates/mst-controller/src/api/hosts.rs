@@ -61,6 +61,9 @@ pub struct HostView {
     physical_networks: Vec<String>,
     agent_version: String,
     vm_count: usize,
+    /// Images it holds the only copy of: they go with it, as nothing
+    /// downloads an image again (Evacuate copies them to other hosts).
+    sole_images: Vec<String>,
     /// Memory kept for the VMs meant to run here (at the most each may grow
     /// to); stopped ones keep none.
     allocated_memory_mib: u64,
@@ -113,7 +116,16 @@ async fn list_hosts(State(state): State<AppState>, p: Principal) -> ApiResult<Js
             .map(|v| v.name.clone())
             .collect();
         let vms = mst_db::vms::list_on_host(&state.db, h.id).await?;
+        let sole_images = match h.state.as_str() {
+            "decommissioned" => vec![],
+            _ => mst_db::images::only_on_host(&state.db, h.id)
+                .await?
+                .into_iter()
+                .map(|i| i.name)
+                .collect(),
+        };
         out.push(HostView {
+            sole_images,
             cluster_name: h.cluster_id.and_then(|c| clusters.get(&c).cloned()),
             cluster_id: h.cluster_id,
             connected: h.is_live(),
@@ -313,7 +325,8 @@ pub struct EvacuateRef {
 }
 
 /// Puts a host in maintenance and live-migrates its running VMs to other
-/// hosts of its cluster, one at a time. Stopped VMs stay.
+/// hosts of its cluster, one at a time. Stopped VMs stay. Images it holds
+/// the only copy of are copied to other hosts.
 #[utoipa::path(post, path = "/hosts/{id}/evacuate", tag = "hosts", params(("id" = HostId, Path)),
     responses((status = 202, body = EvacuateRef), (status = 403), (status = 404), (status = 409)))]
 async fn evacuate_host(
@@ -323,7 +336,7 @@ async fn evacuate_host(
 ) -> ApiResult<(StatusCode, Json<EvacuateRef>)> {
     authorize(&state.db, &p, Perm::InfraWrite, p.tenant_id).await?;
     let host = mst_db::hosts::get(&state.db, id).await?;
-    if host.cluster_id.is_none() {
+    if host.cluster_id.is_none() && !mst_db::vms::list_on_host(&state.db, id).await?.is_empty() {
         return Err(ApiError::conflict(
             "the host is in no cluster, so its VMs have nowhere to go",
         ));
@@ -528,12 +541,32 @@ async fn decommission_host(
             "{disks} disks are on the host's storage: move or delete them before decommissioning it"
         )));
     }
+    // Images only it holds: nothing downloads them again. A host that is up
+    // hands them over first (Evacuate); one that is not took them along.
+    let sole = mst_db::images::only_on_host(&state.db, id).await?;
+    let names = sole
+        .iter()
+        .map(|i| i.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !sole.is_empty() && host.is_live() {
+        return Err(ApiError::conflict(format!(
+            "the host holds the only copy of {} image(s) ({names}): evacuate it first, which copies them to other hosts",
+            sole.len()
+        )));
+    }
     let mut report = DecommissionReport {
         host_cleanup: vec![],
         host_failures: vec![],
         certificates_revoked: 0,
         notes: vec![],
     };
+    if !sole.is_empty() {
+        report.notes.push(format!(
+            "It held the only copy of {} image(s), now gone: {names}. Delete them and add them again.",
+            sole.len()
+        ));
+    }
 
     if !q.wipe {
         report.notes.push(

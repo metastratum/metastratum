@@ -300,33 +300,28 @@ impl ImageStore {
         Ok(Some(stored))
     }
 
-    /// Adds an image to the store (downloaded, or a file here), converted
-    /// to qcow2, unless it is here already. See [`crate::fetch`] for what
-    /// images may not do. With `digest`, the image must hold that.
-    pub async fn fetch(
+    /// Adds an image to the store from a file this host received (see
+    /// [`crate::fetch`] for what images may not do), converted to qcow2,
+    /// unless it is here already.
+    pub async fn add(
         &self,
         tenant_path: &str,
         id: &str,
-        src: &crate::ImageSource<'_>,
+        file: &Path,
         format: &str,
         policy: FetchPolicy,
-        digest: Option<&str>,
     ) -> Result<StoredImage> {
         let dest = self.path(tenant_path, id)?;
         let lock = lock(id);
         let _held = lock.lock().await;
-        if let Some(stored) = self.existing(tenant_path, id, digest).await? {
+        if let Some(stored) = self.existing(tenant_path, id, None).await? {
             return Ok(stored);
         }
         self.make_dir(tenant_path).await?;
-        let unique = random_suffix();
-        let part = dest.with_extension(format!("{unique}.part"));
-        let converted = dest.with_extension(format!("{unique}.tmp"));
-        let _left = Leftovers(vec![part.clone(), converted.clone()]);
-        let sha256 = crate::fetch(src, format, &part, &converted, "qcow2", policy).await?;
-        let _ = tokio::fs::remove_file(&part).await;
+        let converted = dest.with_extension(format!("{}.tmp", random_suffix()));
+        let _left = Leftovers(vec![converted.clone()]);
+        let sha256 = crate::import(file, format, &converted, "qcow2", policy).await?;
         let got = digest_file(&converted, &self.scratch).await?;
-        check_digest(id, &got, digest)?;
         set_mode(&converted, 0o600).await?;
         if publish(&converted, &dest).await? {
             let meta = Meta {

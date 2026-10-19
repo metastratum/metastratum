@@ -43,16 +43,17 @@ The boundaries metastratum enforces:
   A console session needs a ticket that is single-use, valid for 30
   seconds, and tied to the user and VM it was issued for.
 - **Between tenants' input and the infrastructure.** Images that tenants
-  add are fetched only from public internet addresses (checked when
-  connecting, so redirects and DNS tricks do not get around it), capped in
-  size, and refused if they refer to other files (backing files, external
-  data files) or describe a disk larger than the host's largest download
-  (checked before unpacking); `qemu-img` runs under resource limits, its output
-  capped at that size. An image is downloaded once, as it is added (two
-  of a tenant's at a time, with time limits); hosts copy it from each
-  other from then on, each copy checked against the digest of the disk
-  first downloaded, as is a download again. VMs' disks are copies of
-  their own. Identity providers
+  add from a URL are downloaded by the controller, only from public
+  internet addresses (checked when connecting, so redirects and DNS tricks
+  do not get around it), as they are added and never again (no URL is
+  kept). An image's file, downloaded or uploaded, comes to one host in
+  parts, capped in size, and is refused there if it refers to other files
+  (backing files, external data files) or describes a disk larger than the
+  host's largest image (checked before unpacking); `qemu-img` runs under
+  resource limits, its output capped at that size. Two of a tenant tree's
+  images are added at a time, with time limits; hosts copy an image from
+  each other from then on, each copy checked against the digest of the
+  disk first stored. VMs' disks are copies of their own. Identity providers
   configured by sub-tenants likewise must be on public addresses.
 
 ## How it is protected
@@ -126,7 +127,7 @@ The boundaries metastratum enforces:
   it, and the server stops after one copy (or after 13 hours, longer than
   any copy is waited for, should the controller not end it). Images are
   copied between hosts the same way, and every copy is checked against the
-  digest of what was first downloaded. The controller reaches
+  digest of what was first stored. The controller reaches
   OVN's northbound database over TLS with a client certificate from a CA
   that issues to controllers only; hosts reach the southbound one with
   certificates from another CA, naming their chassis, under OVN's RBAC

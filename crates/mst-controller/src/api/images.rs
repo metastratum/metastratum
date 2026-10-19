@@ -3,7 +3,7 @@ use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use mst_core::ids::{HostId, ImageId, LOCAL_POOL, StoragePoolId, TaskId, TenantId};
+use mst_core::ids::{HostId, ImageId, LOCAL_POOL, StoragePoolId, TenantId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
@@ -18,7 +18,6 @@ pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list_images, create_image))
         .routes(routes!(delete_image))
-        .routes(routes!(download_image))
         .routes(routes!(upload_image).layer(DefaultBodyLimit::max(MAX_PART)))
 }
 
@@ -27,18 +26,19 @@ pub struct ImageView {
     id: ImageId,
     tenant_id: TenantId,
     name: String,
-    /// Where it is downloaded from; empty for an uploaded image.
-    source_url: String,
+    /// `download` (from a URL, by the controller, as it was added: the URL
+    /// is kept nowhere) or `upload`.
+    origin: String,
     /// `qcow2` or `raw`.
     format: String,
     /// What VMs made from it run: `linux` or `windows`.
     os: String,
-    /// An uploaded image's size, and how much of it has arrived (see
-    /// `PUT /images/{id}/upload`).
+    /// The size of its file, as it came (an upload's from the start, a
+    /// download's once known), and, while it is coming, how much has.
     #[serde(skip_serializing_if = "Option::is_none")]
-    upload_bytes: Option<i64>,
+    file_bytes: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    uploaded_bytes: Option<i64>,
+    received_bytes: Option<i64>,
     /// Usable by the owning tenant's descendants too.
     shared: bool,
     /// What VMs made from it get unless told otherwise: UEFI Secure Boot,
@@ -51,16 +51,17 @@ pub struct ImageView {
     #[serde(skip_serializing_if = "Option::is_none")]
     admin_user: Option<String>,
     created_at: DateTime<Utc>,
-    /// `uploading` (its parts arriving), `downloading` (being added to its
-    /// pool, from its URL or its upload: VMs made from it meanwhile wait
-    /// for it), `ready`, or `failed` (see `error`; it can be downloaded,
-    /// or uploaded, again).
+    /// Being added: `downloading` or `uploading` (its file coming to the
+    /// host picked for it), `storing` (that host checking it and adding it
+    /// to its pool); then `ready`, or `failed` (see `error`: for good;
+    /// delete it and add it again). VMs made from one being downloaded or
+    /// stored wait for it.
     state: String,
-    /// Why downloading it failed.
+    /// Why adding it failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
-    /// `downloading`, but no task is downloading it (what was ended without
-    /// saying how): it can be downloaded again.
+    /// `storing`, but no task is storing it (what was ended without saying
+    /// how): failed, in effect (it fails within minutes).
     stuck: bool,
     /// Its size, stored (qcow2).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,11 +70,11 @@ pub struct ImageView {
     /// as large.
     #[serde(skip_serializing_if = "Option::is_none")]
     virtual_bytes: Option<i64>,
-    /// SHA-256 of the file downloaded from `source_url`.
+    /// SHA-256 of the file as it came.
     #[serde(skip_serializing_if = "Option::is_none")]
     sha256: Option<String>,
-    /// SHA-256 of the disk it holds, read as a raw disk: every copy, and a
-    /// download again, is checked against it.
+    /// SHA-256 of the disk it holds, read as a raw disk: every copy is
+    /// checked against it.
     #[serde(skip_serializing_if = "Option::is_none")]
     digest: Option<String>,
     /// The hosts holding a copy on their local disk (VMs made from it on
@@ -89,17 +90,18 @@ pub struct ImageView {
 impl ImageView {
     fn new(i: mst_db::images::Image, hosts: Vec<String>, pool_name: String, stuck: bool) -> Self {
         Self {
-            stuck: stuck && i.state == "downloading",
+            stuck: stuck && i.state == "storing",
             storage_pool_id: i.storage_pool_id,
             storage_pool_name: pool_name,
             id: i.id,
             tenant_id: i.tenant_id,
             name: i.name,
-            source_url: i.source_url,
+            received_bytes: matches!(i.state.as_str(), "downloading" | "uploading")
+                .then_some(i.received_bytes),
+            origin: i.origin,
+            file_bytes: i.file_bytes,
             format: i.format,
             os: i.os,
-            upload_bytes: i.upload_bytes,
-            uploaded_bytes: i.upload_bytes.map(|_| i.uploaded_bytes),
             shared: i.shared,
             secure_boot: i.secure_boot,
             tpm: i.tpm,
@@ -119,7 +121,7 @@ impl ImageView {
 async fn views(state: &AppState, images: Vec<mst_db::images::Image>) -> ApiResult<Vec<ImageView>> {
     let ids: Vec<ImageId> = images.iter().map(|i| i.id).collect();
     let mut hosts = mst_db::images::copy_hosts(&state.db, &ids).await?;
-    let under_way = mst_db::images::downloads_under_way(&state.db, &ids).await?;
+    let under_way = mst_db::images::stores_under_way(&state.db, &ids).await?;
     let pools: std::collections::HashMap<StoragePoolId, String> =
         mst_db::storage_pools::list(&state.db)
             .await?
@@ -162,8 +164,9 @@ async fn list_images(
 pub struct CreateImage {
     tenant_id: Option<TenantId>,
     name: String,
-    /// HTTP(S) URL a host downloads the image from, as it is added. Or
-    /// none, with `upload_bytes`.
+    /// HTTP(S) URL the controller downloads the image from, as it is added
+    /// (and only then: the URL is kept nowhere). Or none, with
+    /// `upload_bytes`.
     #[serde(default)]
     source_url: Option<String>,
     /// The size of a file to upload instead (bytes), in parts: see
@@ -197,39 +200,45 @@ pub struct CreateImage {
     storage_pool_id: Option<StoragePoolId>,
 }
 
-#[derive(Serialize, ToSchema)]
-pub struct CreatedImage {
-    /// The download; none for an upload, whose last part starts adding it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    task_id: Option<TaskId>,
-    #[serde(flatten)]
-    image: ImageView,
-}
-
-/// Adds an image: a host downloads it into the image store of the pool it
-/// is kept in (the task): its own local disk (a host picked at random), or
-/// a shared pool, which its hosts make disks from directly. Other hosts copy
-/// it from there to make VMs from it. With `upload_bytes` instead of a URL,
-/// it is uploaded (`PUT /images/{id}/upload`) to such a host, picked now,
-/// and once all of it has arrived added as a download is.
+/// Adds an image. Its file comes to a host that can keep it in its pool
+/// (picked at random; for a shared pool, one attached to it): downloaded
+/// from `source_url` by the controller (in the background: follow
+/// `state`), or uploaded in parts (`PUT /images/{id}/upload`) with
+/// `upload_bytes`. Once all of it is there, the host checks it and adds it
+/// to the pool's image store (its own local disk, or the shared pool,
+/// which its hosts make disks from directly). Other hosts copy it from
+/// there to make VMs from it. It is downloaded as it is added, and never
+/// again: the URL is kept nowhere.
 #[utoipa::path(post, path = "/images", tag = "images", request_body = CreateImage,
-    responses((status = 201, body = CreatedImage), (status = 400), (status = 409)))]
+    responses((status = 201, body = ImageView), (status = 400), (status = 409)))]
 async fn create_image(
     State(state): State<AppState>,
     p: Principal,
     Json(req): Json<CreateImage>,
-) -> ApiResult<(StatusCode, Json<CreatedImage>)> {
+) -> ApiResult<(StatusCode, Json<ImageView>)> {
     let tenant = req.tenant_id.unwrap_or(p.tenant_id);
     authorize(&state.db, &p, Perm::ImageWrite, tenant).await?;
     if req.name.trim().is_empty() || req.name.len() > 128 {
         return Err(ApiError::bad_request("name must be 1-128 characters"));
     }
     let source_url = match (&req.source_url, req.upload_bytes) {
-        (Some(url), None) if url.starts_with("http://") || url.starts_with("https://") => {
-            url.as_str()
+        (Some(url), None) => {
+            // Refused at once where it can be (a tenant's image from a
+            // private address); names are checked as they are resolved.
+            let parsed = reqwest::Url::parse(url)
+                .map_err(|e| ApiError::bad_request(format!("source_url: {e}")))?;
+            let policy = mst_storage::FetchPolicy {
+                allow_private: mst_db::tenants::get(&state.db, tenant)
+                    .await?
+                    .parent_id
+                    .is_none(),
+                ..mst_storage::FetchPolicy::default()
+            };
+            mst_storage::check_url(&parsed, policy)
+                .map_err(|e| ApiError::bad_request(format!("source_url: {e}")))?;
+            Some(url.as_str())
         }
-        (Some(_), None) => return Err(ApiError::bad_request("source_url must be an http(s) URL")),
-        (None, Some(n)) if n > 0 && n <= i64::MAX as u64 => "",
+        (None, Some(n)) if n > 0 && n <= i64::MAX as u64 => None,
         (None, Some(_)) => return Err(ApiError::bad_request("upload_bytes must be more than 0")),
         _ => {
             return Err(ApiError::bad_request(
@@ -256,10 +265,7 @@ async fn create_image(
     if !super::storage_pools::may_use(&state, tenant, &pool).await? {
         return Err(ApiError::not_found("storage pool"));
     }
-    let upload_host = match req.upload_bytes {
-        Some(_) => Some(upload_host(&state, &pool).await?),
-        None => None,
-    };
+    let host = receiving_host(&state, &pool).await?;
     let mut tx = state.db.begin().await?;
     may_download(&mut tx, tenant).await?;
     let image = mst_db::images::create(
@@ -267,7 +273,11 @@ async fn create_image(
         mst_db::images::NewImage {
             tenant_id: tenant,
             name: req.name.trim(),
-            source_url,
+            origin: if source_url.is_some() {
+                "download"
+            } else {
+                "upload"
+            },
             format: &req.format,
             shared: req.shared,
             storage_pool_id: pool.id,
@@ -275,39 +285,40 @@ async fn create_image(
             secure_boot: req.secure_boot,
             tpm: req.tpm,
             admin_user,
-            upload_bytes: req.upload_bytes.map(|n| n as i64),
-            upload_host,
+            file_bytes: req.upload_bytes.map(|n| n as i64),
+            host,
         },
     )
     .await?;
-    let task_id = match image.uploaded() {
-        true => None,
-        false => Some(enqueue_download(&mut tx, &p, &image).await?),
-    };
     tx.commit().await?;
+    if let Some(url) = source_url {
+        crate::receive::download(
+            state.clone(),
+            image.clone(),
+            url.to_owned(),
+            Some(p.user_id),
+        );
+    }
     audit(
         &state.db,
         Some(&p),
         Some(tenant),
         "image.create",
         Some(("image", image.id.0)),
-        json!({"name": image.name, "url": image.source_url, "upload_bytes": image.upload_bytes,
+        json!({"name": image.name, "url": source_url, "upload_bytes": req.upload_bytes,
                "storage_pool": pool.name, "os": image.os,
                "secure_boot": image.secure_boot, "tpm": image.tpm, "admin_user": image.admin_user}),
     )
     .await;
     Ok((
         StatusCode::CREATED,
-        Json(CreatedImage {
-            task_id,
-            image: ImageView::new(image, vec![], pool.name, false),
-        }),
+        Json(ImageView::new(image, vec![], pool.name, false)),
     ))
 }
 
-/// A host to upload an image to: one that can take it into the pool's
-/// store (connected, and reaching a shared pool), at random.
-async fn upload_host(state: &AppState, pool: &mst_db::storage_pools::Pool) -> ApiResult<HostId> {
+/// A host for an image's file to come to: one that can take it into the
+/// pool's store (connected, and reaching a shared pool), at random.
+async fn receiving_host(state: &AppState, pool: &mst_db::storage_pools::Pool) -> ApiResult<HostId> {
     let hosts: Vec<_> = crate::engine::store_hosts(state)
         .await
         .map_err(ApiError::internal)?
@@ -316,7 +327,7 @@ async fn upload_host(state: &AppState, pool: &mst_db::storage_pools::Pool) -> Ap
         .collect();
     if hosts.is_empty() {
         return Err(ApiError::unavailable(match pool.kind.as_str() {
-            "local" => "no connected host to upload the image to".to_owned(),
+            "local" => "no connected host to keep the image".to_owned(),
             _ => format!("no connected host reaches {}", pool.name),
         }));
     }
@@ -325,28 +336,27 @@ async fn upload_host(state: &AppState, pool: &mst_db::storage_pools::Pool) -> Ap
 
 /// The most one request may carry of an upload.
 const MAX_PART: usize = 32 << 20;
-/// What goes to the host in one command (within what gRPC takes).
-const PIECE: usize = 2 << 20;
 
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct UploadQuery {
     /// Where the part goes in the file: as much of it as has arrived
-    /// (`uploaded_bytes`). 0 starts a failed upload over.
+    /// (`received_bytes`).
     offset: u64,
 }
 
 /// Uploads a part of an image added with `upload_bytes`: the next up to
 /// 32 MiB of the file, as the request's body, from `offset` (what has
-/// arrived: `uploaded_bytes`). Parts go to the host picked for it as they
+/// arrived: `received_bytes`). Parts go to the host picked for it as they
 /// come. Once all of it has arrived, it is added to its pool as a download
 /// is (`downloading`, then `ready`), checked the same way. An upload no part
-/// reaches for a day fails. A failed upload is started over from offset 0.
+/// reaches for a day fails. A failed upload has failed for good: delete it
+/// and add it again.
 #[utoipa::path(put, path = "/images/{id}/upload", tag = "images",
     params(("id" = ImageId, Path), UploadQuery),
     request_body(content = Vec<u8>, content_type = "application/octet-stream"),
     responses((status = 200, body = ImageView), (status = 400), (status = 404),
-        (status = 409, description = "Not being uploaded, or the part is not the next one: see `uploaded_bytes`"),
+        (status = 409, description = "Not being uploaded, or the part is not the next one: see `received_bytes`"),
         (status = 413, description = "A part larger than 32 MiB"), (status = 503)))]
 async fn upload_image(
     State(state): State<AppState>,
@@ -357,38 +367,24 @@ async fn upload_image(
 ) -> ApiResult<Json<ImageView>> {
     let image = mst_db::images::get(&state.db, id).await?;
     authorize_resource(&state.db, &p, Perm::ImageWrite, image.tenant_id, "image").await?;
-    let Some(total) = image.upload_bytes.map(|n| n as u64) else {
-        return Err(ApiError::conflict(
-            "the image is downloaded from its URL, not uploaded",
-        ));
-    };
+    if !image.uploaded() {
+        return Err(ApiError::conflict("the image is downloaded, not uploaded"));
+    }
+    let total = image.file_bytes.unwrap_or_default() as u64;
     // Held until the part is through: parts arrive one after the other.
     let mut tx = state.db.begin().await?;
-    let mut image = mst_db::images::get_for_update(&mut tx, id).await?;
-    if image.state == "failed" && q.offset == 0 {
-        let pool = mst_db::storage_pools::get(&mut *tx, image.storage_pool_id).await?;
-        if !super::storage_pools::may_use(&state, image.tenant_id, &pool).await? {
-            return Err(ApiError::conflict(format!(
-                "the tenant may no longer use storage pool {}; add the image again, kept elsewhere",
-                pool.name
-            )));
-        }
-        may_download(&mut tx, image.tenant_id).await?;
-        let host = upload_host(&state, &pool).await?;
-        mst_db::images::upload_again(&mut *tx, id, host).await?;
-        image = mst_db::images::get_for_update(&mut tx, id).await?;
-    }
+    let image = mst_db::images::get_for_update(&mut tx, id).await?;
     match image.state.as_str() {
         "uploading" => {}
         "failed" => {
             return Err(ApiError::conflict(format!(
-                "uploading it failed ({}); upload it again, from offset 0",
+                "uploading it failed ({}); delete it and add it again",
                 image.error.as_deref().unwrap_or("no reason given")
             )));
         }
         _ => return Err(ApiError::conflict("all of the image has been uploaded")),
     }
-    let here = image.uploaded_bytes as u64;
+    let here = image.received_bytes as u64;
     if q.offset != here {
         return Err(ApiError::conflict(format!(
             "{here} bytes of the image have arrived: send the part from offset {here}"
@@ -406,39 +402,25 @@ async fn upload_image(
     let host = image.download_host_id.ok_or_else(|| {
         ApiError::conflict("the host the upload went to is gone; upload it again")
     })?;
-    #[derive(Deserialize)]
-    struct Received {
-        received: u64,
-    }
-    let mut at = here;
-    for piece in body.chunks(PIECE) {
-        let cmd = mst_proto::command::Cmd::ReceiveImage(mst_proto::ReceiveImage {
-            image_id: id.to_string(),
-            offset: at,
-            data: piece.to_vec(),
-            total,
-        });
-        let got: Received = state
-            .agents
-            .query(host, cmd, std::time::Duration::from_secs(60))
-            .await
-            .map_err(|e| ApiError::unavailable(format!("the host taking the upload: {e}")))?;
-        if got.received < at + piece.len() as u64 {
-            // It has less than was sent (it lost some): sent again from there.
-            mst_db::images::uploaded_so_far(&mut *tx, id, got.received as i64).await?;
+    match crate::receive::send_part(&state, host, id, here, &body, total).await {
+        Ok(()) => {}
+        // It has less than was sent (it lost some): sent again from there.
+        Err(crate::receive::PartError::Behind(had)) => {
+            mst_db::images::received_so_far(&mut *tx, id, had as i64).await?;
             tx.commit().await?;
             return Err(ApiError::conflict(format!(
-                "the host has {0} bytes of the image: send the part from offset {0}",
-                got.received
+                "the host has {had} bytes of the image: send the part from offset {had}"
             )));
         }
-        at += piece.len() as u64;
+        Err(crate::receive::PartError::Failed(e)) => {
+            return Err(ApiError::unavailable(format!("{e:#}")));
+        }
     }
-    mst_db::images::uploaded_so_far(&mut *tx, id, end as i64).await?;
-    let done = end == total && mst_db::images::upload_done(&mut *tx, id).await?;
-    if done {
-        enqueue_download(&mut tx, &p, &image).await?;
-    }
+    mst_db::images::received_so_far(&mut *tx, id, end as i64).await?;
+    let done = end == total
+        && crate::receive::done(&mut tx, &image, total, Some(p.user_id))
+            .await
+            .map_err(ApiError::internal)?;
     tx.commit().await?;
     if done {
         audit(
@@ -491,83 +473,6 @@ async fn may_download(tx: &mut mst_db::sqlx::PgConnection, tenant: TenantId) -> 
         )));
     }
     Ok(())
-}
-
-async fn enqueue_download(
-    tx: &mut mst_db::sqlx::PgConnection,
-    p: &Principal,
-    image: &mst_db::images::Image,
-) -> ApiResult<TaskId> {
-    Ok(mst_db::tasks::enqueue(
-        &mut *tx,
-        mst_db::tasks::NewTask {
-            tenant_id: image.tenant_id,
-            kind: "image.download",
-            target: Some(("image", image.id.0)),
-            params: json!({}),
-            created_by: Some(p.user_id),
-        },
-    )
-    .await?
-    .id)
-}
-
-#[derive(Serialize, ToSchema)]
-pub struct DownloadTask {
-    task_id: TaskId,
-}
-
-/// Downloads the image again: after downloading it failed, or when no
-/// host holds a copy any more (each was decommissioned). Downloaded again,
-/// it must be the file first downloaded, if one was.
-#[utoipa::path(post, path = "/images/{id}/download", tag = "images", params(("id" = ImageId, Path)),
-    responses((status = 202, body = DownloadTask), (status = 404),
-              (status = 409, description = "Being downloaded, or held by a host")))]
-async fn download_image(
-    State(state): State<AppState>,
-    p: Principal,
-    Path(id): Path<ImageId>,
-) -> ApiResult<(StatusCode, Json<DownloadTask>)> {
-    let image = mst_db::images::get(&state.db, id).await?;
-    authorize_resource(&state.db, &p, Perm::ImageWrite, image.tenant_id, "image").await?;
-    let mut tx = state.db.begin().await?;
-    let image = mst_db::images::get_for_update(&mut tx, id).await?;
-    if image.uploaded() {
-        return Err(ApiError::conflict(
-            "the image was uploaded: upload it again (from offset 0)",
-        ));
-    }
-    match image.state.as_str() {
-        // Unless what was downloading it ended without saying how.
-        "downloading" if mst_db::images::download_under_way(&mut *tx, id).await? => {
-            return Err(ApiError::conflict("the image is being downloaded"));
-        }
-        "ready" if !mst_db::images::copies(&mut *tx, id).await?.is_empty() => {
-            return Err(ApiError::conflict("hosts hold the image already"));
-        }
-        _ => {}
-    }
-    let pool = mst_db::storage_pools::get(&mut *tx, image.storage_pool_id).await?;
-    if !super::storage_pools::may_use(&state, image.tenant_id, &pool).await? {
-        return Err(ApiError::conflict(format!(
-            "the tenant may no longer use storage pool {}; add the image again, kept elsewhere",
-            pool.name
-        )));
-    }
-    may_download(&mut tx, image.tenant_id).await?;
-    mst_db::images::downloading(&mut *tx, id).await?;
-    let task_id = enqueue_download(&mut tx, &p, &image).await?;
-    tx.commit().await?;
-    audit(
-        &state.db,
-        Some(&p),
-        Some(image.tenant_id),
-        "image.download",
-        Some(("image", id.0)),
-        json!({"name": image.name, "url": image.source_url, "storage_pool_id": image.storage_pool_id}),
-    )
-    .await;
-    Ok((StatusCode::ACCEPTED, Json(DownloadTask { task_id })))
 }
 
 /// Deletes an image, and every copy of it. VMs made from it keep their

@@ -64,7 +64,7 @@ export async function upload(image: Image, file: File, from: number, tenant: str
       if (res.status === 409) {
         const now = await arrivedIn(image.id, tenant)
         if (now.state !== 'uploading' || ++failures >= 5) throw await failure(res)
-        entry.sent = now.uploaded_bytes ?? 0
+        entry.sent = now.received_bytes ?? 0
         continue
       }
       throw await failure(res)

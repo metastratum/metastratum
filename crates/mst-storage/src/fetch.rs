@@ -1,13 +1,13 @@
-//! Downloading images safely.
+//! Downloading images safely, and checking what came.
 //!
 //! Image URLs come from tenants and the files are hostile until proven
 //! otherwise:
 //!
-//! - Hosts sit on the management network. A tenant's URL must not make a host
-//!   fetch from it (and hand the response back as a bootable image), so tenant
-//!   downloads only connect to public addresses. The check runs on the
-//!   addresses actually connected to, for redirects too, so DNS tricks do not
-//!   get around it.
+//! - The controller downloading them sits on the management network. A
+//!   tenant's URL must not make it fetch from there (and hand the response
+//!   back as a bootable image), so tenant downloads only connect to public
+//!   addresses. The check runs on the addresses actually connected to, for
+//!   redirects too, so DNS tricks do not get around it.
 //! - A qcow2 file can point at other host files: a backing file, or an
 //!   external data file. Converting it would copy those into the image. Both
 //!   are refused.
@@ -19,9 +19,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::StreamExt;
 use serde::Deserialize;
-use tokio::io::AsyncWriteExt;
 
 use crate::{Error, Result};
 
@@ -163,57 +161,84 @@ fn client(policy: FetchPolicy) -> Result<reqwest::Client> {
     b.build().map_err(|e| Error::Download(e.to_string()))
 }
 
-/// Downloads `url` to `dest`. Returns the SHA-256 of what it downloaded
-/// (hex).
-pub(crate) async fn download(url: &str, dest: &Path, policy: FetchPolicy) -> Result<String> {
-    use sha2::Digest;
-    let parsed = reqwest::Url::parse(url).map_err(|e| Error::Download(format!("{url}: {e}")))?;
-    check_url(&parsed, policy).map_err(|e| Error::Download(format!("{url}: {e}")))?;
-    let resp = client(policy)?
-        .get(parsed)
-        .send()
-        .await
-        .map_err(|e| Error::Download(chain(&e)))?;
-    if !resp.status().is_success() {
-        return Err(Error::Download(format!("{url}: HTTP {}", resp.status())));
+/// A download under way: its body, read a chunk at a time, within the
+/// policy's limits. Hosts never download (an image comes to them as a file
+/// they receive); the controller does, as an image is added.
+pub struct Download {
+    url: String,
+    resp: reqwest::Response,
+    max_bytes: u64,
+    total: u64,
+    window: (tokio::time::Instant, u64),
+}
+
+impl Download {
+    /// Connects and checks the answer: a success, and not declared larger
+    /// than the policy allows.
+    pub async fn start(url: &str, policy: FetchPolicy) -> Result<Self> {
+        let parsed =
+            reqwest::Url::parse(url).map_err(|e| Error::Download(format!("{url}: {e}")))?;
+        check_url(&parsed, policy).map_err(|e| Error::Download(format!("{url}: {e}")))?;
+        let resp = client(policy)?
+            .get(parsed)
+            .send()
+            .await
+            .map_err(|e| Error::Download(chain(&e)))?;
+        if !resp.status().is_success() {
+            return Err(Error::Download(format!("{url}: HTTP {}", resp.status())));
+        }
+        if resp.content_length().is_some_and(|n| n > policy.max_bytes) {
+            return Err(Error::Download(format!(
+                "{url}: larger than the {} GiB limit",
+                policy.max_bytes >> 30
+            )));
+        }
+        Ok(Self {
+            url: url.to_owned(),
+            resp,
+            max_bytes: policy.max_bytes,
+            total: 0,
+            window: (tokio::time::Instant::now(), 0),
+        })
     }
-    if resp.content_length().is_some_and(|n| n > policy.max_bytes) {
-        return Err(Error::Download(format!(
-            "{url}: larger than the {} GiB limit",
-            policy.max_bytes >> 30
-        )));
+
+    /// The size the server says the file has, if it does.
+    pub fn content_length(&self) -> Option<u64> {
+        self.resp.content_length()
     }
-    let mut file = tokio::fs::File::create(dest).await?;
-    let mut body = resp.bytes_stream();
-    let mut total = 0u64;
-    let mut window = (tokio::time::Instant::now(), 0u64);
-    let mut hash = sha2::Sha256::new();
-    while let Some(chunk) = body.next().await {
-        let chunk = chunk.map_err(|e| Error::Download(chain(&e)))?;
-        total += chunk.len() as u64;
-        window.1 += chunk.len() as u64;
-        if window.0.elapsed() >= SLOW_WINDOW {
-            if window.1 < SLOW_BYTES {
+
+    /// The next part of the file; none once all of it has come. A server
+    /// sending too slowly, or more than allowed, is given up on.
+    pub async fn chunk(&mut self) -> Result<Option<bytes::Bytes>> {
+        let url = &self.url;
+        let Some(chunk) = self
+            .resp
+            .chunk()
+            .await
+            .map_err(|e| Error::Download(chain(&e)))?
+        else {
+            return Ok(None);
+        };
+        self.total += chunk.len() as u64;
+        self.window.1 += chunk.len() as u64;
+        if self.window.0.elapsed() >= SLOW_WINDOW {
+            if self.window.1 < SLOW_BYTES {
                 return Err(Error::Download(format!(
                     "{url}: too slow (under {} MiB in {} minutes)",
                     SLOW_BYTES >> 20,
                     SLOW_WINDOW.as_secs() / 60
                 )));
             }
-            window = (tokio::time::Instant::now(), 0);
+            self.window = (tokio::time::Instant::now(), 0);
         }
-        if total > policy.max_bytes {
+        if self.total > self.max_bytes {
             return Err(Error::Download(format!(
                 "{url}: larger than the {} GiB limit",
-                policy.max_bytes >> 30
+                self.max_bytes >> 30
             )));
         }
-        hash.update(&chunk);
-        file.write_all(&chunk).await?;
+        Ok(Some(chunk))
     }
-    file.flush().await?;
-    file.sync_all().await?;
-    Ok(hex::encode(hash.finalize()))
 }
 
 /// The SHA-256 of a file (hex).
@@ -363,18 +388,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn downloads_come_in_chunks_within_their_limit() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let body: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/img", listener.local_addr().unwrap());
+        let served = body.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut c, _)) = listener.accept().await {
+                let mut req = [0u8; 4096];
+                let _ = c.read(&mut req).await;
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    served.len()
+                );
+                let _ = c.write_all(head.as_bytes()).await;
+                let _ = c.write_all(&served).await;
+            }
+        });
+        // A private address: the provider's, not a tenant's.
+        assert!(Download::start(&url, FetchPolicy::default()).await.is_err());
+        let private = FetchPolicy {
+            allow_private: true,
+            ..FetchPolicy::default()
+        };
+        let mut d = Download::start(&url, private).await.unwrap();
+        assert_eq!(d.content_length(), Some(body.len() as u64));
+        let mut got = vec![];
+        while let Some(c) = d.chunk().await.unwrap() {
+            got.extend_from_slice(&c);
+        }
+        assert_eq!(got, body);
+        // Declared larger than allowed.
+        let small = FetchPolicy {
+            max_bytes: 1000,
+            ..private
+        };
+        let err = Download::start(&url, small).await.err().unwrap();
+        assert!(err.to_string().contains("larger than"), "{err}");
+    }
+
+    #[tokio::test]
     async fn names_resolving_to_private_addresses_are_refused() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let dir = std::env::temp_dir().join(format!("mst-fetch-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // `localhost` resolves to loopback only.
-        let err = download(
-            "http://localhost:9/x",
-            &dir.join("x"),
-            FetchPolicy::default(),
-        )
-        .await
-        .unwrap_err();
+        let err = Download::start("http://localhost:9/x", FetchPolicy::default())
+            .await
+            .err()
+            .unwrap();
         assert!(err.to_string().contains("no public address"), "{err}");
         let _ = std::fs::remove_dir_all(dir);
     }

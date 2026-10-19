@@ -353,14 +353,24 @@ async function createToken() {
             <strong>Evacuate</strong>
             <p class="muted hint">
               Puts the host in maintenance and live-migrates its running VMs to other hosts of its cluster, one at a
-              time. Stopped VMs, and VMs that are not migratable, stay. Follow it in Tasks.
+              time. Stopped VMs, and VMs that are not migratable, stay. Images only this host holds are copied to
+              other hosts (they are not downloaded again). Follow it in Tasks.
+              <template v-if="managing.sole_images.length">
+                <br />Only here: {{ managing.sole_images.join(', ') }}.
+              </template>
             </p>
           </div>
           <button
             type="button"
             class="btn"
-            :disabled="!managing.cluster_id || !managing.vm_count"
-            :title="!managing.cluster_id ? 'The host is in no cluster' : !managing.vm_count ? 'No VMs to move' : undefined"
+            :disabled="(!managing.cluster_id && !!managing.vm_count) || (!managing.vm_count && !managing.sole_images.length)"
+            :title="
+              !managing.cluster_id && managing.vm_count
+                ? 'The host is in no cluster'
+                : !managing.vm_count && !managing.sole_images.length
+                  ? 'No VMs or images to move'
+                  : undefined
+            "
             @click="evacuate"
           >
             Evacuate {{ managing.name }}

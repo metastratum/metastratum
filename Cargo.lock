@@ -2231,6 +2231,7 @@ dependencies = [
 name = "mst-storage"
 version = "0.5.0"
 dependencies = [
+ "bytes",
  "futures",
  "hex",
  "reqwest",

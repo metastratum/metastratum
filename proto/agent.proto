@@ -207,7 +207,6 @@ message Command {
     ExportVolume export_volume = 46;
     EndExport end_export = 47;
     CopyVolume copy_volume = 48;
-    FetchImage fetch_image = 49;
     ExportImage export_image = 50;
     CopyImage copy_image = 51;
     VolumeFromImage volume_from_image = 52;
@@ -219,11 +218,13 @@ message Command {
     ExportTpm export_tpm = 58;
     ImportTpm import_tpm = 59;
     ReceiveImage receive_image = 60;
+    StoreImage store_image = 61;
   }
   // 10: EnsureImage, before the image store. 21: MigrateVm, peer to peer.
   // 27: LibvirtTls, which opened libvirt to other hosts for that. 28:
   // InstallCrl, for QEMU trusting the controller's CA.
-  reserved 10, 21, 27, 28;
+  // 49: FetchImage (hosts downloaded images; the controller does now).
+  reserved 10, 21, 27, 28, 49;
 }
 
 message CommandResult {
@@ -653,24 +654,26 @@ message CopyVolume {
 // N, "virtual_bytes": N, "sha256": "...", "digest": "..."}: the SHA-256 of
 // the file downloaded, and of the disk it holds (its contents as a raw
 // disk), which copies are checked against.
-message FetchImage {
+// Add an image this host received (ReceiveImage: uploaded, or downloaded
+// by the controller) to its store, or `pool`'s: checked (it refers to no
+// other files, and its disk is no larger than allowed, more for `trusted`
+// images, the provider's) and converted to qcow2, and the file received
+// then goes. An image in the store already is kept. Returns
+// {"size_bytes", "virtual_bytes", "sha256", "digest"}.
+message StoreImage {
   string image_id = 1;
   string tenant_path = 2;
-  string source_url = 3;
-  // "qcow2" or "raw": the format of the downloaded file.
-  string format = 4;
-  bool trusted = 5;
-  string digest = 6;
-  Pool pool = 7;
-  // The image was uploaded to this host (ReceiveImage), not downloaded:
-  // added from that, which then goes.
-  bool uploaded = 8;
+  // "qcow2" or "raw": the format of the file received.
+  string format = 3;
+  bool trusted = 4;
+  Pool pool = 5;
 }
 
-// A part of an image being uploaded to this host, written at `offset` into
-// the file kept for the upload; `total` is the whole upload's size. A part
-// at offset 0 starts the upload over. A part beyond what is here is not
-// written. Returns {"received": N}: how much of the upload is here.
+// A part of an image coming to this host (uploaded, or downloaded by the
+// controller), written at `offset` into the file kept for it; `total` is
+// the whole file's size, or 0 when not known. A part at offset 0 starts it
+// over. A part beyond what is here is not written. Returns
+// {"received": N}: how much of it is here.
 message ReceiveImage {
   string image_id = 1;
   uint64 offset = 2;
@@ -691,8 +694,8 @@ message ExportImage {
 
 // Copy an image into this host's store from another host serving it
 // (ExportImage), or with `source_pool` from that pool's store. The copy must
-// hold `digest` (see FetchImage), or it is thrown away. One already in the
-// store is kept. Returns as FetchImage.
+// hold `digest` (the image's, of its disk read as raw), or it is thrown
+// away. One already in the store is kept. Returns as StoreImage.
 message CopyImage {
   string image_id = 1;
   string tenant_path = 2;

@@ -624,28 +624,14 @@ impl Agent {
                 .await?;
                 return Ok(serde_json::json!({ "received": here }).to_string());
             }
-            Cmd::FetchImage(c) => {
-                let upload = match c.uploaded {
-                    true => Some(crate::uploads::path(self.pools.data_dir(), &c.image_id)?),
-                    false => None,
-                };
-                match &upload {
-                    Some(p) => {
-                        tracing::info!(image = %c.image_id, file = %p.display(), "adding an uploaded image to the store")
-                    }
-                    None => {
-                        tracing::info!(image = %c.image_id, url = %c.source_url, "downloading an image into the store")
-                    }
-                }
-                let src = match &upload {
-                    Some(p) => mst_storage::ImageSource::File(p),
-                    None => mst_storage::ImageSource::Url(&c.source_url),
-                };
+            Cmd::StoreImage(c) => {
+                let file = crate::uploads::path(self.pools.data_dir(), &c.image_id)?;
+                tracing::info!(image = %c.image_id, file = %file.display(), "adding a received image to the store");
                 let policy = mst_storage::FetchPolicy {
-                    allow_private: c.trusted,
+                    allow_private: false,
                     max_bytes: self.max_image_bytes,
                     // A tenant's image is at most as large a disk as the
-                    // largest download: a small download may unpack into
+                    // largest file it may be: a small file may unpack into
                     // a huge one, which the store would hold.
                     max_virtual_bytes: if c.trusted {
                         mst_storage::FetchPolicy::default().max_virtual_bytes
@@ -653,25 +639,21 @@ impl Agent {
                         self.max_image_bytes
                     },
                 };
-                let digest = Some(c.digest.as_str()).filter(|s| !s.is_empty());
                 let pool = self.store_pool(c.pool.as_ref()).await?;
                 let store = self.pools.store();
-                let fetch = pool.fetch_stored(
+                let add = pool.add_stored(
                     &c.tenant_path,
                     &c.image_id,
-                    &src,
+                    &file,
                     &c.format,
                     policy,
-                    digest,
                     store.scratch(),
                 );
                 let stored = self
                     .image_work
-                    .run(&c.image_id, async { Ok(fetch.await?) })
+                    .run(&c.image_id, async { Ok(add.await?) })
                     .await?;
-                if upload.is_some() {
-                    crate::uploads::remove(self.pools.data_dir(), &c.image_id).await?;
-                }
+                crate::uploads::remove(self.pools.data_dir(), &c.image_id).await?;
                 return Ok(serde_json::to_string(&stored)?);
             }
             Cmd::ExportImage(c) => return crate::transfer::export_image(self, &c).await,

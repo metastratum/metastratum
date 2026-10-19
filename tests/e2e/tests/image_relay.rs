@@ -153,8 +153,7 @@ async fn scenario(
         )
         .await?;
     let id = added["id"].as_str().unwrap().to_owned();
-    api.wait_task(added["task_id"].as_str().unwrap(), Duration::from_secs(900))
-        .await?;
+    api.wait_image_ready(&id, Duration::from_secs(900)).await?;
     assert_eq!(image(api, &id).await?["hosts"], json!([]));
 
     // On local disk in the cluster apart, whose one host does not reach
@@ -224,10 +223,7 @@ async fn odd_sized(
         )
         .await?;
     let id = added["id"].as_str().unwrap().to_owned();
-    api.wait_task(added["task_id"].as_str().unwrap(), Duration::from_secs(300))
-        .await?;
-    let img = image(api, &id).await?;
-    assert_eq!(img["state"], "ready", "{img}");
+    let img = api.wait_image_ready(&id, Duration::from_secs(300)).await?;
     assert_eq!(img["virtual_bytes"], (1 << 20) + 512, "{img}");
     // Not downloaded again: none to download from.
     server.abort();

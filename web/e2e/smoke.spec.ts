@@ -323,8 +323,8 @@ test('destructive operations say what they remove, and ask first', async ({ page
   await signIn(page)
   const run = Date.now().toString(36)
 
-  // An image that can't be downloaded: it says so and offers to try
-  // again; its dialog warns, then deletes it.
+  // An image that can't be downloaded: it says so (for good: it is
+  // deleted and added again); its dialog warns, then deletes it.
   const image = await page.request.post('/api/v1/images', {
     data: { name: `e2e-img-${run}`, source_url: 'https://example.invalid/never.qcow2', format: 'qcow2' },
   })
@@ -332,7 +332,8 @@ test('destructive operations say what they remove, and ask first', async ({ page
   await page.goto('/images')
   const row = page.getByRole('listitem').filter({ hasText: `e2e-img-${run}` })
   await expect(row.getByText('Download failed', { exact: true })).toBeVisible({ timeout: 60_000 })
-  await expect(row.getByRole('button', { name: 'Download again' })).toBeVisible()
+  await expect(row).toContainText('Delete it and add it again.')
+  await expect(row.getByRole('button', { name: 'Download again' })).toHaveCount(0)
   await row.getByRole('button', { name: 'Delete…' }).click()
   const imageDialog = page.getByRole('dialog')
   await expect(imageDialog).toContainText('Every host deletes its copy')
@@ -588,9 +589,9 @@ test('an image uploaded from a file', async ({ page }) => {
     await expect(field(dialog, 'Format')).toHaveValue('raw')
     await dialog.getByRole('button', { name: 'Add and upload' }).click()
     const row = page.getByRole('listitem').filter({ hasText: name })
-    await expect(row).toContainText('Uploaded,')
     // Checked and stored as a download is: then it shows its disk.
     await expect(row.locator('.facts')).toContainText('disk', { timeout: 3 * 60_000 })
+    await expect(row).toContainText('Uploaded,')
     await expect(row.locator('.tag.failed')).toHaveCount(0)
   } finally {
     const images = (await (await page.request.get('/api/v1/images')).json()) as { id: string; name: string }[]

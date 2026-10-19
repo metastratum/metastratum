@@ -158,11 +158,8 @@ async fn image(api: &Api, edition: &Edition, url: &str) -> anyhow::Result<Value>
                        "tpm": edition.secure}),
             )
             .await?;
-        api.wait_task(
-            added["task_id"].as_str().unwrap(),
-            Duration::from_secs(3600),
-        )
-        .await?;
+        api.wait_image_ready(added["id"].as_str().unwrap(), Duration::from_secs(3600))
+            .await?;
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(3600);
     loop {

@@ -737,18 +737,13 @@ async fn create_inner(
         }
         if image.state == "failed" {
             return Err(ApiError::conflict(format!(
-                "the image could not be {} ({}); {} it again first",
+                "the image could not be {} ({}); delete it and add it again",
                 if image.uploaded() {
                     "uploaded"
                 } else {
                     "downloaded"
                 },
                 image.error.as_deref().unwrap_or("no reason given"),
-                if image.uploaded() {
-                    "upload"
-                } else {
-                    "download"
-                },
             )));
         }
         // One being downloaded is waited for; one being uploaded may never

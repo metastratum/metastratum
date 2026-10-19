@@ -85,7 +85,7 @@ onMounted(async () => {
   networkId.value = (nets.find((n) => n.name === 'default') ?? nets[0])?.id ?? null
   groupIds.value = groups.value.filter((g) => g.name === 'default').map((g) => g.id)
   templates.value = vms.filter((v) => v.template && v.tenant_id === tenantId)
-  // One that failed to download can't make disks until downloaded again.
+  // One that failed to download makes no disks.
   images.value = images.value.filter((i) => i.state !== 'failed')
   from.value = images.value[0] ? `image:${images.value[0].id}` : templates.value[0] ? `template:${templates.value[0].id}` : ''
   poolId.value = pools.value.find((p) => p.kind === 'local')?.id ?? pools.value[0]?.id ?? null

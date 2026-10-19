@@ -32,8 +32,12 @@ A renewed certificate's predecessor is revoked as soon as the host has
 connected with the new one; controllers refuse revoked certificates.
 
 To retire a machine, move its VMs off (Evacuate), then decommission it
-(Manage on the host). Either way the host leaves its cluster and its
-certificates are revoked, and the dialog asks for the host's name:
+(Manage on the host). Evacuating also copies the images the host holds
+the only copy of to other hosts: images are not downloaded again, so they
+would go with it. Decommissioning a connected host that still holds one is
+refused; a host that is down took them along (the report names them;
+delete them and add them again). Either way the host leaves its cluster and
+its certificates are revoked, and the dialog asks for the host's name:
 
 - **Unlink** (the default) retires it in metastratum and leaves the machine as
   it is. Its agent keeps running but can no longer connect. To enroll the

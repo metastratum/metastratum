@@ -139,12 +139,25 @@ pub async fn evacuate(ctx: &TaskCtx) -> Result<()> {
             Err(e) => failures.push(format!("{}: {e}", vm.name)),
         }
     }
-    if !failures.is_empty() {
-        bail!(
-            "{} VM(s) could not be moved: {}",
-            failures.len(),
-            failures.join("; ")
-        );
+    // Images only it holds go elsewhere too (none is downloaded again).
+    let images = super::image::keep_elsewhere(ctx, host).await?;
+    if !failures.is_empty() || !images.is_empty() {
+        let mut why = vec![];
+        if !failures.is_empty() {
+            why.push(format!(
+                "{} VM(s) could not be moved: {}",
+                failures.len(),
+                failures.join("; ")
+            ));
+        }
+        if !images.is_empty() {
+            why.push(format!(
+                "{} image(s) only it holds could not be copied elsewhere: {}",
+                images.len(),
+                images.join("; ")
+            ));
+        }
+        bail!("{}", why.join("; "));
     }
     let staying: Vec<String> = bound
         .iter()

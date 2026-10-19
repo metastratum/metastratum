@@ -35,20 +35,36 @@ async fn tenant_images_are_not_fetched_from_internal_addresses() -> anyhow::Resu
         admin
             .send(Method::PUT, &format!("/tenants/{t}/grants"), Some(json!({"clusters": clusters, "storage_pools": []})))
             .await?;
-        // The controller's own API, on the management network.
+        // The controller's own API, on the management network: refused at
+        // once by address, and as it is resolved by name.
+        let (status, body) = admin
+            .try_send(
+                Method::POST,
+                "/images",
+                Some(json!({"tenant_id": t, "name": "internal", "source_url": "http://10.77.0.1:18080/healthz", "format": "raw"})),
+            )
+            .await?;
+        assert_eq!(status, 400, "{body}");
+        assert!(body["message"].as_str().unwrap_or("").contains("not a public address"), "{body}");
         let img = admin
             .post(
                 "/images",
-                json!({"tenant_id": t, "name": "internal", "source_url": "http://10.77.0.1:18080/healthz", "format": "raw"}),
+                json!({"tenant_id": t, "name": "internal", "source_url": "http://localhost:18080/healthz", "format": "raw"}),
             )
             .await?;
         let id = img["id"].as_str().unwrap();
-        admin.wait_task_end(img["task_id"].as_str().unwrap(), Duration::from_secs(120)).await?;
-        let images = admin.get(&format!("/images?tenant_id={t}")).await?;
-        let img = images.as_array().unwrap().iter().find(|i| i["id"] == id).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        let img = loop {
+            let images = admin.get(&format!("/images?tenant_id={t}")).await?;
+            let img = images.as_array().unwrap().iter().find(|i| i["id"] == id).unwrap().clone();
+            if img["state"] != "downloading" || std::time::Instant::now() > deadline {
+                break img;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        };
         assert_eq!(img["state"], "failed", "{img}");
         let err = img["error"].as_str().unwrap_or("");
-        assert!(err.contains("not a public address"), "{err}");
+        assert!(err.contains("no public address"), "{err}");
         // No VM is made from it.
         let (status, _) = admin
             .try_send(

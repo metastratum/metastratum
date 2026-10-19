@@ -87,51 +87,32 @@ async function remove() {
   }
 }
 
-// Resuming an upload (from what arrived), or uploading it again (it
-// failed): the same file is picked again.
+// Resuming an upload, from what arrived: the same file is picked again.
 const resumeError = ref<Record<string, string>>({})
-function resume(img: Image, again: boolean) {
+function resume(img: Image) {
   const input = document.createElement('input')
   input.type = 'file'
   input.onchange = () => {
     const f = input.files?.[0]
     if (!f) return
-    if (f.size !== img.upload_bytes) {
+    if (f.size !== img.file_bytes) {
       resumeError.value = {
         ...resumeError.value,
-        [img.id]: `That file is ${gib(f.size)}; the image's upload is ${gib(img.upload_bytes ?? 0)}. Pick the same file.`,
+        [img.id]: `That file is ${gib(f.size)}; the image's upload is ${gib(img.file_bytes ?? 0)}. Pick the same file.`,
       }
       return
     }
     resumeError.value = { ...resumeError.value, [img.id]: '' }
     dismissUpload(img.id)
-    void upload(img, f, again ? 0 : (img.uploaded_bytes ?? 0), scope.current).then(load)
+    void upload(img, f, img.received_bytes ?? 0, scope.current).then(load)
   }
   input.click()
 }
-const uploadedPct = (img: Image) => {
-  const u = uploads.get(img.id)
-  const [sent, total] = u ? [u.sent, u.total] : [img.uploaded_bytes ?? 0, img.upload_bytes ?? 1]
-  return Math.floor((100 * sent) / total)
-}
-
-// Downloading it again, after that failed, or stopped without saying how.
-const retryable = (img: Image) => !img.upload_bytes && (img.state === 'failed' || img.stuck)
-const retrying = ref('')
-const retryError = ref<Record<string, string>>({})
-async function downloadAgain(img: Image) {
-  retrying.value = img.id
-  retryError.value = { ...retryError.value, [img.id]: '' }
-  try {
-    await ok(api.POST('/api/v1/images/{id}/download', { params: { path: { id: img.id } } }))
-    await load()
-  } catch (e) {
-    const message = e instanceof ApiError ? e.message : 'The controller isn’t responding. Try again.'
-    retryError.value = { ...retryError.value, [img.id]: message }
-  } finally {
-    retrying.value = ''
-  }
-}
+// How much of an image's file has come: this tab's upload, or what the
+// controller says (a download's size may not be known).
+const received = (img: Image) => uploads.get(img.id)?.sent ?? img.received_bytes ?? 0
+const receivedPct = (img: Image) =>
+  img.file_bytes ? Math.floor((100 * received(img)) / img.file_bytes) : undefined
 
 const own = (img: Image) => img.tenant_id === scope.current
 </script>
@@ -143,7 +124,8 @@ const own = (img: Image) => img.tenant_id === scope.current
       <button v-if="scope.can('image.write')" class="btn primary" @click="openAdd">Add image</button>
     </header>
     <p class="intro">
-      A host downloads an image as you add it, or takes it as you upload it. Hosts copy it from there to make VMs from it, and keep their copy
+      A host downloads an image as you add it, or takes it as you upload it: only then, never again later. Hosts copy
+      it from there to make VMs from it, and keep their copy
       for the next. A VM’s disk is a copy of its own, so it doesn’t depend on the image: VMs keep working when the
       image is gone.
     </p>
@@ -163,30 +145,36 @@ const own = (img: Image) => img.tenant_id === scope.current
           <span v-if="img.tpm" class="tag label">TPM</span>
           <span v-if="img.shared && !scope.solo" class="tag label">Shared with sub-tenants</span>
           <span v-if="!own(img)" class="tag label">From parent tenant</span>
-          <span v-if="img.stuck" class="tag label failed">Download stopped</span>
+          <span v-if="img.stuck" class="tag label failed">Storing stopped</span>
           <span v-else-if="img.state === 'uploading' && uploads.has(img.id) && !uploads.get(img.id)?.error" class="tag label busy">
-            Uploading… {{ uploadedPct(img) }}%
+            Uploading… {{ receivedPct(img) }}%
           </span>
           <span v-else-if="img.state === 'uploading'" class="tag label failed">Upload incomplete</span>
-          <span v-else-if="img.state === 'downloading' && img.upload_bytes" class="tag label busy">Checking the upload…</span>
-          <span v-else-if="img.state === 'downloading'" class="tag label busy">Downloading…</span>
+          <span v-else-if="img.state === 'downloading'" class="tag label busy">
+            Downloading…<template v-if="receivedPct(img) !== undefined"> {{ receivedPct(img) }}%</template>
+          </span>
+          <span v-else-if="img.state === 'storing'" class="tag label busy">Checking and storing…</span>
           <span v-else-if="img.state === 'failed'" class="tag label failed">
-            {{ img.upload_bytes ? 'Upload failed' : 'Download failed' }}
+            {{ img.origin === 'upload' ? 'Upload failed' : 'Download failed' }}
           </span>
         </div>
-        <div v-if="img.source_url" class="url mono">{{ img.source_url }}</div>
-        <div v-else class="url muted">Uploaded, {{ gib(img.upload_bytes ?? 0) }}</div>
-        <div v-if="img.state === 'uploading'" class="upload">
-          <progress :value="uploadedPct(img)" max="100" />
+        <div v-if="img.file_bytes && img.state === 'ready'" class="url muted">
+          {{ img.origin === 'upload' ? 'Uploaded' : 'Downloaded' }}, {{ gib(img.file_bytes) }}
+        </div>
+        <div v-if="img.state === 'uploading' || img.state === 'downloading'" class="upload">
+          <progress v-if="receivedPct(img) !== undefined" :value="receivedPct(img)" max="100" />
           <span class="muted">
-            {{ gib(uploads.get(img.id)?.sent ?? img.uploaded_bytes ?? 0) }} of {{ gib(img.upload_bytes ?? 0) }}
+            {{ gib(received(img)) }}<template v-if="img.file_bytes"> of {{ gib(img.file_bytes) }}</template>
           </span>
         </div>
         <p v-if="uploads.get(img.id)?.error" class="error-text" role="alert">{{ uploads.get(img.id)?.error }}</p>
         <p v-if="resumeError[img.id]" class="error-text" role="alert">{{ resumeError[img.id] }}</p>
-        <p v-if="img.state === 'failed'" class="error-text" role="alert">{{ img.error ?? 'The download failed.' }}</p>
-        <p v-if="img.stuck" class="error-text" role="alert">The download stopped without finishing. Download it again.</p>
-        <p v-if="retryError[img.id]" class="error-text" role="alert">{{ retryError[img.id] }}</p>
+        <p v-if="img.state === 'failed'" class="error-text" role="alert">
+          {{ img.error ?? 'Adding it failed.' }} Delete it and add it again.
+        </p>
+        <p v-if="img.stuck" class="error-text" role="alert">
+          Adding it stopped without finishing. Delete it and add it again.
+        </p>
         <div v-if="img.state === 'ready' && img.virtual_bytes" class="facts muted">
           <span>{{ gib(img.virtual_bytes) }} disk</span>
           <span v-if="img.size_bytes">{{ gib(img.size_bytes) }} stored</span>
@@ -197,14 +185,6 @@ const own = (img: Image) => img.tenant_id === scope.current
           <IdChip :value="img.id" short />
           <span class="muted">Added {{ ago(img.created_at) }}</span>
           <button
-            v-if="retryable(img) && own(img) && scope.can('image.write')"
-            class="btn small push"
-            :disabled="retrying === img.id"
-            @click="downloadAgain(img)"
-          >
-            Download again
-          </button>
-          <button
             v-if="img.state === 'uploading' && uploads.has(img.id) && !uploads.get(img.id)?.error"
             class="btn small push"
             @click="stopUpload(img.id)"
@@ -214,21 +194,14 @@ const own = (img: Image) => img.tenant_id === scope.current
           <button
             v-else-if="img.state === 'uploading' && own(img) && scope.can('image.write')"
             class="btn small push"
-            @click="resume(img, false)"
+            @click="resume(img)"
           >
             Resume upload…
           </button>
           <button
-            v-else-if="img.upload_bytes && img.state === 'failed' && own(img) && scope.can('image.write')"
-            class="btn small push"
-            @click="resume(img, true)"
-          >
-            Upload again…
-          </button>
-          <button
             v-if="own(img) && scope.can('image.write')"
             class="btn danger small"
-            :class="{ push: !(retryable(img) || (img.upload_bytes && ['uploading', 'failed'].includes(img.state))) }"
+            :class="{ push: img.state !== 'uploading' }"
             @click="(deleteError = ''), (deleting = img)"
           >
             Delete…
@@ -245,7 +218,7 @@ const own = (img: Image) => img.tenant_id === scope.current
           <li v-if="deleting.shared">Sub-tenants it is shared with lose it too.</li>
           <li class="error-text">
             Every host deletes its copy. Adding the image again means
-            {{ deleting.upload_bytes ? 'uploading' : 'downloading' }} it again.
+            {{ deleting.origin === 'upload' ? 'uploading' : 'downloading' }} it again.
           </li>
           <li>VMs made from it keep working: their disks are copies of their own.</li>
         </ul>

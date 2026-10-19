@@ -573,19 +573,11 @@ async fn images_visible_to_owner_and_shared_down_the_tree(pool: PgPool) {
     let b = tenants::create(&pool, Some(r.id), "globex", "Globex")
         .await
         .unwrap();
+    let h = host(&pool).await;
     let img = |tenant_id, name, shared| images::NewImage {
-        tenant_id,
         name,
-        source_url: "http://x",
-        format: "qcow2",
         shared,
-        storage_pool_id: mst_core::ids::LOCAL_POOL,
-        os: "linux",
-        secure_boot: false,
-        tpm: false,
-        admin_user: None,
-        upload_bytes: None,
-        upload_host: None,
+        ..new_image(tenant_id, h.id)
     };
 
     let public = images::create(&pool, img(r.id, "debian", true))
@@ -623,58 +615,89 @@ async fn images_visible_to_owner_and_shared_down_the_tree(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]
-async fn images_are_uploaded_then_added_like_downloads(pool: PgPool) {
+async fn image_files_are_received_then_stored(pool: PgPool) {
     let r = root(&pool).await;
     let h = host(&pool).await;
-    let new = |name, upload_bytes| images::NewImage {
-        tenant_id: r.id,
+    let new = |name, origin, file_bytes| images::NewImage {
         name,
-        source_url: "",
+        origin,
+        file_bytes,
         format: "raw",
+        ..new_image(r.id, h.id)
+    };
+    // An upload has its size from the start.
+    assert!(
+        images::create(&pool, new("bad", "upload", None))
+            .await
+            .is_err()
+    );
+    let up = images::create(&pool, new("up", "upload", Some(10)))
+        .await
+        .unwrap();
+    assert_eq!(
+        (up.state.as_str(), up.uploaded(), up.download_host_id),
+        ("uploading", true, Some(h.id))
+    );
+    // A download's comes once all of it is there (unless the server says).
+    let down = images::create(&pool, new("down", "download", None))
+        .await
+        .unwrap();
+    assert_eq!(
+        (down.state.as_str(), down.uploaded()),
+        ("downloading", false)
+    );
+    // Both count as being added.
+    assert_eq!(images::downloads_in_tree(&pool, r.id).await.unwrap(), 2);
+    assert!(images::received_so_far(&pool, up.id, 4).await.unwrap());
+    assert_eq!(images::get(&pool, up.id).await.unwrap().received_bytes, 4);
+    // Beyond its size: refused.
+    assert!(images::received_so_far(&pool, up.id, 11).await.is_err());
+    // Stalled: a download soon (its controller went away), an upload later.
+    let (soon, past) = (
+        Utc::now() + chrono::Duration::seconds(5),
+        Utc::now() - chrono::Duration::hours(1),
+    );
+    assert_eq!(images::stalled(&pool, soon, soon).await.unwrap().len(), 2);
+    assert!(images::stalled(&pool, past, past).await.unwrap().is_empty());
+    let stalled = images::stalled(&pool, soon, past).await.unwrap();
+    assert_eq!(stalled.iter().map(|i| i.id).collect::<Vec<_>>(), [down.id]);
+    assert!(images::received_all(&pool, down.id, 7).await.unwrap());
+    let got = images::get(&pool, down.id).await.unwrap();
+    assert_eq!(
+        (got.state.as_str(), got.file_bytes, got.received_bytes),
+        ("storing", Some(7), 7)
+    );
+    // An upload's must be all it said.
+    assert!(!images::received_all(&pool, up.id, 9).await.unwrap());
+    assert!(images::received_all(&pool, up.id, 10).await.unwrap());
+    assert!(!images::received_all(&pool, up.id, 10).await.unwrap());
+    // Being stored with no task storing them: stopped.
+    let mut stopped = images::stopped_stores(&pool).await.unwrap();
+    stopped.sort();
+    let mut both = vec![up.id, down.id];
+    both.sort();
+    assert_eq!(stopped, both);
+    // Failed for good: added again, as a new image.
+    assert!(images::failed(&pool, up.id, "bad image").await.unwrap());
+    assert!(!images::received_so_far(&pool, up.id, 10).await.unwrap());
+    assert_eq!(images::get(&pool, up.id).await.unwrap().state, "failed");
+}
+
+fn new_image(tenant_id: mst_core::ids::TenantId, host: HostId) -> images::NewImage<'static> {
+    images::NewImage {
+        tenant_id,
+        name: "image",
+        origin: "download",
+        format: "qcow2",
         shared: false,
         storage_pool_id: mst_core::ids::LOCAL_POOL,
         os: "linux",
         secure_boot: false,
         tpm: false,
         admin_user: None,
-        upload_bytes,
-        upload_host: Some(h.id),
-    };
-    // An upload has a size, and no URL; a download the other way round.
-    assert!(images::create(&pool, new("bad", None)).await.is_err());
-    let img = images::create(&pool, new("up", Some(10))).await.unwrap();
-    assert_eq!(
-        (img.state.as_str(), img.uploaded(), img.download_host_id),
-        ("uploading", true, Some(h.id))
-    );
-    // It counts as a download under way.
-    assert_eq!(images::downloads_in_tree(&pool, r.id).await.unwrap(), 1);
-    images::uploaded_so_far(&pool, img.id, 4).await.unwrap();
-    assert_eq!(images::get(&pool, img.id).await.unwrap().uploaded_bytes, 4);
-    // Beyond its size: refused.
-    assert!(images::uploaded_so_far(&pool, img.id, 11).await.is_err());
-    let soon = Utc::now() + chrono::Duration::seconds(5);
-    assert_eq!(images::stale_uploads(&pool, soon).await.unwrap().len(), 1);
-    assert!(
-        images::stale_uploads(&pool, Utc::now() - chrono::Duration::hours(1))
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert!(images::upload_done(&pool, img.id).await.unwrap());
-    assert!(!images::upload_done(&pool, img.id).await.unwrap());
-    let got = images::get(&pool, img.id).await.unwrap();
-    assert_eq!(
-        (got.state.as_str(), got.uploaded_bytes),
-        ("downloading", 10)
-    );
-    assert!(images::failed(&pool, img.id, "bad image").await.unwrap());
-    images::upload_again(&pool, img.id, h.id).await.unwrap();
-    let got = images::get(&pool, img.id).await.unwrap();
-    assert_eq!(
-        (got.state.as_str(), got.uploaded_bytes, got.error),
-        ("uploading", 0, None)
-    );
+        file_bytes: None,
+        host,
+    }
 }
 
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]
@@ -683,21 +706,21 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
     let a = tenants::create(&pool, Some(r.id), "acme", "Acme")
         .await
         .unwrap();
+    let h1 = host(&pool).await;
+    sqlx::query("UPDATE hosts SET name = 'other', address = '10.77.0.12', ovn_chassis = 'other'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let h2 = host(&pool).await;
     let img = images::create(
         &pool,
         images::NewImage {
-            tenant_id: a.id,
             name: "debian",
-            source_url: "http://x",
-            format: "qcow2",
-            shared: false,
-            storage_pool_id: mst_core::ids::LOCAL_POOL,
             os: "windows",
             secure_boot: true,
             tpm: true,
             admin_user: Some("Administrator"),
-            upload_bytes: None,
-            upload_host: None,
+            ..new_image(a.id, h1.id)
         },
     )
     .await
@@ -716,21 +739,23 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
         format!("{}/{}", hex(r.id.0), hex(a.id.0))
     );
 
-    assert!(images::failed(&pool, img.id, "HTTP 404").await.unwrap());
-    let got = images::get(&pool, img.id).await.unwrap();
+    // A download that failed has failed for good.
+    let gone = images::create(
+        &pool,
+        images::NewImage {
+            name: "missing",
+            ..new_image(a.id, h1.id)
+        },
+    )
+    .await
+    .unwrap();
+    assert!(images::failed(&pool, gone.id, "HTTP 404").await.unwrap());
+    let got = images::get(&pool, gone.id).await.unwrap();
     assert_eq!(
         (got.state.as_str(), got.error.as_deref()),
         ("failed", Some("HTTP 404"))
     );
-    images::downloading(&pool, img.id).await.unwrap();
-    assert_eq!(images::get(&pool, img.id).await.unwrap().error, None);
 
-    let h1 = host(&pool).await;
-    sqlx::query("UPDATE hosts SET name = 'other', address = '10.77.0.12', ovn_chassis = 'other'")
-        .execute(&pool)
-        .await
-        .unwrap();
-    let h2 = host(&pool).await;
     let mut conn = pool.acquire().await.unwrap();
     let stored = |size_bytes: i64| images::Stored {
         size_bytes,
@@ -738,16 +763,24 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
         sha256: "abc".into(),
         digest: "def".into(),
     };
-    images::set_download_host(&pool, img.id, h1.id)
-        .await
-        .unwrap();
+    // Not before all of its file came.
     assert!(
-        images::downloaded(&mut conn, img.id, Copy::local(h1.id), &stored(400 << 20))
+        !images::stored(&mut conn, img.id, Copy::local(h1.id), &stored(400 << 20))
             .await
             .unwrap()
     );
-    // Copies change nothing of what was downloaded; neither does a second
-    // report of the download (a second run of it), nor its failing.
+    assert!(
+        images::received_all(&pool, img.id, 300 << 20)
+            .await
+            .unwrap()
+    );
+    assert!(
+        images::stored(&mut conn, img.id, Copy::local(h1.id), &stored(400 << 20))
+            .await
+            .unwrap()
+    );
+    // Copies change nothing of what was stored; neither does a second
+    // report of it (a second run of the task), nor its failing.
     images::add_copy(&mut conn, img.id, Copy::local(h2.id))
         .await
         .unwrap();
@@ -755,7 +788,7 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
         .await
         .unwrap();
     assert!(
-        !images::downloaded(&mut conn, img.id, Copy::local(h1.id), &stored(9 << 30))
+        !images::stored(&mut conn, img.id, Copy::local(h1.id), &stored(9 << 30))
             .await
             .unwrap()
     );
@@ -775,26 +808,16 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
         (Some(400 << 20), Some(3 << 30))
     );
     assert_eq!(got.download_host_id, Some(h1.id));
-    // Downloading again starts on the host it was on, where what a download
-    // cut off left may be.
-    images::downloading(&pool, img.id).await.unwrap();
-    assert_eq!(
-        images::get(&pool, img.id).await.unwrap().download_host_id,
-        Some(h1.id)
-    );
-    // Downloads under way count for the provider's child's whole tree,
+    // Images being added count for the provider's child's whole tree,
     // whoever's they are.
     let a1 = tenants::create(&pool, Some(a.id), "a1", "A1")
         .await
         .unwrap();
-    let task = mst_db::tasks::enqueue(
+    images::create(
         &pool,
-        mst_db::tasks::NewTask {
-            tenant_id: a1.id,
-            kind: "image.download",
-            target: Some(("image", img.id.0)),
-            params: serde_json::json!({}),
-            created_by: None,
+        images::NewImage {
+            name: "coming",
+            ..new_image(a1.id, h1.id)
         },
     )
     .await
@@ -802,8 +825,20 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
     for (t, n) in [(a.id, 1), (a1.id, 1), (r.id, 0)] {
         assert_eq!(images::downloads_in_tree(&pool, t).await.unwrap(), n);
     }
+    let task = mst_db::tasks::enqueue(
+        &pool,
+        mst_db::tasks::NewTask {
+            tenant_id: a1.id,
+            kind: "image.store",
+            target: Some(("image", img.id.0)),
+            params: serde_json::json!({}),
+            created_by: None,
+        },
+    )
+    .await
+    .unwrap();
     assert!(
-        images::downloads_under_way(&pool, &[img.id])
+        images::stores_under_way(&pool, &[img.id])
             .await
             .unwrap()
             .contains(&img.id)
@@ -813,11 +848,6 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    assert!(
-        images::downloaded(&mut conn, img.id, Copy::local(h1.id), &stored(400 << 20))
-            .await
-            .unwrap()
-    );
     assert_eq!(
         images::copies(&pool, img.id).await.unwrap(),
         [Copy::local(h1.id), Copy::local(h2.id)]
@@ -829,6 +859,8 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
         images::copy_hosts(&pool, &[img.id]).await.unwrap()[&img.id].len(),
         2
     );
+    // Two hosts hold it: neither holds the only copy.
+    assert!(images::only_on_host(&pool, h1.id).await.unwrap().is_empty());
     images::remove_copy(&pool, img.id, Copy::local(h1.id))
         .await
         .unwrap();
@@ -836,6 +868,8 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
         images::copies(&pool, img.id).await.unwrap(),
         [Copy::local(h2.id)]
     );
+    let sole = images::only_on_host(&pool, h2.id).await.unwrap();
+    assert_eq!(sole.iter().map(|i| i.id).collect::<Vec<_>>(), [img.id]);
     // A copy in a shared pool is the pool's, not a host's: once.
     let nfs = mst_db::storage_pools::create(
         &mut conn,
@@ -855,6 +889,8 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
         images::copies(&pool, img.id).await.unwrap(),
         [Copy::local(h2.id), Copy::shared(nfs)]
     );
+    // The pool holds one too.
+    assert!(images::only_on_host(&pool, h2.id).await.unwrap().is_empty());
     assert_eq!(images::count_in_pool(&pool, nfs).await.unwrap(), 1);
     assert_eq!(
         images::copy_hosts(&pool, &[img.id]).await.unwrap()[&img.id],

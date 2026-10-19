@@ -88,32 +88,26 @@ impl Pool {
         }
     }
 
-    /// Adds an image (downloaded, or a file here) to the pool's image store (see
-    /// [`crate::ImageStore::fetch`]), unless it is there already. Digests
-    /// are worked out in `scratch`, on the host's own disk. With `digest`,
-    /// the image must hold that.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn fetch_stored(
+    /// Adds an image to the pool's image store from a file this host
+    /// received (see [`crate::ImageStore::add`]), unless it is there
+    /// already. Digests are worked out in `scratch`, on the host's own disk.
+    pub async fn add_stored(
         &self,
         tenant_path: &str,
         id: &str,
-        src: &crate::ImageSource<'_>,
+        file: &Path,
         format: &str,
         policy: crate::FetchPolicy,
-        digest: Option<&str>,
         scratch: &Path,
     ) -> Result<crate::StoredImage> {
         match self {
             Pool::File(p) => {
                 crate::ImageStore::new(p.root())
                     .scratch_in(scratch)
-                    .fetch(tenant_path, id, src, format, policy, digest)
+                    .add(tenant_path, id, file, format, policy)
                     .await
             }
-            Pool::Rbd(p) => {
-                p.fetch_stored(tenant_path, id, src, format, policy, digest)
-                    .await
-            }
+            Pool::Rbd(p) => p.add_stored(tenant_path, id, file, format, policy).await,
         }
     }
 

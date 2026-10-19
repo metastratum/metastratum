@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
 
-use crate::{Error, Result, fetch, random_suffix};
+use crate::{Error, Result, import, random_suffix};
 
 #[derive(Deserialize)]
 pub(crate) struct RbdConfig {
@@ -230,42 +230,31 @@ impl RbdPool {
             .await
     }
 
-    /// Adds an image to the store (see [`crate::ImageStore::fetch`]):
+    /// Adds an image to the store from a file this host received (see
+    /// [`crate::ImageStore::add`]):
     /// checked, converted and its digest worked out on this host first,
     /// then copied in, unless another host stored it meanwhile (that one
     /// stays).
-    pub async fn fetch_stored(
+    pub async fn add_stored(
         &self,
         tenant_path: &str,
         id: &str,
-        src: &crate::ImageSource<'_>,
+        file: &Path,
         format: &str,
         policy: crate::FetchPolicy,
-        digest: Option<&str>,
     ) -> Result<crate::StoredImage> {
         let name = Self::store_name(tenant_path, id)?;
         let lock = self.store_lock(id);
         let _held = lock.lock().await;
+        // Stored by another host meanwhile: that one stays.
         if self.exists(&self.spec(&name)).await? {
-            let stored = self.stored(&name).await?;
-            match crate::store::check_digest(id, &stored.digest, digest) {
-                Ok(()) => return Ok(stored),
-                // Never recorded (see `ImageStore::fetch`): replaced.
-                Err(e) => {
-                    tracing::warn!(image = id, pool = %self.pool, error = %e, "replacing a copy holding something else");
-                    self.rbd(&["rm", "--no-progress", &self.spec(&name)])
-                        .await?;
-                }
-            }
+            return self.stored(&name).await;
         }
         let unique = format!("{}.{}", std::process::id(), random_suffix());
-        let part = self.work_dir.join(format!("{id}.{unique}.part"));
         let converted = self.work_dir.join(format!("{id}.{unique}.qcow2"));
-        let _left = crate::store::Leftovers(vec![part.clone(), converted.clone()]);
-        let sha256 = fetch(src, format, &part, &converted, "qcow2", policy).await?;
-        let _ = tokio::fs::remove_file(&part).await;
+        let _left = crate::store::Leftovers(vec![converted.clone()]);
+        let sha256 = import(file, format, &converted, "qcow2", policy).await?;
         let got = crate::store::digest_file(&converted, &self.work_dir).await?;
-        crate::store::check_digest(id, &got, digest)?;
         let src = crate::CopySource::File(&converted);
         let meta = [
             ("mst.sha256", sha256.as_str()),

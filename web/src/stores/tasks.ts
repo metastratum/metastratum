@@ -64,6 +64,7 @@ const LABELS: Record<string, string> = {
   'disk.attach': 'Attach disk',
   'disk.detach': 'Detach disk',
   'image.download': 'Download image',
+  'image.store': 'Store image',
 }
 
 export function taskLabel(t: Task): string {

@@ -573,7 +573,8 @@ export interface paths {
         put?: never;
         /**
          * Puts a host in maintenance and live-migrates its running VMs to other
-         *     hosts of its cluster, one at a time. Stopped VMs stay.
+         *     hosts of its cluster, one at a time. Stopped VMs stay. Images it holds
+         *     the only copy of are copied to other hosts.
          */
         post: operations["evacuate_host"];
         delete?: never;
@@ -645,12 +646,15 @@ export interface paths {
         get: operations["list_images"];
         put?: never;
         /**
-         * Adds an image: a host downloads it into the image store of the pool it
-         *     is kept in (the task): its own local disk (a host picked at random), or
-         *     a shared pool, which its hosts make disks from directly. Other hosts copy
-         *     it from there to make VMs from it. With `upload_bytes` instead of a URL,
-         *     it is uploaded (`PUT /images/{id}/upload`) to such a host, picked now,
-         *     and once all of it has arrived added as a download is.
+         * Adds an image. Its file comes to a host that can keep it in its pool
+         *     (picked at random; for a shared pool, one attached to it): downloaded
+         *     from `source_url` by the controller (in the background: follow
+         *     `state`), or uploaded in parts (`PUT /images/{id}/upload`) with
+         *     `upload_bytes`. Once all of it is there, the host checks it and adds it
+         *     to the pool's image store (its own local disk, or the shared pool,
+         *     which its hosts make disks from directly). Other hosts copy it from
+         *     there to make VMs from it. It is downloaded as it is added, and never
+         *     again: the URL is kept nowhere.
          */
         post: operations["create_image"];
         delete?: never;
@@ -679,27 +683,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/images/{id}/download": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Downloads the image again: after downloading it failed, or when no
-         *     host holds a copy any more (each was decommissioned). Downloaded again,
-         *     it must be the file first downloaded, if one was.
-         */
-        post: operations["download_image"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/images/{id}/upload": {
         parameters: {
             query?: never;
@@ -711,10 +694,11 @@ export interface paths {
         /**
          * Uploads a part of an image added with `upload_bytes`: the next up to
          *     32 MiB of the file, as the request's body, from `offset` (what has
-         *     arrived: `uploaded_bytes`). Parts go to the host picked for it as they
+         *     arrived: `received_bytes`). Parts go to the host picked for it as they
          *     come. Once all of it has arrived, it is added to its pool as a download
          *     is (`downloading`, then `ready`), checked the same way. An upload no part
-         *     reaches for a day fails. A failed upload is started over from offset 0.
+         *     reaches for a day fails. A failed upload has failed for good: delete it
+         *     and add it again.
          */
         put: operations["upload_image"];
         post?: never;
@@ -2354,8 +2338,9 @@ export interface components {
             secure_boot?: boolean;
             shared?: boolean;
             /**
-             * @description HTTP(S) URL a host downloads the image from, as it is added. Or
-             *     none, with `upload_bytes`.
+             * @description HTTP(S) URL the controller downloads the image from, as it is added
+             *     (and only then: the URL is kept nowhere). Or none, with
+             *     `upload_bytes`.
              */
             source_url?: string | null;
             storage_pool_id?: components["schemas"]["StoragePoolId"] | null;
@@ -2527,9 +2512,6 @@ export interface components {
             name: string;
             tenant_id?: components["schemas"]["TenantId"] | null;
         };
-        CreatedImage: components["schemas"]["ImageView"] & {
-            task_id?: components["schemas"]["TaskId"] | null;
-        };
         /** @description What decommissioning a host did. */
         DecommissionReport: {
             certificates_revoked: number;
@@ -2599,9 +2581,6 @@ export interface components {
             tenant_id: components["schemas"]["TenantId"];
             vm_id?: components["schemas"]["VmId"] | null;
             vm_name?: string | null;
-        };
-        DownloadTask: {
-            task_id: components["schemas"]["TaskId"];
         };
         EvacuateRef: {
             task_id: components["schemas"]["TaskId"];
@@ -2758,6 +2737,11 @@ export interface components {
             physical_networks: string[];
             /** @description Gives guests UEFI Secure Boot (OVMF with Microsoft's keys). */
             secure_boot: boolean;
+            /**
+             * @description Images it holds the only copy of: they go with it, as nothing
+             *     downloads an image again (Evacuate copies them to other hosts).
+             */
+            sole_images: string[];
             /** @description `ready`, `maintenance` or `decommissioned`. */
             state: string;
             /** @description Gives guests a TPM 2.0 (swtpm). */
@@ -2776,12 +2760,18 @@ export interface components {
             /** Format: date-time */
             created_at: string;
             /**
-             * @description SHA-256 of the disk it holds, read as a raw disk: every copy, and a
-             *     download again, is checked against it.
+             * @description SHA-256 of the disk it holds, read as a raw disk: every copy is
+             *     checked against it.
              */
             digest?: string | null;
-            /** @description Why downloading it failed. */
+            /** @description Why adding it failed. */
             error?: string | null;
+            /**
+             * Format: int64
+             * @description The size of its file, as it came (an upload's from the start, a
+             *     download's once known), and, while it is coming, how much has.
+             */
+            file_bytes?: number | null;
             /** @description `qcow2` or `raw`. */
             format: string;
             /**
@@ -2791,14 +2781,21 @@ export interface components {
             hosts: string[];
             id: components["schemas"]["ImageId"];
             name: string;
+            /**
+             * @description `download` (from a URL, by the controller, as it was added: the URL
+             *     is kept nowhere) or `upload`.
+             */
+            origin: string;
             /** @description What VMs made from it run: `linux` or `windows`. */
             os: string;
+            /** Format: int64 */
+            received_bytes?: number | null;
             /**
              * @description What VMs made from it get unless told otherwise: UEFI Secure Boot,
              *     a TPM.
              */
             secure_boot: boolean;
-            /** @description SHA-256 of the file downloaded from `source_url`. */
+            /** @description SHA-256 of the file as it came. */
             sha256?: string | null;
             /** @description Usable by the owning tenant's descendants too. */
             shared: boolean;
@@ -2807,13 +2804,12 @@ export interface components {
              * @description Its size, stored (qcow2).
              */
             size_bytes?: number | null;
-            /** @description Where it is downloaded from; empty for an uploaded image. */
-            source_url: string;
             /**
-             * @description `uploading` (its parts arriving), `downloading` (being added to its
-             *     pool, from its URL or its upload: VMs made from it meanwhile wait
-             *     for it), `ready`, or `failed` (see `error`; it can be downloaded,
-             *     or uploaded, again).
+             * @description Being added: `downloading` or `uploading` (its file coming to the
+             *     host picked for it), `storing` (that host checking it and adding it
+             *     to its pool); then `ready`, or `failed` (see `error`: for good;
+             *     delete it and add it again). VMs made from one being downloaded or
+             *     stored wait for it.
              */
             state: string;
             /**
@@ -2824,20 +2820,12 @@ export interface components {
             storage_pool_id: components["schemas"]["StoragePoolId"];
             storage_pool_name: string;
             /**
-             * @description `downloading`, but no task is downloading it (what was ended without
-             *     saying how): it can be downloaded again.
+             * @description `storing`, but no task is storing it (what was ended without saying
+             *     how): failed, in effect (it fails within minutes).
              */
             stuck: boolean;
             tenant_id: components["schemas"]["TenantId"];
             tpm: boolean;
-            /**
-             * Format: int64
-             * @description An uploaded image's size, and how much of it has arrived (see
-             *     `PUT /images/{id}/upload`).
-             */
-            upload_bytes?: number | null;
-            /** Format: int64 */
-            uploaded_bytes?: number | null;
             /**
              * Format: int64
              * @description The size of the disk it holds: VMs' disks made from it are at least
@@ -5420,7 +5408,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CreatedImage"];
+                    "application/json": components["schemas"]["ImageView"];
                 };
             };
             400: {
@@ -5462,46 +5450,12 @@ export interface operations {
             };
         };
     };
-    download_image: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["schemas"]["ImageId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DownloadTask"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Being downloaded, or held by a host */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     upload_image: {
         parameters: {
             query: {
                 /**
                  * @description Where the part goes in the file: as much of it as has arrived
-                 *     (`uploaded_bytes`). 0 starts a failed upload over.
+                 *     (`received_bytes`).
                  */
                 offset: number;
             };
@@ -5537,7 +5491,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Not being uploaded, or the part is not the next one: see `uploaded_bytes` */
+            /** @description Not being uploaded, or the part is not the next one: see `received_bytes` */
             409: {
                 headers: {
                     [name: string]: unknown;

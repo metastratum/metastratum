@@ -1,46 +1,46 @@
 # Images
 
-Adding an image downloads it at once into the image store of the storage
-pool it is kept in (Keep it in, among the pools the tenant may use):
+An image is added from a URL or from a file (Add image), into the image
+store of the storage pool it is kept in (Keep it in, among the pools the
+tenant may use):
 
 - **Local disk of a host** (the default): a connected host picked at
   random keeps it, in `images/<tenant>/<sub-tenant>/…/<image ID>.qcow2`
   under the agent's data directory, the tenants named by their IDs.
-- **A shared pool**: a host attached to it downloads it there, once: the
-  same path on an NFS pool, an RBD image `store_<tenant>_…_<image ID>` on
-  Ceph.
+- **A shared pool**: a host attached to it (picked at random) stores it
+  there, once: the same path on an NFS pool, an RBD image
+  `store_<tenant>_…_<image ID>` on Ceph.
 
-The images page shows when it is there, its size, where it is kept and
-which hosts hold a copy; a download that failed says why, and can be tried
-again (Download again), as can one that stopped without saying how. Two
-images download at a time per tenant tree (a tenant of the provider's with
-all its sub-tenants; the provider's own count apart), and a server that
-sends nothing for a minute, sends less than 16 MiB in five minutes, or
-takes over two hours, is given up on. Deleting an image stops its download.
-Two hashes are recorded: the SHA-256 of the file downloaded, and the
-image's digest, the SHA-256 of the disk it holds (read as a raw disk).
+Either way its file comes to that host first, in parts, and the host then
+checks it and adds it to the store (Checking and storing). From a URL, the
+controller downloads it as it is added, passing each part on as it comes:
+hosts download nothing. That is the only time it is downloaded. The URL
+is kept nowhere, and nothing downloads the image again later: a download
+cut off (the controller went away) fails within ten minutes, for good.
+From a file, the browser uploads it (below).
+
+The images page shows how far it is, then its size, where it is kept and
+which hosts hold a copy. Adding one that failed says why, and has failed
+for good (as has one whose storing stopped without saying how, within
+minutes): delete the image and add it again. Two images are added at a
+time per tenant tree (a tenant of the provider's with all its sub-tenants;
+the provider's own count apart), and a server that sends nothing for a
+minute, sends less than 16 MiB in five minutes, or takes over two hours,
+is given up on. Deleting an image stops what adds it. Two hashes are
+recorded: the SHA-256 of the file as it came, and the image's digest, the
+SHA-256 of the disk it holds (read as a raw disk).
 
 ## Uploading
 
-An image can be uploaded instead (Add image → From a file on this
-computer): it is added with its size, and a host that can keep it (picked
-at random, as for a download) takes it as its parts arrive. The browser
-sends the file in parts of 16 MiB (the API takes up to 32 MiB each, `PUT
-/api/v1/images/{id}/upload?offset=N`, the next part from what has arrived);
-the controller passes each to that host. A stopped upload (the page
-closed, the connection lost) is resumed from what arrived: Resume upload,
-and the same file again. Once all of it is there it is checked and stored
-as a download is, with the same limits and hashes, and a file that is no
-image (or describes too large a disk) fails then, and is uploaded again
-from the start (Upload again). An upload no part reaches for a day fails,
-and what arrived goes. Uploads count as downloads under way, two at a time
-per tenant tree.
-
-An uploaded image has no address to be downloaded again from: should no
-copy of it be reachable, VMs cannot be made from it until one is, or it is
-uploaded again as a new image. Keep it in a shared pool where that
-matters, or let several hosts hold copies (each VM made on a host leaves
-one there).
+From a file (Add image → From a file on this computer), the image is added
+with its size, and the browser sends the file in parts of 16 MiB (the API
+takes up to 32 MiB each: `PUT /api/v1/images/{id}/upload?offset=N`, the
+next part from what has arrived); the controller passes each to the host,
+as it does a download's. A stopped upload (the page closed, the connection
+lost) is resumed from what arrived: Resume upload, and the same file
+again. Once all of it is there it is stored as a download is, with the
+same checks, limits and hashes. An upload no part reaches for a day fails,
+and what arrived goes.
 
 ## Copies on hosts
 
@@ -61,19 +61,20 @@ controller copies up to four images onto hosts at once; VMs waiting for a
 copy keep no other task from running.
 
 Should no copy of an image be reachable (its hosts are down or
-decommissioned, say), the host that needs it downloads it again, from its
-address; what it downloads must then hold the same disk (the same digest),
-or the VM is not made. An image in a store is never replaced: hosts
-storing the same one in a shared pool at once keep the first. Only a copy
-that does not hold the image's digest is replaced (one left by a download
-cut off, before the image's address served another file). Every hour,
-each host's store, and each shared pool's, lets go of images that no longer
-exist, and of what downloads and copies cut off left.
+decommissioned, say), VMs are not made from it until one is: it is not
+downloaded again. Keep images that matter in a shared pool, or let several
+hosts hold copies (each VM made on a host leaves one there); an image whose
+copies are all gone is deleted and added again. An image in a store is
+never replaced: hosts storing the same one in a shared pool at once keep
+the first. Only a copy that does not hold the image's digest is replaced
+(one left by storing cut off). Every hour, each host's store, and each
+shared pool's, lets go of images that no longer exist, and of what stores,
+copies and incoming files cut off left.
 
-A tenant's image comes from a public internet address only, and may
-describe a disk of at most the host's largest download (`image_max_gib` in
+A tenant's image is downloaded from a public internet address only, and
+may describe a disk of at most the host's largest image (`image_max_gib` in
 `agent.toml`, 64 GiB by default); the provider's may come from anywhere
-and describe disks up to 1 TiB. Both are checked before the download is
-unpacked: a small download can unpack into a huge disk. Images count
+and describe disks up to 1 TiB. Both are checked before the file is
+unpacked: a small file can unpack into a huge disk. Images count
 against their tenant's image quota (Images, in GiB) at their stored size,
 once, however many hosts hold them; none is added where it is used up.
