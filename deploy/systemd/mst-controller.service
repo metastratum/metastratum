@@ -1,6 +1,6 @@
 [Unit]
 Description=metastratum controller
-Documentation=https://github.com/metastratum/metastratum/blob/main/docs/operations.md
+Documentation=https://github.com/metastratum/metastratum/blob/main/docs/operations/README.md
 After=network-online.target
 Wants=network-online.target
 

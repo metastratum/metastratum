@@ -137,7 +137,7 @@ The boundaries metastratum enforces:
 - **Abuse**: requests and password sign-ins are rate limited per client,
   and failed sign-ins per account (a sign-in takes from the account's budget
   before it is checked, and gives back on success, so parallel guesses
-  cannot all slip in before the first fails) (see [operations](docs/operations.md#rate-limits)).
+  cannot all slip in before the first fails) (see [operations](docs/operations/rate-limits.md)).
 - **Browsers**: a Content-Security-Policy allowing scripts only from the
   controller, framing denied, `nosniff`, no referrers to other sites, and
   `Strict-Transport-Security` on requests that came over HTTPS.
@@ -231,7 +231,7 @@ and copied between hosts; earlier releases' compatibility removed). Fixed:
   *Mitigation:* install a bundle from `mst-controller ovn-certificate` on
   each OVN central node, which switches both databases to TLS, and run the
   controllers with `ssl:` servers in `ovn.northbound` and `ovn.southbound`; remove any
-  plain listeners left ([operations](docs/operations.md#ovn)).
+  plain listeners left ([operations](docs/operations/ovn.md)).
 - **The controller serves plain HTTP.** Sessions and passwords would cross
   the network in clear text.
   *Mitigation:* put a TLS-terminating proxy in front of it, listen on
@@ -308,7 +308,7 @@ and copied between hosts; earlier releases' compatibility removed). Fixed:
   the same host or storage; CPU and memory are shared by the overcommit
   ratios alone.
   *Mitigation:* set disk and network limits on each cluster
-  ([operations](docs/operations.md#limits)), and keep overcommit modest.
+  ([operations](docs/operations/hosts.md#limits)), and keep overcommit modest.
 - **Backups are stored as they are.** A backup repository holds every
   backed-up VM's disks, unencrypted, for every tenant using it; NFS checks
   only the client's address, and the export needs `no_root_squash`.

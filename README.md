@@ -57,7 +57,7 @@ covers more hosts, the scripts' options, and installing by hand.
 
 - [Getting started](docs/getting-started.md): the installers, or packages
   by hand; the first controller, host and VM
-- [Running metastratum](docs/operations.md): controllers in several
+- [Running metastratum](docs/operations/README.md): controllers in several
   places, PostgreSQL and OVN underneath, hosts and their failure, storage,
   networks, backups, two-factor sign-in, upgrades, monitoring
 - [Security](SECURITY.md): the security model, a deployment checklist, and

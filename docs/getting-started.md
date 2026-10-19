@@ -2,7 +2,7 @@
 
 The smallest metastratum: one controller and one hypervisor host. Adding
 controllers, more hosts, high availability and the rest is in
-[Running metastratum](operations.md).
+[Running metastratum](operations/README.md).
 
 You need:
 
@@ -139,7 +139,7 @@ systemctl enable --now mst-controller
 ```
 
 The web UI and API listen on `127.0.0.1:7820`, for an HTTPS proxy in front
-([Web traffic](operations.md#controllers) says what it needs). To look
+([Web traffic](operations/controllers.md) says what it needs). To look
 around before setting one up, forward the port over SSH and open
 http://localhost:7820:
 
