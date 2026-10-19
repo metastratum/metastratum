@@ -26,6 +26,8 @@ Install-Msi "$build\CloudbaseInitSetup_x64.msi" @('RUN_SERVICE_AS_LOCAL_SYSTEM=1
 $cbi = "$env:ProgramFiles\Cloudbase Solutions\Cloudbase-Init"
 Copy-Item "$build\cloudbase-init.conf" "$cbi\conf\cloudbase-init.conf" -Force
 Copy-Item "$build\cloudbase-init-unattend.conf" "$cbi\conf\cloudbase-init-unattend.conf" -Force
+# Not while a new VM specializes (see sysprep-unattend.xml, which starts it).
+Set-Service cloudbase-init -StartupType Manual
 
 # The VM's clock is UTC (as Linux guests', so they migrate alike).
 Set-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation RealTimeIsUniversal -Type DWord -Value 1
@@ -45,4 +47,5 @@ Optimize-Volume -DriveLetter C -ReTrim
 
 Stop-Transcript
 # Generalized, it starts afresh on each VM, where cloudbase-init sets it up.
+Copy-Item "$build\sysprep-unattend.xml" "$cbi\conf\Unattend.xml" -Force
 & "$env:SystemRoot\System32\Sysprep\sysprep.exe" /generalize /oobe /shutdown /quiet "/unattend:$cbi\conf\Unattend.xml"

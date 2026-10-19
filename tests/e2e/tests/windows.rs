@@ -40,6 +40,18 @@ async fn windows_vms_get_their_password_once() -> anyhow::Result<()> {
             )
             .await?;
         assert_eq!(status, 400);
+        // Nor is a Windows VM without one.
+        let (status, _) = api
+            .try_send(
+                reqwest::Method::POST,
+                "/vms",
+                Some(
+                    json!({"name": format!("{run}-none"), "vcpus": 2, "memory_mib": 2048,
+                            "disk_gib": disk_gib, "image_id": image["id"]}),
+                ),
+            )
+            .await?;
+        assert_eq!(status, 400);
 
         let vm = api
             .post(

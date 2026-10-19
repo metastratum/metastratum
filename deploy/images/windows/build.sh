@@ -88,7 +88,8 @@ done
 # (Backslashes doubled: sed reads them in the replacement.)
 sed -e "s|@INDEX@|$INDEX|g" -e "s|@PASSWORD@|$PASSWORD|g" -e "s|@DRIVER_PATHS@|${paths//\\/\\\\}|" \
   "$HERE/Autounattend.xml" >"$WORK/build/Autounattend.xml"
-cp "$HERE/setup.ps1" "$HERE/cloudbase-init.conf" "$HERE/cloudbase-init-unattend.conf" "$WORK/build/"
+cp "$HERE/setup.ps1" "$HERE/cloudbase-init.conf" "$HERE/cloudbase-init-unattend.conf" \
+  "$HERE/sysprep-unattend.xml" "$WORK/build/"
 xorrisofs -quiet -volid MSTBUILD -joliet -rock -o "$WORK/build.iso" "$WORK/build"
 rm -f "$WORK/build/Autounattend.xml"
 

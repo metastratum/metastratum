@@ -455,8 +455,10 @@ Windows' rules (8 characters or more, with three of upper case, lower case,
 digits and symbols). Windows takes it as it is, not hashed, so it is kept
 sealed with the master key, put in the VM's cloud-init seed for its first
 boot only, and dropped once the guest reports that boot done, through its
-guest agent; the VM's details say while it is pending. Without a password
-a VM keeps the image's, which no one knows. Windows VMs take no SSH keys.
+guest agent; the VM's details say while it is pending. A VM made from a
+Windows image needs one: until it is set, the Administrator has a random
+password no one knows (sysprep would leave it blank). Clones and restored
+VMs keep their source's unless given another. Windows VMs take no SSH keys.
 
 Windows 11 needs Secure Boot and a TPM, which VMs do not have yet.
 

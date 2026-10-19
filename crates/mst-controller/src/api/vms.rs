@@ -673,6 +673,13 @@ async fn create_inner(
         let image = mst_db::images::get(&state.db, req.image_id).await?;
         if image.os == "windows" {
             guest_os = GuestOs::Windows;
+            // Its Administrator has a password no one knows until then
+            // (deploy/images/windows): without one, no one could sign in.
+            if req.password.is_none() && req.user_data.is_none() {
+                return Err(ApiError::bad_request(
+                    "a Windows VM needs a password (its Administrator's)",
+                ));
+            }
         }
         if image.state == "failed" {
             return Err(ApiError::conflict(format!(

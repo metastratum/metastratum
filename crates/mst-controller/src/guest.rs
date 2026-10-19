@@ -22,7 +22,8 @@ pub const FIRST_BOOT_DONE: &str = r"C:\ProgramData\metastratum-first-boot.txt";
 /// How often VMs whose first boot is pending are asked.
 const EVERY: Duration = Duration::from_secs(30);
 
-/// User data for a Windows VM, but its password: marks its first boot done.
+/// User data for a Windows VM, but its password: marks its first boot done,
+/// once the password is set (`users` runs before `runcmd`).
 pub fn windows_user_data() -> String {
     let doc = json!({ "runcmd": [format!("echo done> {FIRST_BOOT_DONE}")] });
     format!("#cloud-config\n{doc}\n")
