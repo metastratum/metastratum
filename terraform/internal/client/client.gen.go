@@ -182,13 +182,19 @@ type AcceptedVmView struct {
 	// (forced off), `crashed`, `failed`, `daemon`, ...
 	PowerReason *string `json:"power_reason,omitempty"`
 
+	// SecureBoot Boots with UEFI Secure Boot.
+	SecureBoot bool `json:"secure_boot"`
+
 	// Status Lifecycle: `creating`, `ready`, `error` or `deleting`.
 	Status string `json:"status"`
 	TaskId TaskId `json:"task_id"`
 
 	// Template A template: kept to be cloned, never started.
-	Template  bool      `json:"template"`
-	TenantId  TenantId  `json:"tenant_id"`
+	Template bool     `json:"template"`
+	TenantId TenantId `json:"tenant_id"`
+
+	// Tpm Has a TPM 2.0 (its state goes where the VM goes).
+	Tpm       bool      `json:"tpm"`
 	UpdatedAt time.Time `json:"updated_at"`
 
 	// Vcpus Virtual CPUs plugged in.
@@ -561,6 +567,11 @@ type CreateGroup struct {
 
 // CreateImage defines model for CreateImage.
 type CreateImage struct {
+	// AdminUser For a Windows image: the account its VMs are signed in with unless
+	// a VM names another, e.g. `Administrator` on Windows Server. Without
+	// it, each VM names one (Windows 11 has no Administrator to use).
+	AdminUser *string `json:"admin_user,omitempty"`
+
 	// Format `qcow2` or `raw`.
 	Format string `json:"format"`
 	Name   string `json:"name"`
@@ -568,13 +579,21 @@ type CreateImage struct {
 	// Os What VMs made from it run: `linux` (the default) or `windows`, an
 	// image with cloudbase-init (see `deploy/images/windows`): VMs get
 	// Hyper-V enlightenments, and their password as Windows takes it.
-	Os     *string `json:"os,omitempty"`
-	Shared *bool   `json:"shared,omitempty"`
+	Os *string `json:"os,omitempty"`
+
+	// SecureBoot VMs made from it boot with UEFI Secure Boot unless told otherwise
+	// (Windows 11 requires it).
+	SecureBoot *bool `json:"secure_boot,omitempty"`
+	Shared     *bool `json:"shared,omitempty"`
 
 	// SourceUrl HTTP(S) URL a host downloads the image from, as it is added.
 	SourceUrl     string         `json:"source_url"`
 	StoragePoolId *StoragePoolId `json:"storage_pool_id,omitempty"`
 	TenantId      *TenantId      `json:"tenant_id,omitempty"`
+
+	// Tpm VMs made from it get a TPM 2.0 unless told otherwise (Windows 11
+	// requires one).
+	Tpm *bool `json:"tpm,omitempty"`
 }
 
 // CreateJoinToken defines model for CreateJoinToken.
@@ -699,6 +718,10 @@ type CreateVm struct {
 	// stored or passed to the guest.
 	Password *string `json:"password,omitempty"`
 
+	// SecureBoot Boot with UEFI Secure Boot (UEFI firmware only): only what is signed
+	// with Microsoft's keys boots. As the image says by default.
+	SecureBoot *bool `json:"secure_boot,omitempty"`
+
 	// SecurityGroupIds Security groups for the NIC (the tenant's own); its `default` group
 	// otherwise. An empty list blocks all traffic but DHCP.
 	SecurityGroupIds *[]SecurityGroupId `json:"security_group_ids,omitempty"`
@@ -710,6 +733,10 @@ type CreateVm struct {
 	Start         *bool          `json:"start,omitempty"`
 	StoragePoolId *StoragePoolId `json:"storage_pool_id,omitempty"`
 	TenantId      *TenantId      `json:"tenant_id,omitempty"`
+
+	// Tpm Give it a TPM 2.0, whose state stays with the VM wherever it runs.
+	// As the image says by default.
+	Tpm *bool `json:"tpm,omitempty"`
 
 	// UserData Complete cloud-init user data. Overrides `ssh_authorized_keys` and
 	// `password`.
@@ -726,6 +753,10 @@ type CreateVpc struct {
 
 // CreatedImage defines model for CreatedImage.
 type CreatedImage struct {
+	// AdminUser A Windows image's: the account its VMs are signed in with unless
+	// told otherwise (`Administrator` on Windows Server); none when each
+	// VM names one.
+	AdminUser *string   `json:"admin_user,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 
 	// Digest SHA-256 of the disk it holds, read as a raw disk: every copy, and a
@@ -746,6 +777,10 @@ type CreatedImage struct {
 
 	// Os What VMs made from it run: `linux` or `windows`.
 	Os string `json:"os"`
+
+	// SecureBoot What VMs made from it get unless told otherwise: UEFI Secure Boot,
+	// a TPM.
+	SecureBoot bool `json:"secure_boot"`
 
 	// Sha256 SHA-256 of the file downloaded from `source_url`.
 	Sha256 *string `json:"sha256,omitempty"`
@@ -774,6 +809,7 @@ type CreatedImage struct {
 	// TaskId The download.
 	TaskId   TaskId   `json:"task_id"`
 	TenantId TenantId `json:"tenant_id"`
+	Tpm      bool     `json:"tpm"`
 
 	// VirtualBytes The size of the disk it holds: VMs' disks made from it are at least
 	// as large.
@@ -1049,9 +1085,15 @@ type HostView struct {
 	// have their gateways here.
 	PhysicalNetworks []string `json:"physical_networks"`
 
+	// SecureBoot Gives guests UEFI Secure Boot (OVMF with Microsoft's keys).
+	SecureBoot bool `json:"secure_boot"`
+
 	// State `ready`, `maintenance` or `decommissioned`.
-	State   string `json:"state"`
-	VmCount int    `json:"vm_count"`
+	State string `json:"state"`
+
+	// Tpm Gives guests a TPM 2.0 (swtpm).
+	Tpm     bool `json:"tpm"`
+	VmCount int  `json:"vm_count"`
 }
 
 // ImageId defines model for ImageId.
@@ -1059,6 +1101,10 @@ type ImageId = openapi_types.UUID
 
 // ImageView defines model for ImageView.
 type ImageView struct {
+	// AdminUser A Windows image's: the account its VMs are signed in with unless
+	// told otherwise (`Administrator` on Windows Server); none when each
+	// VM names one.
+	AdminUser *string   `json:"admin_user,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 
 	// Digest SHA-256 of the disk it holds, read as a raw disk: every copy, and a
@@ -1079,6 +1125,10 @@ type ImageView struct {
 
 	// Os What VMs made from it run: `linux` or `windows`.
 	Os string `json:"os"`
+
+	// SecureBoot What VMs made from it get unless told otherwise: UEFI Secure Boot,
+	// a TPM.
+	SecureBoot bool `json:"secure_boot"`
 
 	// Sha256 SHA-256 of the file downloaded from `source_url`.
 	Sha256 *string `json:"sha256,omitempty"`
@@ -1104,6 +1154,7 @@ type ImageView struct {
 	// saying how): it can be downloaded again.
 	Stuck    bool     `json:"stuck"`
 	TenantId TenantId `json:"tenant_id"`
+	Tpm      bool     `json:"tpm"`
 
 	// VirtualBytes The size of the disk it holds: VMs' disks made from it are at least
 	// as large.
@@ -1907,9 +1958,17 @@ type UpdateVm struct {
 	// stopped; it applies from the next start.
 	Migratable *bool `json:"migratable,omitempty"`
 
+	// SecureBoot Boot with UEFI Secure Boot (UEFI firmware only). Only while it is
+	// stopped; its UEFI variables start anew at its next start.
+	SecureBoot *bool `json:"secure_boot,omitempty"`
+
 	// Template Make the stopped VM a template, kept to be cloned and never started,
 	// or a VM again.
 	Template *bool `json:"template,omitempty"`
+
+	// Tpm Give it a TPM 2.0. Only while it is stopped; taken away, its TPM's
+	// state is gone for good.
+	Tpm *bool `json:"tpm,omitempty"`
 
 	// Vcpus Virtual CPUs (1-128). While the VM runs, within `max_vcpus`
 	// (plugged in or out); otherwise while it is stopped, its host having
@@ -2057,12 +2116,18 @@ type VmView struct {
 	// (forced off), `crashed`, `failed`, `daemon`, ...
 	PowerReason *string `json:"power_reason,omitempty"`
 
+	// SecureBoot Boots with UEFI Secure Boot.
+	SecureBoot bool `json:"secure_boot"`
+
 	// Status Lifecycle: `creating`, `ready`, `error` or `deleting`.
 	Status string `json:"status"`
 
 	// Template A template: kept to be cloned, never started.
-	Template  bool      `json:"template"`
-	TenantId  TenantId  `json:"tenant_id"`
+	Template bool     `json:"template"`
+	TenantId TenantId `json:"tenant_id"`
+
+	// Tpm Has a TPM 2.0 (its state goes where the VM goes).
+	Tpm       bool      `json:"tpm"`
 	UpdatedAt time.Time `json:"updated_at"`
 
 	// Vcpus Virtual CPUs plugged in.

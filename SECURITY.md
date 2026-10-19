@@ -297,6 +297,13 @@ and copied between hosts; earlier releases' compatibility removed). Fixed:
   its seed.
   *Mitigation:* change the password after the first sign-in where that
   matters.
+- **VMs' TPM state is stored unencrypted on their host.** swtpm's files
+  (`/var/lib/libvirt/swtpm`) are readable by root on the host the VM runs
+  on, so whatever a guest seals to its TPM (BitLocker keys, say) is
+  protected from other guests and tenants, not from the host. The copy the
+  controller keeps is sealed with the master key, bound to its VM.
+  *Mitigation:* treat hosts as trusted with guests' secrets, as they are
+  with their memory.
 - **Per-VM limits are opt-in.** Without them, a VM can slow down others on
   the same host or storage; CPU and memory are shared by the overcommit
   ratios alone.

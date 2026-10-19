@@ -230,6 +230,8 @@ pub async fn domain(
         host_cache: !spec.migratable,
         disk_limits,
         hyperv: spec.guest_os == mst_core::vm::GuestOs::Windows,
+        secure_boot: spec.secure_boot,
+        tpm: spec.tpm,
         nics: spec
             .nics
             .iter()

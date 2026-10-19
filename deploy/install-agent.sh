@@ -372,17 +372,17 @@ if [[ ! -e $CONF/agent.toml ]] && ((!local_controller)); then
 fi
 
 install_packages() {
-  log "installing libvirt, QEMU, Open vSwitch and OVN"
+  log "installing libvirt, QEMU, swtpm, Open vSwitch and OVN"
   case $family in
     debian)
       export DEBIAN_FRONTEND=noninteractive
       apt-get update -q
       apt-get install -y -q openvswitch-switch ovn-host qemu-system-x86 qemu-utils \
-        libvirt-daemon-system libvirt-clients xorriso ovmf nftables curl ca-certificates
+        libvirt-daemon-system libvirt-clients xorriso ovmf swtpm swtpm-tools nftables curl ca-certificates
       ;;
     fedora)
       dnf install -y -q openvswitch ovn-host qemu-kvm qemu-img libvirt-daemon-kvm libvirt-client \
-        xorriso edk2-ovmf nftables curl
+        xorriso edk2-ovmf swtpm swtpm-tools nftables curl
       ;;
     el)
       el_repos
@@ -390,11 +390,11 @@ install_packages() {
       ovn=$(ovn_pkg host) ovs=$(ovs_pkg)
       [[ -n $ovn && -n $ovs ]] || die "no Open vSwitch or OVN packages in the configured repositories"
       dnf install -y -q "$ovn" "$ovs" qemu-kvm qemu-img libvirt-daemon-kvm libvirt-client \
-        xorriso edk2-ovmf nftables curl
+        xorriso edk2-ovmf swtpm swtpm-tools nftables curl
       ;;
     arch)
       pacman -Syu --needed --noconfirm openvswitch qemu-base qemu-img qemu-hw-display-virtio-vga \
-        qemu-hw-display-virtio-gpu libvirt libisoburn edk2-ovmf nftables curl libarchive
+        qemu-hw-display-virtio-gpu libvirt libisoburn edk2-ovmf swtpm nftables curl libarchive
       build_ovn
       ovn_unit ovn-controller "OVN controller" \
         "After=ovs-vswitchd.service

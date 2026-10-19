@@ -75,7 +75,7 @@ pub async fn recover(ctx: &TaskCtx) -> Result<()> {
             .await;
         let mut attempt = 1;
         loop {
-            match super::vm::provision(ctx, vm.id, false).await {
+            match super::vm::provision(ctx, vm.id, false, Some(host)).await {
                 Ok(()) => {
                     tracing::warn!(vm = %vm.id, to = %dest_name, "restarted after host failure");
                     moved.push(format!("{} → {dest_name}", vm.name));
@@ -157,6 +157,8 @@ pub(crate) async fn another_host(
             memory_overcommit: f64::from(c.memory_overcommit),
             used_vcpus: c.used_vcpus.max(0) as u64,
             used_memory_mib: c.used_memory_mib.max(0) as u64,
+            tpm: c.tpm,
+            secure_boot: c.secure_boot,
         })
         .collect();
     let req = mst_scheduler::Request {
@@ -164,6 +166,8 @@ pub(crate) async fn another_host(
         memory_mib: vm.spec.0.reserved_memory_mib(),
         clusters: cluster.map(|c| [c].into_iter().collect()),
         host: None,
+        tpm: vm.spec.0.tpm,
+        secure_boot: vm.spec.0.secure_boot,
     };
     Ok(match mst_scheduler::place(&req, &hosts) {
         Ok(dest) => {

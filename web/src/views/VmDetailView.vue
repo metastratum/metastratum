@@ -106,6 +106,24 @@ async function setFreePageReporting(on: boolean) {
     switching.value = false
   }
 }
+// Taking a TPM away loses what it holds: asked twice.
+const removingTpm = ref(false)
+async function setBootSecurity(body: { secure_boot?: boolean; tpm?: boolean }) {
+  if (body.tpm === false && !removingTpm.value) {
+    removingTpm.value = true
+    return
+  }
+  removingTpm.value = false
+  actionError.value = ''
+  switching.value = true
+  try {
+    vm.value = await ok(api.PATCH('/api/v1/vms/{id}', { params: { path: { id: props.id } }, body }))
+  } catch (e) {
+    actionError.value = errorText(e)
+  } finally {
+    switching.value = false
+  }
+}
 async function fitCpu() {
   actionError.value = ''
   switching.value = true
@@ -428,6 +446,42 @@ async function remove() {
             <dt>VM ID</dt><dd><IdChip :value="vm.id" /></dd>
             <template v-if="!scope.solo"><dt>Tenant</dt><dd><IdChip :value="vm.tenant_id" /></dd></template>
             <dt>Firmware</dt><dd>{{ vm.firmware === 'uefi' ? 'UEFI' : 'BIOS' }}</dd>
+            <template v-if="vm.firmware === 'uefi'">
+              <dt>Secure Boot</dt>
+              <dd class="migratable">
+                {{ vm.secure_boot ? 'On: only signed boot loaders start' : 'Off' }}
+                <button
+                  class="btn small"
+                  :disabled="!stopped || switching"
+                  :title="
+                    stopped ? 'Its UEFI settings start anew at its next start' : 'Stop the VM to change this'
+                  "
+                  @click="setBootSecurity({ secure_boot: !vm.secure_boot })"
+                >
+                  {{ vm.secure_boot ? 'Turn off' : 'Turn on' }}
+                </button>
+              </dd>
+            </template>
+            <dt>TPM</dt>
+            <dd class="migratable">
+              {{ vm.tpm ? 'TPM 2.0: its contents move with the VM' : 'None' }}
+              <button
+                class="btn small"
+                :class="{ danger: removingTpm }"
+                :disabled="!stopped || switching"
+                :title="
+                  stopped
+                    ? vm.tpm
+                      ? 'Removes it and the keys it holds, for good'
+                      : 'Adds a new, empty TPM 2.0'
+                    : 'Stop the VM to change this'
+                "
+                @click="setBootSecurity({ tpm: !vm.tpm })"
+                @blur="removingTpm = false"
+              >
+                {{ vm.tpm ? (removingTpm ? 'Remove it and its keys' : 'Remove') : 'Add' }}
+              </button>
+            </dd>
             <template v-if="vm.guest_os === 'windows'">
               <dt>System</dt>
               <dd>

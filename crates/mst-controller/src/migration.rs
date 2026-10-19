@@ -134,6 +134,8 @@ pub async fn plan(
             memory_overcommit: f64::from(c.memory_overcommit),
             used_vcpus: c.used_vcpus.max(0) as u64,
             used_memory_mib: c.used_memory_mib.max(0) as u64,
+            tpm: c.tpm,
+            secure_boot: c.secure_boot,
         })
         .collect();
     if want.is_some() && candidates.is_empty() && rejected.is_empty() {
@@ -145,6 +147,8 @@ pub async fn plan(
         memory_mib: spec.reserved_memory_mib(),
         clusters: Some(HashSet::from([cluster])),
         host: None,
+        tpm: spec.tpm,
+        secure_boot: spec.secure_boot,
     };
     let dest = match mst_scheduler::place(&request, &candidates) {
         Ok(d) => d,

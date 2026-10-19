@@ -92,6 +92,10 @@ message HostFacts {
   // Whether live migrations can involve this host: QEMU runs in a group
   // the agent can give a migration's TLS key to.
   bool migration_ready = 12;
+  // Whether guests can have a TPM 2.0 here (libvirt runs swtpm).
+  bool tpm = 13;
+  // Whether guests can have UEFI Secure Boot here (firmware with it).
+  bool secure_boot = 14;
 }
 
 message AgentMessage {
@@ -212,6 +216,8 @@ message Command {
     AttachNic attach_nic = 55;
     DetachNic detach_nic = 56;
     ReplugNic replug_nic = 57;
+    ExportTpm export_tpm = 58;
+    ImportTpm import_tpm = 59;
   }
   // 10: EnsureImage, before the image store. 21: MigrateVm, peer to peer.
   // 27: LibvirtTls, which opened libvirt to other hosts for that. 28:
@@ -280,6 +286,9 @@ message SetDiskLimits {
 
 message StartVm {
   string vm_id = 1;
+  // Make its UEFI variables afresh from their template first (after Secure
+  // Boot was turned on or off: the template holds the keys, or none).
+  bool reset_nvram = 2;
 }
 
 message StopVm {
@@ -696,6 +705,23 @@ message VolumeFromImage {
 // pool's) the images not among `image_ids` that are an hour old or more,
 // and downloads or copies cut off a day ago or more. Returns {"removed":
 // [image ids]}.
+// The VM's TPM state on this host. Returns {"digest": SHA-256 (hex) of the
+// state, "state": the state (base64)}, without "state" when its digest is
+// `known` (nothing changed), and {} when the VM has no TPM state here.
+message ExportTpm {
+  string vm_id = 1;
+  string known = 2;
+}
+
+// Put a VM's TPM state in place here (it starts here next, having run
+// elsewhere), in place of any it had here. `digest` is SHA-256 (hex) of
+// `state`, checked. Neither: what it had here goes (its TPM was removed).
+message ImportTpm {
+  string vm_id = 1;
+  bytes state = 2;
+  string digest = 3;
+}
+
 // Whether a file exists in the VM's guest, asked through its guest agent.
 // Returns "true" or "false"; fails while the guest agent does not answer.
 message GuestFileExists {

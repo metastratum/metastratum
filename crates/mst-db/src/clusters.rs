@@ -154,6 +154,9 @@ pub struct Candidate {
     pub used_memory_mib: i64,
     /// Accepts live migrations (QEMU's TLS is set up).
     pub migration_ready: bool,
+    /// Gives guests a TPM, Secure Boot.
+    pub tpm: bool,
+    pub secure_boot: bool,
 }
 
 /// All hosts with their allocations, locked until the transaction ends so
@@ -163,6 +166,7 @@ pub struct Candidate {
 pub async fn candidates_locked(db: &mut PgConnection) -> Result<Vec<Candidate>> {
     Ok(sqlx::query_as(
         "SELECT h.id, h.name, h.cluster_id, h.state, h.kvm, h.cpu_count, h.memory_mib, h.migration_ready,
+                h.tpm, h.secure_boot,
                 (h.connected_to IS NOT NULL AND h.last_seen_at > now() - interval '30 seconds') AS live,
                 coalesce(c.cpu_overcommit, 1) AS cpu_overcommit,
                 coalesce(c.memory_overcommit, 1) AS memory_overcommit,

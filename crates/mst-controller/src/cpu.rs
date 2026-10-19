@@ -174,6 +174,8 @@ mod tests {
             physical_networks: vec![],
             cpu_json: String::new(),
             migration_ready: true,
+            tpm: false,
+            secure_boot: false,
             fence_kind: None,
             connected_since: None,
             agent_protocol: 5,

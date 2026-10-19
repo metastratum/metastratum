@@ -55,6 +55,17 @@ pub struct VmSpec {
     /// What it runs (VMs made before this was kept run Linux).
     #[serde(default)]
     pub guest_os: GuestOs,
+    /// UEFI Secure Boot, with Microsoft's keys enrolled (UEFI firmware only).
+    #[serde(default)]
+    pub secure_boot: bool,
+    /// A TPM 2.0 of its own. Its state lives on the host the VM runs on, and
+    /// moves with it.
+    #[serde(default)]
+    pub tpm: bool,
+    /// Its UEFI variables are made afresh as it next starts (Secure Boot was
+    /// turned on or off: the template holds the keys, or none).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reset_nvram: bool,
     /// Boot disk first.
     pub disks: Vec<DiskSpec>,
     pub nics: Vec<NicSpec>,

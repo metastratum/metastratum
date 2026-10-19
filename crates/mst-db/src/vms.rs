@@ -243,7 +243,56 @@ pub async fn moved(db: &mut sqlx::PgConnection, id: VmId, host: HostId) -> Resul
     Ok(())
 }
 
-/// The VM, locked until the transaction ends.
+/// The latest copy of a VM's TPM state: (state, sealed; its digest).
+pub async fn tpm_state(db: impl PgExecutor<'_>, id: VmId) -> Result<Option<(String, String)>> {
+    Ok(
+        sqlx::query_as("SELECT state, digest FROM vm_tpm_states WHERE vm_id = $1")
+            .bind(id)
+            .fetch_optional(db)
+            .await?,
+    )
+}
+
+/// Keeps a copy of a VM's TPM state (sealed), in place of the one before.
+/// Nothing if the VM is gone.
+pub async fn set_tpm_state(
+    db: impl PgExecutor<'_>,
+    id: VmId,
+    sealed: &str,
+    digest: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO vm_tpm_states (vm_id, state, digest)
+         SELECT id, $2, $3 FROM vms WHERE id = $1
+         ON CONFLICT (vm_id) DO UPDATE SET state = $2, digest = $3, updated_at = now()",
+    )
+    .bind(id)
+    .bind(sealed)
+    .bind(digest)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Forgets the copy of a VM's TPM state (its TPM was removed).
+pub async fn drop_tpm_state(db: impl PgExecutor<'_>, id: VmId) -> Result<()> {
+    sqlx::query("DELETE FROM vm_tpm_states WHERE vm_id = $1")
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// VMs with a TPM, on hosts: (VM, host).
+pub async fn with_tpm(db: impl PgExecutor<'_>) -> Result<Vec<(VmId, HostId)>> {
+    Ok(sqlx::query_as(
+        "SELECT id, host_id FROM vms WHERE (spec->>'tpm')::boolean AND host_id IS NOT NULL
+         AND status IN ('ready', 'error') ORDER BY id",
+    )
+    .fetch_all(db)
+    .await?)
+}
+
 /// VMs whose first boot is pending: a Windows VM's password is kept for it
 /// (see `CloudInit::first_boot_password`).
 pub async fn first_boots_pending(db: impl PgExecutor<'_>) -> Result<Vec<VmId>> {
@@ -254,6 +303,7 @@ pub async fn first_boots_pending(db: impl PgExecutor<'_>) -> Result<Vec<VmId>> {
     .await?)
 }
 
+/// The VM, locked until the transaction ends.
 pub async fn get_for_update(db: &mut sqlx::PgConnection, id: VmId) -> Result<Vm> {
     sqlx::query_as(concat!(
         "SELECT ",

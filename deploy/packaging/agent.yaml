@@ -26,6 +26,8 @@ depends:
   - xorriso
   - ovmf
 recommends:
+  - swtpm
+  - swtpm-tools
   - nfs-common
   - qemu-block-extra
   - ceph-common
@@ -41,6 +43,8 @@ overrides:
       - xorriso
       - edk2-ovmf
     recommends:
+      - swtpm
+      - swtpm-tools
       - nfs-utils
       - qemu-block-rbd
       - ceph-common

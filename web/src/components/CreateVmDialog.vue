@@ -46,6 +46,13 @@ const disk = ref(10)
 watch(minDisk, (m) => {
   if (disk.value < m) disk.value = m
 })
+// As the image says, unless changed.
+const secureBoot = ref(false)
+const tpm = ref(false)
+watch(image, (i) => {
+  secureBoot.value = i?.secure_boot ?? false
+  tpm.value = i?.tpm ?? false
+})
 const sshKey = ref('')
 const password = ref('')
 // Windows takes a password, its Administrator's, and no SSH keys.
@@ -117,6 +124,8 @@ async function submit() {
           memory_mib: memory.value,
           max_memory_mib: maxMemory.value || null,
           disk_gib: disk.value,
+          secure_boot: secureBoot.value,
+          tpm: tpm.value,
           ssh_authorized_keys: sshKeys(),
           password: password.value || null,
         },
@@ -268,6 +277,14 @@ async function submit() {
           <template v-else>The VM stays on its host and gets the host’s full CPU and disk caching.</template>
         </span>
       </label>
+      <fieldset v-if="!template" class="groups">
+        <legend class="label">Boot security</legend>
+        <label class="check"><input v-model="secureBoot" type="checkbox" /> UEFI Secure Boot</label>
+        <label class="check"><input v-model="tpm" type="checkbox" /> TPM 2.0</label>
+        <span class="hint">
+          Windows 11 needs both. The TPM’s contents move with the VM to whichever host it runs on.
+        </span>
+      </fieldset>
       <label v-if="!windows" class="field">
         <span class="label">SSH public keys</span>
         <textarea v-model="sshKey" rows="3" placeholder="ssh-ed25519 AAAA… one per line" />

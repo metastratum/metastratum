@@ -198,6 +198,8 @@ const UNDEFINE_MANAGED_SAVE: u32 = 1;
 const UNDEFINE_SNAPSHOTS_METADATA: u32 = 2;
 const UNDEFINE_NVRAM: u32 = 4;
 const UNDEFINE_CHECKPOINTS_METADATA: u32 = 16;
+/// `VIR_DOMAIN_UNDEFINE_TPM`: its TPM state goes too.
+const UNDEFINE_TPM: u32 = 32;
 const OPEN_GRAPHICS_SKIPAUTH: u32 = 1;
 const CONSOLE_FORCE: u32 = 1;
 
@@ -295,13 +297,44 @@ impl Libvirt {
         Ok(())
     }
 
-    pub async fn start(&self, uuid: &str) -> Result<()> {
+    /// Starts the domain, its UEFI variables made afresh from their
+    /// template first if `reset_nvram` (after Secure Boot was turned on or
+    /// off: the template holds the keys, or none).
+    pub async fn start(&self, uuid: &str, reset_nvram: bool) -> Result<()> {
+        /// `VIR_DOMAIN_START_RESET_NVRAM`.
+        const RESET_NVRAM: u32 = 1 << 5;
         let c = self.client().await?;
         let dom = self.lookup(&c, uuid).await?;
         if self.power_of(&c, &dom).await? != Power::Running {
-            c.domain_create(&DomainCreateArgs { dom }).await?;
+            match reset_nvram {
+                true => {
+                    c.domain_create_with_flags(&DomainCreateWithFlagsArgs {
+                        dom,
+                        flags: RESET_NVRAM,
+                    })
+                    .await?;
+                }
+                false => c.domain_create(&DomainCreateArgs { dom }).await?,
+            }
         }
         Ok(())
+    }
+
+    /// What the host gives guests beyond the basics: a TPM, Secure Boot.
+    pub async fn guest_support(&self) -> Result<crate::xml::GuestSupport> {
+        let caps = self
+            .client()
+            .await?
+            .connect_get_domain_capabilities(&ConnectGetDomainCapabilitiesArgs {
+                emulatorbin: None,
+                arch: Some("x86_64".into()),
+                machine: Some("q35".into()),
+                virttype: Some("kvm".into()),
+                flags: 0,
+            })
+            .await?
+            .capabilities;
+        Ok(crate::xml::guest_support(&caps))
     }
 
     /// ACPI shutdown request; the guest decides when to power off.
@@ -349,7 +382,8 @@ impl Libvirt {
     }
 
     /// Powers off and undefines the domain, including its UEFI variable
-    /// store. Succeeds if the domain does not exist.
+    /// store and TPM state (kept elsewhere first, where it is to live on).
+    /// Succeeds if the domain does not exist.
     pub async fn undefine(&self, uuid: &str) -> Result<()> {
         let c = self.client().await?;
         let dom = match self.lookup(&c, uuid).await {
@@ -359,7 +393,7 @@ impl Libvirt {
         };
         self.power_off(&c, &dom).await?;
         let basic = UNDEFINE_MANAGED_SAVE | UNDEFINE_SNAPSHOTS_METADATA;
-        let full = basic | UNDEFINE_NVRAM | UNDEFINE_CHECKPOINTS_METADATA;
+        let full = basic | UNDEFINE_NVRAM | UNDEFINE_CHECKPOINTS_METADATA | UNDEFINE_TPM;
         match c
             .domain_undefine_flags(&DomainUndefineFlagsArgs {
                 dom: dom.clone(),

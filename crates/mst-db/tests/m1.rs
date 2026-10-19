@@ -46,6 +46,8 @@ async fn host(pool: &PgPool) -> hosts::Host {
         physical_networks: &[],
         cpu_json: "",
         migration_ready: false,
+        tpm: false,
+        secure_boot: false,
     };
     hosts::create(pool, HostId::new(), &facts, "fp", Utc::now(), "01")
         .await
@@ -64,6 +66,9 @@ async fn vm(pool: &PgPool, tenant: &tenants::Tenant, host: &hosts::Host, name: &
         free_page_reporting: true,
         firmware: Default::default(),
         guest_os: Default::default(),
+        secure_boot: false,
+        tpm: false,
+        reset_nvram: false,
         disks: vec![],
         nics: vec![],
         cloud_init: None,
@@ -216,6 +221,34 @@ async fn concurrent_ip_allocation_never_duplicates(pool: PgPool) {
     ips.sort();
     ips.dedup();
     assert_eq!(ips.len(), 40);
+}
+
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn tpm_state_copies_are_kept_per_vm(pool: PgPool) {
+    let t = root(&pool).await;
+    let h = host(&pool).await;
+    let a = vm(&pool, &t, &h, "a").await;
+    vm(&pool, &t, &h, "b").await;
+    vms::settle(&pool, a.id, "ready", None).await.unwrap();
+    assert!(vms::with_tpm(&pool).await.unwrap().is_empty());
+    let mut spec = a.spec.0.clone();
+    spec.tpm = true;
+    vms::set_spec(&pool, a.id, &spec).await.unwrap();
+    assert_eq!(vms::with_tpm(&pool).await.unwrap(), [(a.id, h.id)]);
+
+    assert_eq!(vms::tpm_state(&pool, a.id).await.unwrap(), None);
+    vms::set_tpm_state(&pool, a.id, "s1", "d1").await.unwrap();
+    vms::set_tpm_state(&pool, a.id, "s2", "d2").await.unwrap();
+    assert_eq!(
+        vms::tpm_state(&pool, a.id).await.unwrap(),
+        Some(("s2".into(), "d2".into()))
+    );
+    // None for a VM that is gone.
+    let gone = VmId::new();
+    vms::set_tpm_state(&pool, gone, "s", "d").await.unwrap();
+    assert_eq!(vms::tpm_state(&pool, gone).await.unwrap(), None);
+    vms::drop_tpm_state(&pool, a.id).await.unwrap();
+    assert_eq!(vms::tpm_state(&pool, a.id).await.unwrap(), None);
 }
 
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]
@@ -548,6 +581,9 @@ async fn images_visible_to_owner_and_shared_down_the_tree(pool: PgPool) {
         shared,
         storage_pool_id: mst_core::ids::LOCAL_POOL,
         os: "linux",
+        secure_boot: false,
+        tpm: false,
+        admin_user: None,
     };
 
     let public = images::create(&pool, img(r.id, "debian", true))
@@ -600,6 +636,9 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
             shared: false,
             storage_pool_id: mst_core::ids::LOCAL_POOL,
             os: "windows",
+            secure_boot: true,
+            tpm: true,
+            admin_user: Some("Administrator"),
         },
     )
     .await
@@ -607,6 +646,10 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
     assert_eq!(
         (img.state.as_str(), img.os.as_str()),
         ("downloading", "windows")
+    );
+    assert_eq!(
+        (img.secure_boot, img.tpm, img.admin_user.as_deref()),
+        (true, true, Some("Administrator"))
     );
     let hex = |id: uuid::Uuid| id.simple().to_string();
     assert_eq!(
@@ -827,6 +870,9 @@ async fn scheduling_snapshot_reports_allocations_and_liveness(pool: PgPool) {
         free_page_reporting: true,
         firmware: Default::default(),
         guest_os: Default::default(),
+        secure_boot: false,
+        tpm: false,
+        reset_nvram: false,
         disks: vec![],
         nics: vec![],
         cloud_init: None,
@@ -1402,6 +1448,8 @@ async fn migrations_under_way_are_listed(pool: PgPool) {
         physical_networks: &[],
         cpu_json: "",
         migration_ready: false,
+        tpm: false,
+        secure_boot: false,
     };
     let dest = hosts::create(&pool, HostId::new(), &facts, "fp2", Utc::now(), "01")
         .await
@@ -1474,6 +1522,8 @@ async fn hosts_changes_wait_until_accepted(pool: PgPool) {
         physical_networks: &h.physical_networks,
         cpu_json: "",
         migration_ready: true,
+        tpm: false,
+        secure_boot: false,
     };
     let pending =
         serde_json::json!({"memory_mib": 1 << 20, "physical_networks": ["external", "other"]});

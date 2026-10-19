@@ -48,7 +48,7 @@ async fn call(ctx: &TaskCtx, host: HostId, cmd: Cmd, timeout: Duration) -> Resul
 
 pub async fn create(ctx: &TaskCtx) -> Result<()> {
     let id = target(ctx)?;
-    let result = provision(ctx, id, true).await;
+    let result = provision(ctx, id, true, None).await;
     let db = &ctx.state.db;
     match &result {
         Ok(()) => mst_db::vms::settle(db, id, "ready", None).await?,
@@ -59,8 +59,14 @@ pub async fn create(ctx: &TaskCtx) -> Result<()> {
 
 /// Puts the VM on its host: network, disks (`fresh`: made now; otherwise
 /// they exist, on shared storage, as when it is restarted after its host
-/// failed), definition, and power.
-pub(super) async fn provision(ctx: &TaskCtx, id: VmId, fresh: bool) -> Result<()> {
+/// failed), definition, its TPM state (from `from`, the host it ran on
+/// before, when it moves; see `crate::tpm::carry`), and power.
+pub(super) async fn provision(
+    ctx: &TaskCtx,
+    id: VmId,
+    fresh: bool,
+    from: Option<HostId>,
+) -> Result<()> {
     let db = &ctx.state.db;
     let vm = mst_db::vms::get(db, id).await?;
     let host = host_of(&vm)?;
@@ -111,19 +117,39 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId, fresh: bool) -> Result<()
     )
     .await
     .context("defining VM")?;
+    if spec.tpm && !fresh {
+        crate::tpm::carry(&ctx.state, vm.id, host, from)
+            .await
+            .context("carrying the VM's TPM state")?;
+    }
 
     if vm.desired_power == "running" {
         ctx.step("start", 0.9).await;
-        call(
-            ctx,
-            host,
-            Cmd::StartVm(StartVm {
-                vm_id: vm.id.to_string(),
-            }),
-            QUICK,
-        )
-        .await
-        .context("starting VM")?;
+        power_on(ctx, &vm, host).await.context("starting VM")?;
+    }
+    Ok(())
+}
+
+/// Starts the VM on its host, its UEFI variables made anew if its Secure
+/// Boot was switched (once).
+async fn power_on(ctx: &TaskCtx, vm: &Vm, host: HostId) -> Result<()> {
+    let reset_nvram = vm.spec.0.reset_nvram;
+    call(
+        ctx,
+        host,
+        Cmd::StartVm(StartVm {
+            vm_id: vm.id.to_string(),
+            reset_nvram,
+        }),
+        QUICK,
+    )
+    .await?;
+    if reset_nvram {
+        let mut tx = ctx.state.db.begin().await?;
+        let mut spec = mst_db::vms::get_for_update(&mut tx, vm.id).await?.spec.0;
+        spec.reset_nvram = false;
+        mst_db::vms::set_spec(&mut *tx, vm.id, &spec).await?;
+        tx.commit().await?;
     }
     Ok(())
 }
@@ -300,7 +326,7 @@ pub async fn start(ctx: &TaskCtx) -> Result<()> {
         .filter(|from| *from != host);
     if let Some(from) = moved_from {
         ctx.step("setting the VM up on another host", 0.2).await;
-        provision(ctx, vm.id, false).await?;
+        provision(ctx, vm.id, false, Some(from)).await?;
         let gone = call(
             ctx,
             from,
@@ -315,18 +341,10 @@ pub async fn start(ctx: &TaskCtx) -> Result<()> {
         }
         return Ok(());
     }
-    let started = call(
-        ctx,
-        host,
-        Cmd::StartVm(StartVm {
-            vm_id: vm.id.to_string(),
-        }),
-        QUICK,
-    )
-    .await;
+    let started = power_on(ctx, &vm, host).await;
     match started {
         Err(e) if format!("{e:#}").contains(&format!("domain {} not found", vm.id)) => {
-            provision(ctx, vm.id, false).await
+            provision(ctx, vm.id, false, None).await
         }
         r => r,
     }

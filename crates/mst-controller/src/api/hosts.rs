@@ -50,6 +50,10 @@ pub struct HostView {
     memory_mib: i64,
     cpu_model: String,
     kvm: bool,
+    /// Gives guests a TPM 2.0 (swtpm).
+    tpm: bool,
+    /// Gives guests UEFI Secure Boot (OVMF with Microsoft's keys).
+    secure_boot: bool,
     libvirt_version: String,
     ovn_chassis: String,
     /// Physical networks the host reaches; external networks on them can
@@ -133,6 +137,8 @@ async fn list_hosts(State(state): State<AppState>, p: Principal) -> ApiResult<Js
             memory_mib: h.memory_mib,
             cpu_model: h.cpu_model,
             kvm: h.kvm,
+            tpm: h.tpm,
+            secure_boot: h.secure_boot,
             libvirt_version: h.libvirt_version,
             ovn_chassis: h.ovn_chassis,
             physical_networks: h.physical_networks,

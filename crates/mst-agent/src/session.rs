@@ -141,6 +141,9 @@ impl Agent {
         // listener, and OVS's identity and bridges (OVS resets its system-id
         // at start on some distributions).
         facts.migration_ready = crate::tls::ready_for_migration();
+        // swtpm or Secure Boot firmware installed since.
+        let support = crate::facts::guest_support(&self.lv).await;
+        (facts.tpm, facts.secure_boot) = (support.tpm, support.secure_boot);
         facts.ovn_chassis = crate::facts::ovn_chassis().await;
         facts.physical_networks = crate::facts::physical_networks().await;
         let hello = Hello {
@@ -599,6 +602,8 @@ impl Agent {
             Cmd::DeleteSnapshot(c) => crate::snapshot::delete(self, &c).await?,
             Cmd::ResizeDisk(c) => crate::vm::resize_disk(self, &c).await?,
             Cmd::GuestFileExists(c) => return crate::vm::guest_file_exists(self, &c).await,
+            Cmd::ExportTpm(c) => return crate::tpm::export(&c.vm_id, &c.known).await,
+            Cmd::ImportTpm(c) => crate::tpm::import(&c.vm_id, &c.state, &c.digest).await?,
             Cmd::CloneVolume(c) => crate::vm::clone_volume(self, &c).await?,
             Cmd::ExportVolume(c) => return crate::transfer::export(self, &c).await,
             Cmd::EndExport(c) => crate::transfer::end(&c.volume_id),
@@ -752,7 +757,7 @@ impl Agent {
                 return Ok(answer.to_string());
             }
             Cmd::StartVm(c) => {
-                self.lv.start(&c.vm_id).await?;
+                self.lv.start(&c.vm_id, c.reset_nvram).await?;
                 self.report_power(&c.vm_id, tx).await;
             }
             Cmd::StopVm(c) => {

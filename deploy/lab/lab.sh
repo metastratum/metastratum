@@ -153,7 +153,7 @@ runcmd:
 EOF
   else
     cat <<EOF
-packages: [qemu-system-x86, qemu-utils, libvirt-daemon-system, openvswitch-switch, ovn-host, nfs-common, genisoimage, ovmf]
+packages: [qemu-system-x86, qemu-utils, libvirt-daemon-system, openvswitch-switch, ovn-host, nfs-common, genisoimage, ovmf, swtpm, swtpm-tools]
 runcmd:
   - [usermod, -aG, libvirt, mst]
   # OVS resets system-id from this file at every start; keep the chassis name

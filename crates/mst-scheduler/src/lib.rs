@@ -28,6 +28,10 @@ pub struct Host {
     /// Already allocated to VMs on the host.
     pub used_vcpus: u64,
     pub used_memory_mib: u64,
+    /// Gives guests a TPM.
+    pub tpm: bool,
+    /// Gives guests Secure Boot.
+    pub secure_boot: bool,
 }
 
 impl Host {
@@ -48,6 +52,10 @@ pub struct Request {
     pub clusters: Option<HashSet<ClusterId>>,
     /// The VM must run on this host (e.g. its disks are local to it).
     pub host: Option<HostId>,
+    /// The VM has a TPM.
+    pub tpm: bool,
+    /// The VM boots with Secure Boot.
+    pub secure_boot: bool,
 }
 
 /// Why a host was not chosen.
@@ -56,6 +64,8 @@ pub enum Rejection {
     NotConnected,
     NotReady(String),
     NoKvm,
+    NoTpm,
+    NoSecureBoot,
     NoCluster,
     ClusterNotAllowed,
     OtherHostRequired,
@@ -69,6 +79,8 @@ impl fmt::Display for Rejection {
             Self::NotConnected => f.write_str("not connected"),
             Self::NotReady(s) => write!(f, "in {s}"),
             Self::NoKvm => f.write_str("no KVM"),
+            Self::NoTpm => f.write_str("no TPM for guests"),
+            Self::NoSecureBoot => f.write_str("no Secure Boot for guests"),
             Self::NoCluster => f.write_str("not in a cluster"),
             Self::ClusterNotAllowed => f.write_str("cluster not available to this tenant"),
             Self::OtherHostRequired => f.write_str("the VM's disks live on another host"),
@@ -109,6 +121,12 @@ fn check(req: &Request, h: &Host) -> Result<(), Rejection> {
     }
     if !h.kvm {
         return Err(Rejection::NoKvm);
+    }
+    if req.tpm && !h.tpm {
+        return Err(Rejection::NoTpm);
+    }
+    if req.secure_boot && !h.secure_boot {
+        return Err(Rejection::NoSecureBoot);
     }
     let Some(cluster) = h.cluster else {
         return Err(Rejection::NoCluster);
@@ -181,7 +199,34 @@ mod tests {
             memory_overcommit: 1.0,
             used_vcpus: 0,
             used_memory_mib: used_mem,
+            tpm: true,
+            secure_boot: true,
         }
+    }
+
+    #[test]
+    fn tpm_and_secure_boot_need_hosts_with_them() {
+        let c = ClusterId::new();
+        let plain = Host {
+            tpm: false,
+            secure_boot: false,
+            ..host("plain", c, 8192, 0)
+        };
+        let full = host("full", c, 4096, 0);
+        let hosts = [plain.clone(), full.clone()];
+        let req = |tpm, secure_boot| Request {
+            vcpus: 1,
+            memory_mib: 1024,
+            tpm,
+            secure_boot,
+            ..Default::default()
+        };
+        // Otherwise the roomier one.
+        assert_eq!(place(&req(false, false), &hosts).unwrap(), plain.id);
+        assert_eq!(place(&req(true, false), &hosts).unwrap(), full.id);
+        assert_eq!(place(&req(false, true), &hosts).unwrap(), full.id);
+        let err = place(&req(true, true), &[plain]).unwrap_err().to_string();
+        assert!(err.contains("plain (no TPM for guests)"), "{err}");
     }
 
     #[test]
@@ -217,7 +262,7 @@ mod tests {
             vcpus: 2,
             memory_mib: 1024,
             clusters: Some([c1].into_iter().collect()),
-            host: None,
+            ..Default::default()
         };
         let err = place(&req, &hosts).unwrap_err();
         let reasons: Vec<_> = err.0.iter().map(|(n, r)| format!("{n}: {r}")).collect();

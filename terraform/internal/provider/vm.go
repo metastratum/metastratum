@@ -55,6 +55,8 @@ type vmModel struct {
 	ClusterID         types.String `tfsdk:"cluster_id"`
 	StoragePoolID     types.String `tfsdk:"storage_pool_id"`
 	Migratable        types.Bool   `tfsdk:"migratable"`
+	SecureBoot        types.Bool   `tfsdk:"secure_boot"`
+	TPM               types.Bool   `tfsdk:"tpm"`
 	Running           types.Bool   `tfsdk:"running"`
 	Template          types.Bool   `tfsdk:"template"`
 	IP                types.String `tfsdk:"ip"`
@@ -75,7 +77,7 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 	computed := []planmodifier.String{stringplanmodifier.UseStateForUnknown()}
 	resp.Schema = schema.Schema{
 		Description: "A virtual machine, from an image or as a clone of another (stopped) VM or template. " +
-			"Changing its CPUs, memory, live migration or template setting shuts it down for the change (powering it off if it " +
+			"Changing its CPUs, memory, live migration, Secure Boot, TPM or template setting shuts it down for the change (powering it off if it " +
 			"has not shut down after two minutes) and starts it again; " +
 			"its disk grows in place, and a smaller disk replaces it.",
 		Attributes: map[string]schema.Attribute{
@@ -196,6 +198,19 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 				Computed:      true,
 				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
 			},
+			"secure_boot": schema.BoolAttribute{
+				Description:   "Whether it boots with UEFI Secure Boot (UEFI firmware only); as its image says by default.",
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
+			},
+			"tpm": schema.BoolAttribute{
+				Description: "Whether it has a TPM 2.0, whose state goes where it goes; as its image says by default. " +
+					"Taking it away loses what it holds.",
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
+			},
 			"running": schema.BoolAttribute{
 				Description: "Whether it should be running (default true).",
 				Optional:    true,
@@ -259,6 +274,8 @@ func (m *vmModel) set(ctx context.Context, v *client.VmView, diags *diag.Diagnos
 	}
 	m.Firmware = types.StringValue(string(v.Firmware))
 	m.Migratable = types.BoolValue(v.Migratable)
+	m.SecureBoot = types.BoolValue(v.SecureBoot)
+	m.TPM = types.BoolValue(v.Tpm)
 	m.Running = types.BoolValue(v.DesiredPower == "running")
 	m.Template = types.BoolValue(v.Template)
 	m.HostID = optIDValue(v.HostId)
@@ -429,6 +446,8 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 			ClusterId:         optID(path.Root("cluster_id"), plan.ClusterID, d),
 			StoragePoolId:     optID(path.Root("storage_pool_id"), plan.StoragePoolID, d),
 			Migratable:        plan.Migratable.ValueBoolPointer(),
+			SecureBoot:        plan.SecureBoot.ValueBoolPointer(),
+			Tpm:               plan.TPM.ValueBoolPointer(),
 		}
 		if !plan.Firmware.IsNull() && !plan.Firmware.IsUnknown() {
 			f := client.Firmware(plan.Firmware.ValueString())
@@ -543,7 +562,8 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 			return
 		}
 	}
-	// CPUs, memory, migration and templates change while it is stopped.
+	// CPUs, memory, migration, boot security and templates change while it
+	// is stopped.
 	var change client.UpdateVm
 	if !plan.Vcpus.IsUnknown() && !plan.Vcpus.Equal(state.Vcpus) {
 		change.Vcpus = plan.Vcpus.ValueInt32Pointer()
@@ -562,6 +582,12 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 	}
 	if !plan.Migratable.IsUnknown() && !plan.Migratable.Equal(state.Migratable) {
 		change.Migratable = plan.Migratable.ValueBoolPointer()
+	}
+	if !plan.SecureBoot.IsUnknown() && !plan.SecureBoot.Equal(state.SecureBoot) {
+		change.SecureBoot = plan.SecureBoot.ValueBoolPointer()
+	}
+	if !plan.TPM.IsUnknown() && !plan.TPM.Equal(state.TPM) {
+		change.Tpm = plan.TPM.ValueBoolPointer()
 	}
 	if !plan.Template.Equal(state.Template) {
 		change.Template = plan.Template.ValueBoolPointer()

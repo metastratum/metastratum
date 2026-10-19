@@ -83,6 +83,10 @@ pub struct VmView {
     /// The guest hands memory it frees back to its host.
     free_page_reporting: bool,
     firmware: Firmware,
+    /// Boots with UEFI Secure Boot.
+    secure_boot: bool,
+    /// Has a TPM 2.0 (its state goes where the VM goes).
+    tpm: bool,
     /// What it runs (from its image).
     guest_os: GuestOs,
     /// A Windows VM's first boot has yet to set its password: the
@@ -210,6 +214,8 @@ fn view(vm: Vm, ctx: &Context) -> VmView {
         max_memory_mib: spec.reserved_memory_mib(),
         free_page_reporting: spec.free_page_reporting,
         firmware: spec.firmware,
+        secure_boot: spec.secure_boot,
+        tpm: spec.tpm,
         guest_os: spec.guest_os,
         first_boot_pending: spec
             .cloud_init
@@ -340,6 +346,14 @@ pub struct CreateVm {
     /// page cache. By default VMs are migratable when their cluster has more
     /// than one host.
     migratable: Option<bool>,
+    /// Boot with UEFI Secure Boot (UEFI firmware only): only what is signed
+    /// with Microsoft's keys boots. As the image says by default.
+    #[serde(default)]
+    secure_boot: Option<bool>,
+    /// Give it a TPM 2.0, whose state stays with the VM wherever it runs.
+    /// As the image says by default.
+    #[serde(default)]
+    tpm: Option<bool>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -409,6 +423,8 @@ async fn restore_backup(
         network_id: req.network_id,
         security_group_ids: req.security_group_ids,
         migratable: None,
+        secure_boot: Some(spec.secure_boot),
+        tpm: Some(spec.tpm),
     };
     let out = create_inner(state.clone(), p.clone(), create, Source::Backup(&backup)).await?;
     audit(
@@ -487,6 +503,8 @@ async fn clone_vm(
         network_id: req.network_id,
         security_group_ids: req.security_group_ids,
         migratable: Some(spec.migratable),
+        secure_boot: Some(spec.secure_boot),
+        tpm: Some(spec.tpm),
     };
     create_inner(state, p, create, Source::Clone(&source)).await
 }
@@ -655,7 +673,7 @@ enum Source<'a> {
 async fn create_inner(
     state: AppState,
     p: Principal,
-    req: CreateVm,
+    mut req: CreateVm,
     source: Source<'_>,
 ) -> ApiResult<(StatusCode, Json<Accepted<VmView>>)> {
     validate(&req, matches!(source, Source::Image))?;
@@ -673,6 +691,8 @@ async fn create_inner(
         }
         // One being downloaded is waited for.
         let image = mst_db::images::get(&state.db, req.image_id).await?;
+        req.secure_boot = req.secure_boot.or(Some(image.secure_boot));
+        req.tpm = req.tpm.or(Some(image.tpm));
         if image.os == "windows" {
             guest_os = GuestOs::Windows;
             // Its Administrator has a password no one knows until then
@@ -697,6 +717,10 @@ async fn create_inner(
                 (size as u64).div_ceil(GIB)
             )));
         }
+    }
+    let (secure_boot, tpm) = (req.secure_boot == Some(true), req.tpm == Some(true));
+    if secure_boot && req.firmware != Firmware::Uefi {
+        return Err(ApiError::bad_request("Secure Boot needs UEFI firmware"));
     }
     // A clone's disks are copied in their own pools: local ones on their
     // host, which pins the clone there.
@@ -854,6 +878,9 @@ async fn create_inner(
         max_memory_mib: req.max_memory_mib.filter(|m| *m > req.memory_mib),
         free_page_reporting: req.free_page_reporting.unwrap_or(true),
         firmware: req.firmware,
+        secure_boot,
+        tpm,
+        reset_nvram: false,
         guest_os,
         disks: disks.clone(),
         nics: vec![],
@@ -918,6 +945,7 @@ async fn create_inner(
         "vm.create",
         Some(("vm", vm_id.0)),
         json!({"name": req.name, "vcpus": req.vcpus, "memory_mib": req.memory_mib, "disk_gib": req.disk_gib, "host": host.name,
+               "secure_boot": secure_boot, "tpm": tpm,
                "restored_from": match source { Source::Backup(b) => Some(b.id), _ => None },
                "cloned_from": match source { Source::Clone(vm) => Some(vm.id), _ => None }}),
     )
@@ -1304,6 +1332,8 @@ async fn place(
             memory_overcommit: f64::from(c.memory_overcommit),
             used_vcpus: c.used_vcpus.max(0) as u64,
             used_memory_mib: c.used_memory_mib.max(0) as u64,
+            tpm: c.tpm,
+            secure_boot: c.secure_boot,
         })
         .collect();
     let request = mst_scheduler::Request {
@@ -1311,6 +1341,8 @@ async fn place(
         memory_mib: reserved_memory(req),
         clusters,
         host: pin,
+        tpm: req.tpm == Some(true),
+        secure_boot: req.secure_boot == Some(true),
     };
     let id =
         mst_scheduler::place(&request, &hosts).map_err(|e| ApiError::unavailable(e.to_string()))?;
@@ -1541,6 +1573,12 @@ pub struct UpdateVm {
     /// from its next start. Only while it is stopped, and may migrate.
     #[serde(default)]
     fit_cpu: bool,
+    /// Boot with UEFI Secure Boot (UEFI firmware only). Only while it is
+    /// stopped; its UEFI variables start anew at its next start.
+    secure_boot: Option<bool>,
+    /// Give it a TPM 2.0. Only while it is stopped; taken away, its TPM's
+    /// state is gone for good.
+    tpm: Option<bool>,
 }
 
 /// Changes a VM's settings. A running VM's memory changes at once, within
@@ -1570,6 +1608,11 @@ async fn update_vm(
         .unwrap_or_else(|| old.reserved_memory_mib().max(memory_mib));
     let template = req.template.unwrap_or(vm.template);
     let reporting = req.free_page_reporting.unwrap_or(old.free_page_reporting);
+    let secure_boot = req.secure_boot.unwrap_or(old.secure_boot);
+    let tpm = req.tpm.unwrap_or(old.tpm);
+    if secure_boot && old.firmware != Firmware::Uefi {
+        return Err(ApiError::bad_request("Secure Boot needs UEFI firmware"));
+    }
     if req.fit_cpu && !migratable {
         return Err(ApiError::bad_request(
             "the VM does not migrate: it has its host's CPU as is",
@@ -1584,6 +1627,7 @@ async fn update_vm(
             max_memory_mib,
             template,
             reporting,
+            (secure_boot, tpm),
         ) == (
             old.migratable,
             old.vcpus,
@@ -1592,6 +1636,7 @@ async fn update_vm(
             old.reserved_memory_mib(),
             vm.template,
             old.free_page_reporting,
+            (old.secure_boot, old.tpm),
         )
     {
         return Ok(Json(view(vm, &context(&state).await?)));
@@ -1613,14 +1658,21 @@ async fn update_vm(
     if vm.status == "ready" && !busy && running {
         let old = &vm.spec.0;
         if req.fit_cpu
-            || (migratable, max_vcpus, max_memory_mib, template, reporting)
-                != (
-                    old.migratable,
-                    old.reserved_vcpus(),
-                    old.reserved_memory_mib(),
-                    vm.template,
-                    old.free_page_reporting,
-                )
+            || (
+                migratable,
+                max_vcpus,
+                max_memory_mib,
+                template,
+                reporting,
+                (secure_boot, tpm),
+            ) != (
+                old.migratable,
+                old.reserved_vcpus(),
+                old.reserved_memory_mib(),
+                vm.template,
+                old.free_page_reporting,
+                (old.secure_boot, old.tpm),
+            )
         {
             return Err(ApiError::conflict(format!(
                 "stop {} first: only its CPUs and memory change while it runs, within what they may grow to",
@@ -1656,6 +1708,14 @@ async fn update_vm(
     if req.free_page_reporting.is_some() {
         spec.free_page_reporting = reporting;
     }
+    if secure_boot != spec.secure_boot {
+        // Its variables hold its keys (or none): made anew from the
+        // firmware's own at its next start.
+        spec.secure_boot = secure_boot;
+        spec.reset_nvram = true;
+    }
+    let tpm_removed = spec.tpm && !tpm;
+    spec.tpm = tpm;
     let migratable_changed = migratable != spec.migratable;
     spec.migratable = migratable;
     let fitted = migratable && (migratable_changed || req.fit_cpu);
@@ -1674,6 +1734,11 @@ async fn update_vm(
         mst_db::vms::set_cpu_features(&mut *tx, id, None).await?;
     }
     define_on_host(&state, &mut tx, &vm, host, &spec, generation).await?;
+    if tpm_removed {
+        crate::tpm::discard(&state, id, host)
+            .await
+            .map_err(|e| ApiError::unavailable(format!("removing the VM's TPM: {e:#}")))?;
+    }
     tx.commit().await?;
     if let (true, Some(cpu)) = (fitted, &spec.cpu)
         && let Ok(Some(needs)) = crate::cpu::expand(&state, host, cpu).await
@@ -1689,7 +1754,8 @@ async fn update_vm(
         json!({"name": vm.name, "migratable": req.migratable, "vcpus": req.vcpus,
                "max_vcpus": req.max_vcpus, "memory_mib": req.memory_mib,
                "max_memory_mib": req.max_memory_mib, "template": req.template,
-               "free_page_reporting": req.free_page_reporting, "fit_cpu": req.fit_cpu}),
+               "free_page_reporting": req.free_page_reporting, "fit_cpu": req.fit_cpu,
+               "secure_boot": req.secure_boot, "tpm": req.tpm}),
     )
     .await;
     let vm = mst_db::vms::get(&state.db, id).await?;
@@ -2089,7 +2155,11 @@ async fn make_room(
         spec.reserved_vcpus() as i64,
         spec.reserved_memory_mib() as i64,
     );
-    let Err(full) = host_has_room(tx, host, vcpus, memory).await else {
+    let mut lacking = host_has_room(tx, host, vcpus, memory).await.err();
+    if lacking.is_none() {
+        lacking = host_supports(tx, host, spec).await.err();
+    }
+    let Some(full) = lacking else {
         return Ok(());
     };
     let mut local = false;
@@ -2120,6 +2190,33 @@ async fn make_room(
             full.message
         ))),
     }
+}
+
+/// Refuses a host that lacks what the VM's spec needs of it: a TPM, Secure
+/// Boot (switched on while it was stopped).
+async fn host_supports(
+    tx: &mut mst_db::sqlx::PgConnection,
+    host: HostId,
+    spec: &VmSpec,
+) -> ApiResult<()> {
+    let hosts = mst_db::clusters::candidates_locked(tx).await?;
+    let h = hosts
+        .iter()
+        .find(|h| h.id == host)
+        .ok_or_else(|| ApiError::conflict("the VM's host no longer exists"))?;
+    if spec.tpm && !h.tpm {
+        return Err(ApiError::conflict(format!(
+            "{} has no TPM for guests (swtpm)",
+            h.name
+        )));
+    }
+    if spec.secure_boot && !h.secure_boot {
+        return Err(ApiError::conflict(format!(
+            "{} has no Secure Boot for guests (OVMF's)",
+            h.name
+        )));
+    }
+    Ok(())
 }
 
 async fn host_has_room(
@@ -2272,6 +2369,9 @@ mod tests {
             max_memory_mib: None,
             free_page_reporting: true,
             firmware: Firmware::Uefi,
+            secure_boot: false,
+            tpm: false,
+            reset_nvram: false,
             guest_os: GuestOs::Windows,
             disks: vec![],
             nics: vec![],

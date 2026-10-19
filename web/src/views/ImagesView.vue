@@ -11,7 +11,16 @@ const scope = useScope()
 const images = ref<Image[] | null>(null)
 const adding = ref(false)
 const LOCAL_POOL = '00000000-0000-0000-0000-000000000001'
-const blank = () => ({ name: '', source_url: '', format: 'qcow2', os: 'linux', shared: false, storage_pool_id: LOCAL_POOL })
+const blank = () => ({
+  name: '',
+  source_url: '',
+  format: 'qcow2',
+  os: 'linux',
+  shared: false,
+  secure_boot: false,
+  tpm: false,
+  storage_pool_id: LOCAL_POOL,
+})
 const form = ref(blank())
 // Where images can be kept: the pools the tenant may use.
 const pools = ref<Schemas['UsablePool'][]>([])
@@ -102,6 +111,8 @@ const own = (img: Image) => img.tenant_id === scope.current
           <strong>{{ img.name }}</strong>
           <span class="tag label">{{ img.format }}</span>
           <span v-if="img.os === 'windows'" class="tag label">Windows</span>
+          <span v-if="img.secure_boot" class="tag label">Secure Boot</span>
+          <span v-if="img.tpm" class="tag label">TPM</span>
           <span v-if="img.shared && !scope.solo" class="tag label">Shared with sub-tenants</span>
           <span v-if="!own(img)" class="tag label">From parent tenant</span>
           <span v-if="img.stuck" class="tag label failed">Download stopped</span>
@@ -186,6 +197,12 @@ const own = (img: Image) => img.tenant_id === scope.current
             first boot, and run with Hyper-V enlightenments.
           </span>
         </label>
+        <fieldset class="field boot">
+          <legend class="label">VMs made from it get</legend>
+          <label class="check"><input v-model="form.secure_boot" type="checkbox" /> UEFI Secure Boot</label>
+          <label class="check"><input v-model="form.tpm" type="checkbox" /> TPM 2.0</label>
+          <span class="hint">Windows 11 needs both. Each VM can be made without them.</span>
+        </fieldset>
         <label v-if="pools.length > 1" class="field">
           <span class="label">Keep it in</span>
           <select v-model="form.storage_pool_id">
@@ -212,6 +229,14 @@ const own = (img: Image) => img.tenant_id === scope.current
 </template>
 
 <style scoped>
+.boot {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.boot legend {
+  margin-bottom: 4px;
+}
 .consequences {
   margin: 0;
   padding-left: 18px;

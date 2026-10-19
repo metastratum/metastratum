@@ -136,6 +136,8 @@ fn facts_row(f: &HostFacts) -> mst_db::hosts::Facts<'_> {
         physical_networks: &f.physical_networks,
         cpu_json: &f.cpu_json,
         migration_ready: f.migration_ready,
+        tpm: f.tpm,
+        secure_boot: f.secure_boot,
     }
 }
 
@@ -761,6 +763,8 @@ mod tests {
             physical_networks: vec!["external".into()],
             cpu_json: String::new(),
             migration_ready: true,
+            tpm: false,
+            secure_boot: false,
             fence_kind: None,
             connected_since: None,
             agent_protocol: 5,

@@ -335,6 +335,58 @@ impl Console {
         Ok((out, code))
     }
 
+    /// Sends a raw TPM 2.0 command to a Linux guest's TPM (no tools needed
+    /// in the guest) and returns its response.
+    async fn tpm(&mut self, user: &str, password: &str, command: &[u8]) -> Result<Vec<u8>> {
+        let octal: String = command.iter().map(|b| format!("\\{b:03o}")).collect();
+        // The marker is split by quotes in the echoed command line, so only
+        // the output has it whole.
+        let cmd = format!(
+            "echo \"T\"\"PM=$(sudo sh -c 'exec 3<>/dev/tpmrm0; printf \"{octal}\" >&3; dd bs=4096 count=1 <&3 2>/dev/null' | od -An -tx1 | tr -d ' \\n')\""
+        );
+        let (out, code) = self.run(user, password, &cmd).await?;
+        anyhow::ensure!(code == 0, "TPM command failed ({code}): {out}");
+        let hex = out
+            .rsplit_once("TPM=")
+            .map(|(_, rest)| {
+                rest.split(|c: char| !c.is_ascii_hexdigit())
+                    .next()
+                    .unwrap_or("")
+            })
+            .unwrap_or("");
+        let bytes: Vec<u8> = (0..hex.len() / 2)
+            .filter_map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok())
+            .collect();
+        anyhow::ensure!(bytes.len() >= 10, "no TPM response in {out:?}");
+        let rc = u32::from_be_bytes(bytes[6..10].try_into().unwrap());
+        anyhow::ensure!(rc == 0, "TPM response code {rc:#x}");
+        Ok(bytes)
+    }
+
+    /// Whether the guest's TPM has a password on its owner hierarchy: kept
+    /// in the TPM's own lasting state, so it tells that state was kept.
+    pub async fn tpm_owner_auth_set(&mut self, user: &str, password: &str) -> Result<bool> {
+        // TPM2_GetCapability(TPM_CAP_TPM_PROPERTIES, TPM_PT_PERMANENT, 1).
+        let cmd = [
+            0x80, 0x01, 0, 0, 0, 0x16, 0, 0, 0x01, 0x7a, 0, 0, 0, 0x06, 0, 0, 0x02, 0, 0, 0, 0, 1,
+        ];
+        let r = self.tpm(user, password, &cmd).await?;
+        // TPMA_PERMANENT, last; its bit 0 is ownerAuthSet.
+        anyhow::ensure!(r.len() >= 4, "short TPM response");
+        Ok(r[r.len() - 1] & 1 == 1)
+    }
+
+    /// Gives the guest's TPM owner hierarchy a password.
+    pub async fn tpm_set_owner_auth(&mut self, user: &str, password: &str) -> Result<()> {
+        // TPM2_HierarchyChangeAuth(TPM_RH_OWNER) with the empty password
+        // session, to "test".
+        let cmd = [
+            0x80, 0x02, 0, 0, 0, 0x21, 0, 0, 0x01, 0x29, 0x40, 0, 0, 0x01, 0, 0, 0, 0x09, 0x40, 0,
+            0, 0x09, 0, 0, 0, 0, 0, 0, 0x04, b't', b'e', b's', b't',
+        ];
+        self.tpm(user, password, &cmd).await.map(drop)
+    }
+
     /// Signs in on a Windows guest's serial console (its Special
     /// Administration Console) with a command channel, runs `cmd` there, and
     /// reads until `until` appears in what it prints (the console redraws

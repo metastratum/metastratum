@@ -2013,11 +2013,15 @@ export interface components {
              *     (forced off), `crashed`, `failed`, `daemon`, ...
              */
             power_reason?: string | null;
+            /** @description Boots with UEFI Secure Boot. */
+            secure_boot: boolean;
             /** @description Lifecycle: `creating`, `ready`, `error` or `deleting`. */
             status: string;
             /** @description A template: kept to be cloned, never started. */
             template: boolean;
             tenant_id: components["schemas"]["TenantId"];
+            /** @description Has a TPM 2.0 (its state goes where the VM goes). */
+            tpm: boolean;
             /** Format: date-time */
             updated_at: string;
             /**
@@ -2300,6 +2304,12 @@ export interface components {
             tenant_id?: components["schemas"]["TenantId"] | null;
         };
         CreateImage: {
+            /**
+             * @description For a Windows image: the account its VMs are signed in with unless
+             *     a VM names another, e.g. `Administrator` on Windows Server. Without
+             *     it, each VM names one (Windows 11 has no Administrator to use).
+             */
+            admin_user?: string | null;
             /** @description `qcow2` or `raw`. */
             format: string;
             name: string;
@@ -2309,11 +2319,21 @@ export interface components {
              *     Hyper-V enlightenments, and their password as Windows takes it.
              */
             os?: string | null;
+            /**
+             * @description VMs made from it boot with UEFI Secure Boot unless told otherwise
+             *     (Windows 11 requires it).
+             */
+            secure_boot?: boolean;
             shared?: boolean;
             /** @description HTTP(S) URL a host downloads the image from, as it is added. */
             source_url: string;
             storage_pool_id?: components["schemas"]["StoragePoolId"] | null;
             tenant_id?: components["schemas"]["TenantId"] | null;
+            /**
+             * @description VMs made from it get a TPM 2.0 unless told otherwise (Windows 11
+             *     requires one).
+             */
+            tpm?: boolean;
         };
         CreateJoinToken: {
             cluster_id?: components["schemas"]["ClusterId"] | null;
@@ -2429,6 +2449,11 @@ export interface components {
              */
             password?: string | null;
             /**
+             * @description Boot with UEFI Secure Boot (UEFI firmware only): only what is signed
+             *     with Microsoft's keys boots. As the image says by default.
+             */
+            secure_boot?: boolean | null;
+            /**
              * @description Security groups for the NIC (the tenant's own); its `default` group
              *     otherwise. An empty list blocks all traffic but DHCP.
              */
@@ -2439,6 +2464,11 @@ export interface components {
             start?: boolean | null;
             storage_pool_id?: components["schemas"]["StoragePoolId"] | null;
             tenant_id?: components["schemas"]["TenantId"] | null;
+            /**
+             * @description Give it a TPM 2.0, whose state stays with the VM wherever it runs.
+             *     As the image says by default.
+             */
+            tpm?: boolean | null;
             /**
              * @description Complete cloud-init user data. Overrides `ssh_authorized_keys` and
              *     `password`.
@@ -2682,13 +2712,23 @@ export interface components {
              *     have their gateways here.
              */
             physical_networks: string[];
+            /** @description Gives guests UEFI Secure Boot (OVMF with Microsoft's keys). */
+            secure_boot: boolean;
             /** @description `ready`, `maintenance` or `decommissioned`. */
             state: string;
+            /** @description Gives guests a TPM 2.0 (swtpm). */
+            tpm: boolean;
             vm_count: number;
         };
         /** Format: uuid */
         ImageId: string;
         ImageView: {
+            /**
+             * @description A Windows image's: the account its VMs are signed in with unless
+             *     told otherwise (`Administrator` on Windows Server); none when each
+             *     VM names one.
+             */
+            admin_user?: string | null;
             /** Format: date-time */
             created_at: string;
             /**
@@ -2709,6 +2749,11 @@ export interface components {
             name: string;
             /** @description What VMs made from it run: `linux` or `windows`. */
             os: string;
+            /**
+             * @description What VMs made from it get unless told otherwise: UEFI Secure Boot,
+             *     a TPM.
+             */
+            secure_boot: boolean;
             /** @description SHA-256 of the file downloaded from `source_url`. */
             sha256?: string | null;
             /** @description Usable by the owning tenant's descendants too. */
@@ -2737,6 +2782,7 @@ export interface components {
              */
             stuck: boolean;
             tenant_id: components["schemas"]["TenantId"];
+            tpm: boolean;
             /**
              * Format: int64
              * @description The size of the disk it holds: VMs' disks made from it are at least
@@ -3455,10 +3501,20 @@ export interface components {
              */
             migratable?: boolean | null;
             /**
+             * @description Boot with UEFI Secure Boot (UEFI firmware only). Only while it is
+             *     stopped; its UEFI variables start anew at its next start.
+             */
+            secure_boot?: boolean | null;
+            /**
              * @description Make the stopped VM a template, kept to be cloned and never started,
              *     or a VM again.
              */
             template?: boolean | null;
+            /**
+             * @description Give it a TPM 2.0. Only while it is stopped; taken away, its TPM's
+             *     state is gone for good.
+             */
+            tpm?: boolean | null;
             /**
              * Format: int32
              * @description Virtual CPUs (1-128). While the VM runs, within `max_vcpus`
@@ -3609,11 +3665,15 @@ export interface components {
              *     (forced off), `crashed`, `failed`, `daemon`, ...
              */
             power_reason?: string | null;
+            /** @description Boots with UEFI Secure Boot. */
+            secure_boot: boolean;
             /** @description Lifecycle: `creating`, `ready`, `error` or `deleting`. */
             status: string;
             /** @description A template: kept to be cloned, never started. */
             template: boolean;
             tenant_id: components["schemas"]["TenantId"];
+            /** @description Has a TPM 2.0 (its state goes where the VM goes). */
+            tpm: boolean;
             /** Format: date-time */
             updated_at: string;
             /**

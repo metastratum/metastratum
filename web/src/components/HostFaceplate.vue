@@ -34,6 +34,16 @@ const usedPct = computed(() => Math.min(100, (props.host.allocated_memory_mib / 
       <span v-if="host.connected && !host.migration_ready" class="tag stray" title="The agent finds no group QEMU runs in, to give migrations' TLS keys to">
         No migration
       </span>
+      <span v-if="host.connected && !host.tpm" class="tag stray" title="swtpm is not installed: VMs with a TPM do not run here">
+        No TPM
+      </span>
+      <span
+        v-if="host.connected && !host.secure_boot"
+        class="tag stray"
+        title="No OVMF firmware with Secure Boot: VMs with Secure Boot do not run here"
+      >
+        No Secure Boot
+      </span>
       <span
         v-if="!retired && host.pending_facts"
         class="tag stray"

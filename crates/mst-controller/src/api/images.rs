@@ -32,6 +32,15 @@ pub struct ImageView {
     os: String,
     /// Usable by the owning tenant's descendants too.
     shared: bool,
+    /// What VMs made from it get unless told otherwise: UEFI Secure Boot,
+    /// a TPM.
+    secure_boot: bool,
+    tpm: bool,
+    /// A Windows image's: the account its VMs are signed in with unless
+    /// told otherwise (`Administrator` on Windows Server); none when each
+    /// VM names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    admin_user: Option<String>,
     created_at: DateTime<Utc>,
     /// `downloading` (VMs made from it meanwhile wait for it), `ready`, or
     /// `failed` (see `error`; it can be downloaded again).
@@ -79,6 +88,9 @@ impl ImageView {
             format: i.format,
             os: i.os,
             shared: i.shared,
+            secure_boot: i.secure_boot,
+            tpm: i.tpm,
+            admin_user: i.admin_user,
             created_at: i.created_at,
             state: i.state,
             error: i.error,
@@ -148,6 +160,19 @@ pub struct CreateImage {
     os: Option<String>,
     #[serde(default)]
     shared: bool,
+    /// VMs made from it boot with UEFI Secure Boot unless told otherwise
+    /// (Windows 11 requires it).
+    #[serde(default)]
+    secure_boot: bool,
+    /// VMs made from it get a TPM 2.0 unless told otherwise (Windows 11
+    /// requires one).
+    #[serde(default)]
+    tpm: bool,
+    /// For a Windows image: the account its VMs are signed in with unless
+    /// a VM names another, e.g. `Administrator` on Windows Server. Without
+    /// it, each VM names one (Windows 11 has no Administrator to use).
+    #[serde(default)]
+    admin_user: Option<String>,
     /// The pool to keep it in (one the tenant may use): by default the
     /// local pool, on the local disk of a host picked at random.
     storage_pool_id: Option<StoragePoolId>,
@@ -187,6 +212,13 @@ async fn create_image(
     if !matches!(os, "linux" | "windows") {
         return Err(ApiError::bad_request("os must be linux or windows"));
     }
+    let admin_user = req.admin_user.as_deref().map(str::trim);
+    if let Some(u) = admin_user {
+        if os != "windows" {
+            return Err(ApiError::bad_request("admin_user is for windows images"));
+        }
+        windows_user(u)?;
+    }
     let pool =
         mst_db::storage_pools::get(&state.db, req.storage_pool_id.unwrap_or(LOCAL_POOL)).await?;
     if !super::storage_pools::may_use(&state, tenant, &pool).await? {
@@ -204,6 +236,9 @@ async fn create_image(
             shared: req.shared,
             storage_pool_id: pool.id,
             os,
+            secure_boot: req.secure_boot,
+            tpm: req.tpm,
+            admin_user,
         },
     )
     .await?;
@@ -215,7 +250,8 @@ async fn create_image(
         Some(tenant),
         "image.create",
         Some(("image", image.id.0)),
-        json!({"name": image.name, "url": image.source_url, "storage_pool": pool.name, "os": image.os}),
+        json!({"name": image.name, "url": image.source_url, "storage_pool": pool.name, "os": image.os,
+               "secure_boot": image.secure_boot, "tpm": image.tpm, "admin_user": image.admin_user}),
     )
     .await;
     Ok((
@@ -225,6 +261,18 @@ async fn create_image(
             image: ImageView::new(image, vec![], pool.name, false),
         }),
     ))
+}
+
+/// Refuses what Windows does not take as an account name.
+pub(crate) fn windows_user(name: &str) -> ApiResult<()> {
+    let bad = |c: char| c.is_control() || "\"/\\[]:;|=,+*?<>@%".contains(c);
+    if name.is_empty() || name.chars().count() > 20 || name.chars().any(bad) || name.ends_with('.')
+    {
+        return Err(ApiError::bad_request(
+            "a Windows account name is 1-20 characters, none of \" / \\ [ ] : ; | = , + * ? < > @ %, and does not end in a dot",
+        ));
+    }
+    Ok(())
 }
 
 /// How many images a tenant tree (a child of the provider's, and its

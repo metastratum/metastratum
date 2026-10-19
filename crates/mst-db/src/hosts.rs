@@ -19,6 +19,10 @@ pub struct Host {
     pub physical_networks: Vec<String>,
     pub cpu_json: String,
     pub migration_ready: bool,
+    /// Guests can have a TPM here.
+    pub tpm: bool,
+    /// Guests can have Secure Boot here.
+    pub secure_boot: bool,
     /// `redfish` or `libvirt` when the host can be fenced.
     pub fence_kind: Option<String>,
     pub connected_since: Option<DateTime<Utc>>,
@@ -56,7 +60,7 @@ macro_rules! host_columns {
     () => {
         "id, name, host(address) AS address, state, cpu_count, memory_mib, cpu_model, kvm, \
          libvirt_version, ovn_chassis, agent_version, cert_fingerprint, cert_expires_at, \
-         cluster_id, connected_to, last_seen_at, created_at, physical_networks, cpu_json, migration_ready, fence_kind, connected_since, agent_protocol, pending_facts, cpu_vendor, cpu_features, cpu_features_of"
+         cluster_id, connected_to, last_seen_at, created_at, physical_networks, cpu_json, migration_ready, tpm, secure_boot, fence_kind, connected_since, agent_protocol, pending_facts, cpu_vendor, cpu_features, cpu_features_of"
     };
 }
 
@@ -76,6 +80,8 @@ pub struct Facts<'a> {
     /// The host-model CPU as `mst_core::vm::CpuSpec` JSON; empty if unknown.
     pub cpu_json: &'a str,
     pub migration_ready: bool,
+    pub tpm: bool,
+    pub secure_boot: bool,
 }
 
 pub async fn create(
@@ -89,8 +95,9 @@ pub async fn create(
     sqlx::query_as(concat!(
         "INSERT INTO hosts (id, name, address, cpu_count, memory_mib, cpu_model, kvm, libvirt_version,
                             ovn_chassis, agent_version, cert_fingerprint, cert_expires_at, physical_networks,
-                            cpu_json, migration_ready, cert_serial)
-         VALUES ($1, $2, $3::inet, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING ",
+                            cpu_json, migration_ready, cert_serial, tpm, secure_boot)
+         VALUES ($1, $2, $3::inet, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+         RETURNING ",
         host_columns!()
     ))
     .bind(id)
@@ -109,6 +116,8 @@ pub async fn create(
     .bind(f.cpu_json)
     .bind(f.migration_ready)
     .bind(cert_serial)
+    .bind(f.tpm)
+    .bind(f.secure_boot)
     .fetch_one(db)
     .await
     .map_err(|e| conflict_on_unique(e, "host"))
@@ -126,7 +135,7 @@ pub async fn update_facts(
         "UPDATE hosts SET name = $2, address = $3::inet, cpu_count = $4, memory_mib = $5, cpu_model = $6,
                 kvm = $7, libvirt_version = $8, ovn_chassis = $9, agent_version = $10,
                 physical_networks = $11, cpu_json = $12, migration_ready = $13,
-                pending_facts = $14, updated_at = now()
+                pending_facts = $14, tpm = $15, secure_boot = $16, updated_at = now()
          WHERE id = $1",
     )
     .bind(id)
@@ -143,6 +152,8 @@ pub async fn update_facts(
     .bind(f.cpu_json)
     .bind(f.migration_ready)
     .bind(pending)
+    .bind(f.tpm)
+    .bind(f.secure_boot)
     .execute(db)
     .await
     .map_err(|e| conflict_on_unique(e, "host"))?;

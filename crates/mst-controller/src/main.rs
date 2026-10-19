@@ -24,6 +24,7 @@ mod port_watch;
 mod ratelimit;
 mod secrets;
 mod state;
+mod tpm;
 mod two_factor;
 
 use std::net::SocketAddr;
@@ -392,6 +393,7 @@ async fn serve(db: mst_db::sqlx::PgPool, cfg: &config::Config) -> anyhow::Result
                     engine::sweep_disks(state.clone()),
                     engine::prune_images(state.clone()),
                     guest::first_boots(state.clone()),
+                    tpm::sync(state.clone()),
                     cpu::learn(state),
                 );
             }

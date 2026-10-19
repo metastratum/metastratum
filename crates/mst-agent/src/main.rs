@@ -11,6 +11,7 @@ mod ovn;
 mod session;
 mod snapshot;
 mod tls;
+mod tpm;
 mod transfer;
 mod vm;
 

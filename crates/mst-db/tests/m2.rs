@@ -61,6 +61,8 @@ async fn host(pool: &PgPool) -> HostId {
         physical_networks: &[],
         cpu_json: "",
         migration_ready: false,
+        tpm: false,
+        secure_boot: false,
     };
     hosts::create(pool, HostId::new(), &f, "fp", Utc::now(), "01")
         .await
@@ -100,6 +102,9 @@ async fn allocate(
         free_page_reporting: true,
         firmware: Default::default(),
         guest_os: Default::default(),
+        secure_boot: false,
+        tpm: false,
+        reset_nvram: false,
         disks: vec![],
         nics: vec![],
         cloud_init: None,

@@ -1,6 +1,7 @@
 //! Stopped VMs keep nothing on their host: starting one needs room there
 //! again. One on shared storage whose host has none starts on another host
-//! of its cluster; one on its host's own storage cannot.
+//! of its cluster, its TPM's state brought along; one on its host's own
+//! storage cannot.
 //!
 //! It fills hosts on purpose, so deploy/lab/e2e.sh runs it on its own,
 //! before the others.
@@ -36,15 +37,26 @@ async fn stopped_vms_start_where_there_is_room() -> anyhow::Result<()> {
 
 async fn scenario(api: &Api, run: &str, nfs: &Value) -> anyhow::Result<()> {
     let image = api.image().await?;
-    let create = |name: &str, pool: &Value| {
+    let tpm = api
+        .get("/hosts")
+        .await?
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|h| h["connected"] == true)
+        .all(|h| h["tpm"] == true);
+    if !tpm {
+        eprintln!("not every host gives guests a TPM; the VM that moves has none");
+    }
+    let create = |name: &str, pool: &Value, tpm: bool| {
         api.post(
             "/vms",
             json!({"name": format!("{run}-{name}"), "vcpus": 1, "memory_mib": 512, "disk_gib": 4,
-                   "image_id": image, "password": PW, "storage_pool_id": pool}),
+                   "image_id": image, "password": PW, "storage_pool_id": pool, "tpm": tpm}),
         )
     };
-    let local = create("local", &Value::Null).await?;
-    let shared = create("shared", &nfs["id"]).await?;
+    let local = create("local", &Value::Null, false).await?;
+    let shared = create("shared", &nfs["id"], tpm).await?;
     let (local, shared) = (id(&local), id(&shared));
     for vm in [&local, &shared] {
         api.wait_vm(vm, BOOT, |v| v["power"] == "running").await?;
@@ -106,6 +118,17 @@ async fn scenario(api: &Api, run: &str, nfs: &Value) -> anyhow::Result<()> {
     // much as it may grow to while it runs (what is kept for it), not what
     // it boots with.
     let big = host["memory_mib"].as_u64().unwrap() - 256;
+    if tpm {
+        // Something its TPM keeps, to look for once it has moved.
+        let mut serial = api.console(&shared, "serial").await?;
+        serial.tpm_set_owner_auth("debian", PW).await?;
+        // What its first boot set up (sudo's rules too) is on disk before
+        // it is switched off hard.
+        let (out, code) = serial
+            .run("debian", PW, "cloud-init status --wait >/dev/null; sync")
+            .await?;
+        anyhow::ensure!(code == 0, "{out}");
+    }
     power(api, &shared, "stop?force=true", "stopped").await?;
     let (st, v) = resize(api, &shared, big).await?;
     assert_eq!(st, 200, "{v}");
@@ -127,6 +150,12 @@ async fn scenario(api: &Api, run: &str, nfs: &Value) -> anyhow::Result<()> {
     let mut serial = api.console(&shared, "serial").await?;
     let (out, rc) = serial.run("debian", PW, "true").await?;
     assert_eq!(rc, 0, "it runs there: {out}");
+    if tpm {
+        assert!(
+            serial.tpm_owner_auth_set("debian", PW).await?,
+            "its TPM came along"
+        );
+    }
     Ok(())
 }
 

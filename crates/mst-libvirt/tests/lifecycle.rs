@@ -26,6 +26,8 @@ fn def(uuid: &str) -> DomainDef {
         host_cache: false,
         disk_limits: Default::default(),
         hyperv: false,
+        secure_boot: false,
+        tpm: false,
     }
 }
 
@@ -69,8 +71,8 @@ async fn define_start_stop_undefine_with_events() {
                 (1, Power::Stopped)
             );
 
-            lv.start(&uuid).await.unwrap();
-            lv.start(&uuid).await.unwrap(); // idempotent
+            lv.start(&uuid, false).await.unwrap();
+            lv.start(&uuid, false).await.unwrap(); // idempotent
             assert_eq!(lv.power(&uuid).await.unwrap(), Power::Running);
 
             let vnc = std::os::unix::net::UnixStream::from(lv.open_vnc(&uuid).await.unwrap());

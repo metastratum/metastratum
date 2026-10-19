@@ -33,13 +33,19 @@ pub struct Image {
     pub storage_pool_id: StoragePoolId,
     /// `linux` or `windows`: what VMs made from it run.
     pub os: String,
+    /// What VMs made from it get by default: Secure Boot, a TPM.
+    pub secure_boot: bool,
+    pub tpm: bool,
+    /// The account a Windows image's VMs are signed in with by default; none
+    /// when who makes the VM names one.
+    pub admin_user: Option<String>,
 }
 
 macro_rules! image_columns {
     () => {
         "i.id, i.tenant_id, i.name, i.source_url, i.format, i.shared, i.created_at,
          i.state, i.error, i.size_bytes, i.virtual_bytes, i.sha256, i.digest,
-         i.download_host_id, i.storage_pool_id, i.os"
+         i.download_host_id, i.storage_pool_id, i.os, i.secure_boot, i.tpm, i.admin_user"
     };
 }
 
@@ -51,14 +57,17 @@ pub struct NewImage<'a> {
     pub shared: bool,
     pub storage_pool_id: StoragePoolId,
     pub os: &'a str,
+    pub secure_boot: bool,
+    pub tpm: bool,
+    pub admin_user: Option<&'a str>,
 }
 
 /// Adds an image, to be downloaded (see [`downloading`]).
 pub async fn create(db: impl PgExecutor<'_>, new: NewImage<'_>) -> Result<Image> {
     sqlx::query_as(concat!(
         "INSERT INTO images AS i (id, tenant_id, name, source_url, format, shared, state,
-                                  storage_pool_id, os)
-         VALUES ($1, $2, $3, $4, $5, $6, 'downloading', $7, $8) RETURNING ",
+                                  storage_pool_id, os, secure_boot, tpm, admin_user)
+         VALUES ($1, $2, $3, $4, $5, $6, 'downloading', $7, $8, $9, $10, $11) RETURNING ",
         image_columns!()
     ))
     .bind(ImageId::new())
@@ -69,6 +78,9 @@ pub async fn create(db: impl PgExecutor<'_>, new: NewImage<'_>) -> Result<Image>
     .bind(new.shared)
     .bind(new.storage_pool_id)
     .bind(new.os)
+    .bind(new.secure_boot)
+    .bind(new.tpm)
+    .bind(new.admin_user)
     .fetch_one(db)
     .await
     .map_err(|e| conflict_on_unique(e, "image"))

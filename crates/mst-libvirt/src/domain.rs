@@ -97,6 +97,11 @@ pub struct DomainDef {
     pub host_cache: bool,
     /// Throttling for each disk (not CD-ROMs).
     pub disk_limits: DiskLimits,
+    /// UEFI Secure Boot, with Microsoft's keys enrolled (as on PCs): only
+    /// signed bootloaders and kernels start.
+    pub secure_boot: bool,
+    /// A TPM 2.0 of its own (swtpm), its state on this host.
+    pub tpm: bool,
     /// A Windows guest: Hyper-V enlightenments (what Windows uses when it
     /// knows it runs virtualized, for timers, interrupts and spinlocks), and
     /// the timers Windows expects. All of them migrate.
@@ -238,6 +243,26 @@ impl DomainDef {
             // of the VM's own. Without asking for flash it may pick a
             // confidential-computing build (AMD SEV, Intel TDX) that a
             // plain VM cannot use (Ubuntu 26.04 does, on AMD hosts).
+            Firmware::Uefi if self.secure_boot => El::new("os")
+                .attr("firmware", "efi")
+                .child(
+                    El::new("firmware")
+                        .child(
+                            El::new("feature")
+                                .attr("enabled", "yes")
+                                .attr("name", "enrolled-keys"),
+                        )
+                        .child(
+                            El::new("feature")
+                                .attr("enabled", "yes")
+                                .attr("name", "secure-boot"),
+                        ),
+                )
+                .child(
+                    El::new("loader")
+                        .attr("type", "pflash")
+                        .attr("secure", "yes"),
+                ),
             Firmware::Uefi => El::new("os")
                 .attr("firmware", "efi")
                 .child(
@@ -302,7 +327,12 @@ impl DomainDef {
                 El::new("features")
                     .child(El::new("acpi"))
                     .child(El::new("apic"))
-                    .maybe(self.hyperv.then(hyperv)),
+                    .maybe(self.hyperv.then(hyperv))
+                    // Secure Boot's variables are written in SMM only.
+                    .maybe(
+                        (self.secure_boot && self.firmware == Firmware::Uefi)
+                            .then(|| El::new("smm").attr("state", "on")),
+                    ),
             )
             .child(match &self.cpu {
                 Some(cpu) => El::new("cpu")
@@ -384,6 +414,13 @@ impl DomainDef {
                                 .text("/dev/urandom"),
                         ),
                     )
+                    .maybe(self.tpm.then(|| {
+                        El::new("tpm").attr("model", "tpm-crb").child(
+                            El::new("backend")
+                                .attr("type", "emulator")
+                                .attr("version", "2.0"),
+                        )
+                    }))
                     .child({
                         // Statistics every 10 seconds tell how much the guest
                         // uses, and whether its balloon driver is there.
@@ -575,6 +612,8 @@ mod tests {
                 bridge: "br-int".into(),
                 interface_id: "0199f0a2-7b3c-7d00-8000-0000000000b1".into(),
             }],
+            secure_boot: false,
+            tpm: false,
             hyperv: false,
         }
     }
@@ -653,6 +692,29 @@ mod tests {
             crate::xml::with_layout_of(&sample().to_xml(), "nope"),
             sample().to_xml()
         );
+    }
+
+    #[test]
+    fn secure_boot_and_tpm() {
+        let flat = |x: &str| x.lines().map(str::trim).collect::<String>();
+        let xml = flat(
+            &DomainDef {
+                secure_boot: true,
+                tpm: true,
+                ..sample()
+            }
+            .to_xml(),
+        );
+        for want in [
+            "<feature enabled='yes' name='enrolled-keys'/><feature enabled='yes' name='secure-boot'/>",
+            "<loader type='pflash' secure='yes'/>",
+            "<smm state='on'/>",
+            "<tpm model='tpm-crb'><backend type='emulator' version='2.0'/></tpm>",
+        ] {
+            assert!(xml.contains(want), "{want} not in {xml}");
+        }
+        let plain = flat(&sample().to_xml());
+        assert!(!plain.contains("smm") && !plain.contains("<tpm"));
     }
 
     #[test]

@@ -74,6 +74,27 @@ async fn ovs_external_id(key: &str) -> String {
     }
 }
 
+/// What guests can have here beyond the basics (none if libvirt cannot say).
+pub async fn guest_support(lv: &Libvirt) -> mst_libvirt::xml::GuestSupport {
+    match lv.guest_support().await {
+        Ok(s) => {
+            if !s.tpm {
+                tracing::warn!("guests can have no TPM here: install swtpm (and swtpm-tools)");
+            }
+            if !s.secure_boot {
+                tracing::warn!(
+                    "guests can have no Secure Boot here: install UEFI firmware with it (OVMF/edk2)"
+                );
+            }
+            s
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "asking libvirt what guests can have");
+            Default::default()
+        }
+    }
+}
+
 pub async fn gather(lv: &Libvirt, address: IpAddr) -> Result<HostFacts> {
     let node = lv.node_facts().await.context("querying libvirt")?;
     let cpu = match lv.host_cpu().await {
@@ -89,6 +110,8 @@ pub async fn gather(lv: &Libvirt, address: IpAddr) -> Result<HostFacts> {
             .unwrap_or_default(),
         // Checked again for every session; see Agent::session.
         migration_ready: crate::tls::ready_for_migration(),
+        tpm: false,
+        secure_boot: false,
         hostname: hostname(),
         address: address.to_string(),
         cpu_count: node.cpus,

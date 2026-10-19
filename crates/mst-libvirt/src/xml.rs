@@ -163,6 +163,44 @@ impl El {
     }
 }
 
+/// What the host gives guests beyond the basics, from its domain
+/// capabilities.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GuestSupport {
+    /// A TPM 2.0 of their own (swtpm, as libvirt runs it).
+    pub tpm: bool,
+    /// UEFI Secure Boot (firmware with it, in flash).
+    pub secure_boot: bool,
+}
+
+/// What `domain_capabilities` (`virConnectGetDomainCapabilities`) says
+/// guests can have.
+pub fn guest_support(domain_capabilities: &str) -> GuestSupport {
+    let Some(caps) = El::parse(domain_capabilities) else {
+        return GuestSupport::default();
+    };
+    let child = |e: &El, name: &str| e.children.iter().find(|c| c.name == name).cloned();
+    let values = |e: &El, enum_name: &str| -> Vec<String> {
+        e.children
+            .iter()
+            .filter(|c| c.name == "enum" && c.get("name") == Some(enum_name))
+            .flat_map(|c| c.children.iter().filter_map(|v| v.text.clone()))
+            .collect()
+    };
+    let tpm = child(&caps, "devices")
+        .and_then(|d| child(&d, "tpm"))
+        .filter(|t| t.get("supported") == Some("yes"))
+        .is_some_and(|t| {
+            values(&t, "backendModel").iter().any(|v| v == "emulator")
+                && values(&t, "backendVersion").iter().any(|v| v == "2.0")
+        });
+    let secure_boot = child(&caps, "os")
+        .and_then(|o| child(&o, "loader"))
+        .filter(|l| l.get("supported") == Some("yes"))
+        .is_some_and(|l| values(&l, "secure").iter().any(|v| v == "yes"));
+    GuestSupport { tpm, secure_boot }
+}
+
 /// What a device is, to find it in another definition of the domain.
 fn device_key(e: &El) -> Option<String> {
     Some(match e.name.as_str() {
@@ -451,6 +489,25 @@ pub fn without_parent(xml: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn guest_support_comes_from_domain_capabilities() {
+        let debian = include_str!("../tests/golden/domcaps-debian13.xml");
+        assert_eq!(
+            super::guest_support(debian),
+            super::GuestSupport {
+                tpm: true,
+                secure_boot: true
+            }
+        );
+        // No swtpm (TPM emulator not offered), firmware without Secure Boot.
+        let bare = "<domainCapabilities><os supported='yes'><loader supported='yes'>
+            <enum name='secure'><value>no</value></enum></loader></os><devices>
+            <tpm supported='yes'><enum name='backendModel'><value>passthrough</value></enum>
+            <enum name='backendVersion'><value>2.0</value></enum></tpm></devices></domainCapabilities>";
+        assert_eq!(super::guest_support(bare), super::GuestSupport::default());
+        assert_eq!(super::guest_support("nope"), super::GuestSupport::default());
+    }
+
     #[test]
     fn checkpoint_descriptions() {
         let xml = "<domaincheckpoint>\n  <name>mst-b</name>\n  <parent>\n    <name>mst-a</name>\n  </parent>\n  \
