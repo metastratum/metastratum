@@ -1361,6 +1361,10 @@ async fn power_action(
         ));
     }
     let mut tx = state.db.begin().await?;
+    let mut params = params;
+    if desired == Some("running") {
+        make_room(&mut tx, id, &mut params).await?;
+    }
     if let Some(d) = desired {
         // Locks the VM: a revert that started meanwhile is seen below.
         mst_db::vms::set_desired_power(&mut *tx, id, d).await?;
@@ -1640,7 +1644,10 @@ async fn update_vm(
             .map(|(k, v)| (k.to_owned(), v))
             .collect();
         mst_db::quotas::reserve(&mut tx, vm.tenant_id, &delta).await?;
-        host_has_room(&mut tx, host, grow_cpu, grow_mem).await?;
+        // A VM stopped takes nothing on its host: room is found as it starts.
+        if vm.desired_power == "running" || vm.power != "stopped" {
+            host_has_room(&mut tx, host, grow_cpu, grow_mem).await?;
+        }
     }
     spec.vcpus = vcpus;
     spec.max_vcpus = (max_vcpus > vcpus).then_some(max_vcpus);
@@ -2058,6 +2065,63 @@ fn check_size(vcpus: u32, memory_mib: u64) -> ApiResult<()> {
 
 /// Whether a VM's host can give it `vcpus` more CPUs and `memory_mib` more
 /// memory, within its cluster's overcommit.
+/// A VM stopped takes nothing on its host (see `clusters::candidates_locked`):
+/// starting it, its host needs room for it again. If it has none, a VM whose
+/// disks are all on shared storage starts on another host of its cluster
+/// (`params.moved_from` tells the start task to set it up there); one with
+/// disks on its host's own storage cannot. Locks the VM, then the hosts,
+/// until the transaction ends.
+async fn make_room(
+    tx: &mut mst_db::sqlx::PgConnection,
+    id: VmId,
+    params: &mut serde_json::Value,
+) -> ApiResult<()> {
+    let vm = mst_db::vms::get_for_update(tx, id).await?;
+    let Some(host) = vm.host_id else {
+        return Ok(());
+    };
+    // Running, or about to: counted already.
+    if vm.desired_power == "running" || vm.power != "stopped" || vm.template {
+        return Ok(());
+    }
+    let spec = &vm.spec.0;
+    let (vcpus, memory) = (
+        spec.reserved_vcpus() as i64,
+        spec.reserved_memory_mib() as i64,
+    );
+    let Err(full) = host_has_room(tx, host, vcpus, memory).await else {
+        return Ok(());
+    };
+    let mut local = false;
+    for d in &spec.disks {
+        local |= mst_db::storage_pools::get(&mut *tx, d.pool_id).await?.kind == "local";
+    }
+    if local || vm.status != "ready" {
+        return Err(ApiError::conflict(format!(
+            "{}; it starts only there (its disks are on that host's own storage): stop another VM there first",
+            full.message
+        )));
+    }
+    match crate::engine::another_host(tx, &vm, host)
+        .await
+        .map_err(ApiError::internal)?
+    {
+        Ok((dest, _)) => {
+            mst_db::sqlx::query("UPDATE vms SET host_id = $2, updated_at = now() WHERE id = $1")
+                .bind(id)
+                .bind(dest)
+                .execute(&mut *tx)
+                .await?;
+            params["moved_from"] = json!(host);
+            Ok(())
+        }
+        Err(why) => Err(ApiError::conflict(format!(
+            "{}, and no other host of its cluster can take it: {why}",
+            full.message
+        ))),
+    }
+}
+
 async fn host_has_room(
     tx: &mut mst_db::sqlx::PgConnection,
     host: HostId,

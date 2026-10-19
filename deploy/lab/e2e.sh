@@ -3,8 +3,9 @@
 # against the lab, several at once. Suites that change what the others rely
 # on run first, on their own: storage (makes the NFS pool others use),
 # limits (throttles every VM of the cluster), m5 (renews the hosts'
-# certificates, reconnecting every agent) and image_relay (moves a host
-# without VMs into a cluster of its own for the while). The browser tests
+# certificates, reconnecting every agent), image_relay (moves a host
+# without VMs into a cluster of its own for the while) and capacity (fills
+# a host on purpose). The browser tests
 # run last, on their own too: they migrate a large VM, which needs room on
 # another host. So does windows (MST_E2E_WINDOWS_IMAGE: an image built with
 # deploy/images/windows/build.sh), whose tens of GB of copies would slow
@@ -24,7 +25,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-FIRST=(storage limits m5 image_relay)
+FIRST=(storage limits m5 image_relay capacity)
 LAST=(windows browser)
 # The slowest start first, so that none of them is left running alone at
 # the end.

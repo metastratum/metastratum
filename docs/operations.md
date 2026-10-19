@@ -487,9 +487,9 @@ address gets through). Load balancers count against the tenant's
 ## Resizing
 
 Resize a VM from its page (Resize). CPUs and memory beyond what they may
-grow to while it runs (below) change while it is stopped, and only as far
-as its host has room within the cluster's overcommit; it gets them at its
-next start. Disks only grow, running or
+grow to while it runs (below) change while it is stopped; it gets them at
+its next start, when its host needs room for them (see below). Disks only
+grow, running or
 not: a running guest sees the larger disk at once, and cloud images grow
 their partition and root file system at the next boot (cloud-init's
 growpart); otherwise grow them in the guest (`growpart`, `resize2fs`).
@@ -519,9 +519,21 @@ restart:
   every common Linux kernel and in the virtio drivers for Windows); the VM
   page shows whether it reports, and what the guest uses of its memory.
 
-The host keeps the maximums for the VM, and they count against the
-tenant's `vcpus` and `memory_mib` quotas, so growing within them never
-fails for want of room. Raising a maximum itself needs the VM stopped.
+The host keeps the maximums for the VM while it runs, and they count
+against the tenant's `vcpus` and `memory_mib` quotas, so growing within
+them never fails for want of room. Raising a maximum itself needs the VM
+stopped.
+
+### Room on hosts
+
+A host keeps CPUs and memory (each VM's maximums, within the cluster's
+overcommit) for the VMs meant to run on it; stopped VMs keep nothing there,
+and are not counted in the memory a host shows as allocated. So starting a
+stopped VM needs room on its host again. If its host has none, a VM whose
+disks are all on shared storage starts on another host of its cluster that
+has (the scheduler's pick, with every feature of its CPU), and its old host
+lets go of it; one with disks on its host's own storage starts only there,
+and says what is lacking. Tenants' quotas count every VM, stopped or not.
 
 Guests also hand memory they free back to their host as they free it
 (free page reporting), so a host's actual use stays below what it keeps

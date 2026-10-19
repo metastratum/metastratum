@@ -157,18 +157,22 @@ pub struct Candidate {
 }
 
 /// All hosts with their allocations, locked until the transaction ends so
-/// concurrent placements see each other's allocations.
+/// concurrent placements see each other's allocations. What VMs are to run
+/// (or still do) count, at the most they may grow to while they run; those
+/// stopped take nothing (starting one checks there is room again).
 pub async fn candidates_locked(db: &mut PgConnection) -> Result<Vec<Candidate>> {
     Ok(sqlx::query_as(
         "SELECT h.id, h.name, h.cluster_id, h.state, h.kvm, h.cpu_count, h.memory_mib, h.migration_ready,
                 (h.connected_to IS NOT NULL AND h.last_seen_at > now() - interval '30 seconds') AS live,
                 coalesce(c.cpu_overcommit, 1) AS cpu_overcommit,
                 coalesce(c.memory_overcommit, 1) AS memory_overcommit,
-                -- VMs on the host, plus those migrating to it.
-                (SELECT coalesce(sum(greatest((v.spec->>'vcpus')::bigint, coalesce((v.spec->>'max_vcpus')::bigint, 0))), 0)::bigint FROM vms v WHERE v.host_id = h.id)
+                -- VMs on the host meant to run, plus those migrating to it.
+                (SELECT coalesce(sum(greatest((v.spec->>'vcpus')::bigint, coalesce((v.spec->>'max_vcpus')::bigint, 0))), 0)::bigint FROM vms v
+                 WHERE v.host_id = h.id AND (v.desired_power = 'running' OR v.power <> 'stopped'))
                   + (SELECT coalesce(sum(m.vcpus), 0)::bigint FROM migrations m WHERE m.dest_host_id = h.id)
                     AS used_vcpus,
-                (SELECT coalesce(sum(greatest((v.spec->>'memory_mib')::bigint, coalesce((v.spec->>'max_memory_mib')::bigint, 0))), 0)::bigint FROM vms v WHERE v.host_id = h.id)
+                (SELECT coalesce(sum(greatest((v.spec->>'memory_mib')::bigint, coalesce((v.spec->>'max_memory_mib')::bigint, 0))), 0)::bigint FROM vms v
+                 WHERE v.host_id = h.id AND (v.desired_power = 'running' OR v.power <> 'stopped'))
                   + (SELECT coalesce(sum(m.memory_mib), 0)::bigint FROM migrations m WHERE m.dest_host_id = h.id)
                     AS used_memory_mib
          FROM hosts h LEFT JOIN clusters c ON c.id = h.cluster_id

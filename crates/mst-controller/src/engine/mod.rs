@@ -16,6 +16,7 @@ mod vm;
 pub use backup::schedule as backup_schedule;
 pub use disk::sweep as sweep_disks;
 pub use image::{deleted as image_deleted, prune as prune_images};
+pub(crate) use recover::another_host;
 
 use std::sync::Arc;
 use std::time::Duration;

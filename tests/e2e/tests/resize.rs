@@ -114,7 +114,7 @@ async fn scenario(api: &Api, vm: &str, ceph: bool) -> anyhow::Result<()> {
     let (st, _) = resize(api, vm, 5).await?;
     assert_eq!(st, 400, "disks do not shrink");
 
-    // CPUs and memory only while stopped, and only what the host has.
+    // CPUs and memory only while stopped.
     let (st, _) = api
         .try_send(
             Method::PATCH,
@@ -124,6 +124,8 @@ async fn scenario(api: &Api, vm: &str, ceph: bool) -> anyhow::Result<()> {
         .await?;
     assert_eq!(st, 409, "running");
     power(api, vm, "stop?force=true", "stopped").await?;
+    // Stopped, it keeps nothing on its host: any size goes, and its host
+    // needs room for it as it starts.
     let (st, body) = api
         .try_send(
             Method::PATCH,
@@ -131,12 +133,17 @@ async fn scenario(api: &Api, vm: &str, ceph: bool) -> anyhow::Result<()> {
             Some(json!({"vcpus": 128})),
         )
         .await?;
+    assert_eq!(st, 200, "{body}");
+    let (st, body) = api
+        .try_send(Method::POST, &format!("/vms/{vm}/start"), Some(json!({})))
+        .await?;
     assert_eq!(st, 409, "no host has 128 vCPUs to spare: {body}");
     let (st, v) = api
         .try_send(
             Method::PATCH,
             &format!("/vms/{vm}"),
-            Some(json!({"vcpus": 2, "memory_mib": 1536})),
+            // What it may grow to stays as it was unless given.
+            Some(json!({"vcpus": 2, "max_vcpus": 2, "memory_mib": 1536})),
         )
         .await?;
     assert_eq!(st, 200, "{v}");

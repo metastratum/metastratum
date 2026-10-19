@@ -57,6 +57,8 @@ pub struct HostView {
     physical_networks: Vec<String>,
     agent_version: String,
     vm_count: usize,
+    /// Memory kept for the VMs meant to run here (at the most each may grow
+    /// to); stopped ones keep none.
     allocated_memory_mib: u64,
     cert_expires_at: DateTime<Utc>,
     last_seen_at: Option<DateTime<Utc>>,
@@ -116,8 +118,13 @@ async fn list_hosts(State(state): State<AppState>, p: Principal) -> ApiResult<Js
             connected_since: h.connected_since,
             fence_kind: h.fence_kind.clone(),
             vm_count: vms.len(),
-            // What is kept for its VMs: as much as each may grow to.
-            allocated_memory_mib: vms.iter().map(|v| v.spec.0.reserved_memory_mib()).sum(),
+            // What is kept for its VMs meant to run (or still running): as
+            // much as each may grow to. Stopped ones keep nothing.
+            allocated_memory_mib: vms
+                .iter()
+                .filter(|v| v.desired_power == "running" || v.power != "stopped")
+                .map(|v| v.spec.0.reserved_memory_mib())
+                .sum(),
             id: h.id,
             name: h.name,
             address: h.address,

@@ -283,17 +283,53 @@ async fn fit_cpu(ctx: &TaskCtx, vm: VmId, host: HostId, spec: &mut mst_core::vm:
     true
 }
 
+/// Starts the VM. One placed on another host as it starts (its own had no
+/// room for it: the API's `make_room`) is set up there, and leaves the old
+/// one (or the old one removes it as it reconnects); one whose host has no
+/// definition of it (such a start cut off half way) is set up again.
 pub async fn start(ctx: &TaskCtx) -> Result<()> {
     let vm = mst_db::vms::get(&ctx.state.db, target(ctx)?).await?;
-    call(
+    let host = host_of(&vm)?;
+    let moved_from = ctx
+        .task
+        .params
+        .get("moved_from")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| s.parse().ok())
+        .map(HostId)
+        .filter(|from| *from != host);
+    if let Some(from) = moved_from {
+        ctx.step("setting the VM up on another host", 0.2).await;
+        provision(ctx, vm.id, false).await?;
+        let gone = call(
+            ctx,
+            from,
+            Cmd::UndefineVm(UndefineVm {
+                vm_id: vm.id.to_string(),
+            }),
+            QUICK,
+        )
+        .await;
+        if let Err(e) = gone {
+            tracing::info!(vm = %vm.id, error = %format!("{e:#}"), "removing a VM's definition from the host it left; it goes as that host reconnects");
+        }
+        return Ok(());
+    }
+    let started = call(
         ctx,
-        host_of(&vm)?,
+        host,
         Cmd::StartVm(StartVm {
             vm_id: vm.id.to_string(),
         }),
         QUICK,
     )
-    .await
+    .await;
+    match started {
+        Err(e) if format!("{e:#}").contains(&format!("domain {} not found", vm.id)) => {
+            provision(ctx, vm.id, false).await
+        }
+        r => r,
+    }
 }
 
 pub async fn stop(ctx: &TaskCtx) -> Result<()> {

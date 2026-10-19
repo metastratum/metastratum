@@ -219,6 +219,43 @@ async fn concurrent_ip_allocation_never_duplicates(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn stopped_vms_take_nothing_on_their_host(pool: PgPool) {
+    let t = root(&pool).await;
+    let h = host(&pool).await;
+    let a = vm(&pool, &t, &h, "a").await;
+    vm(&pool, &t, &h, "b").await;
+    let used = |pool: PgPool| async move {
+        let mut conn = pool.acquire().await.unwrap();
+        let c = mst_db::clusters::candidates_locked(&mut conn)
+            .await
+            .unwrap();
+        let c = c.into_iter().find(|c| c.id == h.id).unwrap();
+        (c.used_vcpus, c.used_memory_mib)
+    };
+    assert_eq!(used(pool.clone()).await, (2, 1024), "both meant to run");
+    // Told to stop, but still running: counted until it has.
+    mst_db::vms::set_desired_power(&pool, a.id, "stopped")
+        .await
+        .unwrap();
+    sqlx::query("UPDATE vms SET power = 'running' WHERE id = $1")
+        .bind(a.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(used(pool.clone()).await, (2, 1024));
+    sqlx::query("UPDATE vms SET power = 'stopped' WHERE id = $1")
+        .bind(a.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        used(pool.clone()).await,
+        (1, 512),
+        "the stopped one keeps nothing"
+    );
+}
+
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
 async fn nics_move_between_networks(pool: PgPool) {
     let t = root(&pool).await;
     let h = host(&pool).await;

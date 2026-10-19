@@ -2625,7 +2625,11 @@ export interface components {
         HostView: {
             address: string;
             agent_version: string;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Memory kept for the VMs meant to run here (at the most each may grow
+             *     to); stopped ones keep none.
+             */
             allocated_memory_mib: number;
             /**
              * @description VMs of its cluster whose CPU (model) has what this host's lacks:

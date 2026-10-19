@@ -998,9 +998,12 @@ type HostId = openapi_types.UUID
 
 // HostView defines model for HostView.
 type HostView struct {
-	Address            string `json:"address"`
-	AgentVersion       string `json:"agent_version"`
-	AllocatedMemoryMib int64  `json:"allocated_memory_mib"`
+	Address      string `json:"address"`
+	AgentVersion string `json:"agent_version"`
+
+	// AllocatedMemoryMib Memory kept for the VMs meant to run here (at the most each may grow
+	// to); stopped ones keep none.
+	AllocatedMemoryMib int64 `json:"allocated_memory_mib"`
 
 	// CannotRun VMs of its cluster whose CPU (model) has what this host's lacks:
 	// they do not migrate or restart here.
