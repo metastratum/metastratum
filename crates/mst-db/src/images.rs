@@ -9,13 +9,15 @@ pub struct Image {
     pub id: ImageId,
     pub tenant_id: TenantId,
     pub name: String,
+    /// Where it is downloaded from; empty for an uploaded image.
     pub source_url: String,
     pub format: String,
     pub shared: bool,
     pub created_at: DateTime<Utc>,
-    /// `downloading`, `ready` or `failed`.
+    /// `uploading` (its parts arriving), `downloading` (being added to its
+    /// store), `ready` or `failed`.
     pub state: String,
-    /// Why the download failed.
+    /// Why the download (or upload) failed.
     pub error: Option<String>,
     /// The stored file's size.
     pub size_bytes: Option<i64>,
@@ -39,13 +41,25 @@ pub struct Image {
     /// The account a Windows image's VMs are signed in with by default; none
     /// when who makes the VM names one.
     pub admin_user: Option<String>,
+    /// An uploaded image's size as uploaded, and how much of it has
+    /// arrived (on `download_host_id`).
+    pub upload_bytes: Option<i64>,
+    pub uploaded_bytes: i64,
+}
+
+impl Image {
+    /// Uploaded rather than downloaded.
+    pub fn uploaded(&self) -> bool {
+        self.upload_bytes.is_some()
+    }
 }
 
 macro_rules! image_columns {
     () => {
         "i.id, i.tenant_id, i.name, i.source_url, i.format, i.shared, i.created_at,
          i.state, i.error, i.size_bytes, i.virtual_bytes, i.sha256, i.digest,
-         i.download_host_id, i.storage_pool_id, i.os, i.secure_boot, i.tpm, i.admin_user"
+         i.download_host_id, i.storage_pool_id, i.os, i.secure_boot, i.tpm, i.admin_user,
+         i.upload_bytes, i.uploaded_bytes"
     };
 }
 
@@ -60,14 +74,22 @@ pub struct NewImage<'a> {
     pub secure_boot: bool,
     pub tpm: bool,
     pub admin_user: Option<&'a str>,
+    /// An upload's size (`source_url` empty): to be uploaded to
+    /// `upload_host`, rather than downloaded.
+    pub upload_bytes: Option<i64>,
+    pub upload_host: Option<HostId>,
 }
 
-/// Adds an image, to be downloaded (see [`downloading`]).
+/// Adds an image, to be downloaded (see [`downloading`]), or uploaded.
 pub async fn create(db: impl PgExecutor<'_>, new: NewImage<'_>) -> Result<Image> {
     sqlx::query_as(concat!(
         "INSERT INTO images AS i (id, tenant_id, name, source_url, format, shared, state,
-                                  storage_pool_id, os, secure_boot, tpm, admin_user)
-         VALUES ($1, $2, $3, $4, $5, $6, 'downloading', $7, $8, $9, $10, $11) RETURNING ",
+                                  storage_pool_id, os, secure_boot, tpm, admin_user,
+                                  upload_bytes, download_host_id, upload_touched_at)
+         VALUES ($1, $2, $3, $4, $5, $6,
+                 CASE WHEN $12::bigint IS NULL THEN 'downloading' ELSE 'uploading' END,
+                 $7, $8, $9, $10, $11, $12, $13,
+                 CASE WHEN $12::bigint IS NULL THEN NULL ELSE now() END) RETURNING ",
         image_columns!()
     ))
     .bind(ImageId::new())
@@ -81,9 +103,66 @@ pub async fn create(db: impl PgExecutor<'_>, new: NewImage<'_>) -> Result<Image>
     .bind(new.secure_boot)
     .bind(new.tpm)
     .bind(new.admin_user)
+    .bind(new.upload_bytes)
+    .bind(new.upload_host)
     .fetch_one(db)
     .await
     .map_err(|e| conflict_on_unique(e, "image"))
+}
+
+/// Records how much of an upload has arrived, and that it is in progress.
+pub async fn uploaded_so_far(db: impl PgExecutor<'_>, id: ImageId, bytes: i64) -> Result<()> {
+    sqlx::query(
+        "UPDATE images SET uploaded_bytes = $2, upload_touched_at = now()
+         WHERE id = $1 AND state = 'uploading'",
+    )
+    .bind(id)
+    .bind(bytes)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// An upload all there: to be added to its store (see [`downloading`]).
+/// Returns whether it was being uploaded.
+pub async fn upload_done(db: impl PgExecutor<'_>, id: ImageId) -> Result<bool> {
+    Ok(sqlx::query(
+        "UPDATE images SET state = 'downloading', uploaded_bytes = upload_bytes,
+                upload_touched_at = now()
+         WHERE id = $1 AND state = 'uploading'",
+    )
+    .bind(id)
+    .execute(db)
+    .await?
+    .rows_affected()
+        == 1)
+}
+
+/// An uploaded image to be uploaded again (it failed): from the start,
+/// to `host`.
+pub async fn upload_again(db: impl PgExecutor<'_>, id: ImageId, host: HostId) -> Result<()> {
+    sqlx::query(
+        "UPDATE images SET state = 'uploading', error = NULL, uploaded_bytes = 0,
+                download_host_id = $2, upload_touched_at = now()
+         WHERE id = $1 AND upload_bytes IS NOT NULL",
+    )
+    .bind(id)
+    .bind(host)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Uploads no part reached since `before`.
+pub async fn stale_uploads(db: impl PgExecutor<'_>, before: DateTime<Utc>) -> Result<Vec<Image>> {
+    Ok(sqlx::query_as(concat!(
+        "SELECT ",
+        image_columns!(),
+        " FROM images i WHERE i.state = 'uploading' AND i.upload_touched_at < $1"
+    ))
+    .bind(before)
+    .fetch_all(db)
+    .await?)
 }
 
 pub async fn get(db: impl PgExecutor<'_>, id: ImageId) -> Result<Image> {
@@ -193,15 +272,18 @@ pub async fn set_download_host(db: impl PgExecutor<'_>, id: ImageId, host: HostI
 }
 
 /// How many downloads (tasks pending or running, for images deleted
-/// meanwhile too) the tenant's tree has under way: that of the provider's
-/// child it is in (or the provider's own).
+/// meanwhile too) and uploads the tenant's tree has under way: that of the
+/// provider's child it is in (or the provider's own).
 pub async fn downloads_in_tree(db: impl PgExecutor<'_>, tenant: TenantId) -> Result<i64> {
     Ok(sqlx::query_scalar(
         "WITH me AS (SELECT subpath(path, 0, least(nlevel(path), 2)) AS top FROM tenants
                      WHERE id = $1)
-         SELECT count(*) FROM tasks t JOIN tenants o ON o.id = t.tenant_id, me
-         WHERE t.kind = 'image.download' AND t.state IN ('pending', 'running')
-           AND subpath(o.path, 0, least(nlevel(o.path), 2)) = me.top",
+         SELECT (SELECT count(*) FROM tasks t JOIN tenants o ON o.id = t.tenant_id, me
+                 WHERE t.kind = 'image.download' AND t.state IN ('pending', 'running')
+                   AND subpath(o.path, 0, least(nlevel(o.path), 2)) = me.top)
+              + (SELECT count(*) FROM images i JOIN tenants o ON o.id = i.tenant_id, me
+                 WHERE i.state = 'uploading'
+                   AND subpath(o.path, 0, least(nlevel(o.path), 2)) = me.top)",
     )
     .bind(tenant)
     .fetch_one(db)
@@ -351,12 +433,13 @@ pub async fn remove_copy(db: impl PgExecutor<'_>, id: ImageId, at: Copy) -> Resu
     Ok(())
 }
 
-/// Marks the download failed, saying why: only an image being downloaded
-/// (not one another run of the download made ready). Returns whether it
-/// did.
+/// Marks the download (or upload) failed, saying why: only an image being
+/// downloaded or uploaded (not one another run of the download made
+/// ready). Returns whether it did.
 pub async fn failed(db: impl PgExecutor<'_>, id: ImageId, error: &str) -> Result<bool> {
     Ok(sqlx::query(
-        "UPDATE images SET state = 'failed', error = $2 WHERE id = $1 AND state = 'downloading'",
+        "UPDATE images SET state = 'failed', error = $2
+         WHERE id = $1 AND state IN ('downloading', 'uploading')",
     )
     .bind(id)
     .bind(error)

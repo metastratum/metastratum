@@ -72,6 +72,9 @@ pub async fn delete_image(
     if let Err(e) = agent.pools.store().remove(tenant_path, id).await {
         failed.push(format!("this host's store: {e:#}"));
     }
+    if let Err(e) = crate::uploads::remove(agent.pools.data_dir(), id).await {
+        failed.push(format!("its upload here: {e:#}"));
+    }
     for spec in shared {
         let removed = async {
             let pool = agent.pools.get(spec).await.context("reaching it")?;

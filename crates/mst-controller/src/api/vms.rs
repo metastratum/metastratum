@@ -719,7 +719,7 @@ async fn create_inner(
         req.tpm = req.tpm.or(Some(image.tpm));
         if image.os == "windows" {
             guest_os = GuestOs::Windows;
-            req.username = req.username.or(image.admin_user);
+            req.username = req.username.or(image.admin_user.clone());
             // Its accounts have passwords no one knows until then
             // (deploy/images/windows): without one, no one could sign in.
             if req.user_data.is_none() {
@@ -737,9 +737,26 @@ async fn create_inner(
         }
         if image.state == "failed" {
             return Err(ApiError::conflict(format!(
-                "the image could not be downloaded ({}); download it again first",
-                image.error.as_deref().unwrap_or("no reason given")
+                "the image could not be {} ({}); {} it again first",
+                if image.uploaded() {
+                    "uploaded"
+                } else {
+                    "downloaded"
+                },
+                image.error.as_deref().unwrap_or("no reason given"),
+                if image.uploaded() {
+                    "upload"
+                } else {
+                    "download"
+                },
             )));
+        }
+        // One being downloaded is waited for; one being uploaded may never
+        // be all there.
+        if image.state == "uploading" {
+            return Err(ApiError::conflict(
+                "the image is still being uploaded; make VMs from it once it is ready",
+            ));
         }
         if let Some(size) = image.virtual_bytes
             && (req.disk_gib * GIB) < size as u64

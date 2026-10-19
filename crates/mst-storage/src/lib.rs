@@ -333,11 +333,20 @@ async fn set_mode(path: &Path, mode: u32) -> Result<()> {
     Ok(())
 }
 
-/// Downloads `url` to `part`, checks it, and converts it to `out_format` at
-/// `out`. See [`fetch`] for what is refused. Returns the SHA-256 of what was
-/// downloaded (hex).
+/// Where an image comes from as it is added to a store.
+#[derive(Clone, Copy, Debug)]
+pub enum ImageSource<'a> {
+    /// Downloaded from a URL (see [`fetch`] for what downloads may not do).
+    Url(&'a str),
+    /// A file on this host: an upload, as untrusted as a download.
+    File(&'a Path),
+}
+
+/// Gets the image (downloading a URL to `part`), checks it, and converts it
+/// to `out_format` at `out`. See [`fetch`] for what is refused. Returns the
+/// SHA-256 of the file as it came (hex).
 pub(crate) async fn fetch(
-    url: &str,
+    src: &ImageSource<'_>,
     format: &str,
     part: &Path,
     out: &Path,
@@ -348,7 +357,20 @@ pub(crate) async fn fetch(
         "qcow2" | "raw" => format,
         other => return Err(Error::InvalidImage(format!("unsupported format {other}"))),
     };
-    let hash = fetch::download(url, part, policy).await?;
+    let (input, hash) = match src {
+        ImageSource::Url(url) => (part, fetch::download(url, part, policy).await?),
+        ImageSource::File(file) => {
+            let len = tokio::fs::metadata(file).await?.len();
+            if len > policy.max_bytes {
+                return Err(Error::InvalidImage(format!(
+                    "larger than the {} GiB limit",
+                    policy.max_bytes >> 30
+                )));
+            }
+            (*file, fetch::hash_file(file).await?)
+        }
+    };
+    let part = input;
     let size = fetch::check_untrusted(part, declared).await?;
     if size > policy.max_virtual_bytes {
         return Err(Error::InvalidImage(format!(
@@ -431,16 +453,44 @@ mod tests {
             ..FetchPolicy::default()
         };
         let (part, out) = (dir.join("x.part"), dir.join("x.qcow2"));
-        let err = fetch(&url, "qcow2", &part, &out, "qcow2", policy(512 << 20))
+        let err = fetch(
+            &ImageSource::Url(&url),
+            "qcow2",
+            &part,
+            &out,
+            "qcow2",
+            policy(512 << 20),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("larger than"), "{err}");
+        assert!(!out.exists(), "nothing unpacked");
+        let hash = fetch(
+            &ImageSource::Url(&url),
+            "qcow2",
+            &part,
+            &out,
+            "qcow2",
+            policy(1 << 30),
+        )
+        .await
+        .unwrap();
+        assert_eq!(hash.len(), 64);
+        assert!(out.exists());
+        // An upload: the same checks, and the same hash.
+        let src = ImageSource::File(&img);
+        let up = dir.join("up.qcow2");
+        let err = fetch(&src, "qcow2", &part, &up, "qcow2", policy(512 << 20))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("larger than"), "{err}");
-        assert!(!out.exists(), "nothing unpacked");
-        let hash = fetch(&url, "qcow2", &part, &out, "qcow2", policy(1 << 30))
-            .await
-            .unwrap();
-        assert_eq!(hash.len(), 64);
-        assert!(out.exists());
+        assert_eq!(
+            fetch(&src, "qcow2", &part, &up, "qcow2", policy(1 << 30))
+                .await
+                .unwrap(),
+            hash
+        );
+        assert!(up.exists());
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 

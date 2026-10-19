@@ -265,6 +265,28 @@ impl Api {
         Ok(img["id"].as_str().unwrap().to_owned())
     }
 
+    /// Sends raw bytes (`PUT`, as an upload's parts go), returning the
+    /// status and the JSON answer.
+    pub async fn put_bytes(&self, path: &str, body: Vec<u8>) -> Result<(u16, Value)> {
+        let resp = self
+            .http
+            .put(format!("{}/api/v1{path}", self.base))
+            .header("content-type", "application/octet-stream")
+            .body(body)
+            .send()
+            .await?;
+        let status = resp.status().as_u16();
+        let text = resp.text().await?;
+        Ok((
+            status,
+            if text.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_str(&text)?
+            },
+        ))
+    }
+
     /// Opens a console WebSocket via a fresh ticket.
     pub async fn console(&self, vm: &str, kind: &str) -> Result<Console> {
         let t = self

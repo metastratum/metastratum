@@ -300,14 +300,14 @@ impl ImageStore {
         Ok(Some(stored))
     }
 
-    /// Downloads an image into the store, converted to qcow2, unless it is
-    /// here already. See [`crate::fetch`] for what downloads may not do.
-    /// With `digest`, the image must hold that.
+    /// Adds an image to the store (downloaded, or a file here), converted
+    /// to qcow2, unless it is here already. See [`crate::fetch`] for what
+    /// images may not do. With `digest`, the image must hold that.
     pub async fn fetch(
         &self,
         tenant_path: &str,
         id: &str,
-        url: &str,
+        src: &crate::ImageSource<'_>,
         format: &str,
         policy: FetchPolicy,
         digest: Option<&str>,
@@ -323,7 +323,7 @@ impl ImageStore {
         let part = dest.with_extension(format!("{unique}.part"));
         let converted = dest.with_extension(format!("{unique}.tmp"));
         let _left = Leftovers(vec![part.clone(), converted.clone()]);
-        let sha256 = crate::fetch(url, format, &part, &converted, "qcow2", policy).await?;
+        let sha256 = crate::fetch(src, format, &part, &converted, "qcow2", policy).await?;
         let _ = tokio::fs::remove_file(&part).await;
         let got = digest_file(&converted, &self.scratch).await?;
         check_digest(id, &got, digest)?;
@@ -336,7 +336,7 @@ impl ImageStore {
             self.write_meta(tenant_path, id, &meta).await?;
         }
         let stored = self.stored(tenant_path, id).await?;
-        tracing::info!(image = id, path = %dest.display(), "image downloaded into the store");
+        tracing::info!(image = id, path = %dest.display(), "image added to the store");
         Ok(stored)
     }
 

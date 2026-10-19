@@ -584,6 +584,8 @@ async fn images_visible_to_owner_and_shared_down_the_tree(pool: PgPool) {
         secure_boot: false,
         tpm: false,
         admin_user: None,
+        upload_bytes: None,
+        upload_host: None,
     };
 
     let public = images::create(&pool, img(r.id, "debian", true))
@@ -621,6 +623,61 @@ async fn images_visible_to_owner_and_shared_down_the_tree(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn images_are_uploaded_then_added_like_downloads(pool: PgPool) {
+    let r = root(&pool).await;
+    let h = host(&pool).await;
+    let new = |name, upload_bytes| images::NewImage {
+        tenant_id: r.id,
+        name,
+        source_url: "",
+        format: "raw",
+        shared: false,
+        storage_pool_id: mst_core::ids::LOCAL_POOL,
+        os: "linux",
+        secure_boot: false,
+        tpm: false,
+        admin_user: None,
+        upload_bytes,
+        upload_host: Some(h.id),
+    };
+    // An upload has a size, and no URL; a download the other way round.
+    assert!(images::create(&pool, new("bad", None)).await.is_err());
+    let img = images::create(&pool, new("up", Some(10))).await.unwrap();
+    assert_eq!(
+        (img.state.as_str(), img.uploaded(), img.download_host_id),
+        ("uploading", true, Some(h.id))
+    );
+    // It counts as a download under way.
+    assert_eq!(images::downloads_in_tree(&pool, r.id).await.unwrap(), 1);
+    images::uploaded_so_far(&pool, img.id, 4).await.unwrap();
+    assert_eq!(images::get(&pool, img.id).await.unwrap().uploaded_bytes, 4);
+    // Beyond its size: refused.
+    assert!(images::uploaded_so_far(&pool, img.id, 11).await.is_err());
+    let soon = Utc::now() + chrono::Duration::seconds(5);
+    assert_eq!(images::stale_uploads(&pool, soon).await.unwrap().len(), 1);
+    assert!(
+        images::stale_uploads(&pool, Utc::now() - chrono::Duration::hours(1))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(images::upload_done(&pool, img.id).await.unwrap());
+    assert!(!images::upload_done(&pool, img.id).await.unwrap());
+    let got = images::get(&pool, img.id).await.unwrap();
+    assert_eq!(
+        (got.state.as_str(), got.uploaded_bytes),
+        ("downloading", 10)
+    );
+    assert!(images::failed(&pool, img.id, "bad image").await.unwrap());
+    images::upload_again(&pool, img.id, h.id).await.unwrap();
+    let got = images::get(&pool, img.id).await.unwrap();
+    assert_eq!(
+        (got.state.as_str(), got.uploaded_bytes, got.error),
+        ("uploading", 0, None)
+    );
+}
+
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
 async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
     let r = root(&pool).await;
     let a = tenants::create(&pool, Some(r.id), "acme", "Acme")
@@ -639,6 +696,8 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
             secure_boot: true,
             tpm: true,
             admin_user: Some("Administrator"),
+            upload_bytes: None,
+            upload_host: None,
         },
     )
     .await

@@ -33,7 +33,7 @@ their traffic keeps flowing while every controller is down.
 - [Hosts](hosts.md): enrolling, certificates, migration TLS, retiring; CPUs and clusters; limits
 - [When a host fails](host-failures.md): HA: detection, fencing, restarting VMs elsewhere
 - [Deleting pools and images](storage.md): removing storage pools and images, and what stays on the storage
-- [Images](images.md): adding and keeping images, copies on hosts
+- [Images](images.md): adding images, downloaded or uploaded; copies on hosts
 - [Windows images](windows.md): building Windows Server and Windows 11 images; accounts and passwords
 
 ## VMs

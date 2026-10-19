@@ -13,6 +13,7 @@ mod snapshot;
 mod tls;
 mod tpm;
 mod transfer;
+mod uploads;
 mod vm;
 
 use std::path::PathBuf;

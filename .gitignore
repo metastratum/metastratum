@@ -9,3 +9,5 @@
 deploy/dev/master.key
 /terraform/internal/client/openapi.json
 /terraform/terraform-provider-metastratum
+# What `go build .` there makes.
+/terraform/terraform

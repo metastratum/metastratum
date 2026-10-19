@@ -612,8 +612,35 @@ impl Agent {
                 let shared = c.pools.iter().map(pool_spec).collect::<Result<Vec<_>>>()?;
                 crate::cleanup::delete_image(self, &c.image_id, &shared, &c.tenant_path).await?;
             }
+            Cmd::ReceiveImage(c) => {
+                let here = crate::uploads::receive(
+                    self.pools.data_dir(),
+                    &c.image_id,
+                    c.offset,
+                    &c.data,
+                    c.total,
+                    self.max_image_bytes,
+                )
+                .await?;
+                return Ok(serde_json::json!({ "received": here }).to_string());
+            }
             Cmd::FetchImage(c) => {
-                tracing::info!(image = %c.image_id, url = %c.source_url, "downloading an image into the store");
+                let upload = match c.uploaded {
+                    true => Some(crate::uploads::path(self.pools.data_dir(), &c.image_id)?),
+                    false => None,
+                };
+                match &upload {
+                    Some(p) => {
+                        tracing::info!(image = %c.image_id, file = %p.display(), "adding an uploaded image to the store")
+                    }
+                    None => {
+                        tracing::info!(image = %c.image_id, url = %c.source_url, "downloading an image into the store")
+                    }
+                }
+                let src = match &upload {
+                    Some(p) => mst_storage::ImageSource::File(p),
+                    None => mst_storage::ImageSource::Url(&c.source_url),
+                };
                 let policy = mst_storage::FetchPolicy {
                     allow_private: c.trusted,
                     max_bytes: self.max_image_bytes,
@@ -632,7 +659,7 @@ impl Agent {
                 let fetch = pool.fetch_stored(
                     &c.tenant_path,
                     &c.image_id,
-                    &c.source_url,
+                    &src,
                     &c.format,
                     policy,
                     digest,
@@ -642,6 +669,9 @@ impl Agent {
                     .image_work
                     .run(&c.image_id, async { Ok(fetch.await?) })
                     .await?;
+                if upload.is_some() {
+                    crate::uploads::remove(self.pools.data_dir(), &c.image_id).await?;
+                }
                 return Ok(serde_json::to_string(&stored)?);
             }
             Cmd::ExportImage(c) => return crate::transfer::export_image(self, &c).await,
@@ -651,6 +681,9 @@ impl Agent {
                 let listed_at = (c.listed_at > 0)
                     .then(|| std::time::UNIX_EPOCH + std::time::Duration::from_secs(c.listed_at));
                 let removed = crate::cleanup::prune_store(&pool, &keep, listed_at).await?;
+                if c.pool.is_none() {
+                    crate::uploads::prune(self.pools.data_dir()).await?;
+                }
                 return Ok(serde_json::json!({ "removed": removed }).to_string());
             }
             Cmd::CopyImage(c) => {

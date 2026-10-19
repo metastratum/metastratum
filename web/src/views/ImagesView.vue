@@ -6,6 +6,7 @@ import ModalDialog from '../components/ModalDialog.vue'
 import { ago, gib } from '../state'
 import { useLiveRefresh } from '../stores/live'
 import { useScope } from '../stores/scope'
+import { detectFormat, dismissUpload, stopUpload, upload, uploads } from '../stores/uploads'
 
 const scope = useScope()
 const images = ref<Image[] | null>(null)
@@ -23,6 +24,16 @@ const blank = () => ({
   storage_pool_id: LOCAL_POOL,
 })
 const form = ref(blank())
+// Downloaded from a URL, or uploaded from a file here.
+const source = ref<'url' | 'file'>('url')
+const file = ref<File | null>(null)
+async function pickFile(e: Event) {
+  const f = (e.target as HTMLInputElement).files?.[0] ?? null
+  file.value = f
+  if (!f) return
+  if (!form.value.name) form.value.name = f.name.replace(/\.(qcow2|img|raw)$/i, '')
+  form.value.format = await detectFormat(f)
+}
 // Where images can be kept: the pools the tenant may use.
 const pools = ref<Schemas['UsablePool'][]>([])
 const error = ref('')
@@ -44,10 +55,17 @@ async function add() {
   error.value = ''
   try {
     const admin_user = form.value.os === 'windows' ? form.value.admin_user.trim() || null : null
-    await ok(api.POST('/api/v1/images', { body: { ...form.value, admin_user, tenant_id: scope.current } }))
+    const from = source.value === 'file' && file.value ? { upload_bytes: file.value.size } : { source_url: form.value.source_url }
+    const body = { ...form.value, ...from, source_url: from.source_url ?? null, admin_user, tenant_id: scope.current }
+    const created = await ok(api.POST('/api/v1/images', { body }))
+    const picked = file.value
     adding.value = false
     form.value = blank()
+    file.value = null
+    source.value = 'url'
     await load()
+    // In the background: the list shows how far it is.
+    if (picked) void upload(created as unknown as Image, picked, 0, scope.current).then(load)
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : 'The controller isn’t responding. Try again.'
   }
@@ -69,8 +87,36 @@ async function remove() {
   }
 }
 
+// Resuming an upload (from what arrived), or uploading it again (it
+// failed): the same file is picked again.
+const resumeError = ref<Record<string, string>>({})
+function resume(img: Image, again: boolean) {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.onchange = () => {
+    const f = input.files?.[0]
+    if (!f) return
+    if (f.size !== img.upload_bytes) {
+      resumeError.value = {
+        ...resumeError.value,
+        [img.id]: `That file is ${gib(f.size)}; the image's upload is ${gib(img.upload_bytes ?? 0)}. Pick the same file.`,
+      }
+      return
+    }
+    resumeError.value = { ...resumeError.value, [img.id]: '' }
+    dismissUpload(img.id)
+    void upload(img, f, again ? 0 : (img.uploaded_bytes ?? 0), scope.current).then(load)
+  }
+  input.click()
+}
+const uploadedPct = (img: Image) => {
+  const u = uploads.get(img.id)
+  const [sent, total] = u ? [u.sent, u.total] : [img.uploaded_bytes ?? 0, img.upload_bytes ?? 1]
+  return Math.floor((100 * sent) / total)
+}
+
 // Downloading it again, after that failed, or stopped without saying how.
-const retryable = (img: Image) => img.state === 'failed' || img.stuck
+const retryable = (img: Image) => !img.upload_bytes && (img.state === 'failed' || img.stuck)
 const retrying = ref('')
 const retryError = ref<Record<string, string>>({})
 async function downloadAgain(img: Image) {
@@ -97,7 +143,7 @@ const own = (img: Image) => img.tenant_id === scope.current
       <button v-if="scope.can('image.write')" class="btn primary" @click="openAdd">Add image</button>
     </header>
     <p class="intro">
-      A host downloads an image as you add it. Hosts copy it from there to make VMs from it, and keep their copy
+      A host downloads an image as you add it, or takes it as you upload it. Hosts copy it from there to make VMs from it, and keep their copy
       for the next. A VM’s disk is a copy of its own, so it doesn’t depend on the image: VMs keep working when the
       image is gone.
     </p>
@@ -118,10 +164,26 @@ const own = (img: Image) => img.tenant_id === scope.current
           <span v-if="img.shared && !scope.solo" class="tag label">Shared with sub-tenants</span>
           <span v-if="!own(img)" class="tag label">From parent tenant</span>
           <span v-if="img.stuck" class="tag label failed">Download stopped</span>
+          <span v-else-if="img.state === 'uploading' && uploads.has(img.id) && !uploads.get(img.id)?.error" class="tag label busy">
+            Uploading… {{ uploadedPct(img) }}%
+          </span>
+          <span v-else-if="img.state === 'uploading'" class="tag label failed">Upload incomplete</span>
+          <span v-else-if="img.state === 'downloading' && img.upload_bytes" class="tag label busy">Checking the upload…</span>
           <span v-else-if="img.state === 'downloading'" class="tag label busy">Downloading…</span>
-          <span v-else-if="img.state === 'failed'" class="tag label failed">Download failed</span>
+          <span v-else-if="img.state === 'failed'" class="tag label failed">
+            {{ img.upload_bytes ? 'Upload failed' : 'Download failed' }}
+          </span>
         </div>
-        <div class="url mono">{{ img.source_url }}</div>
+        <div v-if="img.source_url" class="url mono">{{ img.source_url }}</div>
+        <div v-else class="url muted">Uploaded, {{ gib(img.upload_bytes ?? 0) }}</div>
+        <div v-if="img.state === 'uploading'" class="upload">
+          <progress :value="uploadedPct(img)" max="100" />
+          <span class="muted">
+            {{ gib(uploads.get(img.id)?.sent ?? img.uploaded_bytes ?? 0) }} of {{ gib(img.upload_bytes ?? 0) }}
+          </span>
+        </div>
+        <p v-if="uploads.get(img.id)?.error" class="error-text" role="alert">{{ uploads.get(img.id)?.error }}</p>
+        <p v-if="resumeError[img.id]" class="error-text" role="alert">{{ resumeError[img.id] }}</p>
         <p v-if="img.state === 'failed'" class="error-text" role="alert">{{ img.error ?? 'The download failed.' }}</p>
         <p v-if="img.stuck" class="error-text" role="alert">The download stopped without finishing. Download it again.</p>
         <p v-if="retryError[img.id]" class="error-text" role="alert">{{ retryError[img.id] }}</p>
@@ -143,9 +205,30 @@ const own = (img: Image) => img.tenant_id === scope.current
             Download again
           </button>
           <button
+            v-if="img.state === 'uploading' && uploads.has(img.id) && !uploads.get(img.id)?.error"
+            class="btn small push"
+            @click="stopUpload(img.id)"
+          >
+            Stop upload
+          </button>
+          <button
+            v-else-if="img.state === 'uploading' && own(img) && scope.can('image.write')"
+            class="btn small push"
+            @click="resume(img, false)"
+          >
+            Resume upload…
+          </button>
+          <button
+            v-else-if="img.upload_bytes && img.state === 'failed' && own(img) && scope.can('image.write')"
+            class="btn small push"
+            @click="resume(img, true)"
+          >
+            Upload again…
+          </button>
+          <button
             v-if="own(img) && scope.can('image.write')"
             class="btn danger small"
-            :class="{ push: !(retryable(img) && own(img)) }"
+            :class="{ push: !(retryable(img) || (img.upload_bytes && ['uploading', 'failed'].includes(img.state))) }"
             @click="(deleteError = ''), (deleting = img)"
           >
             Delete…
@@ -160,7 +243,10 @@ const own = (img: Image) => img.tenant_id === scope.current
         <ul class="consequences">
           <li>New VMs can no longer be created from it.</li>
           <li v-if="deleting.shared">Sub-tenants it is shared with lose it too.</li>
-          <li class="error-text">Every host deletes its copy. Adding the image again means downloading it again.</li>
+          <li class="error-text">
+            Every host deletes its copy. Adding the image again means
+            {{ deleting.upload_bytes ? 'uploading' : 'downloading' }} it again.
+          </li>
           <li>VMs made from it keep working: their disks are copies of their own.</li>
         </ul>
         <p v-if="deleteError" class="error-text" role="alert">{{ deleteError }}</p>
@@ -177,9 +263,22 @@ const own = (img: Image) => img.tenant_id === scope.current
           <span class="label">Name</span>
           <input v-model="form.name" required placeholder="debian-13" autofocus />
         </label>
-        <label class="field">
+        <fieldset class="field boot">
+          <legend class="label">From</legend>
+          <label class="check"><input v-model="source" type="radio" value="url" /> A download URL</label>
+          <label class="check"><input v-model="source" type="radio" value="file" /> A file on this computer</label>
+        </fieldset>
+        <label v-if="source === 'url'" class="field">
           <span class="label">Download URL</span>
           <input v-model="form.source_url" required type="url" placeholder="https://cloud.debian.org/…/debian-13-genericcloud-amd64.qcow2" />
+        </label>
+        <label v-else class="field">
+          <span class="label">File</span>
+          <input type="file" accept=".qcow2,.img,.raw" required @change="pickFile" />
+          <span class="hint">
+            Uploaded in the background once added; keep this page open until it is done. A stopped upload can be
+            resumed from where it was.
+          </span>
         </label>
         <label class="field">
           <span class="label">Format</span>
@@ -231,7 +330,7 @@ const own = (img: Image) => img.tenant_id === scope.current
         <p v-if="error" class="error-text" role="alert">{{ error }}</p>
         <footer>
           <button type="button" class="btn" @click="adding = false">Cancel</button>
-          <button class="btn primary">Add image</button>
+          <button class="btn primary">{{ source === 'file' ? 'Add and upload' : 'Add image' }}</button>
         </footer>
       </form>
     </ModalDialog>
@@ -239,6 +338,16 @@ const own = (img: Image) => img.tenant_id === scope.current
 </template>
 
 <style scoped>
+.upload {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.upload progress {
+  flex: 1;
+  max-width: 320px;
+}
 .boot {
   margin: 0;
   padding: 0;

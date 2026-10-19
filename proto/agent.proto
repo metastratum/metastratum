@@ -218,6 +218,7 @@ message Command {
     ReplugNic replug_nic = 57;
     ExportTpm export_tpm = 58;
     ImportTpm import_tpm = 59;
+    ReceiveImage receive_image = 60;
   }
   // 10: EnsureImage, before the image store. 21: MigrateVm, peer to peer.
   // 27: LibvirtTls, which opened libvirt to other hosts for that. 28:
@@ -661,6 +662,20 @@ message FetchImage {
   bool trusted = 5;
   string digest = 6;
   Pool pool = 7;
+  // The image was uploaded to this host (ReceiveImage), not downloaded:
+  // added from that, which then goes.
+  bool uploaded = 8;
+}
+
+// A part of an image being uploaded to this host, written at `offset` into
+// the file kept for the upload; `total` is the whole upload's size. A part
+// at offset 0 starts the upload over. A part beyond what is here is not
+// written. Returns {"received": N}: how much of the upload is here.
+message ReceiveImage {
+  string image_id = 1;
+  uint64 offset = 2;
+  bytes data = 3;
+  uint64 total = 4;
 }
 
 // Serve an image in this host's store to one other host, as ExportVolume

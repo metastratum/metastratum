@@ -648,7 +648,9 @@ export interface paths {
          * Adds an image: a host downloads it into the image store of the pool it
          *     is kept in (the task): its own local disk (a host picked at random), or
          *     a shared pool, which its hosts make disks from directly. Other hosts copy
-         *     it from there to make VMs from it.
+         *     it from there to make VMs from it. With `upload_bytes` instead of a URL,
+         *     it is uploaded (`PUT /images/{id}/upload`) to such a host, picked now,
+         *     and once all of it has arrived added as a download is.
          */
         post: operations["create_image"];
         delete?: never;
@@ -692,6 +694,30 @@ export interface paths {
          *     it must be the file first downloaded, if one was.
          */
         post: operations["download_image"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/images/{id}/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Uploads a part of an image added with `upload_bytes`: the next up to
+         *     32 MiB of the file, as the request's body, from `offset` (what has
+         *     arrived: `uploaded_bytes`). Parts go to the host picked for it as they
+         *     come. Once all of it has arrived, it is added to its pool as a download
+         *     is (`downloading`, then `ready`), checked the same way. An upload no part
+         *     reaches for a day fails. A failed upload is started over from offset 0.
+         */
+        put: operations["upload_image"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2327,8 +2353,11 @@ export interface components {
              */
             secure_boot?: boolean;
             shared?: boolean;
-            /** @description HTTP(S) URL a host downloads the image from, as it is added. */
-            source_url: string;
+            /**
+             * @description HTTP(S) URL a host downloads the image from, as it is added. Or
+             *     none, with `upload_bytes`.
+             */
+            source_url?: string | null;
             storage_pool_id?: components["schemas"]["StoragePoolId"] | null;
             tenant_id?: components["schemas"]["TenantId"] | null;
             /**
@@ -2336,6 +2365,12 @@ export interface components {
              *     requires one).
              */
             tpm?: boolean;
+            /**
+             * Format: int64
+             * @description The size of a file to upload instead (bytes), in parts: see
+             *     `PUT /images/{id}/upload`.
+             */
+            upload_bytes?: number | null;
         };
         CreateJoinToken: {
             cluster_id?: components["schemas"]["ClusterId"] | null;
@@ -2493,8 +2528,7 @@ export interface components {
             tenant_id?: components["schemas"]["TenantId"] | null;
         };
         CreatedImage: components["schemas"]["ImageView"] & {
-            /** @description The download. */
-            task_id: components["schemas"]["TaskId"];
+            task_id?: components["schemas"]["TaskId"] | null;
         };
         /** @description What decommissioning a host did. */
         DecommissionReport: {
@@ -2773,10 +2807,13 @@ export interface components {
              * @description Its size, stored (qcow2).
              */
             size_bytes?: number | null;
+            /** @description Where it is downloaded from; empty for an uploaded image. */
             source_url: string;
             /**
-             * @description `downloading` (VMs made from it meanwhile wait for it), `ready`, or
-             *     `failed` (see `error`; it can be downloaded again).
+             * @description `uploading` (its parts arriving), `downloading` (being added to its
+             *     pool, from its URL or its upload: VMs made from it meanwhile wait
+             *     for it), `ready`, or `failed` (see `error`; it can be downloaded,
+             *     or uploaded, again).
              */
             state: string;
             /**
@@ -2793,6 +2830,14 @@ export interface components {
             stuck: boolean;
             tenant_id: components["schemas"]["TenantId"];
             tpm: boolean;
+            /**
+             * Format: int64
+             * @description An uploaded image's size, and how much of it has arrived (see
+             *     `PUT /images/{id}/upload`).
+             */
+            upload_bytes?: number | null;
+            /** Format: int64 */
+            uploaded_bytes?: number | null;
             /**
              * Format: int64
              * @description The size of the disk it holds: VMs' disks made from it are at least
@@ -5444,6 +5489,69 @@ export interface operations {
             };
             /** @description Being downloaded, or held by a host */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    upload_image: {
+        parameters: {
+            query: {
+                /**
+                 * @description Where the part goes in the file: as much of it as has arrived
+                 *     (`uploaded_bytes`). 0 starts a failed upload over.
+                 */
+                offset: number;
+            };
+            header?: never;
+            path: {
+                id: components["schemas"]["ImageId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": number[];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not being uploaded, or the part is not the next one: see `uploaded_bytes` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A part larger than 32 MiB */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

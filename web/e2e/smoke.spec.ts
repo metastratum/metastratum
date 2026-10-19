@@ -568,3 +568,32 @@ test('backup repositories, and the backups page', async ({ page }) => {
   await page.getByRole('dialog').getByRole('button', { name: 'Delete' }).click()
   await expect(row).toHaveCount(0)
 })
+
+test('an image uploaded from a file', async ({ page }) => {
+  const name = `e2e-up-${Date.now().toString(36)}`
+  await signIn(page)
+  try {
+    await page.goto('/images')
+    await page.getByRole('button', { name: 'Add image' }).first().click()
+    const dialog = page.getByRole('dialog')
+    await dialog.getByRole('radio', { name: 'A file on this computer' }).check()
+    // A raw disk of 20 MiB: uploaded in two parts. Its name and format come
+    // from the file.
+    await dialog.locator('input[type=file]').setInputFiles({
+      name: `${name}.raw`,
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.alloc(20 << 20),
+    })
+    await expect(field(dialog, 'Name')).toHaveValue(name)
+    await expect(field(dialog, 'Format')).toHaveValue('raw')
+    await dialog.getByRole('button', { name: 'Add and upload' }).click()
+    const row = page.getByRole('listitem').filter({ hasText: name })
+    await expect(row).toContainText('Uploaded,')
+    // Checked and stored as a download is: then it shows its disk.
+    await expect(row.locator('.facts')).toContainText('disk', { timeout: 3 * 60_000 })
+    await expect(row.locator('.tag.failed')).toHaveCount(0)
+  } finally {
+    const images = (await (await page.request.get('/api/v1/images')).json()) as { id: string; name: string }[]
+    for (const i of images.filter((i) => i.name === name)) await page.request.delete(`/api/v1/images/${i.id}`)
+  }
+})

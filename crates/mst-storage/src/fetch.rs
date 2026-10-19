@@ -216,6 +216,23 @@ pub(crate) async fn download(url: &str, dest: &Path, policy: FetchPolicy) -> Res
     Ok(hex::encode(hash.finalize()))
 }
 
+/// The SHA-256 of a file (hex).
+pub(crate) async fn hash_file(path: &Path) -> Result<String> {
+    use sha2::Digest;
+    use tokio::io::AsyncReadExt;
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hash = sha2::Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = file.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buf[..n]);
+    }
+    Ok(hex::encode(hash.finalize()))
+}
+
 fn chain(e: &dyn std::error::Error) -> String {
     let mut out = e.to_string();
     let mut s = e.source();

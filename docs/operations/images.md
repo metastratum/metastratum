@@ -20,6 +20,30 @@ takes over two hours, is given up on. Deleting an image stops its download.
 Two hashes are recorded: the SHA-256 of the file downloaded, and the
 image's digest, the SHA-256 of the disk it holds (read as a raw disk).
 
+## Uploading
+
+An image can be uploaded instead (Add image → From a file on this
+computer): it is added with its size, and a host that can keep it (picked
+at random, as for a download) takes it as its parts arrive. The browser
+sends the file in parts of 16 MiB (the API takes up to 32 MiB each, `PUT
+/api/v1/images/{id}/upload?offset=N`, the next part from what has arrived);
+the controller passes each to that host. A stopped upload (the page
+closed, the connection lost) is resumed from what arrived: Resume upload,
+and the same file again. Once all of it is there it is checked and stored
+as a download is, with the same limits and hashes, and a file that is no
+image (or describes too large a disk) fails then, and is uploaded again
+from the start (Upload again). An upload no part reaches for a day fails,
+and what arrived goes. Uploads count as downloads under way, two at a time
+per tenant tree.
+
+An uploaded image has no address to be downloaded again from: should no
+copy of it be reachable, VMs cannot be made from it until one is, or it is
+uploaded again as a new image. Keep it in a shared pool where that
+matters, or let several hosts hold copies (each VM made on a host leaves
+one there).
+
+## Copies on hosts
+
 A VM made from an image is made on its host from that host's copy, or
 straight from the shared pool keeping it when the host is attached to that
 pool. A host without either gets a copy from a host that has one (a host

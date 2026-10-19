@@ -88,7 +88,7 @@ impl Pool {
         }
     }
 
-    /// Downloads an image into the pool's image store (see
+    /// Adds an image (downloaded, or a file here) to the pool's image store (see
     /// [`crate::ImageStore::fetch`]), unless it is there already. Digests
     /// are worked out in `scratch`, on the host's own disk. With `digest`,
     /// the image must hold that.
@@ -97,7 +97,7 @@ impl Pool {
         &self,
         tenant_path: &str,
         id: &str,
-        url: &str,
+        src: &crate::ImageSource<'_>,
         format: &str,
         policy: crate::FetchPolicy,
         digest: Option<&str>,
@@ -107,11 +107,11 @@ impl Pool {
             Pool::File(p) => {
                 crate::ImageStore::new(p.root())
                     .scratch_in(scratch)
-                    .fetch(tenant_path, id, url, format, policy, digest)
+                    .fetch(tenant_path, id, src, format, policy, digest)
                     .await
             }
             Pool::Rbd(p) => {
-                p.fetch_stored(tenant_path, id, url, format, policy, digest)
+                p.fetch_stored(tenant_path, id, src, format, policy, digest)
                     .await
             }
         }
@@ -360,6 +360,11 @@ impl Pools {
     /// The local pool's cache and files, for cleaning up after images.
     pub fn local(&self) -> FilePool {
         FilePool::new(&self.data_dir)
+    }
+
+    /// The local pool's directory: the agent's data directory.
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
     }
 
     /// The local pool's image store.

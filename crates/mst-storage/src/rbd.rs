@@ -230,7 +230,7 @@ impl RbdPool {
             .await
     }
 
-    /// Downloads an image into the store (see [`crate::ImageStore::fetch`]):
+    /// Adds an image to the store (see [`crate::ImageStore::fetch`]):
     /// checked, converted and its digest worked out on this host first,
     /// then copied in, unless another host stored it meanwhile (that one
     /// stays).
@@ -238,7 +238,7 @@ impl RbdPool {
         &self,
         tenant_path: &str,
         id: &str,
-        url: &str,
+        src: &crate::ImageSource<'_>,
         format: &str,
         policy: crate::FetchPolicy,
         digest: Option<&str>,
@@ -262,7 +262,7 @@ impl RbdPool {
         let part = self.work_dir.join(format!("{id}.{unique}.part"));
         let converted = self.work_dir.join(format!("{id}.{unique}.qcow2"));
         let _left = crate::store::Leftovers(vec![part.clone(), converted.clone()]);
-        let sha256 = fetch(url, format, &part, &converted, "qcow2", policy).await?;
+        let sha256 = fetch(src, format, &part, &converted, "qcow2", policy).await?;
         let _ = tokio::fs::remove_file(&part).await;
         let got = crate::store::digest_file(&converted, &self.work_dir).await?;
         crate::store::check_digest(id, &got, digest)?;
@@ -273,7 +273,7 @@ impl RbdPool {
         ];
         crate::transfer::copy_to_rbd_name(self, &name, 0, &src, &meta).await?;
         let stored = self.stored(&name).await?;
-        tracing::info!(image = id, pool = %self.pool, "image downloaded into the store");
+        tracing::info!(image = id, pool = %self.pool, "image added to the store");
         Ok(stored)
     }
 

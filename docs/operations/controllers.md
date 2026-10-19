@@ -50,6 +50,9 @@ The proxy must:
   `X-Forwarded-Proto` it makes the redirect URI for OIDC sign-in,
   `https://<host>/api/v1/auth/oidc/callback`, which is what to register
   with identity providers (Tenants → Sign-in shows it);
+- take request bodies of 32 MiB: image uploads come in parts of 16 MiB (in
+  nginx, `client_max_body_size 32m`; HAProxy and Caddy take them as they
+  are);
 - reach `/healthz`, which answers 200 while the replica can reach Postgres.
 
 **Tenant domains.** A tenant can have its own address, such as

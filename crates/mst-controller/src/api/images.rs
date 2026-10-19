@@ -1,12 +1,13 @@
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use mst_core::ids::{ImageId, LOCAL_POOL, StoragePoolId, TaskId, TenantId};
+use mst_core::ids::{HostId, ImageId, LOCAL_POOL, StoragePoolId, TaskId, TenantId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
-use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::router::{OpenApiRouter, UtoipaMethodRouterExt};
 use utoipa_axum::routes;
 
 use crate::authz::{Perm, Principal, audit, authorize, authorize_resource};
@@ -18,6 +19,7 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(list_images, create_image))
         .routes(routes!(delete_image))
         .routes(routes!(download_image))
+        .routes(routes!(upload_image).layer(DefaultBodyLimit::max(MAX_PART)))
 }
 
 #[derive(Serialize, ToSchema)]
@@ -25,11 +27,18 @@ pub struct ImageView {
     id: ImageId,
     tenant_id: TenantId,
     name: String,
+    /// Where it is downloaded from; empty for an uploaded image.
     source_url: String,
     /// `qcow2` or `raw`.
     format: String,
     /// What VMs made from it run: `linux` or `windows`.
     os: String,
+    /// An uploaded image's size, and how much of it has arrived (see
+    /// `PUT /images/{id}/upload`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upload_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    uploaded_bytes: Option<i64>,
     /// Usable by the owning tenant's descendants too.
     shared: bool,
     /// What VMs made from it get unless told otherwise: UEFI Secure Boot,
@@ -42,8 +51,10 @@ pub struct ImageView {
     #[serde(skip_serializing_if = "Option::is_none")]
     admin_user: Option<String>,
     created_at: DateTime<Utc>,
-    /// `downloading` (VMs made from it meanwhile wait for it), `ready`, or
-    /// `failed` (see `error`; it can be downloaded again).
+    /// `uploading` (its parts arriving), `downloading` (being added to its
+    /// pool, from its URL or its upload: VMs made from it meanwhile wait
+    /// for it), `ready`, or `failed` (see `error`; it can be downloaded,
+    /// or uploaded, again).
     state: String,
     /// Why downloading it failed.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -87,6 +98,8 @@ impl ImageView {
             source_url: i.source_url,
             format: i.format,
             os: i.os,
+            upload_bytes: i.upload_bytes,
+            uploaded_bytes: i.upload_bytes.map(|_| i.uploaded_bytes),
             shared: i.shared,
             secure_boot: i.secure_boot,
             tpm: i.tpm,
@@ -149,8 +162,14 @@ async fn list_images(
 pub struct CreateImage {
     tenant_id: Option<TenantId>,
     name: String,
-    /// HTTP(S) URL a host downloads the image from, as it is added.
-    source_url: String,
+    /// HTTP(S) URL a host downloads the image from, as it is added. Or
+    /// none, with `upload_bytes`.
+    #[serde(default)]
+    source_url: Option<String>,
+    /// The size of a file to upload instead (bytes), in parts: see
+    /// `PUT /images/{id}/upload`.
+    #[serde(default)]
+    upload_bytes: Option<u64>,
     /// `qcow2` or `raw`.
     format: String,
     /// What VMs made from it run: `linux` (the default) or `windows`, an
@@ -180,8 +199,9 @@ pub struct CreateImage {
 
 #[derive(Serialize, ToSchema)]
 pub struct CreatedImage {
-    /// The download.
-    task_id: TaskId,
+    /// The download; none for an upload, whose last part starts adding it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_id: Option<TaskId>,
     #[serde(flatten)]
     image: ImageView,
 }
@@ -189,7 +209,9 @@ pub struct CreatedImage {
 /// Adds an image: a host downloads it into the image store of the pool it
 /// is kept in (the task): its own local disk (a host picked at random), or
 /// a shared pool, which its hosts make disks from directly. Other hosts copy
-/// it from there to make VMs from it.
+/// it from there to make VMs from it. With `upload_bytes` instead of a URL,
+/// it is uploaded (`PUT /images/{id}/upload`) to such a host, picked now,
+/// and once all of it has arrived added as a download is.
 #[utoipa::path(post, path = "/images", tag = "images", request_body = CreateImage,
     responses((status = 201, body = CreatedImage), (status = 400), (status = 409)))]
 async fn create_image(
@@ -202,9 +224,19 @@ async fn create_image(
     if req.name.trim().is_empty() || req.name.len() > 128 {
         return Err(ApiError::bad_request("name must be 1-128 characters"));
     }
-    if !(req.source_url.starts_with("http://") || req.source_url.starts_with("https://")) {
-        return Err(ApiError::bad_request("source_url must be an http(s) URL"));
-    }
+    let source_url = match (&req.source_url, req.upload_bytes) {
+        (Some(url), None) if url.starts_with("http://") || url.starts_with("https://") => {
+            url.as_str()
+        }
+        (Some(_), None) => return Err(ApiError::bad_request("source_url must be an http(s) URL")),
+        (None, Some(n)) if n > 0 && n <= i64::MAX as u64 => "",
+        (None, Some(_)) => return Err(ApiError::bad_request("upload_bytes must be more than 0")),
+        _ => {
+            return Err(ApiError::bad_request(
+                "give either source_url (to download it) or upload_bytes (to upload it)",
+            ));
+        }
+    };
     if !matches!(req.format.as_str(), "qcow2" | "raw") {
         return Err(ApiError::bad_request("format must be qcow2 or raw"));
     }
@@ -224,6 +256,10 @@ async fn create_image(
     if !super::storage_pools::may_use(&state, tenant, &pool).await? {
         return Err(ApiError::not_found("storage pool"));
     }
+    let upload_host = match req.upload_bytes {
+        Some(_) => Some(upload_host(&state, &pool).await?),
+        None => None,
+    };
     let mut tx = state.db.begin().await?;
     may_download(&mut tx, tenant).await?;
     let image = mst_db::images::create(
@@ -231,7 +267,7 @@ async fn create_image(
         mst_db::images::NewImage {
             tenant_id: tenant,
             name: req.name.trim(),
-            source_url: &req.source_url,
+            source_url,
             format: &req.format,
             shared: req.shared,
             storage_pool_id: pool.id,
@@ -239,10 +275,15 @@ async fn create_image(
             secure_boot: req.secure_boot,
             tpm: req.tpm,
             admin_user,
+            upload_bytes: req.upload_bytes.map(|n| n as i64),
+            upload_host,
         },
     )
     .await?;
-    let task_id = enqueue_download(&mut tx, &p, &image).await?;
+    let task_id = match image.uploaded() {
+        true => None,
+        false => Some(enqueue_download(&mut tx, &p, &image).await?),
+    };
     tx.commit().await?;
     audit(
         &state.db,
@@ -250,7 +291,8 @@ async fn create_image(
         Some(tenant),
         "image.create",
         Some(("image", image.id.0)),
-        json!({"name": image.name, "url": image.source_url, "storage_pool": pool.name, "os": image.os,
+        json!({"name": image.name, "url": image.source_url, "upload_bytes": image.upload_bytes,
+               "storage_pool": pool.name, "os": image.os,
                "secure_boot": image.secure_boot, "tpm": image.tpm, "admin_user": image.admin_user}),
     )
     .await;
@@ -261,6 +303,160 @@ async fn create_image(
             image: ImageView::new(image, vec![], pool.name, false),
         }),
     ))
+}
+
+/// A host to upload an image to: one that can take it into the pool's
+/// store (connected, and reaching a shared pool), at random.
+async fn upload_host(state: &AppState, pool: &mst_db::storage_pools::Pool) -> ApiResult<HostId> {
+    let hosts: Vec<_> = crate::engine::store_hosts(state)
+        .await
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .filter(|h| pool.kind == "local" || crate::engine::reaches(h, pool))
+        .collect();
+    if hosts.is_empty() {
+        return Err(ApiError::unavailable(match pool.kind.as_str() {
+            "local" => "no connected host to upload the image to".to_owned(),
+            _ => format!("no connected host reaches {}", pool.name),
+        }));
+    }
+    Ok(hosts[rand::random_range(0..hosts.len())].id)
+}
+
+/// The most one request may carry of an upload.
+const MAX_PART: usize = 32 << 20;
+/// What goes to the host in one command (within what gRPC takes).
+const PIECE: usize = 2 << 20;
+
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct UploadQuery {
+    /// Where the part goes in the file: as much of it as has arrived
+    /// (`uploaded_bytes`). 0 starts a failed upload over.
+    offset: u64,
+}
+
+/// Uploads a part of an image added with `upload_bytes`: the next up to
+/// 32 MiB of the file, as the request's body, from `offset` (what has
+/// arrived: `uploaded_bytes`). Parts go to the host picked for it as they
+/// come. Once all of it has arrived, it is added to its pool as a download
+/// is (`downloading`, then `ready`), checked the same way. An upload no part
+/// reaches for a day fails. A failed upload is started over from offset 0.
+#[utoipa::path(put, path = "/images/{id}/upload", tag = "images",
+    params(("id" = ImageId, Path), UploadQuery),
+    request_body(content = Vec<u8>, content_type = "application/octet-stream"),
+    responses((status = 200, body = ImageView), (status = 400), (status = 404),
+        (status = 409, description = "Not being uploaded, or the part is not the next one: see `uploaded_bytes`"),
+        (status = 413, description = "A part larger than 32 MiB"), (status = 503)))]
+async fn upload_image(
+    State(state): State<AppState>,
+    p: Principal,
+    Path(id): Path<ImageId>,
+    Query(q): Query<UploadQuery>,
+    body: Bytes,
+) -> ApiResult<Json<ImageView>> {
+    let image = mst_db::images::get(&state.db, id).await?;
+    authorize_resource(&state.db, &p, Perm::ImageWrite, image.tenant_id, "image").await?;
+    let Some(total) = image.upload_bytes.map(|n| n as u64) else {
+        return Err(ApiError::conflict(
+            "the image is downloaded from its URL, not uploaded",
+        ));
+    };
+    // Held until the part is through: parts arrive one after the other.
+    let mut tx = state.db.begin().await?;
+    let mut image = mst_db::images::get_for_update(&mut tx, id).await?;
+    if image.state == "failed" && q.offset == 0 {
+        let pool = mst_db::storage_pools::get(&mut *tx, image.storage_pool_id).await?;
+        if !super::storage_pools::may_use(&state, image.tenant_id, &pool).await? {
+            return Err(ApiError::conflict(format!(
+                "the tenant may no longer use storage pool {}; add the image again, kept elsewhere",
+                pool.name
+            )));
+        }
+        may_download(&mut tx, image.tenant_id).await?;
+        let host = upload_host(&state, &pool).await?;
+        mst_db::images::upload_again(&mut *tx, id, host).await?;
+        image = mst_db::images::get_for_update(&mut tx, id).await?;
+    }
+    match image.state.as_str() {
+        "uploading" => {}
+        "failed" => {
+            return Err(ApiError::conflict(format!(
+                "uploading it failed ({}); upload it again, from offset 0",
+                image.error.as_deref().unwrap_or("no reason given")
+            )));
+        }
+        _ => return Err(ApiError::conflict("all of the image has been uploaded")),
+    }
+    let here = image.uploaded_bytes as u64;
+    if q.offset != here {
+        return Err(ApiError::conflict(format!(
+            "{here} bytes of the image have arrived: send the part from offset {here}"
+        )));
+    }
+    let end = here + body.len() as u64;
+    if end > total {
+        return Err(ApiError::bad_request(format!(
+            "the part goes beyond the image's {total} bytes"
+        )));
+    }
+    if body.is_empty() {
+        return Err(ApiError::bad_request("the part is empty"));
+    }
+    let host = image.download_host_id.ok_or_else(|| {
+        ApiError::conflict("the host the upload went to is gone; upload it again")
+    })?;
+    #[derive(Deserialize)]
+    struct Received {
+        received: u64,
+    }
+    let mut at = here;
+    for piece in body.chunks(PIECE) {
+        let cmd = mst_proto::command::Cmd::ReceiveImage(mst_proto::ReceiveImage {
+            image_id: id.to_string(),
+            offset: at,
+            data: piece.to_vec(),
+            total,
+        });
+        let got: Received = state
+            .agents
+            .query(host, cmd, std::time::Duration::from_secs(60))
+            .await
+            .map_err(|e| ApiError::unavailable(format!("the host taking the upload: {e}")))?;
+        if got.received < at + piece.len() as u64 {
+            // It has less than was sent (it lost some): sent again from there.
+            mst_db::images::uploaded_so_far(&mut *tx, id, got.received as i64).await?;
+            tx.commit().await?;
+            return Err(ApiError::conflict(format!(
+                "the host has {0} bytes of the image: send the part from offset {0}",
+                got.received
+            )));
+        }
+        at += piece.len() as u64;
+    }
+    mst_db::images::uploaded_so_far(&mut *tx, id, end as i64).await?;
+    let done = end == total && mst_db::images::upload_done(&mut *tx, id).await?;
+    if done {
+        enqueue_download(&mut tx, &p, &image).await?;
+    }
+    tx.commit().await?;
+    if done {
+        audit(
+            &state.db,
+            Some(&p),
+            Some(image.tenant_id),
+            "image.upload",
+            Some(("image", id.0)),
+            json!({"name": image.name, "bytes": total}),
+        )
+        .await;
+    }
+    let image = mst_db::images::get(&state.db, id).await?;
+    let view = views(&state, vec![image])
+        .await?
+        .pop()
+        .ok_or_else(|| ApiError::not_found("image"))?;
+    Ok(Json(view))
 }
 
 /// Refuses what Windows does not take as an account name.
@@ -336,6 +532,11 @@ async fn download_image(
     authorize_resource(&state.db, &p, Perm::ImageWrite, image.tenant_id, "image").await?;
     let mut tx = state.db.begin().await?;
     let image = mst_db::images::get_for_update(&mut tx, id).await?;
+    if image.uploaded() {
+        return Err(ApiError::conflict(
+            "the image was uploaded: upload it again (from offset 0)",
+        ));
+    }
     match image.state.as_str() {
         // Unless what was downloading it ended without saying how.
         "downloading" if mst_db::images::download_under_way(&mut *tx, id).await? => {

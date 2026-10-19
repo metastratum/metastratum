@@ -589,14 +589,19 @@ type CreateImage struct {
 	SecureBoot *bool `json:"secure_boot,omitempty"`
 	Shared     *bool `json:"shared,omitempty"`
 
-	// SourceUrl HTTP(S) URL a host downloads the image from, as it is added.
-	SourceUrl     string         `json:"source_url"`
+	// SourceUrl HTTP(S) URL a host downloads the image from, as it is added. Or
+	// none, with `upload_bytes`.
+	SourceUrl     *string        `json:"source_url,omitempty"`
 	StoragePoolId *StoragePoolId `json:"storage_pool_id,omitempty"`
 	TenantId      *TenantId      `json:"tenant_id,omitempty"`
 
 	// Tpm VMs made from it get a TPM 2.0 unless told otherwise (Windows 11
 	// requires one).
 	Tpm *bool `json:"tpm,omitempty"`
+
+	// UploadBytes The size of a file to upload instead (bytes), in parts: see
+	// `PUT /images/{id}/upload`.
+	UploadBytes *int64 `json:"upload_bytes,omitempty"`
 }
 
 // CreateJoinToken defines model for CreateJoinToken.
@@ -800,10 +805,14 @@ type CreatedImage struct {
 
 	// SizeBytes Its size, stored (qcow2).
 	SizeBytes *int64 `json:"size_bytes,omitempty"`
+
+	// SourceUrl Where it is downloaded from; empty for an uploaded image.
 	SourceUrl string `json:"source_url"`
 
-	// State `downloading` (VMs made from it meanwhile wait for it), `ready`, or
-	// `failed` (see `error`; it can be downloaded again).
+	// State `uploading` (its parts arriving), `downloading` (being added to its
+	// pool, from its URL or its upload: VMs made from it meanwhile wait
+	// for it), `ready`, or `failed` (see `error`; it can be downloaded,
+	// or uploaded, again).
 	State string `json:"state"`
 
 	// StoragePoolId The pool it is kept in: the local pool (a host's local disk, picked
@@ -814,12 +823,15 @@ type CreatedImage struct {
 
 	// Stuck `downloading`, but no task is downloading it (what was ended without
 	// saying how): it can be downloaded again.
-	Stuck bool `json:"stuck"`
-
-	// TaskId The download.
-	TaskId   TaskId   `json:"task_id"`
+	Stuck    bool     `json:"stuck"`
+	TaskId   *TaskId  `json:"task_id,omitempty"`
 	TenantId TenantId `json:"tenant_id"`
 	Tpm      bool     `json:"tpm"`
+
+	// UploadBytes An uploaded image's size, and how much of it has arrived (see
+	// `PUT /images/{id}/upload`).
+	UploadBytes   *int64 `json:"upload_bytes,omitempty"`
+	UploadedBytes *int64 `json:"uploaded_bytes,omitempty"`
 
 	// VirtualBytes The size of the disk it holds: VMs' disks made from it are at least
 	// as large.
@@ -1148,10 +1160,14 @@ type ImageView struct {
 
 	// SizeBytes Its size, stored (qcow2).
 	SizeBytes *int64 `json:"size_bytes,omitempty"`
+
+	// SourceUrl Where it is downloaded from; empty for an uploaded image.
 	SourceUrl string `json:"source_url"`
 
-	// State `downloading` (VMs made from it meanwhile wait for it), `ready`, or
-	// `failed` (see `error`; it can be downloaded again).
+	// State `uploading` (its parts arriving), `downloading` (being added to its
+	// pool, from its URL or its upload: VMs made from it meanwhile wait
+	// for it), `ready`, or `failed` (see `error`; it can be downloaded,
+	// or uploaded, again).
 	State string `json:"state"`
 
 	// StoragePoolId The pool it is kept in: the local pool (a host's local disk, picked
@@ -1165,6 +1181,11 @@ type ImageView struct {
 	Stuck    bool     `json:"stuck"`
 	TenantId TenantId `json:"tenant_id"`
 	Tpm      bool     `json:"tpm"`
+
+	// UploadBytes An uploaded image's size, and how much of it has arrived (see
+	// `PUT /images/{id}/upload`).
+	UploadBytes   *int64 `json:"upload_bytes,omitempty"`
+	UploadedBytes *int64 `json:"uploaded_bytes,omitempty"`
 
 	// VirtualBytes The size of the disk it holds: VMs' disks made from it are at least
 	// as large.
@@ -2246,6 +2267,13 @@ type ListImagesParams struct {
 	TenantId *TenantId `form:"tenant_id,omitempty" json:"tenant_id,omitempty"`
 }
 
+// UploadImageParams defines parameters for UploadImage.
+type UploadImageParams struct {
+	// Offset Where the part goes in the file: as much of it as has arrived
+	// (`uploaded_bytes`). 0 starts a failed upload over.
+	Offset int64 `form:"offset" json:"offset"`
+}
+
 // ListLoadBalancersParams defines parameters for ListLoadBalancers.
 type ListLoadBalancersParams struct {
 	// TenantId Defaults to the caller's tenant.
@@ -2943,7 +2971,9 @@ type ClientInterface interface {
 	// CreateImageWithBody Adds an image: a host downloads it into the image store of the pool it
 	// is kept in (the task): its own local disk (a host picked at random), or
 	// a shared pool, which its hosts make disks from directly. Other hosts copy
-	// it from there to make VMs from it.
+	// it from there to make VMs from it. With `upload_bytes` instead of a URL,
+	// it is uploaded (`PUT /images/{id}/upload`) to such a host, picked now,
+	// and once all of it has arrived added as a download is.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -2953,7 +2983,9 @@ type ClientInterface interface {
 	// CreateImage Adds an image: a host downloads it into the image store of the pool it
 	// is kept in (the task): its own local disk (a host picked at random), or
 	// a shared pool, which its hosts make disks from directly. Other hosts copy
-	// it from there to make VMs from it.
+	// it from there to make VMs from it. With `upload_bytes` instead of a URL,
+	// it is uploaded (`PUT /images/{id}/upload`) to such a host, picked now,
+	// and once all of it has arrived added as a download is.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -2972,6 +3004,18 @@ type ClientInterface interface {
 	//
 	// Corresponds with POST /api/v1/images/{id}/download (the `DownloadImage` operationId).
 	DownloadImage(ctx context.Context, id ImageId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UploadImageWithBody Uploads a part of an image added with `upload_bytes`: the next up to
+	// 32 MiB of the file, as the request's body, from `offset` (what has
+	// arrived: `uploaded_bytes`). Parts go to the host picked for it as they
+	// come. Once all of it has arrived, it is added to its pool as a download
+	// is (`downloading`, then `ready`), checked the same way. An upload no part
+	// reaches for a day fails. A failed upload is started over from offset 0.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /api/v1/images/{id}/upload (the `UploadImage` operationId).
+	UploadImageWithBody(ctx context.Context, id ImageId, params *UploadImageParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListLoadBalancers performs a GET /api/v1/load-balancers (the `ListLoadBalancers` operationId) request.
 	ListLoadBalancers(ctx context.Context, params *ListLoadBalancersParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4796,7 +4840,9 @@ func (c *Client) ListImages(ctx context.Context, params *ListImagesParams, reqEd
 // CreateImageWithBody Adds an image: a host downloads it into the image store of the pool it
 // is kept in (the task): its own local disk (a host picked at random), or
 // a shared pool, which its hosts make disks from directly. Other hosts copy
-// it from there to make VMs from it.
+// it from there to make VMs from it. With `upload_bytes` instead of a URL,
+// it is uploaded (`PUT /images/{id}/upload`) to such a host, picked now,
+// and once all of it has arrived added as a download is.
 //
 // Takes any type of body and a specified content type.
 //
@@ -4816,7 +4862,9 @@ func (c *Client) CreateImageWithBody(ctx context.Context, contentType string, bo
 // CreateImage Adds an image: a host downloads it into the image store of the pool it
 // is kept in (the task): its own local disk (a host picked at random), or
 // a shared pool, which its hosts make disks from directly. Other hosts copy
-// it from there to make VMs from it.
+// it from there to make VMs from it. With `upload_bytes` instead of a URL,
+// it is uploaded (`PUT /images/{id}/upload`) to such a host, picked now,
+// and once all of it has arrived added as a download is.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -4856,6 +4904,28 @@ func (c *Client) DeleteImage(ctx context.Context, id ImageId, reqEditors ...Requ
 // Corresponds with POST /api/v1/images/{id}/download (the `DownloadImage` operationId).
 func (c *Client) DownloadImage(ctx context.Context, id ImageId, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewDownloadImageRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// UploadImageWithBody Uploads a part of an image added with `upload_bytes`: the next up to
+// 32 MiB of the file, as the request's body, from `offset` (what has
+// arrived: `uploaded_bytes`). Parts go to the host picked for it as they
+// come. Once all of it has arrived, it is added to its pool as a download
+// is (`downloading`, then `ready`), checked the same way. An upload no part
+// reaches for a day fails. A failed upload is started over from offset 0.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /api/v1/images/{id}/upload (the `UploadImage` operationId).
+func (c *Client) UploadImageWithBody(ctx context.Context, id ImageId, params *UploadImageParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUploadImageRequestWithBody(c.Server, id, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -9209,6 +9279,65 @@ func NewDownloadImageRequest(server string, id ImageId) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewUploadImageRequestWithBody constructs an http.Request for the UploadImage method, with any body, and a specified content type
+func NewUploadImageRequestWithBody(server string, id ImageId, params *UploadImageParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/images/%s/upload", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "offset", params.Offset, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: "int64"}); err != nil {
+			return nil, err
+		} else {
+			for _, qp := range strings.Split(queryFrag, "&") {
+				rawQueryFragments = append(rawQueryFragments, qp)
+			}
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -13903,7 +14032,9 @@ type ClientWithResponsesInterface interface {
 	// CreateImageWithBodyWithResponse Adds an image: a host downloads it into the image store of the pool it
 	// is kept in (the task): its own local disk (a host picked at random), or
 	// a shared pool, which its hosts make disks from directly. Other hosts copy
-	// it from there to make VMs from it.
+	// it from there to make VMs from it. With `upload_bytes` instead of a URL,
+	// it is uploaded (`PUT /images/{id}/upload`) to such a host, picked now,
+	// and once all of it has arrived added as a download is.
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -13913,7 +14044,9 @@ type ClientWithResponsesInterface interface {
 	// CreateImageWithResponse Adds an image: a host downloads it into the image store of the pool it
 	// is kept in (the task): its own local disk (a host picked at random), or
 	// a shared pool, which its hosts make disks from directly. Other hosts copy
-	// it from there to make VMs from it.
+	// it from there to make VMs from it. With `upload_bytes` instead of a URL,
+	// it is uploaded (`PUT /images/{id}/upload`) to such a host, picked now,
+	// and once all of it has arrived added as a download is.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -13936,6 +14069,18 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with POST /api/v1/images/{id}/download (the `DownloadImage` operationId).
 	DownloadImageWithResponse(ctx context.Context, id ImageId, reqEditors ...RequestEditorFn) (*DownloadImageResponse, error)
+
+	// UploadImageWithBodyWithResponse Uploads a part of an image added with `upload_bytes`: the next up to
+	// 32 MiB of the file, as the request's body, from `offset` (what has
+	// arrived: `uploaded_bytes`). Parts go to the host picked for it as they
+	// come. Once all of it has arrived, it is added to its pool as a download
+	// is (`downloading`, then `ready`), checked the same way. An upload no part
+	// reaches for a day fails. A failed upload is started over from offset 0.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /api/v1/images/{id}/upload (the `UploadImage` operationId).
+	UploadImageWithBodyWithResponse(ctx context.Context, id ImageId, params *UploadImageParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UploadImageResponse, error)
 
 	// ListLoadBalancersWithResponse performs a GET /api/v1/load-balancers (the `ListLoadBalancers` operationId) request.
 	//
@@ -16894,6 +17039,47 @@ func (r DownloadImageResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r DownloadImageResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type UploadImageResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *ImageView
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r UploadImageResponse) GetJSON200() *ImageView {
+	return r.JSON200
+}
+
+// GetBody returns the raw response body bytes
+func (r UploadImageResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r UploadImageResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UploadImageResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r UploadImageResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -21663,7 +21849,9 @@ func (c *ClientWithResponses) ListImagesWithResponse(ctx context.Context, params
 // CreateImageWithBodyWithResponse Adds an image: a host downloads it into the image store of the pool it
 // is kept in (the task): its own local disk (a host picked at random), or
 // a shared pool, which its hosts make disks from directly. Other hosts copy
-// it from there to make VMs from it.
+// it from there to make VMs from it. With `upload_bytes` instead of a URL,
+// it is uploaded (`PUT /images/{id}/upload`) to such a host, picked now,
+// and once all of it has arrived added as a download is.
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -21679,7 +21867,9 @@ func (c *ClientWithResponses) CreateImageWithBodyWithResponse(ctx context.Contex
 // CreateImageWithResponse Adds an image: a host downloads it into the image store of the pool it
 // is kept in (the task): its own local disk (a host picked at random), or
 // a shared pool, which its hosts make disks from directly. Other hosts copy
-// it from there to make VMs from it.
+// it from there to make VMs from it. With `upload_bytes` instead of a URL,
+// it is uploaded (`PUT /images/{id}/upload`) to such a host, picked now,
+// and once all of it has arrived added as a download is.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -21719,6 +21909,24 @@ func (c *ClientWithResponses) DownloadImageWithResponse(ctx context.Context, id 
 		return nil, err
 	}
 	return ParseDownloadImageResponse(rsp)
+}
+
+// UploadImageWithBodyWithResponse Uploads a part of an image added with `upload_bytes`: the next up to
+// 32 MiB of the file, as the request's body, from `offset` (what has
+// arrived: `uploaded_bytes`). Parts go to the host picked for it as they
+// come. Once all of it has arrived, it is added to its pool as a download
+// is (`downloading`, then `ready`), checked the same way. An upload no part
+// reaches for a day fails. A failed upload is started over from offset 0.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/images/{id}/upload (the `UploadImage` operationId).
+func (c *ClientWithResponses) UploadImageWithBodyWithResponse(ctx context.Context, id ImageId, params *UploadImageParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UploadImageResponse, error) {
+	rsp, err := c.UploadImageWithBody(ctx, id, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUploadImageResponse(rsp)
 }
 
 // ListLoadBalancersWithResponse performs a GET /api/v1/load-balancers (the `ListLoadBalancers` operationId) request.
@@ -24922,6 +25130,47 @@ func ParseDownloadImageResponse(rsp *http.Response) (*DownloadImageResponse, err
 		break // No content-type
 
 	case rsp.StatusCode == 409:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseUploadImageResponse parses an HTTP response from a UploadImageWithResponse call
+func ParseUploadImageResponse(rsp *http.Response) (*UploadImageResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UploadImageResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ImageView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case rsp.StatusCode == 400:
+		break // No content-type
+
+	case rsp.StatusCode == 404:
+		break // No content-type
+
+	case rsp.StatusCode == 409:
+		break // No content-type
+
+	case rsp.StatusCode == 413:
+		break // No content-type
+
+	case rsp.StatusCode == 503:
 		break // No content-type
 
 	}

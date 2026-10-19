@@ -75,6 +75,7 @@ pub fn capability(cmd: &command::Cmd) -> &'static str {
         ReplugNic(_) => "replug_nic",
         ExportTpm(_) => "export_tpm",
         ImportTpm(_) => "import_tpm",
+        ReceiveImage(_) => "receive_image",
     }
 }
 
@@ -126,6 +127,7 @@ pub const CAPABILITIES: &[&str] = &[
     "replug_nic",
     "export_tpm",
     "import_tpm",
+    "receive_image",
 ];
 
 /// What this build's agent does beyond its commands' first versions,
@@ -138,7 +140,7 @@ mod tests {
     fn every_command_is_a_capability() {
         // A new command added to the protocol must be named here too; this
         // count is a reminder (prost has no variant list to check against).
-        assert_eq!(super::CAPABILITIES.len(), 46);
+        assert_eq!(super::CAPABILITIES.len(), 47);
         let unique: std::collections::HashSet<_> = super::CAPABILITIES.iter().collect();
         assert_eq!(unique.len(), super::CAPABILITIES.len());
     }

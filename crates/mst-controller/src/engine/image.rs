@@ -49,7 +49,7 @@ fn target(ctx: &TaskCtx) -> Result<ImageId> {
 }
 
 /// Hosts that can take an image: connected, not fenced or decommissioned.
-async fn store_hosts(state: &AppState) -> Result<Vec<Host>> {
+pub async fn store_hosts(state: &AppState) -> Result<Vec<Host>> {
     let mut out = vec![];
     for h in mst_db::hosts::list(&state.db).await? {
         if h.is_live() && !matches!(h.state.as_str(), "fenced" | "decommissioned") {
@@ -60,7 +60,7 @@ async fn store_hosts(state: &AppState) -> Result<Vec<Host>> {
 }
 
 /// Whether the host reaches a shared pool: one attached to its cluster.
-fn reaches(h: &Host, pool: &Pool) -> bool {
+pub fn reaches(h: &Host, pool: &Pool) -> bool {
     h.cluster_id.is_some_and(|c| pool.clusters.contains(&c))
 }
 
@@ -139,17 +139,22 @@ async fn first_download(ctx: &TaskCtx, image: &Image) -> Result<()> {
         }
     }
     // Resumed (a controller restarted): on the host it was downloading on,
-    // which has it, or will; another would download it all over again.
+    // which has it, or will; another would download it all over again. An
+    // upload is where it was uploaded to.
     let host = match hosts.iter().find(|h| Some(h.id) == image.download_host_id) {
         Some(h) => h,
+        None if image.uploaded() => bail!("the host the image was uploaded to is not connected"),
         None => {
             let h = &hosts[rand::random_range(0..hosts.len())];
             mst_db::images::set_download_host(db, image.id, h.id).await?;
             h
         }
     };
-    ctx.step(&format!("downloading on {}", host.name), 0.1)
-        .await;
+    let doing = match image.uploaded() {
+        true => "adding the upload on",
+        false => "downloading on",
+    };
+    ctx.step(&format!("{doing} {}", host.name), 0.1).await;
     let path = mst_db::images::store_path(db, image.tenant_id).await?;
     let (at, into) = match shared {
         true => (Copy::shared(pool.id), Some(crate::api::agent_pool(&pool)?)),
@@ -206,6 +211,7 @@ async fn fetch(
         format: image.format.clone(),
         trusted: super::image_trusted(&state.db, image).await?,
         digest: digest.unwrap_or_default().to_owned(),
+        uploaded: image.uploaded(),
     });
     let out = send(state, host, cmd, DOWNLOAD).await?;
     Ok(serde_json::from_str(&out)?)
@@ -306,9 +312,15 @@ async fn ready(state: &AppState, id: ImageId) -> Result<Image> {
         match image.state.as_str() {
             "ready" => return Ok(image),
             "failed" => bail!(
-                "the image could not be downloaded: {}",
+                "the image could not be {}: {}",
+                match image.uploaded() {
+                    true => "uploaded",
+                    false => "downloaded",
+                },
                 image.error.as_deref().unwrap_or("no reason given")
             ),
+            // Its upload stopped: it may not go on.
+            "uploading" => bail!("the image is not all uploaded"),
             _ if tokio::time::Instant::now() > deadline => {
                 bail!("the image is still being downloaded")
             }
@@ -416,7 +428,17 @@ async fn copy_to(ctx: &TaskCtx, image: &Image, host: HostId) -> Result<Option<ms
         }
     }
     // No copy could be handed over: downloaded again, it must hold what
-    // was first downloaded.
+    // was first downloaded. An upload is not to be had again but from who
+    // uploaded it.
+    if image.uploaded() {
+        bail!(
+            "no copy of the uploaded image could be had{}; upload it again (as a new image)",
+            match failures.is_empty() {
+                true => String::new(),
+                false => format!(" ({})", failures.join("; ")),
+            }
+        );
+    }
     ctx.step("downloading the image", 0.2).await;
     if let Err(e) = fetch(state, image, &path, host, None, digest).await {
         return Err(match failures.is_empty() {
@@ -600,7 +622,18 @@ pub async fn prune(state: AppState) {
     }
 }
 
+/// An upload no part reached for this long fails (what arrived goes).
+const UPLOAD_STALE: Duration = Duration::from_secs(24 * 3600);
+
 async fn prune_once(state: &AppState) -> Result<()> {
+    let before = chrono::Utc::now() - UPLOAD_STALE;
+    for image in mst_db::images::stale_uploads(&state.db, before).await? {
+        let why = "the upload stopped: no part of it arrived for a day";
+        if mst_db::images::failed(&state.db, image.id, why).await? {
+            tracing::info!(image = %image.id, "an upload stopped");
+            remove_leftover(state, image.id).await;
+        }
+    }
     let listed_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
