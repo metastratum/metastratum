@@ -28,7 +28,7 @@ FIRST=(storage limits m5 image_relay)
 LAST=(windows browser)
 # The slowest start first, so that none of them is left running alone at
 # the end.
-SLOW=(m4 resize backups load_balancers m3 balloon clone snapshots images)
+SLOW=(m4 nics resize backups load_balancers m3 balloon clone snapshots images)
 JOBS=3
 CHANGED=
 LIST=

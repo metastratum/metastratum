@@ -195,6 +195,16 @@ type AcceptedVmView struct {
 	Vcpus int32 `json:"vcpus"`
 }
 
+// AddNic defines model for AddNic.
+type AddNic struct {
+	// NetworkId The network (the VM's tenant's).
+	NetworkId NetworkId `json:"network_id"`
+
+	// SecurityGroupIds Its security groups (the tenant's own); the tenant's `default` group
+	// otherwise. An empty list blocks all traffic but DHCP.
+	SecurityGroupIds *[]SecurityGroupId `json:"security_group_ids,omitempty"`
+}
+
 // AddTotp defines model for AddTotp.
 type AddTotp struct {
 	// Code The code the app shows now.
@@ -1836,6 +1846,12 @@ type UpdateLoadBalancer struct {
 	Name        string `json:"name"`
 }
 
+// UpdateNic defines model for UpdateNic.
+type UpdateNic struct {
+	// NetworkId The network to move the interface to (the VM's tenant's).
+	NetworkId NetworkId `json:"network_id"`
+}
+
 // UpdateTenant defines model for UpdateTenant.
 type UpdateTenant struct {
 	Name string `json:"name"`
@@ -2401,6 +2417,12 @@ type ResizeDiskJSONRequestBody = ResizeDisk
 
 // MigrateVmJSONRequestBody defines body for MigrateVm for application/json ContentType.
 type MigrateVmJSONRequestBody = MigrateVm
+
+// AddNicJSONRequestBody defines body for AddNic for application/json ContentType.
+type AddNicJSONRequestBody = AddNic
+
+// UpdateNicJSONRequestBody defines body for UpdateNic for application/json ContentType.
+type UpdateNicJSONRequestBody = UpdateNic
 
 // SetNicGroupsJSONRequestBody defines body for SetNicGroups for application/json ContentType.
 type SetNicGroupsJSONRequestBody = NicGroups
@@ -3571,6 +3593,61 @@ type ClientInterface interface {
 	//
 	// Corresponds with POST /api/v1/vms/{id}/migrate/cancel (the `CancelMigration` operationId).
 	CancelMigration(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AddNicWithBody Adds a network interface to a VM, in a network of its tenant's (with an
+	// address of its own there): plugged in at once if the VM runs, otherwise
+	// there from its next start. Guests set it up with DHCP: Windows, and Linux
+	// VMs made from this version on (their seed configures every interface,
+	// the first one's routes preferred). At most 8 interfaces.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/vms/{id}/nics (the `AddNic` operationId).
+	AddNicWithBody(ctx context.Context, id VmId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AddNic Adds a network interface to a VM, in a network of its tenant's (with an
+	// address of its own there): plugged in at once if the VM runs, otherwise
+	// there from its next start. Guests set it up with DHCP: Windows, and Linux
+	// VMs made from this version on (their seed configures every interface,
+	// the first one's routes preferred). At most 8 interfaces.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/vms/{id}/nics (the `AddNic` operationId).
+	AddNic(ctx context.Context, id VmId, body AddNicJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteNic Removes an interface from a VM: unplugged at once if the VM runs. Its
+	// address is free again, its floating IP is let go of (kept, attached to
+	// nothing), and it leaves its load balancers. A VM keeps at least one.
+	//
+	// Corresponds with DELETE /api/v1/vms/{id}/nics/{nic} (the `DeleteNic` operationId).
+	DeleteNic(ctx context.Context, id VmId, nic NicId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UpdateNicWithBody Moves a VM's interface to another network: it keeps its MAC and
+	// security groups, and gets an address in the new network (the old one is
+	// free again). A running VM keeps running: the interface is unplugged and
+	// plugged in again, and the guest sets it up afresh, asking DHCP for its
+	// new address (what was configured on it by hand in the guest goes). Not for
+	// an interface whose floating IP or load balancers belong to another VPC
+	// than the network's (detach it from those first).
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /api/v1/vms/{id}/nics/{nic} (the `UpdateNic` operationId).
+	UpdateNicWithBody(ctx context.Context, id VmId, nic NicId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UpdateNic Moves a VM's interface to another network: it keeps its MAC and
+	// security groups, and gets an address in the new network (the old one is
+	// free again). A running VM keeps running: the interface is unplugged and
+	// plugged in again, and the guest sets it up afresh, asking DHCP for its
+	// new address (what was configured on it by hand in the guest goes). Not for
+	// an interface whose floating IP or load balancers belong to another VPC
+	// than the network's (detach it from those first).
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PATCH /api/v1/vms/{id}/nics/{nic} (the `UpdateNic` operationId).
+	UpdateNic(ctx context.Context, id VmId, nic NicId, body UpdateNicJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// SetNicGroupsWithBody Changes which security groups apply to a NIC. Takes effect at once; the
 	// VM keeps running.
@@ -6610,6 +6687,111 @@ func (c *Client) MigrateVm(ctx context.Context, id VmId, body MigrateVmJSONReque
 // Corresponds with POST /api/v1/vms/{id}/migrate/cancel (the `CancelMigration` operationId).
 func (c *Client) CancelMigration(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewCancelMigrationRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AddNicWithBody Adds a network interface to a VM, in a network of its tenant's (with an
+// address of its own there): plugged in at once if the VM runs, otherwise
+// there from its next start. Guests set it up with DHCP: Windows, and Linux
+// VMs made from this version on (their seed configures every interface,
+// the first one's routes preferred). At most 8 interfaces.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/vms/{id}/nics (the `AddNic` operationId).
+func (c *Client) AddNicWithBody(ctx context.Context, id VmId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAddNicRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AddNic Adds a network interface to a VM, in a network of its tenant's (with an
+// address of its own there): plugged in at once if the VM runs, otherwise
+// there from its next start. Guests set it up with DHCP: Windows, and Linux
+// VMs made from this version on (their seed configures every interface,
+// the first one's routes preferred). At most 8 interfaces.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/vms/{id}/nics (the `AddNic` operationId).
+func (c *Client) AddNic(ctx context.Context, id VmId, body AddNicJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAddNicRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DeleteNic Removes an interface from a VM: unplugged at once if the VM runs. Its
+// address is free again, its floating IP is let go of (kept, attached to
+// nothing), and it leaves its load balancers. A VM keeps at least one.
+//
+// Corresponds with DELETE /api/v1/vms/{id}/nics/{nic} (the `DeleteNic` operationId).
+func (c *Client) DeleteNic(ctx context.Context, id VmId, nic NicId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteNicRequest(c.Server, id, nic)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// UpdateNicWithBody Moves a VM's interface to another network: it keeps its MAC and
+// security groups, and gets an address in the new network (the old one is
+// free again). A running VM keeps running: the interface is unplugged and
+// plugged in again, and the guest sets it up afresh, asking DHCP for its
+// new address (what was configured on it by hand in the guest goes). Not for
+// an interface whose floating IP or load balancers belong to another VPC
+// than the network's (detach it from those first).
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /api/v1/vms/{id}/nics/{nic} (the `UpdateNic` operationId).
+func (c *Client) UpdateNicWithBody(ctx context.Context, id VmId, nic NicId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateNicRequestWithBody(c.Server, id, nic, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// UpdateNic Moves a VM's interface to another network: it keeps its MAC and
+// security groups, and gets an address in the new network (the old one is
+// free again). A running VM keeps running: the interface is unplugged and
+// plugged in again, and the guest sets it up afresh, asking DHCP for its
+// new address (what was configured on it by hand in the guest goes). Not for
+// an interface whose floating IP or load balancers belong to another VPC
+// than the network's (detach it from those first).
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PATCH /api/v1/vms/{id}/nics/{nic} (the `UpdateNic` operationId).
+func (c *Client) UpdateNic(ctx context.Context, id VmId, nic NicId, body UpdateNicJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateNicRequest(c.Server, id, nic, body)
 	if err != nil {
 		return nil, err
 	}
@@ -12537,6 +12719,148 @@ func NewCancelMigrationRequest(server string, id VmId) (*http.Request, error) {
 	return req, nil
 }
 
+// NewAddNicRequest calls the generic AddNic builder with application/json body
+func NewAddNicRequest(server string, id VmId, body AddNicJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewAddNicRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewAddNicRequestWithBody constructs an http.Request for the AddNic method, with any body, and a specified content type
+func NewAddNicRequestWithBody(server string, id VmId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/vms/%s/nics", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewDeleteNicRequest constructs an http.Request for the DeleteNic method
+func NewDeleteNicRequest(server string, id VmId, nic NicId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "nic", nic, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/vms/%s/nics/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewUpdateNicRequest calls the generic UpdateNic builder with application/json body
+func NewUpdateNicRequest(server string, id VmId, nic NicId, body UpdateNicJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewUpdateNicRequestWithBody(server, id, nic, "application/json", bodyReader)
+}
+
+// NewUpdateNicRequestWithBody constructs an http.Request for the UpdateNic method, with any body, and a specified content type
+func NewUpdateNicRequestWithBody(server string, id VmId, nic NicId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "nic", nic, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/vms/%s/nics/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewSetNicGroupsRequest calls the generic SetNicGroups builder with application/json body
 func NewSetNicGroupsRequest(server string, id VmId, nic NicId, body SetNicGroupsJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -14359,6 +14683,63 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with POST /api/v1/vms/{id}/migrate/cancel (the `CancelMigration` operationId).
 	CancelMigrationWithResponse(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*CancelMigrationResponse, error)
+
+	// AddNicWithBodyWithResponse Adds a network interface to a VM, in a network of its tenant's (with an
+	// address of its own there): plugged in at once if the VM runs, otherwise
+	// there from its next start. Guests set it up with DHCP: Windows, and Linux
+	// VMs made from this version on (their seed configures every interface,
+	// the first one's routes preferred). At most 8 interfaces.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/vms/{id}/nics (the `AddNic` operationId).
+	AddNicWithBodyWithResponse(ctx context.Context, id VmId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AddNicResponse, error)
+
+	// AddNicWithResponse Adds a network interface to a VM, in a network of its tenant's (with an
+	// address of its own there): plugged in at once if the VM runs, otherwise
+	// there from its next start. Guests set it up with DHCP: Windows, and Linux
+	// VMs made from this version on (their seed configures every interface,
+	// the first one's routes preferred). At most 8 interfaces.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/vms/{id}/nics (the `AddNic` operationId).
+	AddNicWithResponse(ctx context.Context, id VmId, body AddNicJSONRequestBody, reqEditors ...RequestEditorFn) (*AddNicResponse, error)
+
+	// DeleteNicWithResponse Removes an interface from a VM: unplugged at once if the VM runs. Its
+	// address is free again, its floating IP is let go of (kept, attached to
+	// nothing), and it leaves its load balancers. A VM keeps at least one.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /api/v1/vms/{id}/nics/{nic} (the `DeleteNic` operationId).
+	DeleteNicWithResponse(ctx context.Context, id VmId, nic NicId, reqEditors ...RequestEditorFn) (*DeleteNicResponse, error)
+
+	// UpdateNicWithBodyWithResponse Moves a VM's interface to another network: it keeps its MAC and
+	// security groups, and gets an address in the new network (the old one is
+	// free again). A running VM keeps running: the interface is unplugged and
+	// plugged in again, and the guest sets it up afresh, asking DHCP for its
+	// new address (what was configured on it by hand in the guest goes). Not for
+	// an interface whose floating IP or load balancers belong to another VPC
+	// than the network's (detach it from those first).
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PATCH /api/v1/vms/{id}/nics/{nic} (the `UpdateNic` operationId).
+	UpdateNicWithBodyWithResponse(ctx context.Context, id VmId, nic NicId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateNicResponse, error)
+
+	// UpdateNicWithResponse Moves a VM's interface to another network: it keeps its MAC and
+	// security groups, and gets an address in the new network (the old one is
+	// free again). A running VM keeps running: the interface is unplugged and
+	// plugged in again, and the guest sets it up afresh, asking DHCP for its
+	// new address (what was configured on it by hand in the guest goes). Not for
+	// an interface whose floating IP or load balancers belong to another VPC
+	// than the network's (detach it from those first).
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PATCH /api/v1/vms/{id}/nics/{nic} (the `UpdateNic` operationId).
+	UpdateNicWithResponse(ctx context.Context, id VmId, nic NicId, body UpdateNicJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateNicResponse, error)
 
 	// SetNicGroupsWithBodyWithResponse Changes which security groups apply to a NIC. Takes effect at once; the
 	// VM keeps running.
@@ -19818,6 +20199,129 @@ func (r CancelMigrationResponse) ContentType() string {
 	return ""
 }
 
+type AddNicResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON201 the response for an HTTP 201 `application/json` response
+	JSON201 *VmView
+}
+
+// GetJSON201 returns the response for an HTTP 201 `application/json` response
+func (r AddNicResponse) GetJSON201() *VmView {
+	return r.JSON201
+}
+
+// GetBody returns the raw response body bytes
+func (r AddNicResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r AddNicResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AddNicResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r AddNicResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeleteNicResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *VmView
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r DeleteNicResponse) GetJSON200() *VmView {
+	return r.JSON200
+}
+
+// GetBody returns the raw response body bytes
+func (r DeleteNicResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteNicResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteNicResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteNicResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type UpdateNicResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *VmView
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r UpdateNicResponse) GetJSON200() *VmView {
+	return r.JSON200
+}
+
+// GetBody returns the raw response body bytes
+func (r UpdateNicResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r UpdateNicResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UpdateNicResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r UpdateNicResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type SetNicGroupsResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -22688,6 +23192,93 @@ func (c *ClientWithResponses) CancelMigrationWithResponse(ctx context.Context, i
 		return nil, err
 	}
 	return ParseCancelMigrationResponse(rsp)
+}
+
+// AddNicWithBodyWithResponse Adds a network interface to a VM, in a network of its tenant's (with an
+// address of its own there): plugged in at once if the VM runs, otherwise
+// there from its next start. Guests set it up with DHCP: Windows, and Linux
+// VMs made from this version on (their seed configures every interface,
+// the first one's routes preferred). At most 8 interfaces.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/vms/{id}/nics (the `AddNic` operationId).
+func (c *ClientWithResponses) AddNicWithBodyWithResponse(ctx context.Context, id VmId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AddNicResponse, error) {
+	rsp, err := c.AddNicWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAddNicResponse(rsp)
+}
+
+// AddNicWithResponse Adds a network interface to a VM, in a network of its tenant's (with an
+// address of its own there): plugged in at once if the VM runs, otherwise
+// there from its next start. Guests set it up with DHCP: Windows, and Linux
+// VMs made from this version on (their seed configures every interface,
+// the first one's routes preferred). At most 8 interfaces.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/vms/{id}/nics (the `AddNic` operationId).
+func (c *ClientWithResponses) AddNicWithResponse(ctx context.Context, id VmId, body AddNicJSONRequestBody, reqEditors ...RequestEditorFn) (*AddNicResponse, error) {
+	rsp, err := c.AddNic(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAddNicResponse(rsp)
+}
+
+// DeleteNicWithResponse Removes an interface from a VM: unplugged at once if the VM runs. Its
+// address is free again, its floating IP is let go of (kept, attached to
+// nothing), and it leaves its load balancers. A VM keeps at least one.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /api/v1/vms/{id}/nics/{nic} (the `DeleteNic` operationId).
+func (c *ClientWithResponses) DeleteNicWithResponse(ctx context.Context, id VmId, nic NicId, reqEditors ...RequestEditorFn) (*DeleteNicResponse, error) {
+	rsp, err := c.DeleteNic(ctx, id, nic, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteNicResponse(rsp)
+}
+
+// UpdateNicWithBodyWithResponse Moves a VM's interface to another network: it keeps its MAC and
+// security groups, and gets an address in the new network (the old one is
+// free again). A running VM keeps running: the interface is unplugged and
+// plugged in again, and the guest sets it up afresh, asking DHCP for its
+// new address (what was configured on it by hand in the guest goes). Not for
+// an interface whose floating IP or load balancers belong to another VPC
+// than the network's (detach it from those first).
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PATCH /api/v1/vms/{id}/nics/{nic} (the `UpdateNic` operationId).
+func (c *ClientWithResponses) UpdateNicWithBodyWithResponse(ctx context.Context, id VmId, nic NicId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateNicResponse, error) {
+	rsp, err := c.UpdateNicWithBody(ctx, id, nic, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateNicResponse(rsp)
+}
+
+// UpdateNicWithResponse Moves a VM's interface to another network: it keeps its MAC and
+// security groups, and gets an address in the new network (the old one is
+// free again). A running VM keeps running: the interface is unplugged and
+// plugged in again, and the guest sets it up afresh, asking DHCP for its
+// new address (what was configured on it by hand in the guest goes). Not for
+// an interface whose floating IP or load balancers belong to another VPC
+// than the network's (detach it from those first).
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PATCH /api/v1/vms/{id}/nics/{nic} (the `UpdateNic` operationId).
+func (c *ClientWithResponses) UpdateNicWithResponse(ctx context.Context, id VmId, nic NicId, body UpdateNicJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateNicResponse, error) {
+	rsp, err := c.UpdateNic(ctx, id, nic, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateNicResponse(rsp)
 }
 
 // SetNicGroupsWithBodyWithResponse Changes which security groups apply to a NIC. Takes effect at once; the
@@ -26696,6 +27287,117 @@ func ParseCancelMigrationResponse(rsp *http.Response) (*CancelMigrationResponse,
 	response := &CancelMigrationResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseAddNicResponse parses an HTTP response from a AddNicWithResponse call
+func ParseAddNicResponse(rsp *http.Response) (*AddNicResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AddNicResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest VmView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case rsp.StatusCode == 400:
+		break // No content-type
+
+	case rsp.StatusCode == 404:
+		break // No content-type
+
+	case rsp.StatusCode == 409:
+		break // No content-type
+
+	case rsp.StatusCode == 503:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteNicResponse parses an HTTP response from a DeleteNicWithResponse call
+func ParseDeleteNicResponse(rsp *http.Response) (*DeleteNicResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteNicResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest VmView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case rsp.StatusCode == 404:
+		break // No content-type
+
+	case rsp.StatusCode == 409:
+		break // No content-type
+
+	case rsp.StatusCode == 503:
+		break // No content-type
+
+	}
+
+	return response, nil
+}
+
+// ParseUpdateNicResponse parses an HTTP response from a UpdateNicWithResponse call
+func ParseUpdateNicResponse(rsp *http.Response) (*UpdateNicResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UpdateNicResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest VmView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case rsp.StatusCode == 400:
+		break // No content-type
+
+	case rsp.StatusCode == 404:
+		break // No content-type
+
+	case rsp.StatusCode == 409:
+		break // No content-type
+
+	case rsp.StatusCode == 503:
+		break // No content-type
+
 	}
 
 	return response, nil

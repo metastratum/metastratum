@@ -748,6 +748,52 @@ impl Libvirt {
         Ok(())
     }
 
+    /// The MAC addresses (lower case) of a running domain's interfaces.
+    pub async fn live_nics(&self, uuid: &str) -> Result<Vec<String>> {
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        let xml = c
+            .domain_get_xml_desc(&DomainGetXmlDescArgs { dom, flags: 0 })
+            .await?
+            .xml;
+        Ok(crate::xml::interface_macs(&xml))
+    }
+
+    /// Unplugs the interface with `mac` from the running domain, and waits
+    /// until it is gone (the guest lets go of it). One not there is fine. Its
+    /// definition is updated separately.
+    pub async fn detach_nic(&self, uuid: &str, mac: &str, within: Duration) -> Result<()> {
+        const AFFECT_LIVE: u32 = 1;
+        let mac = mac.to_lowercase();
+        if !self.live_nics(uuid).await?.contains(&mac) {
+            return Ok(());
+        }
+        let c = self.client().await?;
+        let dom = self.lookup(&c, uuid).await?;
+        // libvirt finds the interface by its MAC address (the rest only
+        // has to be valid).
+        let xml = format!(
+            "<interface type='bridge'><mac address='{}'/><source bridge='br-int'/></interface>",
+            crate::xml::escape(&mac)
+        );
+        c.domain_detach_device_flags(&DomainDetachDeviceFlagsArgs {
+            dom,
+            xml,
+            flags: AFFECT_LIVE,
+        })
+        .await?;
+        let deadline = tokio::time::Instant::now() + within;
+        while self.live_nics(uuid).await?.contains(&mac) {
+            if tokio::time::Instant::now() > deadline {
+                return Err(Error::Other(format!(
+                    "the guest did not let go of interface {mac}"
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        Ok(())
+    }
+
     /// Unplugs the disk at `target` from the running domain, and waits until
     /// it is gone (the guest lets go of it). One not there is fine. Its
     /// definition is updated separately.

@@ -118,7 +118,9 @@ The boundaries metastratum enforces:
   made for it alone: the destination accepts the VM from that source
   only, and the source sends it to that destination only. The destination
   defines the VM from the controller's description of it, never from what
-  the source sends; agents from before this are refused. A disk moving
+  the source sends, but where its devices sit (their addresses, and the
+  buses they are on: nothing that reaches anything on the host); agents
+  from before this are refused. A disk moving
   between hosts is served read-only by `qemu-nbd` over TLS, with a CA and
   certificates made for that copy alone: only the host it moves to can read
   it, and the server stops after one copy (or after 13 hours, longer than

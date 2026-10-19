@@ -216,6 +216,15 @@ impl DomainDef {
     }
 
     /// The `<disk>` element of the disk at `target`, to plug it in.
+    /// The interface with `mac`, as in the definition (to plug it into the
+    /// running domain).
+    pub fn nic_xml(&self, mac: &str) -> Option<String> {
+        self.nics
+            .iter()
+            .find(|n| n.mac.eq_ignore_ascii_case(mac))
+            .map(|n| nic_el(n).render())
+    }
+
     pub fn disk_xml(&self, target: &str) -> Option<String> {
         self.disks
             .iter()
@@ -250,18 +259,7 @@ impl DomainDef {
 
         let disks = self.disks.iter().map(|d| self.disk_el(d));
 
-        let nics = self.nics.iter().map(|n| {
-            El::new("interface")
-                .attr("type", "bridge")
-                .child(El::new("mac").attr("address", &n.mac))
-                .child(El::new("source").attr("bridge", &n.bridge))
-                .child(
-                    El::new("virtualport")
-                        .attr("type", "openvswitch")
-                        .child(El::new("parameters").attr("interfaceid", &n.interface_id)),
-                )
-                .child(El::new("model").attr("type", "virtio"))
-        });
+        let nics = self.nics.iter().map(nic_el);
 
         El::new("domain")
             .attr("type", "kvm")
@@ -334,6 +332,23 @@ impl DomainDef {
                             .attr("index", 0)
                             .attr("model", "virtio-scsi"),
                     )
+                    // A slot for each PCI device, and free ones for
+                    // interfaces plugged in while it runs: libvirt puts
+                    // devices on the slots there are first, and makes more
+                    // only for those left (none to spare). After the root
+                    // they hang off, whose place unnumbered controllers
+                    // would take.
+                    .child(
+                        El::new("controller")
+                            .attr("type", "pci")
+                            .attr("index", 0)
+                            .attr("model", "pcie-root"),
+                    )
+                    .children((0..self.pci_devices() + SPARE_PORTS).map(|_| {
+                        El::new("controller")
+                            .attr("type", "pci")
+                            .attr("model", "pcie-root-port")
+                    }))
                     .children(disks)
                     .children(nics)
                     .child(
@@ -383,6 +398,33 @@ impl DomainDef {
             )
             .render()
     }
+}
+
+/// PCIe slots kept free in each VM, for interfaces plugged in while it runs.
+const SPARE_PORTS: usize = 4;
+
+impl DomainDef {
+    /// The PCI devices the domain has, each on a slot of its own: its video,
+    /// SCSI, USB and serial controllers, balloon and RNG, and its virtio
+    /// disks and interfaces.
+    fn pci_devices(&self) -> usize {
+        6 + self.disks.iter().filter(|d| d.bus == "virtio").count() + self.nics.len()
+    }
+}
+
+/// An interface: on OVS's integration bridge, the OVN port named
+/// `interface_id`.
+fn nic_el(n: &Nic) -> El {
+    El::new("interface")
+        .attr("type", "bridge")
+        .child(El::new("mac").attr("address", &n.mac))
+        .child(El::new("source").attr("bridge", &n.bridge))
+        .child(
+            El::new("virtualport")
+                .attr("type", "openvswitch")
+                .child(El::new("parameters").attr("interfaceid", &n.interface_id)),
+        )
+        .child(El::new("model").attr("type", "virtio"))
 }
 
 pub fn domain_name(uuid: &str) -> String {
@@ -559,6 +601,58 @@ mod tests {
         let flat = |x: &str| x.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(flat(&xml).contains(&flat(&disk)), "{disk}");
         assert!(d.disk_xml("sdz").is_none());
+    }
+
+    #[test]
+    fn definitions_parse_back_as_they_were() {
+        let xml = sample().to_xml();
+        assert!(xml.contains("web &lt;1&gt; &amp; co"));
+        assert_eq!(crate::xml::El::parse(&xml).unwrap().render(), xml);
+    }
+
+    /// A migration's destination lays its definition out as the source's
+    /// running domain is (an interface plugged in there sits where it was
+    /// put), taking nothing else from it.
+    #[test]
+    fn incoming_domains_take_the_source_layout_only() {
+        let source = "<domain type='kvm'><name>x</name><devices>
+            <controller type='pci' index='0' model='pcie-root'><alias name='pcie.0'/></controller>
+            <controller type='pci' index='9' model='pcie-root-port'><model name='pcie-root-port'/>
+              <target chassis='9' port='0x18'/><alias name='pci.9'/>
+              <address type='pci' domain='0x0000' bus='0x00' slot='0x03' function='0x0'/></controller>
+            <controller type='scsi' index='0' model='virtio-scsi'><driver queues='64'/>
+              <address type='pci' domain='0x0000' bus='0x02' slot='0x00' function='0x0'/></controller>
+            <controller type='ide' index='0'/>
+            <disk type='file' device='disk'><source file='/etc/shadow'/><target dev='vda' bus='virtio'/>
+              <address type='pci' domain='0x0000' bus='0x05' slot='0x00' function='0x0'/></disk>
+            <interface type='bridge'><mac address='02:00:00:00:00:01'/><source bridge='br-evil'/>
+              <address type='pci' domain='0x0000' bus='0x09' slot='0x00' function='0x0'/></interface>
+            <hostdev mode='subsystem' type='pci'><source><address bus='0x01'/></source></hostdev>
+            </devices></domain>";
+        let got = crate::xml::with_layout_of(&sample().to_xml(), source);
+        let flat = |x: &str| x.lines().map(str::trim).collect::<String>();
+        let got = flat(&got);
+        // The source's buses, but only what places them.
+        assert!(got.contains("<controller type='pci' index='9' model='pcie-root-port'>"));
+        assert!(!got.contains("queues") && !got.contains("alias") && !got.contains("type='ide'"));
+        assert_eq!(
+            got.matches("pcie-root-port").count(),
+            2,
+            "ours made way: {got}"
+        );
+        // Our devices, at the source's addresses.
+        assert!(got.contains("<target dev='vda' bus='virtio'/><boot order='1'/><address type='pci' domain='0x0000' bus='0x05'"), "{got}");
+        assert!(got.contains("<source bridge='br-int'/>") && !got.contains("br-evil"));
+        assert!(
+            got.contains("<model type='virtio'/><address type='pci' domain='0x0000' bus='0x09'"),
+            "{got}"
+        );
+        assert!(!got.contains("/etc/shadow") && !got.contains("hostdev"));
+        // Nothing to go by: ours as it is.
+        assert_eq!(
+            crate::xml::with_layout_of(&sample().to_xml(), "nope"),
+            sample().to_xml()
+        );
     }
 
     #[test]

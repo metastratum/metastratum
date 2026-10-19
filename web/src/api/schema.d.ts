@@ -1758,6 +1758,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/vms/{id}/nics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adds a network interface to a VM, in a network of its tenant's (with an
+         *     address of its own there): plugged in at once if the VM runs, otherwise
+         *     there from its next start. Guests set it up with DHCP: Windows, and Linux
+         *     VMs made from this version on (their seed configures every interface,
+         *     the first one's routes preferred). At most 8 interfaces.
+         */
+        post: operations["add_nic"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/nics/{nic}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Removes an interface from a VM: unplugged at once if the VM runs. Its
+         *     address is free again, its floating IP is let go of (kept, attached to
+         *     nothing), and it leaves its load balancers. A VM keeps at least one.
+         */
+        delete: operations["delete_nic"];
+        options?: never;
+        head?: never;
+        /**
+         * Moves a VM's interface to another network: it keeps its MAC and
+         *     security groups, and gets an address in the new network (the old one is
+         *     free again). A running VM keeps running: the interface is unplugged and
+         *     plugged in again, and the guest sets it up afresh, asking DHCP for its
+         *     new address (what was configured on it by hand in the guest goes). Not for
+         *     an interface whose floating IP or load balancers belong to another VPC
+         *     than the network's (detach it from those first).
+         */
+        patch: operations["update_nic"];
+        trace?: never;
+    };
     "/api/v1/vms/{id}/nics/{nic}/security-groups": {
         parameters: {
             query?: never;
@@ -1974,6 +2027,15 @@ export interface components {
             vcpus: number;
         } & {
             task_id: components["schemas"]["TaskId"];
+        };
+        AddNic: {
+            /** @description The network (the VM's tenant's). */
+            network_id: components["schemas"]["NetworkId"];
+            /**
+             * @description Its security groups (the tenant's own); the tenant's `default` group
+             *     otherwise. An empty list blocks all traffic but DHCP.
+             */
+            security_group_ids?: components["schemas"]["SecurityGroupId"][] | null;
         };
         AddTotp: {
             /** @description The code the app shows now. */
@@ -3324,6 +3386,10 @@ export interface components {
             /** @description Replaces the members. */
             member_vm_ids: components["schemas"]["VmId"][];
             name: string;
+        };
+        UpdateNic: {
+            /** @description The network to move the interface to (the VM's tenant's). */
+            network_id: components["schemas"]["NetworkId"];
         };
         UpdateTenant: {
             name: string;
@@ -8224,6 +8290,148 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    add_nic: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddNic"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The VM's host could not plug it in */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_nic: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+                nic: components["schemas"]["NicId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The VM's host could not unplug it */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_nic: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["VmId"];
+                nic: components["schemas"]["NicId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateNic"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Moved, but the guest could not be told */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

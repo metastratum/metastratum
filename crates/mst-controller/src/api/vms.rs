@@ -28,6 +28,8 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(stop_vm))
         .routes(routes!(reboot_vm))
         .routes(routes!(set_nic_groups))
+        .routes(routes!(add_nic))
+        .routes(routes!(update_nic, delete_nic))
         .routes(routes!(migrate_vm))
         .routes(routes!(cancel_migration))
         .routes(routes!(restore_backup))
@@ -980,6 +982,277 @@ async fn set_nic_groups(
         "vm.nic.security_groups",
         Some(("vm", id.0)),
         json!({"nic": nic, "security_group_ids": groups}),
+    )
+    .await;
+    state.net.kick();
+    let vm = mst_db::vms::get(&state.db, id).await?;
+    Ok(Json(view(vm, &context(&state).await?)))
+}
+
+/// The most network interfaces a VM has. Four of them can be plugged in
+/// while it runs (spare slots its definition keeps).
+const MAX_NICS: usize = 8;
+
+/// Refuses changes to a VM's interfaces while it is not settled: being
+/// created, migrated or deleted (or after creating it failed).
+fn nics_changeable(vm: &Vm) -> ApiResult<()> {
+    match vm.status.as_str() {
+        "ready" => Ok(()),
+        "migrating" => Err(ApiError::conflict(
+            "the VM is being migrated; change its interfaces once it is done",
+        )),
+        other => Err(ApiError::conflict(format!(
+            "the VM is {other}; its interfaces cannot change now"
+        ))),
+    }
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct AddNic {
+    /// The network (the VM's tenant's).
+    network_id: NetworkId,
+    /// Its security groups (the tenant's own); the tenant's `default` group
+    /// otherwise. An empty list blocks all traffic but DHCP.
+    security_group_ids: Option<Vec<SecurityGroupId>>,
+}
+
+/// Adds a network interface to a VM, in a network of its tenant's (with an
+/// address of its own there): plugged in at once if the VM runs, otherwise
+/// there from its next start. Guests set it up with DHCP: Windows, and Linux
+/// VMs made from this version on (their seed configures every interface,
+/// the first one's routes preferred). At most 8 interfaces.
+#[utoipa::path(post, path = "/vms/{id}/nics", tag = "vms", params(("id" = VmId, Path)),
+    request_body = AddNic,
+    responses((status = 201, body = VmView), (status = 400), (status = 404), (status = 409),
+              (status = 503, description = "The VM's host could not plug it in")))]
+async fn add_nic(
+    State(state): State<AppState>,
+    p: Principal,
+    Path(id): Path<VmId>,
+    Json(req): Json<AddNic>,
+) -> ApiResult<(StatusCode, Json<VmView>)> {
+    load(&state, &p, id, Perm::VmWrite).await?;
+    let mut tx = state.db.begin().await?;
+    let vm = mst_db::vms::get_for_update(&mut tx, id).await?;
+    nics_changeable(&vm)?;
+    let mut spec = vm.spec.0.clone();
+    if spec.nics.len() >= MAX_NICS {
+        return Err(ApiError::conflict(format!(
+            "a VM has at most {MAX_NICS} interfaces"
+        )));
+    }
+    let network = mst_db::networks::get(&mut *tx, req.network_id).await?;
+    if network.tenant_id != vm.tenant_id {
+        return Err(ApiError::not_found("network"));
+    }
+    let groups = match &req.security_group_ids {
+        Some(ids) => {
+            let mut ids = ids.clone();
+            ids.sort();
+            ids.dedup();
+            check_groups(&mut tx, vm.tenant_id, &ids).await?;
+            ids
+        }
+        None => vec![
+            mst_db::netsec::default_group(&mut tx, vm.tenant_id)
+                .await?
+                .id,
+        ],
+    };
+    let nic_id = NicId::new();
+    let nic =
+        mst_db::networks::create_nic(&mut tx, nic_id, id, network.id, &mac_for(nic_id)).await?;
+    mst_db::networks::set_nic_groups(&mut tx, nic_id, &groups).await?;
+    spec.nics.push(NicSpec {
+        id: nic_id,
+        network_id: network.id,
+        mac: nic.mac.clone(),
+        ip: nic.ip.parse().map_err(ApiError::internal)?,
+    });
+    let generation = mst_db::vms::redefine(&mut tx, id, &spec).await?;
+    if let Some(host) = vm.host_id {
+        let define = definition(&state, &mut tx, &vm, host, &spec, generation).await?;
+        let cmd = mst_proto::command::Cmd::AttachNic(mst_proto::AttachNic {
+            vm: Some(define),
+            mac: nic.mac.clone(),
+        });
+        state
+            .agents
+            .call(host, cmd, std::time::Duration::from_secs(60))
+            .await
+            .map_err(|e| ApiError::unavailable(format!("plugging the interface in: {e}")))?;
+    }
+    tx.commit().await?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(vm.tenant_id),
+        "vm.nic.add",
+        Some(("vm", id.0)),
+        json!({"name": vm.name, "nic": nic_id, "network": network.name, "ip": nic.ip,
+               "security_group_ids": groups}),
+    )
+    .await;
+    state.net.kick();
+    let vm = mst_db::vms::get(&state.db, id).await?;
+    Ok((StatusCode::CREATED, Json(view(vm, &context(&state).await?))))
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct UpdateNic {
+    /// The network to move the interface to (the VM's tenant's).
+    network_id: NetworkId,
+}
+
+/// Moves a VM's interface to another network: it keeps its MAC and
+/// security groups, and gets an address in the new network (the old one is
+/// free again). A running VM keeps running: the interface is unplugged and
+/// plugged in again, and the guest sets it up afresh, asking DHCP for its
+/// new address (what was configured on it by hand in the guest goes). Not for
+/// an interface whose floating IP or load balancers belong to another VPC
+/// than the network's (detach it from those first).
+#[utoipa::path(patch, path = "/vms/{id}/nics/{nic}", tag = "vms",
+    params(("id" = VmId, Path), ("nic" = NicId, Path)), request_body = UpdateNic,
+    responses((status = 200, body = VmView), (status = 400), (status = 404), (status = 409),
+              (status = 503, description = "Moved, but the guest could not be told")))]
+async fn update_nic(
+    State(state): State<AppState>,
+    p: Principal,
+    Path((id, nic_id)): Path<(VmId, NicId)>,
+    Json(req): Json<UpdateNic>,
+) -> ApiResult<Json<VmView>> {
+    load(&state, &p, id, Perm::VmWrite).await?;
+    let mut tx = state.db.begin().await?;
+    let vm = mst_db::vms::get_for_update(&mut tx, id).await?;
+    nics_changeable(&vm)?;
+    let mut spec = vm.spec.0.clone();
+    let Some(at) = spec.nics.iter().position(|n| n.id == nic_id) else {
+        return Err(ApiError::not_found("NIC"));
+    };
+    let network = mst_db::networks::get(&mut *tx, req.network_id).await?;
+    if network.tenant_id != vm.tenant_id {
+        return Err(ApiError::not_found("network"));
+    }
+    if spec.nics[at].network_id == network.id {
+        tx.rollback().await?;
+        let vm = mst_db::vms::get(&state.db, id).await?;
+        return Ok(Json(view(vm, &context(&state).await?)));
+    }
+    let (floating, balancers) = mst_db::networks::nic_ties(&mut tx, nic_id).await?;
+    if let Some(external) = floating {
+        let vpc = mst_db::networks::get_vpc(&mut *tx, network.vpc_id).await?;
+        if vpc.external_network_id != Some(external) {
+            return Err(ApiError::conflict(format!(
+                "the interface has a floating IP, which VPC {} does not route to; detach it first",
+                vpc.name
+            )));
+        }
+    }
+    if balancers.iter().any(|v| *v != network.vpc_id) {
+        return Err(ApiError::conflict(
+            "the interface is a member of a load balancer in another VPC; remove the VM from it first",
+        ));
+    }
+    if !balancers.is_empty() {
+        // Health checks reach it in its new network too.
+        mst_db::networks::monitor_address(&mut tx, network.id).await?;
+    }
+    let from = spec.nics[at].network_id;
+    let moved = mst_db::networks::move_nic(&mut tx, nic_id, network.id).await?;
+    spec.nics[at].network_id = network.id;
+    spec.nics[at].ip = moved.ip.parse().map_err(ApiError::internal)?;
+    let generation = mst_db::vms::redefine(&mut tx, id, &spec).await?;
+    if let Some(host) = vm.host_id {
+        define_on_host(&state, &mut tx, &vm, host, &spec, generation).await?;
+    }
+    tx.commit().await?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(vm.tenant_id),
+        "vm.nic.move",
+        Some(("vm", id.0)),
+        json!({"name": vm.name, "nic": nic_id, "from": from, "to": network.name, "ip": moved.ip}),
+    )
+    .await;
+    // OVN moves the port; then the guest is made to ask for its address.
+    if let Err(e) = state.net.sync().await {
+        tracing::warn!(vm = %id, error = %format!("{e:#}"), "moving an interface's port; retrying in the background");
+        state.net.kick();
+    }
+    if let Some(host) = vm.host_id {
+        let vm = mst_db::vms::get(&state.db, id).await?;
+        let mut conn = state.db.acquire().await?;
+        let define = definition(&state, &mut conn, &vm, host, &spec, vm.generation).await?;
+        drop(conn);
+        let cmd = mst_proto::command::Cmd::ReplugNic(mst_proto::ReplugNic {
+            vm: Some(define),
+            mac: moved.mac.clone(),
+        });
+        state
+            .agents
+            .call(host, cmd, std::time::Duration::from_secs(60))
+            .await
+            .map_err(|e| {
+                ApiError::unavailable(format!(
+                    "the interface moved to {}, but could not be plugged in again for the guest \
+                     to take its new address ({e}); it does at its next DHCP renewal or restart",
+                    network.name
+                ))
+            })?;
+    }
+    let vm = mst_db::vms::get(&state.db, id).await?;
+    Ok(Json(view(vm, &context(&state).await?)))
+}
+
+/// Removes an interface from a VM: unplugged at once if the VM runs. Its
+/// address is free again, its floating IP is let go of (kept, attached to
+/// nothing), and it leaves its load balancers. A VM keeps at least one.
+#[utoipa::path(delete, path = "/vms/{id}/nics/{nic}", tag = "vms",
+    params(("id" = VmId, Path), ("nic" = NicId, Path)),
+    responses((status = 200, body = VmView), (status = 404), (status = 409),
+              (status = 503, description = "The VM's host could not unplug it")))]
+async fn delete_nic(
+    State(state): State<AppState>,
+    p: Principal,
+    Path((id, nic_id)): Path<(VmId, NicId)>,
+) -> ApiResult<Json<VmView>> {
+    load(&state, &p, id, Perm::VmWrite).await?;
+    let mut tx = state.db.begin().await?;
+    let vm = mst_db::vms::get_for_update(&mut tx, id).await?;
+    nics_changeable(&vm)?;
+    let mut spec = vm.spec.0.clone();
+    let Some(at) = spec.nics.iter().position(|n| n.id == nic_id) else {
+        return Err(ApiError::not_found("NIC"));
+    };
+    if spec.nics.len() == 1 {
+        return Err(ApiError::conflict(
+            "a VM keeps at least one interface; move it to another network instead",
+        ));
+    }
+    let gone = spec.nics.remove(at);
+    mst_db::networks::delete_nic(&mut *tx, nic_id).await?;
+    let generation = mst_db::vms::redefine(&mut tx, id, &spec).await?;
+    if let Some(host) = vm.host_id {
+        let define = definition(&state, &mut tx, &vm, host, &spec, generation).await?;
+        let cmd = mst_proto::command::Cmd::DetachNic(mst_proto::DetachNic {
+            vm: Some(define),
+            mac: gone.mac.clone(),
+        });
+        state
+            .agents
+            .call(host, cmd, std::time::Duration::from_secs(60))
+            .await
+            .map_err(|e| ApiError::unavailable(format!("unplugging the interface: {e}")))?;
+    }
+    tx.commit().await?;
+    audit(
+        &state.db,
+        Some(&p),
+        Some(vm.tenant_id),
+        "vm.nic.remove",
+        Some(("vm", id.0)),
+        json!({"name": vm.name, "nic": nic_id, "ip": gone.ip.to_string()}),
     )
     .await;
     state.net.kick();

@@ -78,6 +78,177 @@ impl El {
     }
 }
 
+impl El {
+    /// Parses a document into a tree (comments, processing instructions
+    /// and whitespace between elements dropped). None if it is not XML.
+    pub fn parse(xml: &str) -> Option<El> {
+        use quick_xml::events::Event;
+        let el = |e: &quick_xml::events::BytesStart<'_>| {
+            let mut out = El::new(e.name().as_ref());
+            for a in e.attributes().flatten() {
+                let v = a
+                    .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                    .ok()?
+                    .into_owned();
+                out.attrs.push((a.key.as_ref().to_owned(), v));
+            }
+            Some(out)
+        };
+        // Each open element, with its text so far.
+        let mut stack: Vec<(El, String)> = vec![];
+        let close = |stack: &mut Vec<(El, String)>, (mut done, text): (El, String)| {
+            let text = text.trim();
+            if !text.is_empty() {
+                done.text = Some(text.to_owned());
+            }
+            match stack.last_mut() {
+                Some((parent, _)) => {
+                    parent.children.push(done);
+                    None
+                }
+                None => Some(done),
+            }
+        };
+        let mut reader = quick_xml::Reader::from_str(xml);
+        loop {
+            match reader.read_event().ok()? {
+                Event::Start(e) => stack.push((el(&e)?, String::new())),
+                Event::Empty(e) => {
+                    if let Some(root) = close(&mut stack, (el(&e)?, String::new())) {
+                        return Some(root);
+                    }
+                }
+                Event::Text(t) => {
+                    if let Some((_, text)) = stack.last_mut() {
+                        text.push_str(&t.xml_content(quick_xml::XmlVersion::Implicit1_0));
+                    }
+                }
+                Event::GeneralRef(r) => {
+                    let c = match r.as_ref() {
+                        "lt" => '<',
+                        "gt" => '>',
+                        "amp" => '&',
+                        "apos" => '\'',
+                        "quot" => '"',
+                        _ => r.resolve_char_ref().ok()??,
+                    };
+                    if let Some((_, text)) = stack.last_mut() {
+                        text.push(c);
+                    }
+                }
+                Event::End(_) => {
+                    let top = stack.pop()?;
+                    if let Some(root) = close(&mut stack, top) {
+                        return Some(root);
+                    }
+                }
+                Event::Eof => return None,
+                _ => {}
+            }
+        }
+    }
+
+    fn get(&self, attr: &str) -> Option<&str> {
+        self.attrs
+            .iter()
+            .find(|(k, _)| k == attr)
+            .map(|(_, v)| v.as_str())
+    }
+
+    fn child_attr(&self, child: &str, attr: &str) -> Option<&str> {
+        self.children
+            .iter()
+            .find(|c| c.name == child)
+            .and_then(|c| c.get(attr))
+    }
+}
+
+/// What a device is, to find it in another definition of the domain.
+fn device_key(e: &El) -> Option<String> {
+    Some(match e.name.as_str() {
+        "disk" => format!("disk:{}", e.child_attr("target", "dev")?),
+        "interface" => format!(
+            "interface:{}",
+            e.child_attr("mac", "address")?.to_lowercase()
+        ),
+        "channel" => format!("channel:{}", e.child_attr("target", "name")?),
+        "serial" | "console" => format!(
+            "{}:{}",
+            e.name,
+            e.child_attr("target", "port").unwrap_or("0")
+        ),
+        "input" => format!("input:{}:{}", e.get("type")?, e.get("bus").unwrap_or("")),
+        "video" | "rng" | "memballoon" => e.name.clone(),
+        _ => return None,
+    })
+}
+
+/// A controller of the source's taken over: buses and the like, nothing
+/// that reaches anything on the host. Only what places it is kept.
+fn layout_controller(c: &El) -> Option<El> {
+    let ok = match c.get("type")? {
+        "pci" | "usb" | "sata" | "virtio-serial" => true,
+        "scsi" => c.get("model") == Some("virtio-scsi"),
+        _ => false,
+    };
+    ok.then(|| El {
+        children: c
+            .children
+            .iter()
+            .filter(|x| matches!(x.name.as_str(), "model" | "target" | "address"))
+            .cloned()
+            .collect(),
+        text: None,
+        ..c.clone()
+    })
+}
+
+/// A domain definition made here (`ours`) laid out as the running domain
+/// it replaces (`source`, its definition there, as a migration's source
+/// sends it): its controllers, and the address of each device both have.
+/// What the guest runs on must be laid out alike for its state to load: a
+/// definition made afresh puts devices plugged in or out while the domain
+/// ran elsewhere. Nothing else is taken from the source: the devices, and
+/// what they reach on the host, are ours. Ours as it is if either is not
+/// a domain.
+pub fn with_layout_of(ours: &str, source: &str) -> String {
+    let (Some(mut dom), Some(src)) = (El::parse(ours), El::parse(source)) else {
+        return ours.to_owned();
+    };
+    let Some(src_devices) = src.children.iter().find(|c| c.name == "devices") else {
+        return ours.to_owned();
+    };
+    let Some(devices) = dom.children.iter_mut().find(|c| c.name == "devices") else {
+        return ours.to_owned();
+    };
+    let addresses: std::collections::HashMap<String, &El> = src_devices
+        .children
+        .iter()
+        .filter_map(|d| {
+            let address = d.children.iter().find(|c| c.name == "address")?;
+            Some((device_key(d)?, address))
+        })
+        .collect();
+    let mut laid_out: Vec<El> = src_devices
+        .children
+        .iter()
+        .filter(|c| c.name == "controller")
+        .filter_map(layout_controller)
+        .collect();
+    for mut d in std::mem::take(&mut devices.children) {
+        if d.name == "controller" {
+            continue;
+        }
+        if let Some(address) = device_key(&d).and_then(|k| addresses.get(&k)) {
+            d.children.retain(|c| c.name != "address");
+            d.children.push((*address).clone());
+        }
+        laid_out.push(d);
+    }
+    devices.children = laid_out;
+    dom.render()
+}
+
 pub fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -201,6 +372,32 @@ pub fn disk_paths(xml: &str) -> Vec<(String, String)> {
                         *source = attr(&e, "file").or_else(|| attr(&e, "name"));
                     }
                     _ => {}
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return out,
+            _ => {}
+        }
+    }
+}
+
+/// The MAC addresses of a domain's interfaces (lower case).
+pub fn interface_macs(xml: &str) -> Vec<String> {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut out = Vec::new();
+    let mut inside = false;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) if e.local_name().as_ref() == "interface" => inside = true,
+            Ok(Event::End(e)) if e.local_name().as_ref() == "interface" => inside = false,
+            Ok(Event::Start(e) | Event::Empty(e)) if inside && e.local_name().as_ref() == "mac" => {
+                if let Some(mac) = e
+                    .attributes()
+                    .flatten()
+                    .find(|a| a.key.as_ref() == "address")
+                    .and_then(|a| a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok())
+                {
+                    out.push(mac.to_lowercase());
                 }
             }
             Ok(Event::Eof) | Err(_) => return out,

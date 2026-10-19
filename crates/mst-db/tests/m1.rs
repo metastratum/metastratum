@@ -219,6 +219,69 @@ async fn concurrent_ip_allocation_never_duplicates(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn nics_move_between_networks(pool: PgPool) {
+    let t = root(&pool).await;
+    let h = host(&pool).await;
+    let v = vm(&pool, &t, &h, "a").await;
+    let mut conn = pool.acquire().await.unwrap();
+    let a = networks::default_for(&mut conn, t.id).await.unwrap();
+    let vpc = networks::get_vpc(&pool, a.vpc_id).await.unwrap();
+    // Five addresses: .2 to .6 (.1 is the gateway).
+    let b = networks::create(
+        &pool,
+        NetworkId::new(),
+        &vpc,
+        "b",
+        "10.0.1.0/29",
+        "10.0.1.1",
+    )
+    .await
+    .unwrap();
+    let mac = |i: u8| format!("02:00:00:00:03:{i:02}");
+    let first = NicId::new();
+    networks::create_nic(&mut conn, first, v.id, a.id, &mac(1))
+        .await
+        .unwrap();
+
+    // To the lowest free address there, keeping its MAC; its old one is free.
+    let moved = networks::move_nic(&mut conn, first, b.id).await.unwrap();
+    assert_eq!(
+        (moved.network_id, moved.ip.as_str(), moved.mac.as_str()),
+        (b.id, "10.0.1.2", mac(1).as_str())
+    );
+    let second = NicId::new();
+    let n = networks::create_nic(&mut conn, second, v.id, a.id, &mac(2))
+        .await
+        .unwrap();
+    assert_eq!(n.ip, "10.0.0.2");
+    assert_eq!(
+        networks::nic_ties(&mut conn, first).await.unwrap(),
+        (None, vec![])
+    );
+
+    // Into a full network: refused, and it stays where it was.
+    for i in 3..7 {
+        networks::create_nic(&mut conn, NicId::new(), v.id, b.id, &mac(i))
+            .await
+            .unwrap();
+    }
+    let err = networks::move_nic(&mut conn, second, b.id)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("no free addresses"), "{err}");
+    let kept = networks::get_nic(&pool, second).await.unwrap();
+    assert_eq!((kept.network_id, kept.ip.as_str()), (a.id, "10.0.0.2"));
+
+    // Removed, its address is free again.
+    networks::delete_nic(&pool, first).await.unwrap();
+    networks::move_nic(&mut conn, second, b.id).await.unwrap();
+    assert_eq!(
+        networks::get_nic(&pool, second).await.unwrap().ip,
+        "10.0.1.2"
+    );
+}
+
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
 async fn concurrent_monitor_addresses_reserve_one(pool: PgPool) {
     let t = root(&pool).await;
     let net = networks::default_for(&mut pool.acquire().await.unwrap(), t.id)

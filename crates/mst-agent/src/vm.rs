@@ -21,9 +21,44 @@ impl VmFiles {
     }
 }
 
+/// Network configuration for a Linux guest (cloud-init's version 2, as
+/// netplan takes it): DHCP on its first interface, and on every other
+/// virtio one, those plugged in while it runs too, with their routes less
+/// preferred, so the first network keeps the default route. cloud-init
+/// applies it as the VM first boots; networkd then configures interfaces as
+/// they come, the first file matching (`nic0` before `nics`). Windows sets
+/// up new adapters with DHCP by itself.
+fn network_config(spec: &VmSpec) -> Option<String> {
+    if spec.guest_os == mst_core::vm::GuestOs::Windows {
+        return None;
+    }
+    let first = spec.nics.first()?;
+    Some(format!(
+        "version: 2\n\
+         ethernets:\n\
+         \x20 nic0:\n\
+         \x20   match:\n\
+         \x20     macaddress: \"{}\"\n\
+         \x20   dhcp4: true\n\
+         \x20 nics:\n\
+         \x20   match:\n\
+         \x20     driver: virtio_net\n\
+         \x20   dhcp4: true\n\
+         \x20   dhcp4-overrides:\n\
+         \x20     route-metric: 200\n",
+        first.mac
+    ))
+}
+
 /// Writes the NoCloud seed ISO for a VM. Always regenerated so a redefined
 /// VM picks up changed user data.
-async fn write_seed(path: &Path, vm_id: &str, hostname: &str, user_data: &str) -> Result<()> {
+async fn write_seed(
+    path: &Path,
+    vm_id: &str,
+    hostname: &str,
+    user_data: &str,
+    network: Option<&str>,
+) -> Result<()> {
     let work = path.with_extension("d");
     tokio::fs::create_dir_all(&work).await?;
     tokio::fs::write(work.join("user-data"), user_data).await?;
@@ -32,8 +67,13 @@ async fn write_seed(path: &Path, vm_id: &str, hostname: &str, user_data: &str) -
         format!("instance-id: {vm_id}\nlocal-hostname: {hostname}\n"),
     )
     .await?;
+    let mut files = vec![work.join("user-data"), work.join("meta-data")];
+    if let Some(network) = network {
+        tokio::fs::write(work.join("network-config"), network).await?;
+        files.push(work.join("network-config"));
+    }
     let tmp = path.with_extension("tmp");
-    let made = make_iso(&tmp, &[work.join("user-data"), work.join("meta-data")]).await;
+    let made = make_iso(&tmp, &files).await;
     let _ = tokio::fs::remove_dir_all(&work).await;
     made?;
     // User data may hold secrets: for root, and the VM's QEMU (libvirt
@@ -148,7 +188,15 @@ pub async fn domain(
     if let Some(ci) = &spec.cloud_init {
         mst_storage::private_dir(&files.cloud_init_dir).await?;
         let seed = files.seed_path(vm_id);
-        write_seed(&seed, vm_id, &ci.hostname, &ci.user_data).await?;
+        let network = network_config(spec);
+        write_seed(
+            &seed,
+            vm_id,
+            &ci.hostname,
+            &ci.user_data,
+            network.as_deref(),
+        )
+        .await?;
         disks.push(Disk {
             device: DiskDevice::Cdrom,
             source: DiskSource::File(seed.to_string_lossy().into_owned()),
@@ -253,13 +301,49 @@ pub async fn clone_volume(agent: &crate::session::Agent, c: &mst_proto::CloneVol
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn linux_guests_take_dhcp_on_every_interface_first_one_preferred() {
+        let nic = |mac: &str| mst_core::vm::NicSpec {
+            id: mst_core::ids::NicId::new(),
+            network_id: mst_core::ids::NetworkId::new(),
+            mac: mac.into(),
+            ip: "10.0.0.2".parse().unwrap(),
+        };
+        let mut spec: mst_core::vm::VmSpec = serde_json::from_value(serde_json::json!({
+            "vcpus": 1, "memory_mib": 512, "free_page_reporting": true, "disks": [],
+            "nics": [], "migratable": false,
+        }))
+        .unwrap();
+        assert_eq!(super::network_config(&spec), None, "no interface");
+        spec.nics = vec![nic("02:68:00:00:00:01"), nic("02:68:00:00:00:02")];
+        assert_eq!(
+            super::network_config(&spec).unwrap(),
+            "version: 2
+ethernets:
+  nic0:
+    match:
+      macaddress: \"02:68:00:00:00:01\"
+    dhcp4: true
+  nics:
+    match:
+      driver: virtio_net
+    dhcp4: true
+    dhcp4-overrides:
+      route-metric: 200
+"
+        );
+        spec.guest_os = mst_core::vm::GuestOs::Windows;
+        assert_eq!(super::network_config(&spec), None, "Windows does its own");
+    }
+
     /// A seed ISO cloud-init finds: volume `cidata`, with both files.
     #[tokio::test]
     async fn seeds_are_cidata_isos() {
         let dir = std::env::temp_dir().join(format!("mst-seed-{}", std::process::id()));
         tokio::fs::create_dir_all(&dir).await.unwrap();
         let iso = dir.join("vm.iso");
-        match super::write_seed(&iso, "vm-1", "web-1", "#cloud-config\n").await {
+        let network = "version: 2\n";
+        match super::write_seed(&iso, "vm-1", "web-1", "#cloud-config\n", Some(network)).await {
             Err(e) if e.to_string().contains("install xorriso") => {
                 eprintln!("skipping: {e}");
                 return;
@@ -271,6 +355,7 @@ mod tests {
         assert!(image[16 * 2048 + 40..16 * 2048 + 46].eq_ignore_ascii_case(b"cidata"));
         let text = String::from_utf8_lossy(&image);
         assert!(text.contains("local-hostname: web-1"), "meta-data is in it");
+        assert!(text.contains("NETWORK_CONFIG") || text.contains("network-config"));
         tokio::fs::remove_dir_all(&dir).await.unwrap();
     }
 }

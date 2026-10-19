@@ -384,6 +384,49 @@ impl Agent {
                 self.lv.define(def.to_xml()).await?;
                 tracing::info!(vm = %v.vm_id, target = %c.target, "disk attached");
             }
+            Cmd::AttachNic(c) => {
+                let v = c.vm.context("no VM to attach the interface to")?;
+                let def = self.domain_def(&v).await?;
+                if self.lv.power(&v.vm_id).await? != Power::Stopped
+                    && !self
+                        .lv
+                        .live_nics(&v.vm_id)
+                        .await?
+                        .contains(&c.mac.to_lowercase())
+                {
+                    let xml = def
+                        .nic_xml(&c.mac)
+                        .with_context(|| format!("the VM has no interface {}", c.mac))?;
+                    self.lv.attach_device(&v.vm_id, &xml).await?;
+                }
+                self.lv.define(def.to_xml()).await?;
+                tracing::info!(vm = %v.vm_id, mac = %c.mac, "interface attached");
+            }
+            Cmd::DetachNic(c) => {
+                let v = c.vm.context("no VM to detach the interface from")?;
+                let def = self.domain_def(&v).await?;
+                if self.lv.power(&v.vm_id).await? != Power::Stopped {
+                    self.lv
+                        .detach_nic(&v.vm_id, &c.mac, Duration::from_secs(30))
+                        .await?;
+                }
+                self.lv.define(def.to_xml()).await?;
+                tracing::info!(vm = %v.vm_id, mac = %c.mac, "interface detached");
+            }
+            Cmd::ReplugNic(c) => {
+                let v = c.vm.context("no VM whose interface to plug in again")?;
+                if self.lv.power(&v.vm_id).await? != Power::Stopped {
+                    let def = self.domain_def(&v).await?;
+                    let xml = def
+                        .nic_xml(&c.mac)
+                        .with_context(|| format!("the VM has no interface {}", c.mac))?;
+                    self.lv
+                        .detach_nic(&v.vm_id, &c.mac, Duration::from_secs(30))
+                        .await?;
+                    self.lv.attach_device(&v.vm_id, &xml).await?;
+                    tracing::info!(vm = %v.vm_id, mac = %c.mac, "interface plugged in again");
+                }
+            }
             Cmd::DetachDisk(c) => {
                 let v = c.vm.context("no VM to detach the disk from")?;
                 let def = self.domain_def(&v).await?;
@@ -441,9 +484,17 @@ impl Agent {
                     Step::Begin => mst_libvirt::MigrationStep::Begin,
                     // Not the XML the source sent (a host taken over could
                     // name other VMs' disks, or host devices, in it): the
-                    // one made here from the controller's spec.
+                    // one made here from the controller's spec, laid out as
+                    // the source runs it (devices plugged in or out there
+                    // sit where they were put), taking nothing else.
                     Step::Prepare => mst_libvirt::MigrationStep::Prepare {
-                        xml: self.incoming_def(&c.vm_id)?,
+                        xml: match c.xml.as_str() {
+                            "" => self.incoming_def(&c.vm_id)?,
+                            source => mst_libvirt::xml::with_layout_of(
+                                &self.incoming_def(&c.vm_id)?,
+                                source,
+                            ),
+                        },
                     },
                     Step::Perform => mst_libvirt::MigrationStep::Perform { uri: c.uri },
                     Step::Finish => mst_libvirt::MigrationStep::Finish {

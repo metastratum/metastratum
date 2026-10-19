@@ -1,7 +1,18 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, ApiError, errorText, ok, type Disk, type Schemas, type SecurityGroup, type Task, type Vm } from '../api/client'
+import {
+  api,
+  ApiError,
+  errorText,
+  ok,
+  type Disk,
+  type Schemas,
+  type SecurityGroup,
+  type Task,
+  type Vm,
+  type Vpc,
+} from '../api/client'
 import IdChip from '../components/IdChip.vue'
 import MigrateDialog from '../components/MigrateDialog.vue'
 import ResizeDialog from '../components/ResizeDialog.vue'
@@ -139,8 +150,10 @@ async function load() {
   }
 }
 
-// Security groups of the VM's tenant, to name and change a NIC's groups.
+// Security groups of the VM's tenant, to name and change a NIC's groups;
+// its VPCs and their networks, to add interfaces and move them.
 const groups = ref<SecurityGroup[]>([])
+const vpcs = ref<Vpc[]>([])
 const editingNic = ref<string | null>(null)
 const nicGroups = ref<string[]>([])
 const nicError = ref('')
@@ -151,8 +164,45 @@ watch(
     groups.value = await ok(api.GET('/api/v1/security-groups', { params: { query: { tenant_id: tenant } } })).catch(
       () => [],
     )
+    vpcs.value = await ok(api.GET('/api/v1/vpcs', { params: { query: { tenant_id: tenant } } })).catch(() => [])
   },
 )
+const withNetworks = computed(() => vpcs.value.filter((v) => v.networks.length))
+
+// Adding an interface, moving one to another network, removing one.
+const nicAction = ref<{ kind: 'add' | 'move' | 'remove'; nic?: string } | null>(null)
+const nicNetwork = ref('')
+const nicBusy = ref(false)
+const nicActionError = ref('')
+function startNic(kind: 'add' | 'move' | 'remove', n?: Vm['nics'][number]) {
+  nicActionError.value = ''
+  nicNetwork.value = n?.network_id ?? withNetworks.value[0]?.networks[0]?.id ?? ''
+  nicAction.value = { kind, nic: n?.id }
+}
+async function doNic() {
+  const a = nicAction.value
+  if (!a) return
+  nicBusy.value = true
+  nicActionError.value = ''
+  try {
+    const path = { id: props.id, nic: a.nic ?? '' }
+    vm.value = await ok(
+      a.kind === 'add'
+        ? api.POST('/api/v1/vms/{id}/nics', {
+            params: { path: { id: props.id } },
+            body: { network_id: nicNetwork.value },
+          })
+        : a.kind === 'move'
+          ? api.PATCH('/api/v1/vms/{id}/nics/{nic}', { params: { path }, body: { network_id: nicNetwork.value } })
+          : api.DELETE('/api/v1/vms/{id}/nics/{nic}', { params: { path } }),
+    )
+    nicAction.value = null
+  } catch (e) {
+    nicActionError.value = errorText(e)
+  } finally {
+    nicBusy.value = false
+  }
+}
 const groupName = (id: string) => groups.value.find((g) => g.id === id)?.name ?? shortId(id)
 function editNic(n: Vm['nics'][number]) {
   nicError.value = ''
@@ -450,11 +500,75 @@ async function remove() {
           </dl>
         </section>
         <section>
-          <h2 class="label">Network interfaces</h2>
+          <h2 class="label">
+            Network interfaces
+            <button
+              v-if="withNetworks.length && nicAction?.kind !== 'add'"
+              class="btn small"
+              :disabled="vm.status !== 'ready'"
+              @click="startNic('add')"
+            >
+              Add interface
+            </button>
+          </h2>
+          <form v-if="nicAction?.kind === 'add'" class="nic-action" @submit.prevent="doNic">
+            <select v-model="nicNetwork" aria-label="Network" required>
+              <optgroup v-for="v in withNetworks" :key="v.id" :label="`VPC ${v.name}`">
+                <option v-for="net in v.networks" :key="net.id" :value="net.id">{{ net.name }} ({{ net.cidr }})</option>
+              </optgroup>
+            </select>
+            <button type="button" class="btn small" @click="nicAction = null">Cancel</button>
+            <button class="btn small primary" :disabled="nicBusy">{{ nicBusy ? 'Adding…' : 'Add' }}</button>
+            <span class="hint">
+              {{ vm.power === 'running' ? 'Plugged in at once' : 'There from its next start' }}, in the tenant’s default
+              security group. Guests set it up with DHCP.
+            </span>
+            <span v-if="nicActionError" class="error-text">{{ nicActionError }}</span>
+          </form>
           <dl v-for="n in vm.nics" :key="n.id" class="kv">
             <dt>Address</dt><dd class="mono">{{ n.ip }}</dd>
             <dt>Network</dt>
-            <dd><RouterLink to="/networks">{{ n.network_name ?? shortId(n.network_id) }}</RouterLink></dd>
+            <dd>
+              <template v-if="nicAction?.nic !== n.id">
+                <RouterLink to="/networks">{{ n.network_name ?? shortId(n.network_id) }}</RouterLink>
+                <template v-if="vm.status === 'ready'">
+                  <button v-if="withNetworks.length" class="btn small" @click="startNic('move', n)">Move</button>
+                  <button v-if="vm.nics.length > 1" class="btn small danger" @click="startNic('remove', n)">
+                    Remove…
+                  </button>
+                </template>
+              </template>
+              <form v-else-if="nicAction.kind === 'move'" class="nic-action" @submit.prevent="doNic">
+                <select v-model="nicNetwork" aria-label="Network" required>
+                  <optgroup v-for="v in withNetworks" :key="v.id" :label="`VPC ${v.name}`">
+                    <option v-for="net in v.networks" :key="net.id" :value="net.id">
+                      {{ net.name }} ({{ net.cidr }})
+                    </option>
+                  </optgroup>
+                </select>
+                <button type="button" class="btn small" @click="nicAction = null">Cancel</button>
+                <button class="btn small primary" :disabled="nicBusy || nicNetwork === n.network_id">
+                  {{ nicBusy ? 'Moving…' : 'Move' }}
+                </button>
+                <span class="hint">
+                  It gets an address there.
+                  <template v-if="vm.power === 'running'">
+                    It is unplugged and plugged in again, and the guest asks DHCP for the new address.
+                  </template>
+                </span>
+                <span v-if="nicActionError" class="error-text">{{ nicActionError }}</span>
+              </form>
+              <form v-else class="nic-action" @submit.prevent="doNic">
+                <span>
+                  Remove the interface with {{ n.ip }}?
+                  <template v-if="n.floating_ip">Its floating IP {{ n.floating_ip }} is kept, attached to nothing.</template>
+                  It leaves any load balancers.
+                </span>
+                <button type="button" class="btn small" @click="nicAction = null">Keep it</button>
+                <button class="btn small danger" :disabled="nicBusy">{{ nicBusy ? 'Removing…' : 'Remove' }}</button>
+                <span v-if="nicActionError" class="error-text">{{ nicActionError }}</span>
+              </form>
+            </dd>
             <dt>Floating IP</dt>
             <dd class="mono">
               <RouterLink v-if="n.floating_ip" to="/floating-ips">{{ n.floating_ip }}</RouterLink>
@@ -640,6 +754,16 @@ h1 {
 }
 .group {
   margin-right: 6px;
+}
+.nic-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 6px 0 10px;
+}
+.nic-action .hint {
+  flex-basis: 100%;
 }
 .nic-groups {
   display: flex;

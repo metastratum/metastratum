@@ -209,6 +209,9 @@ message Command {
     VolumeFromImage volume_from_image = 52;
     PruneStore prune_store = 53;
     GuestFileExists guest_file_exists = 54;
+    AttachNic attach_nic = 55;
+    DetachNic detach_nic = 56;
+    ReplugNic replug_nic = 57;
   }
   // 10: EnsureImage, before the image store. 21: MigrateVm, peer to peer.
   // 27: LibvirtTls, which opened libvirt to other hosts for that. 28:
@@ -558,6 +561,31 @@ message AttachDisk {
   string target = 2;
   // The disk's volume, to tell it from another disk at `target`.
   string volume_id = 3;
+}
+
+// Plug the interface with `mac` into the running VM, as `vm` (its
+// definition with the interface) has it, and define it so. A VM not running
+// is only defined.
+message AttachNic {
+  DefineVm vm = 1;
+  string mac = 2;
+}
+
+// Unplug the interface with `mac` from the running VM, waiting until the
+// guest lets go of it, and define `vm` (its definition without it). A VM not
+// running is only defined.
+message DetachNic {
+  DefineVm vm = 1;
+  string mac = 2;
+}
+
+// Unplug the running VM's interface with `mac` and plug it in again: the
+// guest sets it up afresh, asking DHCP for its address (after it moved to
+// another network; a link only taken down and up, guests keep their lease).
+// `vm` is the VM's definition. A VM not running is left alone.
+message ReplugNic {
+  DefineVm vm = 1;
+  string mac = 2;
 }
 
 // Unplug the disk at `target` from the running VM, waiting until the guest

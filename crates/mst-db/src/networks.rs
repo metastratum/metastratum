@@ -350,6 +350,84 @@ pub async fn create_nic(
     Ok(nic)
 }
 
+/// Moves a NIC to another network, with the lowest free address there (its
+/// address in the old one is free again); it keeps its MAC. Allocations in
+/// the network are serialised ([`lock_addresses`]).
+pub async fn move_nic(db: &mut PgConnection, id: NicId, network_id: NetworkId) -> Result<Nic> {
+    use sqlx::Connection;
+    let mut tx = db.begin().await?;
+    lock_addresses(&mut tx, network_id).await?;
+    let nic = sqlx::query_as(
+        "UPDATE nics SET network_id = $2, ip = (
+             SELECT set_masklen(n.cidr::inet + s, 32)
+             FROM networks n, generate_series(1, (2 ^ (32 - masklen(n.cidr)))::bigint - 2) s
+             WHERE n.id = $2
+               AND set_masklen(n.cidr::inet + s, 32) <> set_masklen(n.gateway, 32)
+               AND NOT EXISTS (SELECT 1 FROM nics x
+                               WHERE x.network_id = n.id AND x.ip = set_masklen(n.cidr::inet + s, 32))
+               AND NOT EXISTS (SELECT 1 FROM network_addresses a
+                               WHERE a.network_id = n.id AND a.ip = set_masklen(n.cidr::inet + s, 32))
+             ORDER BY s LIMIT 1)
+         WHERE id = $1
+         RETURNING id, vm_id, network_id, mac, host(ip) AS ip",
+    )
+    .bind(id)
+    .bind(network_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| -> crate::Error {
+        match &e {
+            // No address left: the subquery is NULL.
+            sqlx::Error::Database(d) if d.code().as_deref() == Some("23502") => {
+                mst_core::Error::Conflict("network has no free addresses".into()).into()
+            }
+            _ => crate::conflict_on_unique(e, "nic"),
+        }
+    })?
+    .ok_or_else(|| -> crate::Error {
+        mst_core::Error::NotFound {
+            kind: "NIC",
+            id: id.to_string(),
+        }
+        .into()
+    })?;
+    tx.commit().await?;
+    Ok(nic)
+}
+
+/// What a NIC is tied to in its VPC: the external network of the floating
+/// IP pointing at it, if any, and the VPCs of the load balancers it is a
+/// member of.
+pub async fn nic_ties(
+    db: &mut PgConnection,
+    id: NicId,
+) -> Result<(Option<ExternalNetworkId>, Vec<VpcId>)> {
+    let floating: Option<ExternalNetworkId> = sqlx::query_scalar(
+        "SELECT external_network_id FROM external_ips WHERE nic_id = $1 AND kind = 'floating'",
+    )
+    .bind(id)
+    .fetch_optional(&mut *db)
+    .await?;
+    let lbs: Vec<VpcId> = sqlx::query_scalar(
+        "SELECT DISTINCT l.vpc_id FROM load_balancer_members m
+         JOIN load_balancers l ON l.id = m.load_balancer_id WHERE m.nic_id = $1",
+    )
+    .bind(id)
+    .fetch_all(&mut *db)
+    .await?;
+    Ok((floating, lbs))
+}
+
+/// Removes a NIC: its address is free again, it leaves its security groups
+/// and load balancers, and its floating IP is let go of.
+pub async fn delete_nic(db: impl PgExecutor<'_>, id: NicId) -> Result<()> {
+    sqlx::query("DELETE FROM nics WHERE id = $1")
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 /// Serialises address allocation in a network until the transaction ends:
 /// NICs and reserved addresses come from different tables. Allocations
 /// lock first, so they never pick the same address. Callers are in a

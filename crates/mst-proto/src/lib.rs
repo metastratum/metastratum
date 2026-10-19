@@ -70,6 +70,9 @@ pub fn capability(cmd: &command::Cmd) -> &'static str {
         VolumeFromImage(_) => "volume_from_image",
         PruneStore(_) => "prune_store",
         GuestFileExists(_) => "guest_file_exists",
+        AttachNic(_) => "attach_nic",
+        DetachNic(_) => "detach_nic",
+        ReplugNic(_) => "replug_nic",
     }
 }
 
@@ -116,6 +119,9 @@ pub const CAPABILITIES: &[&str] = &[
     "volume_from_image",
     "prune_store",
     "guest_file_exists",
+    "attach_nic",
+    "detach_nic",
+    "replug_nic",
 ];
 
 /// What this build's agent does beyond its commands' first versions,
@@ -128,7 +134,7 @@ mod tests {
     fn every_command_is_a_capability() {
         // A new command added to the protocol must be named here too; this
         // count is a reminder (prost has no variant list to check against).
-        assert_eq!(super::CAPABILITIES.len(), 41);
+        assert_eq!(super::CAPABILITIES.len(), 44);
         let unique: std::collections::HashSet<_> = super::CAPABILITIES.iter().collect();
         assert_eq!(unique.len(), super::CAPABILITIES.len());
     }
