@@ -493,20 +493,10 @@ pub async fn start(
         BackupMode::Full => None,
         BackupMode::Incremental => mst_db::backups::newest_ready(&mut *tx, vm.id, repo.id).await?,
     };
-    let older_agent = match (&parent, vm.host_id) {
-        (Some(_), Some(host)) => {
-            !mst_db::hosts::agent_supports(&mut *tx, host, crate::engine::INCREMENTAL_BACKUP)
-                .await?
-        }
-        _ => false,
-    };
     let taking = match (mode, &parent) {
         (BackupMode::Full, _) => mst_db::backups::Taking::Full { reason: None },
         (BackupMode::Incremental, None) => mst_db::backups::Taking::Full {
             reason: Some("there is no earlier backup of the VM in this repository to build on"),
-        },
-        (BackupMode::Incremental, Some(_)) if older_agent => mst_db::backups::Taking::Full {
-            reason: Some("the VM's host runs an older agent; upgrade it"),
         },
         (BackupMode::Incremental, Some(parent)) => mst_db::backups::Taking::Incremental { parent },
     };

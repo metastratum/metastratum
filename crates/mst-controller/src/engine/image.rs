@@ -48,15 +48,11 @@ fn target(ctx: &TaskCtx) -> Result<ImageId> {
         .context("task has no target image")
 }
 
-/// Hosts that can take an image: connected, not fenced or decommissioned,
-/// with an image store.
+/// Hosts that can take an image: connected, not fenced or decommissioned.
 async fn store_hosts(state: &AppState) -> Result<Vec<Host>> {
     let mut out = vec![];
     for h in mst_db::hosts::list(&state.db).await? {
-        if h.is_live()
-            && !matches!(h.state.as_str(), "fenced" | "decommissioned")
-            && mst_db::hosts::agent_supports(&state.db, h.id, "fetch_image").await?
-        {
+        if h.is_live() && !matches!(h.state.as_str(), "fenced" | "decommissioned") {
             out.push(h);
         }
     }
@@ -525,12 +521,7 @@ async fn prune_once(state: &AppState) -> Result<()> {
         .into_iter()
         .map(|i| i.to_string())
         .collect();
-    let mut hosts = vec![];
-    for h in store_hosts(state).await? {
-        if mst_db::hosts::agent_supports(&state.db, h.id, "prune_store").await? {
-            hosts.push(h);
-        }
-    }
+    let hosts = store_hosts(state).await?;
     let prune = |host: HostId, pool: Option<mst_proto::Pool>| {
         let cmd = Cmd::PruneStore(PruneStore {
             pool,

@@ -289,9 +289,6 @@ async fn reset_two_factor(
 
 async fn serve(db: mst_db::sqlx::PgPool, cfg: &config::Config) -> anyhow::Result<()> {
     let recorder = metrics::install()?;
-    secrets::seal_existing(&db)
-        .await
-        .context("sealing stored secrets")?;
     let ca = ca::load_or_create(&db).await?;
     let ovn_ca = ca::load_or_create_ovn(&db).await?;
     let (cert_chain, key) = ca::server_identity(&ca)?;

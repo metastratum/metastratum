@@ -513,7 +513,6 @@ impl AgentControl for AgentControlService {
             .map_err(internal)?;
         observe_domains(&state, host, &hello.domains, true).await;
         tracing::info!(%host, "agent session established");
-        renew_if_outlived(&state, host).await;
         // Connected with its current certificate: the one it replaced is
         // no longer needed.
         if let Some((fp, serial)) = &presented {
@@ -523,9 +522,6 @@ impl AgentControl for AgentControlService {
             if let Ok(Some(old)) = mst_db::hosts::retire_previous_cert(&state.db, host, fp).await {
                 crate::crl::revoke(&state, host, &[old], "superseded").await;
             }
-        }
-        if let Ok(h) = mst_db::hosts::get(&state.db, host).await {
-            tokio::spawn(libvirt_tls_policy(state.clone(), h.cluster_id, host));
         }
 
         tokio::spawn(async move {
@@ -600,61 +596,6 @@ impl AgentControl for AgentControlService {
         }
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
-}
-
-/// Tells the hosts of a cluster whether their libvirt must listen for each
-/// other over TLS: only while one of them has an agent too old for
-/// migrations the controller drives, which migrates peer to peer. A host
-/// outside clusters migrates nowhere and never needs to.
-pub async fn libvirt_tls_policy(
-    state: AppState,
-    cluster: Option<mst_core::ids::ClusterId>,
-    host: HostId,
-) {
-    let Ok(hosts) = mst_db::hosts::list(&state.db).await else {
-        return;
-    };
-    // Hosts' libvirt never listens for each other: the controller drives
-    // migrations on each host's own (agents from before that are refused).
-    // Hosts that once listened, under an older controller, stop.
-    for h in hosts
-        .iter()
-        .filter(|h| h.state != "decommissioned" && h.is_live())
-        .filter(|h| match cluster {
-            Some(c) => h.cluster_id == Some(c),
-            None => h.id == host,
-        })
-    {
-        let cmd = mst_proto::command::Cmd::LibvirtTls(mst_proto::LibvirtTls { listen: false });
-        if let Err(e) = state.agents.call(h.id, cmd, Duration::from_secs(120)).await {
-            tracing::warn!(host = %h.id, error = %e, "closing libvirt's TLS listener");
-        }
-    }
-}
-
-/// Asks a host to renew a certificate issued for longer than hosts get now
-/// (under an earlier policy), so it does not stay valid that long.
-async fn renew_if_outlived(state: &AppState, host: HostId) {
-    let Ok(h) = mst_db::hosts::get(&state.db, host).await else {
-        return;
-    };
-    let limit = chrono::Utc::now()
-        + chrono::Duration::from_std(HOST_CERT_LIFETIME).unwrap_or_default()
-        + chrono::Duration::days(1);
-    if h.cert_expires_at <= limit {
-        return;
-    }
-    tracing::info!(%host, expires = %h.cert_expires_at, "certificate outlives the current policy; asking the host to renew");
-    let agents = state.agents.clone();
-    tokio::spawn(async move {
-        let renew = mst_proto::command::Cmd::RenewCertificate(mst_proto::RenewCertificate {});
-        if let Err(e) = agents
-            .send_local(host, renew, Duration::from_secs(60))
-            .await
-        {
-            tracing::warn!(%host, error = %e, "asking the host to renew its certificate");
-        }
-    });
 }
 
 /// Serves other replicas: commands and consoles for agents connected here.

@@ -71,9 +71,8 @@ what it would clash with, reports all of it, and stops:
   `controller.toml` and master key are gone (the database's secrets are
   sealed with that key);
 - OVN databases another deployment uses, a host's Open vSwitch in another
-  OVN deployment, a bridge `br-ext` or physical network `external` in use,
-  and libvirt TLS certificates the agent would replace. `--force` goes
-  ahead with these. On
+  OVN deployment, or a bridge `br-ext` or physical network `external` in
+  use. `--force` goes ahead with these. On
 Arch, OVN is not packaged: the installers build it from source, and upgrade
 the system first as Arch requires. On RHEL, Open vSwitch and OVN come from
 the Fast Datapath repository, which takes a subscription; Rocky Linux and

@@ -39,13 +39,11 @@ pub fn capability(cmd: &command::Cmd) -> &'static str {
         OpenConsole(_) => "open_console",
         BaselineCpu(_) => "baseline_cpu",
         PrepareMigration(_) => "prepare_migration",
-        MigrateVm(_) => "migrate_vm",
         MigrationStats(_) => "migration_stats",
         AbortMigration(_) => "abort_migration",
         DomainInfo(_) => "domain_info",
         RenewCertificate(_) => "renew_certificate",
         MigrationStep(_) => "migration_step",
-        LibvirtTls(_) => "libvirt_tls",
         InstallCrl(_) => "install_crl",
         SetDiskLimits(_) => "set_disk_limits",
         RemovePool(_) => "remove_pool",
@@ -87,13 +85,11 @@ pub const CAPABILITIES: &[&str] = &[
     "open_console",
     "baseline_cpu",
     "prepare_migration",
-    "migrate_vm",
     "migration_stats",
     "abort_migration",
     "domain_info",
     "renew_certificate",
     "migration_step",
-    "libvirt_tls",
     "install_crl",
     "set_disk_limits",
     "remove_pool",
@@ -124,10 +120,7 @@ pub const CAPABILITIES: &[&str] = &[
 
 /// What this build's agent does beyond its commands' first versions,
 /// announced with its capabilities; older agents lack them.
-pub const FEATURES: &[&str] = &[
-    // BackupVm builds on a parent backup; DeleteBackup merges into children.
-    "incremental_backup",
-];
+pub const FEATURES: &[&str] = &[];
 
 #[cfg(test)]
 mod tests {
@@ -135,7 +128,7 @@ mod tests {
     fn every_command_is_a_capability() {
         // A new command added to the protocol must be named here too; this
         // count is a reminder (prost has no variant list to check against).
-        assert_eq!(super::CAPABILITIES.len(), 43);
+        assert_eq!(super::CAPABILITIES.len(), 41);
         let unique: std::collections::HashSet<_> = super::CAPABILITIES.iter().collect();
         assert_eq!(unique.len(), super::CAPABILITIES.len());
     }

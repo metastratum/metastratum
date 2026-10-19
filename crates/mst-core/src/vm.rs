@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{ImageId, LOCAL_POOL, NetworkId, NicId, StoragePoolId, VolumeId};
+use crate::ids::{ImageId, NetworkId, NicId, StoragePoolId, VolumeId};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
@@ -34,19 +34,10 @@ pub struct VmSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_memory_mib: Option<u64>,
     /// The guest hands memory it frees back to the host (virtio-balloon free
-    /// page reporting): on for new VMs, and can be turned off (for guests
+    /// page reporting): on by default, and can be turned off (for guests
     /// that should keep their memory warm, say). It is part of the balloon
-    /// device, so it changes only while the VM is stopped. Unset for VMs
-    /// from before it existed; they get it at their next start from stopped.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub free_page_reporting: Option<bool>,
-    /// Its disks other than the boot disk sit on a virtio-SCSI controller,
-    /// each at a unit of its own, so they plug in and out while it runs (and
-    /// stay put when one before them goes). It adds a device, so it is set
-    /// as the VM starts from stopped; unset for VMs not started since, whose
-    /// disks are all virtio disks in order.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub disk_hotplug: Option<bool>,
+    /// device, so it changes only while the VM is stopped.
+    pub free_page_reporting: bool,
     #[serde(default)]
     pub firmware: Firmware,
     /// Boot disk first.
@@ -55,14 +46,13 @@ pub struct VmSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_init: Option<CloudInit>,
     /// The guest CPU: the VM's cluster baseline, so it can run (and migrate)
-    /// on any host of the cluster. Unset for VMs from before live migration,
-    /// which get their host's CPU as is.
+    /// on any host of the cluster. Unset for VMs that may not migrate, which
+    /// get their host's CPU as is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu: Option<CpuSpec>,
     /// Whether the VM may live-migrate. If not, it gets its host's CPU with
     /// every feature, and disks use the host's page cache: faster, but tied
-    /// to the host. VMs from before this setting existed could migrate.
-    #[serde(default = "yes")]
+    /// to the host.
     pub migratable: bool,
     /// Fields a newer version added, kept as they are when this one writes
     /// the spec back (controllers of two versions run side by side while
@@ -79,30 +69,26 @@ impl VmSpec {
         self.max_memory_mib.unwrap_or(0).max(self.memory_mib)
     }
 
-    /// Whether the balloon hands free memory back.
-    pub fn reports_free_pages(&self) -> bool {
-        self.free_page_reporting.unwrap_or(false)
-    }
-
     /// The most virtual CPUs the VM can have without a restart: what its
     /// host keeps for it, and what counts against its tenant's quota.
     pub fn reserved_vcpus(&self) -> u32 {
         self.max_vcpus.unwrap_or(0).max(self.vcpus)
     }
 
-    /// Where each of its disks sits in the guest, in the order of `disks`.
+    /// Where each of its disks sits in the guest, in the order of `disks`:
+    /// the boot disk is `vda`; the others sit on a virtio-SCSI controller,
+    /// each at its unit, so they plug in and out while the VM runs (and stay
+    /// put when one before them goes).
     pub fn disk_slots(&self) -> Vec<DiskSlot> {
-        let hotplug = self.disk_hotplug == Some(true);
         self.disks
             .iter()
             .enumerate()
-            .map(|(i, d)| match (i, hotplug) {
-                (0, _) | (_, false) => DiskSlot {
-                    // vda, vdb, ...: specs stay far below 26 disks.
-                    target: format!("vd{}", letter(i as u32)),
+            .map(|(i, d)| match i {
+                0 => DiskSlot {
+                    target: "vda".into(),
                     scsi_unit: None,
                 },
-                (_, true) => {
+                _ => {
                     let unit = d.unit.unwrap_or(i as u32 - 1);
                     DiskSlot {
                         // sdb...: sda is the cloud-init seed's (on SATA).
@@ -114,17 +100,9 @@ impl VmSpec {
             .collect()
     }
 
-    /// The SCSI unit for another data disk: the lowest one free, also
-    /// before its disks are on the SCSI controller (they take the units
-    /// they will have there).
+    /// The SCSI unit for another data disk: the lowest one free.
     pub fn free_unit(&self) -> u32 {
-        let taken: Vec<u32> = self
-            .disks
-            .iter()
-            .skip(1)
-            .enumerate()
-            .map(|(i, d)| d.unit.unwrap_or(i as u32))
-            .collect();
+        let taken: Vec<u32> = self.disks.iter().skip(1).filter_map(|d| d.unit).collect();
         (0..).find(|u| !taken.contains(u)).unwrap_or(0)
     }
 }
@@ -137,17 +115,12 @@ pub const MAX_DATA_DISKS: usize = 16;
 pub struct DiskSlot {
     /// libvirt's target device: `vda` for the boot disk.
     pub target: String,
-    /// Its unit on the virtio-SCSI controller, for data disks of VMs that
-    /// plug them in while running.
+    /// Its unit on the virtio-SCSI controller, for data disks.
     pub scsi_unit: Option<u32>,
 }
 
 fn letter(i: u32) -> char {
     (b'a' + i as u8) as char
-}
-
-fn yes() -> bool {
-    true
 }
 
 /// A named CPU model with feature adjustments.
@@ -173,9 +146,7 @@ pub struct CpuFeature {
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DiskSpec {
     pub volume_id: VolumeId,
-    /// Pool the volume lives in. Specs from before storage pools existed
-    /// used local storage.
-    #[serde(default = "local_pool")]
+    /// Pool the volume lives in.
     pub pool_id: StoragePoolId,
     pub size_bytes: u64,
     /// Image the volume was cloned from, if any.
@@ -188,7 +159,7 @@ pub struct DiskSpec {
     /// another VM's disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloned_from: Option<VolumeId>,
-    /// Its unit on the VM's SCSI controller (see [`VmSpec::disk_hotplug`]),
+    /// Its unit on the VM's SCSI controller (see [`VmSpec::disk_slots`]),
     /// kept while it is attached; unset for the boot disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<u32>,
@@ -227,10 +198,6 @@ pub struct CloudInit {
     pub user_data: String,
 }
 
-fn local_pool() -> StoragePoolId {
-    LOCAL_POOL
-}
-
 /// Locally administered unicast MAC in metastratum's prefix, derived from the
 /// NIC ID so it is stable and needs no allocation table.
 pub fn mac_for(nic: NicId) -> String {
@@ -245,35 +212,15 @@ pub fn mac_for(nic: NicId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn free_page_reporting_tells_off_from_never_set() {
-        let base = r#""vcpus":1,"memory_mib":512,"disks":[],"nics":[]"#;
-        let parse = |extra: &str| -> VmSpec {
-            serde_json::from_str(&format!("{{{base}{extra}}}")).unwrap()
-        };
-        // From before it existed: unset, off until the next start sets it.
-        let legacy = parse("");
-        assert_eq!(legacy.free_page_reporting, None);
-        assert!(!legacy.reports_free_pages());
-        // Turned off: stays off, also written out.
-        let off = parse(r#","free_page_reporting":false"#);
-        assert_eq!(off.free_page_reporting, Some(false));
-        let again: VmSpec = serde_json::from_value(serde_json::to_value(&off).unwrap()).unwrap();
-        assert_eq!(again.free_page_reporting, Some(false));
-        assert!(parse(r#","free_page_reporting":true"#).reports_free_pages());
-    }
+    use crate::ids::LOCAL_POOL;
 
     #[test]
     fn spec_json_roundtrip_with_defaults() {
-        let json = r#"{"vcpus":2,"memory_mib":1024,"disks":[{"volume_id":"0199f0a2-7b3c-7d00-8000-000000000001","size_bytes":1}],"nics":[]}"#;
+        let json = r#"{"vcpus":2,"memory_mib":1024,"free_page_reporting":true,"migratable":true,"disks":[{"volume_id":"0199f0a2-7b3c-7d00-8000-000000000001","pool_id":"00000000-0000-0000-0000-000000000001","size_bytes":1}],"nics":[]}"#;
         let spec: VmSpec = serde_json::from_str(json).unwrap();
         assert_eq!(spec.firmware, Firmware::Uefi);
         assert!(spec.cloud_init.is_none());
-        assert_eq!(
-            spec.disks[0].pool_id, LOCAL_POOL,
-            "old specs used local storage"
-        );
+        assert_eq!(spec.disks[0].pool_id, LOCAL_POOL);
         let again: VmSpec = serde_json::from_str(&serde_json::to_string(&spec).unwrap()).unwrap();
         assert_eq!(again, spec);
     }
@@ -290,24 +237,18 @@ mod tests {
             unit,
             extra: Default::default(),
         };
-        let mut spec: VmSpec =
-            serde_json::from_str(r#"{"vcpus":1,"memory_mib":512,"disks":[],"nics":[]}"#).unwrap();
+        let mut spec: VmSpec = serde_json::from_str(
+            r#"{"vcpus":1,"memory_mib":512,"free_page_reporting":true,"migratable":true,"disks":[],"nics":[]}"#,
+        )
+        .unwrap();
         spec.disks = vec![disk(None), disk(Some(0)), disk(Some(2))];
-        // Not started since: virtio disks in order.
         let targets = |s: &VmSpec| {
             s.disk_slots()
                 .into_iter()
                 .map(|d| d.target)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(targets(&spec), ["vda", "vdb", "vdc"]);
-        // A disk from before units takes the one it will have.
-        let mut legacy = spec.clone();
-        legacy.disks[1].unit = None;
-        legacy.disks[2].unit = None;
-        assert_eq!(legacy.free_unit(), 2);
-        // Plugged in: units stay as they were when one goes.
-        spec.disk_hotplug = Some(true);
+        // Units stay as they were when one goes.
         assert_eq!(targets(&spec), ["vda", "sdb", "sdd"]);
         assert_eq!(spec.free_unit(), 1);
         spec.disks.remove(1);
@@ -318,7 +259,7 @@ mod tests {
 
     #[test]
     fn fields_of_newer_versions_survive_a_rewrite() {
-        let json = r#"{"vcpus":1,"memory_mib":512,"future":{"x":1},"disks":[{"volume_id":"0199f0a2-7b3c-7d00-8000-000000000001","size_bytes":1,"later":true}],"nics":[]}"#;
+        let json = r#"{"vcpus":1,"memory_mib":512,"free_page_reporting":true,"migratable":true,"future":{"x":1},"disks":[{"volume_id":"0199f0a2-7b3c-7d00-8000-000000000001","pool_id":"00000000-0000-0000-0000-000000000001","size_bytes":1,"later":true}],"nics":[]}"#;
         let spec: VmSpec = serde_json::from_str(json).unwrap();
         let again = serde_json::to_value(&spec).unwrap();
         assert_eq!(again["future"], serde_json::json!({"x": 1}));

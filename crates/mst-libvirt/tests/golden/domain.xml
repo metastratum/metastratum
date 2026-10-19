@@ -36,6 +36,7 @@
   <on_reboot>restart</on_reboot>
   <on_crash>destroy</on_crash>
   <devices>
+    <controller type='scsi' index='0' model='virtio-scsi'/>
     <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2' cache='none' discard='unmap'/>
       <source file='/var/lib/metastratum/pools/local/vol-1.qcow2'/>

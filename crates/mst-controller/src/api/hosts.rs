@@ -38,7 +38,7 @@ pub struct HostView {
     cluster_name: Option<String>,
     /// Whether the host's agent has a live session (and heartbeated recently).
     connected: bool,
-    /// Accepts live migrations (libvirt TLS is set up).
+    /// Accepts live migrations (QEMU's TLS is set up).
     migration_ready: bool,
     /// The controller replica holding the agent's session, and since when.
     controller: Option<String>,
@@ -275,13 +275,6 @@ async fn update_host(
             ));
         }
         mst_db::hosts::set_cluster(&state.db, id, cluster).await?;
-        if cluster != host.cluster_id {
-            // Whether libvirt must listen depends on the cluster's hosts:
-            // both the one it left and the one it joined may change.
-            let tls = crate::agents::libvirt_tls_policy;
-            tokio::spawn(tls(state.clone(), host.cluster_id, id));
-            tokio::spawn(tls(state.clone(), cluster, id));
-        }
     }
     if let Some(s) = &req.state {
         if !matches!(s.as_str(), "ready" | "maintenance") {
@@ -413,8 +406,7 @@ async fn set_fencing(
                     }
                 }
             }
-            let opened = crate::ha::open_config(id, &config).map_err(ApiError::internal)?;
-            crate::fence::validate(kind, &opened).map_err(ApiError::bad_request)?;
+            // Secrets that came in as plaintext are sealed, as are those kept.
             for f in crate::fence::SECRET_FIELDS {
                 if let Some(v) = config.get(*f).and_then(|v| v.as_str())
                     && !mst_pki::is_sealed(v)
@@ -422,6 +414,8 @@ async fn set_fencing(
                     config[*f] = crate::secrets::seal(&crate::fence::secret_context(id), v).into();
                 }
             }
+            let opened = crate::ha::open_config(id, &config).map_err(ApiError::internal)?;
+            crate::fence::validate(kind, &opened).map_err(ApiError::bad_request)?;
             mst_db::hosts::set_fencing(&state.db, id, Some((kind, &config))).await?;
         }
     }
@@ -566,11 +560,6 @@ async fn decommission_host(
     report.certificates_revoked = revoked.len();
     crate::crl::revoke(&state, id, &revoked, "decommissioned").await;
     state.agents.close(id);
-    tokio::spawn(crate::agents::libvirt_tls_policy(
-        state.clone(),
-        host.cluster_id,
-        id,
-    ));
     audit(
         &state.db,
         Some(&p),

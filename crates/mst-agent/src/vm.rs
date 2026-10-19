@@ -171,7 +171,7 @@ pub async fn domain(
         vcpu_hotplug: spec.max_vcpus.is_some(),
         memory_mib: spec.memory_mib,
         max_memory_mib: spec.reserved_memory_mib(),
-        free_page_reporting: spec.reports_free_pages(),
+        free_page_reporting: spec.free_page_reporting,
         firmware: match spec.firmware {
             Firmware::Bios => mst_libvirt::Firmware::Bios,
             Firmware::Uefi => mst_libvirt::Firmware::Uefi,
@@ -181,7 +181,6 @@ pub async fn domain(
         cpu: spec.cpu.as_ref().filter(|_| spec.migratable).map(cpu_model),
         host_cache: !spec.migratable,
         disk_limits,
-        scsi_controller: spec.disk_hotplug == Some(true),
         nics: spec
             .nics
             .iter()

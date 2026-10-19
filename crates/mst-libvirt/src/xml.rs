@@ -209,28 +209,6 @@ pub fn disk_paths(xml: &str) -> Vec<(String, String)> {
     }
 }
 
-/// Whether the domain has the virtio-SCSI controller data disks plug into.
-pub fn has_scsi_controller(xml: &str) -> bool {
-    use quick_xml::events::Event;
-    let mut reader = quick_xml::Reader::from_str(xml);
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(e) | Event::Empty(e)) if e.local_name().as_ref() == "controller" => {
-                let has = |k: &str, v: &str| {
-                    e.attributes()
-                        .flatten()
-                        .any(|a| a.key.as_ref() == k && a.value.as_ref() == v)
-                };
-                if has("type", "scsi") && has("model", "virtio-scsi") {
-                    return true;
-                }
-            }
-            Ok(Event::Eof) | Err(_) => return false,
-            _ => {}
-        }
-    }
-}
-
 /// The disks (targets) a checkpoint (`<domaincheckpoint>`) keeps a dirty
 /// bitmap in.
 pub fn checkpoint_disks(xml: &str) -> Vec<String> {
@@ -313,10 +291,6 @@ mod tests {
                 ("sdb".to_owned(), "pool/vol-b".to_owned())
             ]
         );
-        assert!(super::has_scsi_controller(xml));
-        assert!(!super::has_scsi_controller(
-            "<domain><devices><controller type='usb'/></devices></domain>"
-        ));
     }
 
     #[test]

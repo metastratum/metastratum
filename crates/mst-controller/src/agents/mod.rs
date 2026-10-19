@@ -21,9 +21,7 @@ use mst_proto::{
 use tokio::sync::{mpsc, oneshot};
 use tonic::Status;
 
-pub use service::{
-    AgentControlService, EnrollmentService, ReplicaControlService, libvirt_tls_policy,
-};
+pub use service::{AgentControlService, EnrollmentService, ReplicaControlService};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
@@ -42,8 +40,7 @@ type Outbound = mpsc::Sender<Result<ControllerMessage, Status>>;
 pub struct AgentConn {
     session: u64,
     tx: Outbound,
-    /// Commands the agent handles; empty for agents from before
-    /// capabilities, which get everything they always got.
+    /// Commands the agent handles.
     capabilities: std::collections::HashSet<String>,
     pending: Mutex<HashMap<String, oneshot::Sender<Result<String, String>>>>,
     /// Ends the session from this side.
@@ -195,7 +192,7 @@ impl Agents {
             .cloned()
             .ok_or(AgentError::NotConnected)?;
         let want = mst_proto::capability(&cmd);
-        if !conn.capabilities.is_empty() && !conn.capabilities.contains(want) {
+        if !conn.capabilities.contains(want) {
             return Err(AgentError::Failed(format!(
                 "the host's agent does not support {want}; upgrade it"
             )));
@@ -299,19 +296,12 @@ mod tests {
         let host = HostId::new();
         let (tx, mut rx) = mpsc::channel(4);
         agents.register(host, tx, &["start_vm".to_owned()]);
-        let cmd = command::Cmd::MigrateVm(mst_proto::MigrateVm::default());
+        let cmd = command::Cmd::StopVm(mst_proto::StopVm::default());
         let err = agents
             .send_local(host, cmd, Duration::from_secs(1))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("upgrade"), "{err}");
         assert!(rx.try_recv().is_err(), "nothing was sent");
-        // An agent from before capabilities gets everything.
-        let old = HostId::new();
-        let (tx, mut rx) = mpsc::channel(4);
-        agents.register(old, tx, &[]);
-        let cmd = command::Cmd::MigrateVm(mst_proto::MigrateVm::default());
-        let _ = agents.send_local(old, cmd, Duration::from_millis(50)).await;
-        assert!(rx.try_recv().is_ok(), "sent");
     }
 }

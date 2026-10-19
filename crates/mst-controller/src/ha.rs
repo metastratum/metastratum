@@ -4,8 +4,8 @@
 //! A host is considered failed when:
 //!
 //! 1. its agent has been silent for [`GRACE`] (no session, no heartbeat),
-//! 2. it does not answer on its libvirt TLS or SSH ports either (a crashed
-//!    agent on a healthy host must not get the host shot), and
+//! 2. it does not answer on its SSH port either (a crashed agent on a
+//!    healthy host must not get the host shot), and
 //! 3. at most half of its cluster looks failed (more is likelier a problem
 //!    on the controller's side of the network than in the hosts).
 //!
@@ -76,18 +76,13 @@ where
     }
 }
 
-/// Whether a host answers on any of its management ports.
+/// Whether a host answers on its management port (SSH).
 async fn answers(address: &str) -> bool {
-    for port in [16514u16, 22] {
-        let probe = tokio::net::TcpStream::connect((address, port));
-        if matches!(
-            tokio::time::timeout(Duration::from_secs(3), probe).await,
-            Ok(Ok(_))
-        ) {
-            return true;
-        }
-    }
-    false
+    let probe = tokio::net::TcpStream::connect((address, 22));
+    matches!(
+        tokio::time::timeout(Duration::from_secs(3), probe).await,
+        Ok(Ok(_))
+    )
 }
 
 /// The leader's watch over hosts.

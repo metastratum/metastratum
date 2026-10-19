@@ -152,7 +152,7 @@ pub struct Candidate {
     pub memory_overcommit: f32,
     pub used_vcpus: i64,
     pub used_memory_mib: i64,
-    /// Accepts live migrations (libvirt TLS is set up).
+    /// Accepts live migrations (QEMU's TLS is set up).
     pub migration_ready: bool,
 }
 

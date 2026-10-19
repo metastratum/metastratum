@@ -48,11 +48,9 @@ pub async fn create(ctx: &TaskCtx) -> Result<()> {
     let result = take(ctx, &backup).await;
     match &result {
         Ok(t) => {
-            // An agent from before incremental backups took it in full.
-            let reason = match (backup.parent_id, t.incremental, &t.full_reason) {
-                (Some(_), false, None) => Some("the host's agent took it in full"),
-                (_, false, r) => r.as_deref(),
-                (_, true, _) => None,
+            let reason = match t.incremental {
+                false => t.full_reason.as_deref(),
+                true => None,
             };
             let mut conn = db.acquire().await?;
             mst_db::backups::finish(&mut conn, id, t.stored_bytes as i64, t.consistent, reason)
@@ -200,7 +198,7 @@ async fn delete_locked(ctx: &TaskCtx, id: BackupId) -> Result<()> {
     }
     let repo = mst_db::backups::get_repository(&state.db, backup.repository_id).await?;
     // Merging takes an agent that knows how; removing files, any.
-    let host = any_host(state, backup.vm_id, !children.is_empty()).await?;
+    let host = any_host(state, backup.vm_id).await?;
     if !children.is_empty() {
         ctx.step("merging into the backup built on it", 0.1).await;
     }
@@ -240,22 +238,9 @@ async fn delete_locked(ctx: &TaskCtx, id: BackupId) -> Result<()> {
     Ok(())
 }
 
-/// A host that can reach the repository: the VM's, or any connected one;
-/// with `merging`, one whose agent merges backups.
-async fn any_host(
-    state: &AppState,
-    vm: Option<mst_core::ids::VmId>,
-    merging: bool,
-) -> Result<HostId> {
-    let merges = match merging {
-        true => Some(mst_db::hosts::supporting(&state.db, INCREMENTAL).await?),
-        false => None,
-    };
-    let able = |h: &mst_db::hosts::Host| {
-        h.state != "decommissioned"
-            && h.connected_to.is_some()
-            && merges.as_ref().is_none_or(|m| m.contains(&h.id))
-    };
+/// A host that can reach the repository: the VM's, or any connected one.
+async fn any_host(state: &AppState, vm: Option<mst_core::ids::VmId>) -> Result<HostId> {
+    let able = |h: &mst_db::hosts::Host| h.state != "decommissioned" && h.connected_to.is_some();
     if let Some(vm) = vm
         && let Ok(vm) = mst_db::vms::get(&state.db, vm).await
         && let Some(host) = vm.host_id
@@ -270,17 +255,8 @@ async fn any_host(
         .into_iter()
         .find(able)
         .map(|h| h.id)
-        .ok_or_else(|| {
-            anyhow!(if merging {
-                "no host is connected whose agent merges backups (upgrade one)"
-            } else {
-                "no host is connected to reach the repository"
-            })
-        })
+        .ok_or_else(|| anyhow!("no host is connected to reach the repository"))
 }
-
-/// The agent feature incremental backups (and merging them) take.
-pub const INCREMENTAL: &str = "incremental_backup";
 
 /// Deletes a VM's scheduled backups beyond what its schedule keeps.
 async fn prune(state: &AppState, vm: mst_core::ids::VmId) {

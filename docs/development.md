@@ -175,8 +175,9 @@ deploy/lab/lab.sh ovn-tls
 ```
 
 **The hosts.** `deploy/lab/agent.sh` builds the agent's package and
-installs it on the three hosts, with a fresh join token for those not yet
-enrolled (`MST_CONFIG` set as above; it takes nfpm, see Building):
+installs it on the three hosts, with a fresh join token (for the default
+cluster) for those not yet enrolled (`MST_CONFIG` set as above; it takes
+nfpm, see Building):
 
 ```sh
 deploy/lab/agent.sh
@@ -184,9 +185,7 @@ deploy/lab/agent.sh
 
 **A first VM.** Add an image, for example
 `https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2`.
-Hosts take VMs once they are in a cluster (Infrastructure → Clusters, then
-Manage on a host); sub-tenants also need the cluster granted to them
-(Tenants → Resources).
+Sub-tenants need the cluster granted to them (Tenants → Resources).
 
 **Several controllers.** Run a second one beside the first, from a copy of
 the configuration with other `[api] listen` and `[agents] listen` ports

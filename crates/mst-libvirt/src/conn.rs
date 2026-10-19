@@ -595,25 +595,6 @@ impl Libvirt {
         Ok(crate::cpu::parse_cpu(&r.cpu))
     }
 
-    /// Live-migrates a running domain to another host, peer to peer: this
-    /// host's daemon connects to the destination's over TLS and drives the
-    /// whole migration, including copying local disks. Returns when it has
-    /// finished (the domain then runs on the destination and is gone here)
-    /// or failed (it keeps running here).
-    pub async fn migrate(&self, uuid: &str, to: &MigrateTo<'_>) -> Result<()> {
-        let c = self.client().await?;
-        let dom = self.lookup(&c, uuid).await?;
-        c.domain_migrate_perform3_params(&DomainMigratePerform3ParamsArgs {
-            dom,
-            dconnuri: Some(format!("qemu+tls://{}/system", to.address)),
-            params: migrate_params(to, &format!("tcp://{}", to.address)),
-            cookie_in: vec![],
-            flags: migrate_flags(to) | MIGRATE_PEER2PEER,
-        })
-        .await?;
-        Ok(())
-    }
-
     /// Runs one step of a migration the caller drives (see
     /// [`MigrationStep`]). `to` describes the migration the same way at
     /// every step, on both hosts.
@@ -1099,19 +1080,15 @@ impl Libvirt {
         Ok(crate::xml::disk_targets(&xml))
     }
 
-    /// The running domain's disks (target and where its data is), and
-    /// whether it has the virtio-SCSI controller data disks plug into.
-    pub async fn live_disks(&self, uuid: &str) -> Result<(Vec<(String, String)>, bool)> {
+    /// The running domain's disks: target, and where its data is.
+    pub async fn live_disks(&self, uuid: &str) -> Result<Vec<(String, String)>> {
         let c = self.client().await?;
         let dom = self.lookup(&c, uuid).await?;
         let xml = c
             .domain_get_xml_desc(&DomainGetXmlDescArgs { dom, flags: 0 })
             .await?
             .xml;
-        Ok((
-            crate::xml::disk_paths(&xml),
-            crate::xml::has_scsi_controller(&xml),
-        ))
+        Ok(crate::xml::disk_paths(&xml))
     }
 
     /// A running domain's disks, each target with its source's index (see
@@ -1193,7 +1170,6 @@ impl Libvirt {
 
 // virDomainMigrateFlags
 const MIGRATE_LIVE: u32 = 1;
-const MIGRATE_PEER2PEER: u32 = 2;
 const MIGRATE_PERSIST_DEST: u32 = 8;
 const MIGRATE_UNDEFINE_SOURCE: u32 = 16;
 const MIGRATE_NON_SHARED_DISK: u32 = 64;

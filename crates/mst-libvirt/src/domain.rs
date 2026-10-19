@@ -97,8 +97,6 @@ pub struct DomainDef {
     pub host_cache: bool,
     /// Throttling for each disk (not CD-ROMs).
     pub disk_limits: DiskLimits,
-    /// A virtio-SCSI controller, for disks to plug in while it runs.
-    pub scsi_controller: bool,
 }
 
 /// Disk throttling; `None`: no limit.
@@ -321,12 +319,13 @@ impl DomainDef {
             .child(El::new("on_crash").text("destroy"))
             .child(
                 El::new("devices")
-                    .maybe(self.scsi_controller.then(|| {
+                    // For data disks, which plug in while it runs.
+                    .child(
                         El::new("controller")
                             .attr("type", "scsi")
                             .attr("index", 0)
-                            .attr("model", "virtio-scsi")
-                    }))
+                            .attr("model", "virtio-scsi"),
+                    )
                     .children(disks)
                     .children(nics)
                     .child(
@@ -482,7 +481,6 @@ mod tests {
             ],
             host_cache: false,
             disk_limits: DiskLimits::default(),
-            scsi_controller: false,
             cpu: Some(crate::cpu::CpuModel {
                 model: "EPYC-Milan".into(),
                 vendor: Some("AMD".into()),
@@ -502,7 +500,6 @@ mod tests {
     #[test]
     fn data_disks_sit_at_fixed_scsi_units() {
         let mut d = sample();
-        d.scsi_controller = true;
         d.disks[1].target = "sdd".into();
         d.disks[1].bus = "scsi".into();
         d.disks[1].scsi_unit = Some(2);

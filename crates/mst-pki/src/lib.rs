@@ -3,7 +3,7 @@
 //! The controller owns a CA. It issues its own TLS server certificate for the
 //! agent endpoint and signs host certificates during enrollment. Hosts identify
 //! themselves to the controller with that certificate (the host ID is the
-//! subject CN), and later use it for libvirt TLS between hosts.
+//! subject CN).
 //!
 //! An agent bootstraps trust from a join token, which carries the SHA-256
 //! fingerprint of the CA certificate alongside a one-time secret, the same idea
@@ -217,8 +217,8 @@ impl Ca {
     /// Signs a host certificate for the public key in `csr_pem`. Only the key
     /// is taken from the CSR: subject and SANs are decided by the controller,
     /// so an agent cannot request an identity it was not given. Host
-    /// certificates are valid for both client and server auth, as libvirt TLS
-    /// between hosts needs both.
+    /// certificates are valid for both client and server auth: hosts serve
+    /// QEMU's TLS with them too.
     pub fn sign_host_csr(
         &self,
         csr_pem: &str,

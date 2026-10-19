@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the agent's package (deploy/packaging/build.sh) and installs it on
 # the lab hosts, with their configuration. Hosts that are not enrolled yet
-# get a fresh join token.
+# get a fresh join token, for the default cluster.
 #
 # Usage: deploy/lab/agent.sh [host...]          (default: all three hosts)
 #
@@ -34,12 +34,10 @@ main() {
     token=""
     if ! "$LAB" ssh "$host" test -e /var/lib/metastratum-agent/host_id; then
       : "${MST_CONFIG:?MST_CONFIG must name the controller configuration to issue a join token for $host}"
-      token=$("$ROOT/target/debug/mst-controller" join-token --ttl-minutes 15)
+      token=$("$ROOT/target/debug/mst-controller" join-token --ttl-minutes 15 --cluster default)
     fi
     "$LAB" ssh "$host" sudo bash -s -- "$CONTROLLER" "$token" <<'REMOTE'
 set -euo pipefail
-# Hosts set up before the package: drop the hand-installed agent.
-rm -f /usr/local/bin/mst-agent /etc/systemd/system/mst-agent.service /etc/metastratum/agent.env
 install -d -m 0755 /etc/metastratum
 {
   printf 'controllers = ["%s"]\n' "${1//,/\", \"}"

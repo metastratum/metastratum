@@ -186,12 +186,12 @@ async fn write_plan(dir: &Path, plan: &Plan) -> Result<()> {
     Ok(())
 }
 
-async fn read_plan(dir: &Path) -> Plan {
-    match tokio::fs::read(dir.join("plan.json")).await {
-        Ok(b) => serde_json::from_slice(&b).unwrap_or_default(),
-        // Begun by an agent from before plans: in full.
-        Err(_) => Plan::default(),
-    }
+/// The plan a backup was begun with (written before it began).
+async fn read_plan(dir: &Path) -> Result<Plan> {
+    let b = tokio::fs::read(dir.join("plan.json"))
+        .await
+        .context("reading the backup's plan")?;
+    Ok(serde_json::from_slice(&b)?)
 }
 
 /// Why a running VM's backup is taken in full though it has a parent.
@@ -442,7 +442,7 @@ async fn live(agent: &Agent, c: &BackupVm, dir: &Path) -> Result<(bool, Plan)> {
             break;
         }
     }
-    let plan = read_plan(dir).await;
+    let plan = read_plan(dir).await?;
     match lv.completed_job(&c.vm_id).await? {
         Some(job) if job.operation == Some(JOB_OPERATION_BACKUP) && !job.ok => {
             // What it started tracks from a backup that is not there.

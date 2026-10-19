@@ -22,10 +22,6 @@ impl ActualRow {
             Canon::Set(_) => BTreeMap::new(),
         }
     }
-
-    fn name(&self) -> Option<&str> {
-        self.cols.get("name").and_then(Value::as_str)
-    }
 }
 
 /// What converging takes.
@@ -130,7 +126,7 @@ fn encode(d: &Datum, targets: &HashMap<&str, Target>) -> Value {
     }
 }
 
-/// Is this row one of metastratum's (current or from before keys existed)?
+/// Is this row one of metastratum's?
 fn ours(ids: &BTreeMap<String, String>) -> bool {
     ids.keys().any(|k| k.starts_with("metastratum-"))
 }
@@ -139,21 +135,15 @@ fn ours(ids: &BTreeMap<String, String>) -> bool {
 /// rows among metastratum's own. Rows of other owners are never matched,
 /// changed or deleted.
 pub fn plan(desired: &Desired, actual: &[ActualRow]) -> Plan {
-    // Claim existing rows: by key, else (rows from before keys) by name.
+    // Claim existing rows by their key. Ours without one are removed.
     let mut by_key: HashMap<(Table, String), Vec<&ActualRow>> = HashMap::new();
-    let mut by_name: HashMap<(Table, &str), Vec<&ActualRow>> = HashMap::new();
     for a in actual {
         let ids = a.external_ids();
         if !ours(&ids) {
             continue;
         }
-        match ids.get(KEY) {
-            Some(k) => by_key.entry((a.table, k.clone())).or_default().push(a),
-            None => {
-                if let Some(n) = a.name() {
-                    by_name.entry((a.table, n)).or_default().push(a);
-                }
-            }
+        if let Some(k) = ids.get(KEY) {
+            by_key.entry((a.table, k.clone())).or_default().push(a);
         }
     }
     let mut claimed: BTreeSet<&str> = BTreeSet::new();
@@ -163,13 +153,6 @@ pub fn plan(desired: &Desired, actual: &[ActualRow]) -> Plan {
         let found = by_key
             .get(&(r.table, r.key.clone()))
             .and_then(|v| v.first())
-            .or_else(|| {
-                let name = r.str("name").filter(|_| r.table.has_name())?;
-                by_name
-                    .get(&(r.table, name))?
-                    .iter()
-                    .find(|a| !claimed.contains(a.uuid.as_str()))
-            })
             .filter(|a| !claimed.contains(a.uuid.as_str()));
         match found {
             Some(a) => {
@@ -378,34 +361,6 @@ mod tests {
         );
         // The default-deny port group stays, now empty.
         assert_eq!(p.inserts, 0);
-    }
-
-    #[test]
-    fn rows_from_before_keys_are_adopted_by_name() {
-        let m = model();
-        let net = m.networks[0].id;
-        let legacy = ActualRow {
-            table: Table::LogicalSwitch,
-            uuid: "aaaaaaaa-0000-0000-0000-000000000000".into(),
-            cols: Map::from_iter([
-                ("name".to_owned(), json!(format!("mst-net-{net}"))),
-                ("ports".to_owned(), json!(["set", []])),
-                (
-                    "external_ids".to_owned(),
-                    json!(["map", [["metastratum-id", net.to_string()]]]),
-                ),
-            ]),
-        };
-        let p = plan(&compile(&m), &[legacy]);
-        let update = p
-            .ops
-            .iter()
-            .find(|o| o["op"] == "update")
-            .expect("adopted, not recreated");
-        assert_eq!(update["table"], "Logical_Switch");
-        assert!(!p.ops.iter().any(|o| o["op"] == "insert"
-            && o["table"] == "Logical_Switch"
-            && o["row"]["name"] == json!(format!("mst-net-{net}"))));
     }
 
     #[test]

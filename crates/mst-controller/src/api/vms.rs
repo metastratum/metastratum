@@ -201,7 +201,7 @@ fn view(vm: Vm, ctx: &Context) -> VmView {
         cpu_hotplug: spec.max_vcpus.is_some(),
         memory_mib: spec.memory_mib,
         max_memory_mib: spec.reserved_memory_mib(),
-        free_page_reporting: spec.reports_free_pages(),
+        free_page_reporting: spec.free_page_reporting,
         firmware: spec.firmware,
         migratable: spec.migratable,
         cpu_model: spec.cpu.as_ref().map(|c| c.model.clone()),
@@ -384,7 +384,7 @@ async fn restore_backup(
         max_vcpus: spec.max_vcpus,
         memory_mib: spec.memory_mib,
         max_memory_mib: spec.max_memory_mib,
-        free_page_reporting: spec.free_page_reporting,
+        free_page_reporting: Some(spec.free_page_reporting),
         disk_gib: disk_bytes.div_ceil(GIB),
         image_id: ImageId(uuid::Uuid::nil()),
         firmware: spec.firmware,
@@ -462,7 +462,7 @@ async fn clone_vm(
         max_vcpus: spec.max_vcpus,
         memory_mib: spec.memory_mib,
         max_memory_mib: spec.max_memory_mib,
-        free_page_reporting: spec.free_page_reporting,
+        free_page_reporting: Some(spec.free_page_reporting),
         disk_gib: disk_bytes.div_ceil(GIB),
         image_id: ImageId(uuid::Uuid::nil()),
         firmware: spec.firmware,
@@ -772,9 +772,7 @@ async fn create_inner(
         max_vcpus: req.max_vcpus.filter(|m| *m > req.vcpus),
         memory_mib: req.memory_mib,
         max_memory_mib: req.max_memory_mib.filter(|m| *m > req.memory_mib),
-        free_page_reporting: Some(req.free_page_reporting.unwrap_or(true)),
-        // Set as it starts, if its host's agent plugs disks in.
-        disk_hotplug: None,
+        free_page_reporting: req.free_page_reporting.unwrap_or(true),
         firmware: req.firmware,
         disks: disks.clone(),
         nics: vec![],
@@ -1215,7 +1213,7 @@ async fn update_vm(
         .max_memory_mib
         .unwrap_or_else(|| old.reserved_memory_mib().max(memory_mib));
     let template = req.template.unwrap_or(vm.template);
-    let reporting = req.free_page_reporting.unwrap_or(old.reports_free_pages());
+    let reporting = req.free_page_reporting.unwrap_or(old.free_page_reporting);
     if req.fit_cpu && !migratable {
         return Err(ApiError::bad_request(
             "the VM does not migrate: it has its host's CPU as is",
@@ -1237,7 +1235,7 @@ async fn update_vm(
             old.memory_mib,
             old.reserved_memory_mib(),
             vm.template,
-            old.reports_free_pages(),
+            old.free_page_reporting,
         )
     {
         return Ok(Json(view(vm, &context(&state).await?)));
@@ -1265,7 +1263,7 @@ async fn update_vm(
                     old.reserved_vcpus(),
                     old.reserved_memory_mib(),
                     vm.template,
-                    old.reports_free_pages(),
+                    old.free_page_reporting,
                 )
         {
             return Err(ApiError::conflict(format!(
@@ -1297,7 +1295,7 @@ async fn update_vm(
     spec.memory_mib = memory_mib;
     spec.max_memory_mib = (max_memory_mib > memory_mib).then_some(max_memory_mib);
     if req.free_page_reporting.is_some() {
-        spec.free_page_reporting = Some(reporting);
+        spec.free_page_reporting = reporting;
     }
     let migratable_changed = migratable != spec.migratable;
     spec.migratable = migratable;

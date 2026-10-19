@@ -3,9 +3,9 @@
 //! `expand`), compared when a VM is placed, migrated or restarted elsewhere.
 //!
 //! A VM that may migrate has its cluster's baseline model (what all its
-//! hosts ran when it was made); one that may not, or from before baselines,
-//! its host's CPU as is. A host runs the first if it offers every feature
-//! of the model; the second if it offers every feature of that host.
+//! hosts ran when it was made); one that may not, its host's CPU as is. A
+//! host runs the first if it offers every feature of the model; the second
+//! if it offers every feature of that host.
 
 use std::time::Duration;
 

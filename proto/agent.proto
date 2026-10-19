@@ -180,13 +180,11 @@ message Command {
     OpenConsole open_console = 18;
     BaselineCpu baseline_cpu = 19;
     PrepareMigration prepare_migration = 20;
-    MigrateVm migrate_vm = 21;
     MigrationStats migration_stats = 22;
     AbortMigration abort_migration = 23;
     DomainInfo domain_info = 24;
     RenewCertificate renew_certificate = 25;
     MigrationStep migration_step = 26;
-    LibvirtTls libvirt_tls = 27;
     InstallCrl install_crl = 28;
     SetDiskLimits set_disk_limits = 29;
     RemovePool remove_pool = 30;
@@ -214,8 +212,9 @@ message Command {
     VolumeFromImage volume_from_image = 52;
     PruneStore prune_store = 53;
   }
-  // 10: EnsureImage, before the image store.
-  reserved 10;
+  // 10: EnsureImage, before the image store. 21: MigrateVm, peer to peer.
+  // 27: LibvirtTls, which opened libvirt to other hosts for that.
+  reserved 10, 21, 27;
 }
 
 message CommandResult {
@@ -356,13 +355,6 @@ message MigrationTls {
   string ca_pem = 1;
   string cert_pem = 2;
   string key_pem = 3;
-}
-
-// Whether libvirt listens for TLS connections from other hosts: only
-// needed while some host in the cluster migrates peer to peer (agents from
-// before MigrationStep).
-message LibvirtTls {
-  bool listen = 1;
 }
 
 // A storage pool was deleted: let go of it on this host (unmount, keyring,
@@ -524,13 +516,6 @@ message Decommission {}
 // A newer revocation list of the controller's CA.
 message InstallCrl {
   string crl_pem = 1;
-}
-
-message MigrateVm {
-  string vm_id = 1;
-  string dest_address = 2;
-  // Disks on host-local storage to copy (targets: vda, ...).
-  repeated string copy_disks = 3;
 }
 
 // Progress of the VM's migration job. Returns mst_libvirt::JobStats as JSON.

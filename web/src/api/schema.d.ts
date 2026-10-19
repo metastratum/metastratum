@@ -2400,17 +2400,14 @@ export interface components {
         DiskSpec: {
             cloned_from?: components["schemas"]["VolumeId"] | null;
             image_id?: components["schemas"]["ImageId"] | null;
-            /**
-             * @description Pool the volume lives in. Specs from before storage pools existed
-             *     used local storage.
-             */
-            pool_id?: components["schemas"]["StoragePoolId"];
+            /** @description Pool the volume lives in. */
+            pool_id: components["schemas"]["StoragePoolId"];
             restored_from?: components["schemas"]["RestoredFrom"] | null;
             /** Format: int64 */
             size_bytes: number;
             /**
              * Format: int32
-             * @description Its unit on the VM's SCSI controller (see [`VmSpec::disk_hotplug`]),
+             * @description Its unit on the VM's SCSI controller (see [`VmSpec::disk_slots`]),
              *     kept while it is attached; unset for the boot disk.
              */
             unit?: number | null;
@@ -2583,7 +2580,7 @@ export interface components {
             libvirt_version: string;
             /** Format: int64 */
             memory_mib: number;
-            /** @description Accepts live migrations (libvirt TLS is set up). */
+            /** @description Accepts live migrations (QEMU's TLS is set up). */
             migration_ready: boolean;
             name: string;
             ovn_chassis: string;

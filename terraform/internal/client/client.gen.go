@@ -758,13 +758,12 @@ type DiskSpec struct {
 	ClonedFrom *VolumeId `json:"cloned_from,omitempty"`
 	ImageId    *ImageId  `json:"image_id,omitempty"`
 
-	// PoolId Pool the volume lives in. Specs from before storage pools existed
-	// used local storage.
-	PoolId       *StoragePoolId `json:"pool_id,omitempty"`
-	RestoredFrom *RestoredFrom  `json:"restored_from,omitempty"`
-	SizeBytes    int64          `json:"size_bytes"`
+	// PoolId Pool the volume lives in.
+	PoolId       StoragePoolId `json:"pool_id"`
+	RestoredFrom *RestoredFrom `json:"restored_from,omitempty"`
+	SizeBytes    int64         `json:"size_bytes"`
 
-	// Unit Its unit on the VM's SCSI controller (see [`VmSpec::disk_hotplug`]),
+	// Unit Its unit on the VM's SCSI controller (see [`VmSpec::disk_slots`]),
 	// kept while it is attached; unset for the boot disk.
 	Unit     *int32   `json:"unit,omitempty"`
 	VolumeId VolumeId `json:"volume_id"`
@@ -980,7 +979,7 @@ type HostView struct {
 	LibvirtVersion string     `json:"libvirt_version"`
 	MemoryMib      int64      `json:"memory_mib"`
 
-	// MigrationReady Accepts live migrations (libvirt TLS is set up).
+	// MigrationReady Accepts live migrations (QEMU's TLS is set up).
 	MigrationReady bool   `json:"migration_ready"`
 	Name           string `json:"name"`
 	OvnChassis     string `json:"ovn_chassis"`

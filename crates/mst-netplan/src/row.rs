@@ -69,20 +69,6 @@ impl Table {
         )
     }
 
-    /// Whether rows have a unique `name`, by which rows from before
-    /// `metastratum-key` existed are adopted.
-    pub fn has_name(self) -> bool {
-        matches!(
-            self,
-            Table::LogicalSwitch
-                | Table::LogicalSwitchPort
-                | Table::LogicalRouter
-                | Table::LogicalRouterPort
-                | Table::GatewayChassis
-                | Table::PortGroup
-        )
-    }
-
     /// Columns metastratum sets; everything a comparison needs.
     pub fn columns(self) -> &'static [&'static str] {
         match self {

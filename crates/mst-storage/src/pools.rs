@@ -392,6 +392,12 @@ async fn mount_nfs(cfg: &NfsConfig, mountpoint: &Path) -> Result<()> {
         return Ok(());
     }
     tokio::fs::create_dir_all(mountpoint).await?;
+    // QEMU passes through to its VM's files there (the agent's umask keeps
+    // what it makes private otherwise).
+    if let Some(pools) = mountpoint.parent() {
+        crate::set_mode(pools, 0o711).await?;
+    }
+    crate::set_mode(mountpoint, 0o711).await?;
     let source = format!("{}:{}", cfg.server, cfg.export);
     let target = mountpoint.to_string_lossy();
     tracing::info!(%source, target = %target, "mounting NFS pool");

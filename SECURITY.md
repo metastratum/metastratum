@@ -161,11 +161,11 @@ A review of the whole system before calling it hardened. Fixed:
 | No limit on sign-in attempts | rate limits per client and per account, shared by replicas through Redis |
 | No browser security headers | CSP and the headers above |
 | An agent from another version could be sent commands it does not know | protocol versions and capabilities |
-| Hosts' certificates were valid for a year | 30 days, renewed automatically; longer ones are renewed at once |
-| Hosts' libvirt accepted any certificate the controller's CA issued (replicas' too) | only host certificates (`tls_allowed_dn_list`, kept by the agent) |
+| Hosts' certificates were valid for a year | 30 days, renewed automatically |
+| Hosts' libvirt accepted any certificate the controller's CA issued (replicas' too) | libvirt no longer listens on the network at all |
 | Nothing kept a VM from taking all of a host's disk or network bandwidth | per-VM disk (IOPS, MB/s) and network (Mbit/s each way) limits per cluster, enforced by QEMU and OVN, changed live |
 | The destination of a live migration accepted the incoming VM from any certificate the controller's CA issued: another host could send it a VM of its own instead of the source's | each migration gets a CA and certificates of its own; QEMU on each side trusts only that CA while it sets up the migration's TLS |
-| Host certificates could not be revoked | the controller's CA keeps a revocation list that hosts install for QEMU and libvirt: a renewed host's previous certificate is revoked once it uses the new one, a decommissioned host's at once |
+| Host certificates could not be revoked | the controller's CA keeps a revocation list that hosts install for QEMU: a renewed host's previous certificate is revoked once it uses the new one, a decommissioned host's at once |
 | For live migration, each host's libvirt accepted connections from the other hosts with full control: one compromised host could take over the rest | the controller drives migrations on each host's own libvirt; libvirt's TLS listener is closed |
 | API tokens carried all of their user's rights | tokens can be limited to roles at tenants |
 | Hosts' ovn-controller used the southbound database with no TLS or RBAC: any host could rewrite every host's flows | agents set up TLS with a certificate per chassis from a separate OVN CA, under OVN's RBAC (`ovn.southbound`) |

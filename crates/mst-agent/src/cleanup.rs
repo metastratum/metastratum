@@ -209,13 +209,7 @@ pub async fn decommission(agent: &Agent) -> Result<Report> {
         remove_files_in(&agent.files.cloud_init_dir, ".iso").await,
     );
 
-    // Libvirt: no TLS listener, no metastratum certificates.
-    report.step(
-        "closed libvirt's TLS listener",
-        crate::tls::set_listening(false)
-            .await
-            .map(|()| String::new()),
-    );
+    // QEMU: no metastratum certificates.
     report.step("removed metastratum's TLS files", {
         let _held = agent.qemu_tls.lock().await;
         crate::tls::remove_installed().map(|n| format!("{n} files"))

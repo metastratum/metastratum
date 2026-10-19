@@ -25,7 +25,6 @@ fn def(uuid: &str) -> DomainDef {
         cpu: None,
         host_cache: false,
         disk_limits: Default::default(),
-        scsi_controller: false,
     }
 }
 

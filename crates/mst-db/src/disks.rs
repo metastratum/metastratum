@@ -25,9 +25,6 @@ pub struct Disk {
     pub vm_name: Option<String>,
     /// Its VM's boot disk.
     pub boot: bool,
-    /// Its VM's other disks sit on its SCSI controller (see
-    /// `VmSpec::disk_hotplug`).
-    pub vm_disk_hotplug: bool,
     /// `creating`, `ready`, `attaching`, `detaching`, `moving`, `deleting`
     /// or `failed`.
     pub state: String,
@@ -40,7 +37,6 @@ macro_rules! disk_select {
         "SELECT v.id, v.tenant_id, v.name, v.size_bytes, v.pool_id, p.name AS pool_name,
                 p.kind AS pool_kind, v.host_id, h.name AS host_name, v.vm_id, m.name AS vm_name,
                 coalesce(m.spec->'disks'->0->>'volume_id' = v.id::text, false) AS boot,
-                coalesce((m.spec->>'disk_hotplug')::boolean, false) AS vm_disk_hotplug,
                 v.state, v.error, v.created_at
          FROM volumes v
          JOIN storage_pools p ON p.id = v.pool_id

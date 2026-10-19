@@ -200,14 +200,14 @@ impl FilePool {
     }
 
     /// Removes everything of metastratum's from the pool: its image store,
-    /// images cached before it, and any volumes left (the controller removes pools
-    /// that hold none). Only metastratum's own files go (`<id>.qcow2` in
-    /// `images/` and `volumes/`, and the store's tenants' directories);
-    /// the directories go too if that leaves them empty. Returns how many
-    /// files were removed.
+    /// and any volumes left (the controller removes pools that hold none).
+    /// Only metastratum's own files go (`<id>.qcow2` in `volumes/`, and the
+    /// store's tenants' directories); `images/` and `volumes/` go too if
+    /// that leaves them empty. Returns how many files were removed.
     pub async fn purge(&self) -> Result<usize> {
         let mut removed = crate::ImageStore::new(&self.root).purge().await?;
-        for sub in ["images", "volumes"] {
+        let _ = tokio::fs::remove_dir(self.root.join("images")).await;
+        for sub in ["volumes"] {
             let dir_path = self.root.join(sub);
             let mut dir = match tokio::fs::read_dir(&dir_path).await {
                 Ok(d) => d,
@@ -294,29 +294,11 @@ pub(crate) fn random_suffix() -> String {
 
 /// Makes a directory of VMs' files private: others on the host may pass
 /// through it (QEMU, which libvirt gives each VM's own files when it
-/// starts) but not list it, and its files are readable by their owner only.
-/// Files made before are tightened too.
+/// starts) but not list it. What is written into it is readable by its
+/// owner only.
 pub async fn private_dir(dir: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
     tokio::fs::create_dir_all(dir).await?;
     set_mode(dir, 0o711).await?;
-    let mut entries = tokio::fs::read_dir(dir).await?;
-    let gone = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
-    while let Some(e) = entries.next_entry().await? {
-        // Files come and go meanwhile (others' are written beside these,
-        // through temporary names): one gone needs no tightening.
-        let meta = match e.metadata().await {
-            Err(err) if gone(&err) => continue,
-            m => m?,
-        };
-        if meta.is_file() && meta.permissions().mode() & 0o077 != 0 {
-            match tokio::fs::set_permissions(e.path(), std::fs::Permissions::from_mode(0o600)).await
-            {
-                Err(err) if gone(&err) => {}
-                r => r?,
-            }
-        }
-    }
     Ok(())
 }
 
@@ -401,46 +383,6 @@ mod tests {
 
     /// Exercises qemu-img when it is installed: overlays, size checks,
     /// idempotency and rejection of images with backing files.
-    #[tokio::test]
-    async fn private_dirs_tolerate_files_coming_and_going() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("mst-private-{}", std::process::id()));
-        tokio::fs::create_dir_all(&dir).await.unwrap();
-        let old = dir.join("old.iso");
-        tokio::fs::write(&old, "x").await.unwrap();
-        tokio::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o644))
-            .await
-            .unwrap();
-        // Seeds written meanwhile, through temporary names, as VMs are
-        // defined side by side.
-        let churn = {
-            let dir = dir.clone();
-            tokio::spawn(async move {
-                for i in 0..2000 {
-                    let tmp = dir.join(format!("{i}.tmp"));
-                    tokio::fs::write(&tmp, "x").await.unwrap();
-                    tokio::fs::rename(&tmp, dir.join(format!("{i}.iso")))
-                        .await
-                        .unwrap();
-                    tokio::fs::remove_file(dir.join(format!("{i}.iso")))
-                        .await
-                        .unwrap();
-                }
-            })
-        };
-        while !churn.is_finished() {
-            private_dir(&dir).await.unwrap();
-        }
-        churn.await.unwrap();
-        let mode = tokio::fs::metadata(&old)
-            .await
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600);
-        tokio::fs::remove_dir_all(&dir).await.unwrap();
-    }
-
     #[tokio::test]
     async fn images_larger_than_their_disk_are_refused_before_unpacking() {
         if Command::new("qemu-img")

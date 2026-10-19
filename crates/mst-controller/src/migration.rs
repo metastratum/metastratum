@@ -85,13 +85,6 @@ pub async fn plan(
             src.name
         ));
     };
-    // A VM whose disks plug in while it runs is defined so only by agents
-    // that know of it.
-    let pluggable = if vm.spec.0.disk_hotplug == Some(true) {
-        Some(mst_db::hosts::supporting(&mut *tx, "attach_disk").await?)
-    } else {
-        None
-    };
     // Its CPU: hosts that lack what its model (or its host's CPU) has do
     // not run it.
     let full = mst_db::hosts::list(&mut *tx).await?;
@@ -113,13 +106,7 @@ pub async fn plan(
                 false
             } else if !h.migration_ready {
                 rejected.push(format!(
-                    "{}: does not accept migrations (libvirt TLS is not set up)",
-                    h.name
-                ));
-                false
-            } else if pluggable.as_ref().is_some_and(|p| !p.contains(&h.id)) {
-                rejected.push(format!(
-                    "{}: its agent is older than the VM's disks (upgrade it)",
+                    "{}: does not accept migrations (QEMU's TLS is not set up)",
                     h.name
                 ));
                 false

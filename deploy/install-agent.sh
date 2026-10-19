@@ -13,8 +13,7 @@
 # not forward itself, a unit started with Docker lets the external network
 # through (metastratum-docker-forward.service). Before changing anything, it looks for what it
 # would clash with (Open vSwitch in another OVN deployment, a physical
-# network or bridge of that name in use, libvirt TLS certificates it would
-# replace) and stops if it finds any.
+# network or bridge of that name in use) and stops if it finds any.
 #
 # Supported: Debian 13, Ubuntu 26.04 and later, Fedora 43 and later, RHEL,
 # Rocky Linux and AlmaLinux 10, and Arch Linux, on x86-64 with hardware
@@ -38,7 +37,7 @@
 #                         built by deploy/packaging/build.sh) instead
 #   --force               go ahead although it would take over what someone
 #                         else set up (another OVN deployment's Open vSwitch,
-#                         a bridge br-ext, libvirt's TLS certificates)
+#                         a bridge br-ext)
 #   -y, --yes             do not ask before changing the system
 #
 # The join token (from the controller: mst-controller join-token, or
@@ -333,9 +332,6 @@ if [[ ! -e $CONF/agent.toml ]]; then
   if [[ $ext_cidr != none ]] && ip link show br-ext >/dev/null 2>&1 &&
     ! { command -v ovs-vsctl >/dev/null && ovs-vsctl br-exists br-ext; }; then
     problem "a network interface br-ext exists (not an Open vSwitch bridge): metastratum's external network needs that name (or none: --external-cidr none)"
-  fi
-  if [[ -e /etc/pki/libvirt/servercert.pem ]]; then
-    takeover "libvirt has TLS certificates (/etc/pki/libvirt): the agent replaces them with its own, which other TLS clients of libvirt here do not trust"
   fi
   if command -v virsh >/dev/null; then
     vms=$(virsh -q -c qemu:///system list --all --name 2>/dev/null | grep -c . || true)

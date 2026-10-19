@@ -80,16 +80,9 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // libvirt and QEMU use the host identity for migration TLS.
-    match tls::install(&identity) {
-        Ok(true) => tracing::info!("installed the host certificate for libvirt and QEMU TLS"),
-        Ok(false) => {}
-        Err(e) => {
-            tracing::warn!(error = %format!("{e:#}"), "installing TLS certificates; live migration will fail")
-        }
-    }
-    if let Err(e) = tls::restrict_libvirt_clients().await {
-        tracing::warn!(error = %format!("{e:#}"), "restricting libvirt's TLS clients to hosts");
+    // QEMU uses the host identity for migration TLS.
+    if let Err(e) = tls::install(&identity) {
+        tracing::warn!(error = %format!("{e:#}"), "installing TLS certificates; live migration will fail");
     }
 
     let pools = Pools::new(&cfg.data_dir);
@@ -111,11 +104,10 @@ async fn main() -> anyhow::Result<()> {
             cloud_init_dir: cfg.data_dir.join("cloud-init"),
         },
         changes: tokio::sync::Mutex::new(lv.watch()),
-        libvirt_tls: tokio::sync::watch::Sender::new(None),
         consoles: Default::default(),
     });
-    // VMs' files are root's and their own QEMU's only (made so since; older
-    // ones are tightened here), and libvirt should confine each QEMU.
+    // VMs' files are root's and their own QEMU's only, and libvirt should
+    // confine each QEMU.
     if let Err(e) = agent.pools.local().init().await {
         tracing::warn!(error = %e, "making the VMs' files private");
     }
@@ -133,7 +125,6 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => tracing::warn!(error = %e, "asking libvirt how it confines VMs"),
     }
     tokio::spawn(agent.clone().keep_certificate_fresh());
-    tokio::spawn(agent.clone().apply_libvirt_tls());
     tokio::select! {
         () = agent.run() => {},
         _ = tokio::signal::ctrl_c() => tracing::info!("shutting down"),

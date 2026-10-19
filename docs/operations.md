@@ -229,9 +229,10 @@ an external network their VPC routes to, or beyond it.
 Hosts enroll with a single-use join token (Infrastructure → Hosts, or
 `mst-controller join-token`) and get a certificate from the controller's CA,
 valid for 30 days. Agents renew it when a third of that is left, or on
-demand (Renew certificate on the host), and libvirt picks up the new one
-without restarting. A renewal revokes any other certificate the host held
-but did not use, so it never holds more than two.
+demand (Renew certificate on the host); migrations use the new one from
+the next on. A renewal revokes any other certificate the host held but did
+not use, so it never holds more than two.
+`mst_host_cert_expiry_timestamp_seconds` shows how long each has.
 
 What a host reports about itself is taken as it is when it enrolls. Later
 changes that would give it more (another name, address or OVN chassis, a
@@ -249,18 +250,12 @@ gets certificates of its own from a CA the controller makes for it, so the
 destination accepts the VM from that source only. The agent puts them in
 `/etc/pki/qemu` just while QEMU loads them, and the host's own back after.
 The destination defines the incoming VM from the controller's description
-of it, never from what the source sends. Agents older than protocol 4 (the
-first release's) are refused, and the agent closes libvirt's TLS listener
-should an older one have left it open. Either change
-restarts libvirt once, after migrations on the host have ended; running VMs
-do not notice. `mst_host_cert_expiry_timestamp_seconds` shows how long
-each has.
+of it, never from what the source sends.
 
 A renewed certificate's predecessor is revoked as soon as the host has
 connected with the new one. Hosts install the CA's revocation list for
-QEMU and libvirt (`/etc/pki/qemu/ca-crl.pem`, `/etc/pki/CA/cacrl.pem`); the
-controller sends a new one whenever it revokes something, and with every
-welcome.
+QEMU (`/etc/pki/qemu/ca-crl.pem`); the controller sends a new one whenever
+it revokes something, and with every welcome.
 
 To retire a machine, move its VMs off (Evacuate), then decommission it
 (Manage on the host). Either way the host leaves its cluster and its
@@ -349,8 +344,8 @@ not migratable stay where they are.
 
 With HA enabled on its cluster (Infrastructure → Clusters), the leader
 watches the cluster's hosts. A host has failed when its agent has been
-silent for 60 seconds **and** it does not answer on its libvirt TLS or SSH
-ports either (a crashed agent on a healthy host is not a failed host), and
+silent for 60 seconds **and** it does not answer on its SSH port either (a
+crashed agent on a healthy host is not a failed host), and
 at most half of its cluster looks failed (more is likelier a problem on the
 controller's side of the network).
 
@@ -634,7 +629,7 @@ A backup asked to be incremental is taken in full, and says why, when
 there is nothing to build on: no earlier backup in the repository, or the
 VM's tracking does not reach back to it. That happens after its QEMU was
 killed (a host crash), after reverting it to a snapshot, or when its disks
-moved to other storage, and with an older agent on its host.
+moved to other storage.
 
 An incremental backup's files are qcow2 files backed by the previous
 backup's (`../<parent id>/<index>.qcow2`). Deleting a backup that another
@@ -729,36 +724,10 @@ commands an agent handles. Upgrade **controllers first, then agents**:
    throughout.
 
 Controllers keep the fields of VM definitions that newer controllers
-added when they write a definition back, from 0.3 on: replicas of two
-versions side by side do not undo each other's changes. Replicas of 0.2
-and older drop them, so when upgrading from 0.2, upgrade every controller
-before starting VMs or using disks: a 0.2 replica that rewrites a VM's
-definition (resizing it, say) after a newer one gave it disks to plug in
-would describe them as they were.
+added when they write a definition back: replicas of two versions side by
+side do not undo each other's changes.
 
-Incremental backups start once a VM's host runs an agent that takes them;
-until then its backups are taken in full, and say so. Keep to the order
-above: only upgraded controllers merge a backup into the ones built on it
-when deleting it, and upgraded agents refuse to delete a backup others
-build on for a controller that does not.
-
-0.5 cannot upgrade an installation of 0.4 or older: install it afresh.
-Disks used to be overlays on images cached on hosts, which 0.5 no longer
-keeps (see Images); its controllers refuse agents older than 0.5.
-
-From 0.4 on, the controller's default ports are 7820 (the API) and 7821
-(the agent endpoint), not 8080 and 8443. A controller whose configuration
-sets neither `[api] listen` nor `[agents] listen` moves to the new ones
-when upgraded: its proxy, and its hosts (whose `agent.toml` names the
-endpoint's port), lose it. Before upgrading, set them to the ports in use:
-
-```toml
-[api]
-listen = "127.0.0.1:8080"
-
-[agents]
-listen = "0.0.0.0:8443"
-```
+0.5 does not upgrade earlier installations: install it afresh.
 
 The release notes say when a release drops support for an agent revision.
 

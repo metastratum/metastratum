@@ -67,7 +67,7 @@ pub struct DiskView {
 
 impl From<Disk> for DiskView {
     fn from(d: Disk) -> Self {
-        let guest_path = (d.vm_id.is_some() && !d.boot && d.vm_disk_hotplug).then(|| {
+        let guest_path = (d.vm_id.is_some() && !d.boot).then(|| {
             format!(
                 "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_{}",
                 d.id.0.simple()
@@ -684,11 +684,6 @@ pub async fn begin_attach(
             )));
         }
     }
-    if vm.power != "stopped" && spec.disk_hotplug != Some(true) {
-        return Err(ApiError::conflict(
-            "the VM was started before disks could be plugged in while it runs: stop it to attach the disk (from its next start they can be)",
-        ));
-    }
     let unit = spec.free_unit();
     spec.disks.push(DiskSpec {
         volume_id: disk.id,
@@ -745,11 +740,6 @@ async fn detach_disk(
         return Err(ApiError::conflict(format!("the disk is {}", disk.state)));
     }
     check_vm(&mut tx, &vm, "detach the disk").await?;
-    if vm.power != "stopped" && vm.spec.0.disk_hotplug != Some(true) {
-        return Err(ApiError::conflict(
-            "the VM was started before disks could be unplugged while it runs: stop it to detach the disk",
-        ));
-    }
     mst_db::disks::set_state(&mut *tx, disk_id, "detaching", None).await?;
     let task = mst_db::tasks::enqueue(
         &mut *tx,

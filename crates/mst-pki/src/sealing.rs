@@ -32,7 +32,7 @@ impl std::fmt::Debug for Sealer {
     }
 }
 
-/// Whether `value` is sealed (as opposed to plaintext from before sealing).
+/// Whether `value` is sealed (rather than plaintext, as it comes in).
 pub fn is_sealed(value: &str) -> bool {
     value.starts_with(PREFIX)
 }
@@ -72,9 +72,7 @@ impl Sealer {
     /// Opens a sealed value. Plaintext (stored before sealing existed) is
     /// returned as is.
     pub fn open(&self, context: &str, value: &str) -> Result<String, SealError> {
-        let Some(b64) = value.strip_prefix(PREFIX) else {
-            return Ok(value.to_owned());
-        };
+        let b64 = value.strip_prefix(PREFIX).ok_or(SealError::Open)?;
         let raw = STANDARD.decode(b64).map_err(|_| SealError::Open)?;
         if raw.len() < 24 {
             return Err(SealError::Open);
@@ -117,8 +115,8 @@ mod tests {
             other.open("pool:1:key", &sealed).is_err(),
             "another master key"
         );
-        // Plaintext from before sealing passes through.
-        assert_eq!(s.open("x", "plain").unwrap(), "plain");
+        // Only sealed values open.
+        assert!(s.open("x", "plain").is_err());
     }
 
     #[test]

@@ -9,12 +9,11 @@
 //!   migrated, copying memory and local disks while the guest runs.
 //!   Progress is polled from the source; a cancel aborts the job.
 //!
-//!   Between hosts whose agents speak protocol 3, the controller drives the
-//!   migration: libvirt's Begin, Prepare, Perform, Finish and Confirm, each
-//!   on its own host's libvirt, carrying the cookies between them and
-//!   recording the step reached (`handoff`). Hosts' libvirt daemons then
-//!   never talk to each other, and need not listen for each other at all.
-//!   With older agents the source's libvirt migrates peer to peer.
+//!   The controller drives the migration: libvirt's Begin, Prepare,
+//!   Perform, Finish and Confirm, each on its own host's libvirt, carrying
+//!   the cookies between them and recording the step reached (`handoff`).
+//!   Hosts' libvirt daemons never talk to each other: only QEMU sends the
+//!   VM over, with TLS credentials made for this migration alone.
 //! - `committing`: the VM runs on the destination; the source's copies are
 //!   removed and the database records the move.
 //!
