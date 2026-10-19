@@ -51,6 +51,9 @@ impl RbdPool {
         safe(&cfg.pool)?;
         safe(&cfg.user)?;
         tokio::fs::create_dir_all(dir.join("tmp")).await?;
+        // Downloads and key files go there: private, whatever the umask.
+        crate::set_mode(dir, 0o700).await?;
+        crate::set_mode(&dir.join("tmp"), 0o700).await?;
         let keyring = dir.join("keyring");
         let contents = format!("[client.{}]\n\tkey = {}\n", cfg.user, cfg.key.trim());
         {
@@ -162,6 +165,7 @@ impl RbdPool {
             .args(["--no-mon-config", "export", "--no-progress", spec, "-"])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
             .spawn()?;
         let stdout = child.stdout.take().expect("piped");
         let digest = crate::store::hash_reader(stdout).await;
@@ -244,32 +248,33 @@ impl RbdPool {
         let _held = lock.lock().await;
         if self.exists(&self.spec(&name)).await? {
             let stored = self.stored(&name).await?;
-            crate::store::check_digest(id, &stored.digest, digest)?;
-            return Ok(stored);
+            match crate::store::check_digest(id, &stored.digest, digest) {
+                Ok(()) => return Ok(stored),
+                // Never recorded (see `ImageStore::fetch`): replaced.
+                Err(e) => {
+                    tracing::warn!(image = id, pool = %self.pool, error = %e, "replacing a copy holding something else");
+                    self.rbd(&["rm", "--no-progress", &self.spec(&name)])
+                        .await?;
+                }
+            }
         }
         let unique = format!("{}.{}", std::process::id(), random_suffix());
         let part = self.work_dir.join(format!("{id}.{unique}.part"));
         let converted = self.work_dir.join(format!("{id}.{unique}.qcow2"));
-        let result = async {
-            let sha256 = fetch(url, format, &part, &converted, "qcow2", policy).await?;
-            let _ = tokio::fs::remove_file(&part).await;
-            let got = crate::store::digest_file(&converted, &self.work_dir).await?;
-            crate::store::check_digest(id, &got, digest)?;
-            let src = crate::CopySource::File(&converted);
-            let meta = [
-                ("mst.sha256", sha256.as_str()),
-                ("mst.digest", got.as_str()),
-            ];
-            crate::transfer::copy_to_rbd_name(self, &name, 0, &src, &meta).await?;
-            self.stored(&name).await
-        }
-        .await;
+        let _left = crate::store::Leftovers(vec![part.clone(), converted.clone()]);
+        let sha256 = fetch(url, format, &part, &converted, "qcow2", policy).await?;
         let _ = tokio::fs::remove_file(&part).await;
-        let _ = tokio::fs::remove_file(&converted).await;
-        if result.is_ok() {
-            tracing::info!(image = id, pool = %self.pool, "image downloaded into the store");
-        }
-        result
+        let got = crate::store::digest_file(&converted, &self.work_dir).await?;
+        crate::store::check_digest(id, &got, digest)?;
+        let src = crate::CopySource::File(&converted);
+        let meta = [
+            ("mst.sha256", sha256.as_str()),
+            ("mst.digest", got.as_str()),
+        ];
+        crate::transfer::copy_to_rbd_name(self, &name, 0, &src, &meta).await?;
+        let stored = self.stored(&name).await?;
+        tracing::info!(image = id, pool = %self.pool, "image downloaded into the store");
+        Ok(stored)
     }
 
     /// Removes an image from the store.

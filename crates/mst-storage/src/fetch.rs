@@ -135,6 +135,11 @@ pub fn check_url(url: &reqwest::Url, policy: FetchPolicy) -> std::result::Result
 const STALLED: Duration = Duration::from_secs(60);
 /// No download takes longer than this, however slowly a server sends.
 const LONGEST: Duration = Duration::from_secs(2 * 3600);
+/// Nor does one keep going slower than this: [`SLOW_BYTES`] in each
+/// [`SLOW_WINDOW`] (about 55 kB/s), or it is given up on. A server sending
+/// a byte a minute would otherwise hold a download slot for two hours.
+const SLOW_WINDOW: Duration = Duration::from_secs(300);
+const SLOW_BYTES: u64 = 16 << 20;
 
 fn client(policy: FetchPolicy) -> Result<reqwest::Client> {
     let mut b = reqwest::Client::builder()
@@ -181,10 +186,22 @@ pub(crate) async fn download(url: &str, dest: &Path, policy: FetchPolicy) -> Res
     let mut file = tokio::fs::File::create(dest).await?;
     let mut body = resp.bytes_stream();
     let mut total = 0u64;
+    let mut window = (tokio::time::Instant::now(), 0u64);
     let mut hash = sha2::Sha256::new();
     while let Some(chunk) = body.next().await {
         let chunk = chunk.map_err(|e| Error::Download(chain(&e)))?;
         total += chunk.len() as u64;
+        window.1 += chunk.len() as u64;
+        if window.0.elapsed() >= SLOW_WINDOW {
+            if window.1 < SLOW_BYTES {
+                return Err(Error::Download(format!(
+                    "{url}: too slow (under {} MiB in {} minutes)",
+                    SLOW_BYTES >> 20,
+                    SLOW_WINDOW.as_secs() / 60
+                )));
+            }
+            window = (tokio::time::Instant::now(), 0);
+        }
         if total > policy.max_bytes {
             return Err(Error::Download(format!(
                 "{url}: larger than the {} GiB limit",

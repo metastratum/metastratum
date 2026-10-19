@@ -30,7 +30,7 @@ pub use backups::{
 };
 pub use disks::begin_attach;
 pub use snapshots::check_idle as check_disks_idle;
-pub use storage_pools::agent_pool;
+pub use storage_pools::{agent_pool, may_use as may_use_pool};
 pub use vms::{define_on_host, definition as vm_definition};
 
 use axum::Router;

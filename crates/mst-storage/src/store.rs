@@ -84,32 +84,50 @@ pub(crate) fn check_digest(id: &str, got: &str, want: Option<&str>) -> Result<()
     }
 }
 
-/// SHA-256 of a qcow2 file's disk, read as a raw disk: converted to a
-/// (sparse) raw file in `scratch`, which is then read.
-pub(crate) async fn digest_file(path: &Path, scratch: &Path) -> Result<String> {
+/// Files removed once dropped: what a download or copy leaves, also when
+/// it is cut off (its image deleted meanwhile).
+pub(crate) struct Leftovers(pub(crate) Vec<PathBuf>);
+
+impl Drop for Leftovers {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Makes a directory of the store (private), or marks it in use if it is
+/// there: pruning leaves directories in use alone (see
+/// [`ImageStore::prune`]), so one is not removed, as empty, just before a
+/// file is written into it.
+pub(crate) async fn ensure_dir(dir: &Path) -> Result<()> {
     use std::os::unix::fs::DirBuilderExt;
-    let s = scratch.to_owned();
+    let d = dir.to_owned();
     tokio::task::spawn_blocking(move || {
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
-            .create(s)
+            .create(&d)?;
+        std::fs::File::open(&d)?.set_modified(SystemTime::now())
     })
     .await
     .map_err(|e| Error::Io(std::io::Error::other(e)))??;
+    Ok(())
+}
+
+/// SHA-256 of a qcow2 file's disk, read as a raw disk: converted to a
+/// (sparse) raw file in `scratch`, which is then read.
+pub(crate) async fn digest_file(path: &Path, scratch: &Path) -> Result<String> {
+    ensure_dir(scratch).await?;
     let raw = scratch.join(format!("{}.raw", random_suffix()));
+    let _left = Leftovers(vec![raw.clone()]);
     let (p, r) = (path.to_string_lossy(), raw.to_string_lossy());
-    let result = async {
-        run(
-            "qemu-img",
-            &["convert", "-q", "-f", "qcow2", "-O", "raw", &p, &r],
-        )
-        .await?;
-        hash_reader(tokio::fs::File::open(&raw).await?).await
-    }
-    .await;
-    let _ = tokio::fs::remove_file(&raw).await;
-    result
+    run(
+        "qemu-img",
+        &["convert", "-q", "-f", "qcow2", "-O", "raw", &p, &r],
+    )
+    .await?;
+    hash_reader(tokio::fs::File::open(&raw).await?).await
 }
 
 /// SHA-256 of what a reader yields (hex).
@@ -192,14 +210,8 @@ impl ImageStore {
     }
 
     async fn make_dir(&self, tenant_path: &str) -> Result<PathBuf> {
-        use std::os::unix::fs::DirBuilderExt;
         let dir = self.tenant_dir(tenant_path)?;
-        let mut b = std::fs::DirBuilder::new();
-        b.recursive(true).mode(0o700);
-        let d = dir.clone();
-        tokio::task::spawn_blocking(move || b.create(d))
-            .await
-            .map_err(|e| Error::Io(std::io::Error::other(e)))??;
+        ensure_dir(&dir).await?;
         Ok(dir)
     }
 
@@ -241,6 +253,31 @@ impl ImageStore {
         })
     }
 
+    /// The image if it is here (the caller holds its lock). With `digest`,
+    /// one holding something else goes: left by a download or copy never
+    /// recorded (cut off as its agent reconnected, say), it may be of
+    /// what the image's URL served before; the digest recorded is what
+    /// counts.
+    async fn existing(
+        &self,
+        tenant_path: &str,
+        id: &str,
+        digest: Option<&str>,
+    ) -> Result<Option<StoredImage>> {
+        if !tokio::fs::try_exists(self.path(tenant_path, id)?).await? {
+            return Ok(None);
+        }
+        let stored = self.stored(tenant_path, id).await?;
+        match check_digest(id, &stored.digest, digest) {
+            Ok(()) => Ok(Some(stored)),
+            Err(e) => {
+                tracing::warn!(image = id, error = %e, "replacing a copy holding something else");
+                self.remove_files(tenant_path, id).await?;
+                Ok(None)
+            }
+        }
+    }
+
     /// Whether the image is here.
     pub async fn has(&self, tenant_path: &str, id: &str) -> Result<bool> {
         Ok(tokio::fs::try_exists(self.path(tenant_path, id)?).await?)
@@ -278,37 +315,29 @@ impl ImageStore {
         let dest = self.path(tenant_path, id)?;
         let lock = lock(id);
         let _held = lock.lock().await;
-        if tokio::fs::try_exists(&dest).await? {
-            let stored = self.stored(tenant_path, id).await?;
-            check_digest(id, &stored.digest, digest)?;
+        if let Some(stored) = self.existing(tenant_path, id, digest).await? {
             return Ok(stored);
         }
         self.make_dir(tenant_path).await?;
         let unique = random_suffix();
         let part = dest.with_extension(format!("{unique}.part"));
         let converted = dest.with_extension(format!("{unique}.tmp"));
-        let result = async {
-            let sha256 = crate::fetch(url, format, &part, &converted, "qcow2", policy).await?;
-            let _ = tokio::fs::remove_file(&part).await;
-            let got = digest_file(&converted, &self.scratch).await?;
-            check_digest(id, &got, digest)?;
-            set_mode(&converted, 0o600).await?;
-            if publish(&converted, &dest).await? {
-                let meta = Meta {
-                    sha256,
-                    digest: got,
-                };
-                self.write_meta(tenant_path, id, &meta).await?;
-            }
-            self.stored(tenant_path, id).await
-        }
-        .await;
+        let _left = Leftovers(vec![part.clone(), converted.clone()]);
+        let sha256 = crate::fetch(url, format, &part, &converted, "qcow2", policy).await?;
         let _ = tokio::fs::remove_file(&part).await;
-        let _ = tokio::fs::remove_file(&converted).await;
-        if result.is_ok() {
-            tracing::info!(image = id, path = %dest.display(), "image downloaded into the store");
+        let got = digest_file(&converted, &self.scratch).await?;
+        check_digest(id, &got, digest)?;
+        set_mode(&converted, 0o600).await?;
+        if publish(&converted, &dest).await? {
+            let meta = Meta {
+                sha256,
+                digest: got,
+            };
+            self.write_meta(tenant_path, id, &meta).await?;
         }
-        result
+        let stored = self.stored(tenant_path, id).await?;
+        tracing::info!(image = id, path = %dest.display(), "image downloaded into the store");
+        Ok(stored)
     }
 
     /// Copies an image into the store (from another host serving it, or
@@ -324,33 +353,26 @@ impl ImageStore {
         let dest = self.path(tenant_path, id)?;
         let lock = lock(id);
         let _held = lock.lock().await;
-        if tokio::fs::try_exists(&dest).await? {
-            let stored = self.stored(tenant_path, id).await?;
-            check_digest(id, &stored.digest, digest)?;
+        if let Some(stored) = self.existing(tenant_path, id, digest).await? {
             return Ok(stored);
         }
         self.make_dir(tenant_path).await?;
         let tmp = dest.with_extension(format!("{}.tmp", random_suffix()));
-        let result = async {
-            crate::transfer::convert_to(src, &tmp).await?;
-            let got = digest_file(&tmp, &self.scratch).await?;
-            check_digest(id, &got, digest)?;
-            set_mode(&tmp, 0o600).await?;
-            if publish(&tmp, &dest).await? {
-                let meta = Meta {
-                    sha256: String::new(),
-                    digest: got,
-                };
-                self.write_meta(tenant_path, id, &meta).await?;
-            }
-            self.stored(tenant_path, id).await
+        let _left = Leftovers(vec![tmp.clone()]);
+        crate::transfer::convert_to(src, &tmp).await?;
+        let got = digest_file(&tmp, &self.scratch).await?;
+        check_digest(id, &got, digest)?;
+        set_mode(&tmp, 0o600).await?;
+        if publish(&tmp, &dest).await? {
+            let meta = Meta {
+                sha256: String::new(),
+                digest: got,
+            };
+            self.write_meta(tenant_path, id, &meta).await?;
         }
-        .await;
-        let _ = tokio::fs::remove_file(&tmp).await;
-        if result.is_ok() {
-            tracing::info!(image = id, "image copied into the store");
-        }
-        result
+        let stored = self.stored(tenant_path, id).await?;
+        tracing::info!(image = id, "image copied into the store");
+        Ok(stored)
     }
 
     /// Removes an image from the store. Its tenants' directories stay:
@@ -360,6 +382,11 @@ impl ImageStore {
     pub async fn remove(&self, tenant_path: &str, id: &str) -> Result<()> {
         let lock = lock(id);
         let _held = lock.lock().await;
+        self.remove_files(tenant_path, id).await
+    }
+
+    /// Removes an image's files (the caller holds its lock).
+    async fn remove_files(&self, tenant_path: &str, id: &str) -> Result<()> {
         for path in [
             self.path(tenant_path, id)?,
             self.meta_path(tenant_path, id)?,
@@ -372,8 +399,10 @@ impl ImageStore {
         Ok(())
     }
 
-    /// Removes the tenants' directories left empty.
-    async fn remove_empty_dirs(&self) -> Result<()> {
+    /// Removes the tenants' directories left empty, last used before
+    /// `before` (if given): one just made, or about to be written into,
+    /// stays (see [`ensure_dir`]).
+    async fn remove_empty_dirs(&self, before: Option<SystemTime>) -> Result<()> {
         // Deepest first: a directory may be empty once its own are gone.
         let mut dirs = vec![];
         let mut todo = vec![self.root.clone()];
@@ -392,6 +421,12 @@ impl ImageStore {
         }
         dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
         for d in dirs {
+            if let Some(before) = before {
+                match tokio::fs::metadata(&d).await.and_then(|m| m.modified()) {
+                    Ok(at) if at < before => {}
+                    _ => continue,
+                }
+            }
             let _ = tokio::fs::remove_dir(d).await;
         }
         Ok(())
@@ -472,7 +507,7 @@ impl ImageStore {
                 removed.push(id);
             }
         }
-        self.remove_empty_dirs().await?;
+        self.remove_empty_dirs(Some(before)).await?;
         Ok(removed)
     }
 
@@ -485,7 +520,7 @@ impl ImageStore {
                 _ => {}
             }
         }
-        self.remove_empty_dirs().await?;
+        self.remove_empty_dirs(None).await?;
         Ok(files.len())
     }
 }

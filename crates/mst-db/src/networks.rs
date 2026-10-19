@@ -398,18 +398,26 @@ pub async fn reserve_address(
     Ok(ip)
 }
 
-/// The network's health check address, reserved on first use.
+/// The network's health check address, reserved on first use: looked for
+/// under the network's address lock, so two load balancers given members
+/// there at once reserve only one.
 pub async fn monitor_address(db: &mut PgConnection, network: NetworkId) -> Result<Ipv4Addr> {
+    use sqlx::Connection;
+    let mut tx = db.begin().await?;
+    lock_addresses(&mut tx, network).await?;
     let have: Option<String> = sqlx::query_scalar(
         "SELECT host(ip) FROM network_addresses WHERE network_id = $1 AND purpose = 'lb-monitor'",
     )
     .bind(network)
-    .fetch_optional(&mut *db)
+    .fetch_optional(&mut *tx)
     .await?;
-    match have.and_then(|ip| ip.parse().ok()) {
-        Some(ip) => Ok(ip),
-        None => reserve_address(db, network, "lb-monitor").await,
-    }
+    let ip = match have.and_then(|ip| ip.parse().ok()) {
+        Some(ip) => ip,
+        // The lock is taken again there: advisory locks nest.
+        None => reserve_address(&mut tx, network, "lb-monitor").await?,
+    };
+    tx.commit().await?;
+    Ok(ip)
 }
 
 pub async fn release_address(

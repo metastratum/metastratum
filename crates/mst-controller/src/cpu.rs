@@ -176,7 +176,7 @@ mod tests {
             migration_ready: true,
             fence_kind: None,
             connected_since: None,
-            agent_protocol: 4,
+            agent_protocol: 5,
             agent_version: String::new(),
             cert_fingerprint: String::new(),
             cert_expires_at: chrono::Utc::now(),

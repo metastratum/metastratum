@@ -235,10 +235,17 @@ async fn copy_to_rbd(
     store: Option<&[(&str, &str)]>,
 ) -> Result<bool> {
     let tmp = format!("{vol}-part-{}", random_suffix());
-    let bytes = virtual_size(source).await?.max(size);
-    let mib = bytes.div_ceil(1 << 20).to_string();
-    pool.rbd(&["create", "--no-progress", "--size", &mib, &pool.spec(&tmp)])
-        .await?;
+    // Exactly as large (in bytes): a store's copy reads as the disk it
+    // holds, which its digest is of.
+    let bytes = format!("{}B", virtual_size(source).await?.max(size));
+    pool.rbd(&[
+        "create",
+        "--no-progress",
+        "--size",
+        &bytes,
+        &pool.spec(&tmp),
+    ])
+    .await?;
     let result = async {
         if store.is_some() {
             // Its age, for pruning a copy cut off (and the image, once

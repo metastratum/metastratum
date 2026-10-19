@@ -455,17 +455,7 @@ impl AgentControl for AgentControlService {
             }))) => h,
             _ => return Err(Status::invalid_argument("expected hello")),
         };
-        // An agent too old is refused before anything it says is kept (a
-        // host claiming an old revision must not get older, weaker ways of
-        // migrating, or its peers' libvirt listening for it). 0: before
-        // versioning, revision 1.
-        let version = hello.protocol_version.max(1);
-        if version < mst_proto::MIN_AGENT_PROTOCOL {
-            return Err(Status::failed_precondition(format!(
-                "agent protocol {version} is too old; this controller needs {} or later",
-                mst_proto::MIN_AGENT_PROTOCOL
-            )));
-        }
+        let version = agent_protocol(hello.protocol_version)?;
         // Only then what it says about itself.
         if let Some(f) = &hello.facts {
             check_facts(f)?;
@@ -495,10 +485,6 @@ impl AgentControl for AgentControlService {
                     controller_version: env!("CARGO_PKG_VERSION").to_owned(),
                     ovn_sb_remote: state.ovn_sb_remote.clone(),
                     inventory: crate::cleanup::inventory(&state.db).await.ok(),
-                    crl_pem: crate::crl::current(&state).await.unwrap_or_else(|e| {
-                        tracing::error!(error = %format!("{e:#}"), "signing the revocation list");
-                        String::new()
-                    }),
                 },
             )),
         };
@@ -704,9 +690,34 @@ impl mst_proto::replica_control_server::ReplicaControl for ReplicaControlService
     }
 }
 
+/// The agent's protocol revision, refused when too old: before anything it
+/// says is kept, so a host claiming an old revision gets nothing meant for
+/// agents of then. 0: before versioning, revision 1.
+fn agent_protocol(version: u32) -> Result<u32, Status> {
+    let version = version.max(1);
+    if version < mst_proto::MIN_AGENT_PROTOCOL {
+        return Err(Status::failed_precondition(format!(
+            "agent protocol {version} is too old; this controller needs {} or later",
+            mst_proto::MIN_AGENT_PROTOCOL
+        )));
+    }
+    Ok(version)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agents_older_than_this_release_are_refused() {
+        for old in [0, 1, 4] {
+            let e = agent_protocol(old).unwrap_err();
+            assert_eq!(e.code(), tonic::Code::FailedPrecondition, "{old}");
+        }
+        assert_eq!(agent_protocol(mst_proto::PROTOCOL_VERSION).unwrap(), 5);
+        // Newer agents are fine: the controller sends what both know.
+        assert_eq!(agent_protocol(6).unwrap(), 6);
+    }
 
     #[test]
     fn hosts_cannot_name_themselves_as_the_controller() {
@@ -752,7 +763,7 @@ mod tests {
             migration_ready: true,
             fence_kind: None,
             connected_since: None,
-            agent_protocol: 4,
+            agent_protocol: 5,
             agent_version: String::new(),
             cert_fingerprint: String::new(),
             cert_expires_at: Utc::now(),

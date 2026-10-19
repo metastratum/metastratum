@@ -80,7 +80,7 @@ affects() {
     crates/mst-storage/*) echo storage clone snapshots backups resize m4 disks images image_relay ;;
     crates/mst-controller/src/api/images.rs | crates/mst-controller/src/engine/image.rs) echo images image_relay m5 browser ;;
     crates/mst-controller/src/api/disks.rs | crates/mst-controller/src/engine/disk.rs | \
-      crates/mst-agent/src/transfer.rs) echo disks browser ;;
+      crates/mst-agent/src/transfer.rs) echo disks images image_relay browser ;;
     *) echo all ;;
   esac
 }

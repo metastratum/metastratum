@@ -235,8 +235,13 @@ async fn member_nics(
 }
 
 /// Gives each members' network an address for health checks to come from.
+/// Networks are locked in one order (by ID), so two updates sharing
+/// networks never wait on each other's.
 async fn monitor_addresses(tx: &mut PgConnection, members: &[(NicId, NetworkId)]) -> ApiResult<()> {
-    for net in members.iter().map(|m| m.1).collect::<HashSet<_>>() {
+    let mut nets: Vec<NetworkId> = members.iter().map(|m| m.1).collect();
+    nets.sort_by_key(|n| n.0);
+    nets.dedup();
+    for net in nets {
         mst_db::networks::monitor_address(&mut *tx, net).await?;
     }
     Ok(())

@@ -178,6 +178,7 @@ create_vm() { # create_vm <line>
   log "creating $name ($role, $ip)"
   local vol="$name.qcow2" seed="$name-seed.iso" dir="$STATE/$name"
   mkdir -p "$dir"
+  rm -f "$dir/upgraded"
   local ext_mac=${mac/52:54:00:77/52:54:00:78}
   user_data "$name" "$ip" "$role" "$ext_mac" >"$dir/user-data"
   printf 'instance-id: %s\nlocal-hostname: %s\n' "$name" "$name" >"$dir/meta-data"
@@ -210,21 +211,33 @@ ssh_vm() { # ssh_vm <name> [cmd...]
 }
 
 # The cloud image lags the archive, its kernel included, and Debian's
-# 6.12.111 crashes in openvswitch and geneve under OVN load. Every VM
-# therefore runs current packages, and reboots into a newer kernel.
+# 6.12.111 crashes in openvswitch and geneve under OVN load. Every VM made
+# therefore starts on current packages, rebooted into a newer kernel; once
+# (a marker says so), not again under a lab in use.
 upgrade_vm() { # upgrade_vm <name>
-  local name=$1 boot
+  local name=$1 marker="$STATE/$1/upgraded" boot newest running
+  [[ -f $marker ]] && return 0
   log "upgrading packages on $name"
-  ssh_vm "$name" 'sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y -qq -o Dpkg::Options::=--force-confold >/dev/null' ||
+  # Waits for apt-daily, which may hold the lock just after boot.
+  ssh_vm "$name" 'sudo apt-get update -qq -o DPkg::Lock::Timeout=600 && sudo DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y -qq -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confold >/dev/null' ||
     die "upgrading packages on $name failed: $0 ssh $name sudo apt-get full-upgrade"
-  ssh_vm "$name" '[ "$(ls /boot/vmlinuz-* | sort -V | tail -n1)" != "/boot/vmlinuz-$(uname -r)" ]' || return 0
-  boot=$(ssh_vm "$name" cat /proc/sys/kernel/random/boot_id)
+  newest=$(ssh_vm "$name" 'ls /boot/vmlinuz-* | sort -V | tail -n1') &&
+    running=$(ssh_vm "$name" uname -r) &&
+    boot=$(ssh_vm "$name" cat /proc/sys/kernel/random/boot_id) ||
+    die "cannot tell which kernel $name runs: $0 ssh $name uname -r"
+  if [[ $newest == "/boot/vmlinuz-$running" ]]; then
+    touch "$marker"
+    return 0
+  fi
   log "rebooting $name into its new kernel"
   ssh_vm "$name" sudo systemctl reboot >/dev/null 2>&1 || true
   for _ in $(seq 60); do
     sleep 5
-    [[ $(ssh_vm "$name" cat /proc/sys/kernel/random/boot_id 2>/dev/null) == "${boot:-x}" ]] && continue
-    ssh_vm "$name" true >/dev/null 2>&1 && return 0
+    [[ $(ssh_vm "$name" cat /proc/sys/kernel/random/boot_id 2>/dev/null) == "$boot" ]] && continue
+    if ssh_vm "$name" true >/dev/null 2>&1; then
+      touch "$marker"
+      return 0
+    fi
   done
   die "$name did not come back after its reboot; check its console: virsh -c $LIBVIRT_DEFAULT_URI console $name"
 }

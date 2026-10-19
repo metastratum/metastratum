@@ -5,6 +5,11 @@
 //! The lab's hosts all reach its pools, so this moves one host without VMs
 //! into a cluster of its own for the while (deploy/lab/e2e.sh runs it on its
 //! own, before the others), and back afterwards.
+//!
+//! Then the same from Ceph, with an image whose disk is no whole number of
+//! MiB (as RBD images were made), served from here: `MST_E2E_SERVE` is the
+//! address of this machine the hosts reach (the lab's 10.77.0.1 by
+//! default).
 
 use std::time::Duration;
 
@@ -36,6 +41,17 @@ async fn images_reach_hosts_outside_their_pool() -> anyhow::Result<()> {
         return Ok(());
     };
     let home = pool["cluster_ids"][0].clone();
+    let rbd = pools
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| {
+            p["name"] == "e2e-rbd"
+                && p["cluster_ids"]
+                    .as_array()
+                    .is_some_and(|c| c.contains(&home))
+        })
+        .cloned();
 
     // A host of the pool's cluster without VMs, leaving others there.
     let vms = api.get("/vms?descendants=true").await?;
@@ -76,11 +92,16 @@ async fn images_reach_hosts_outside_their_pool() -> anyhow::Result<()> {
         .await;
     let outcome = match moved {
         Ok(_) => {
-            mst_e2e::cleaned_up(
-                &api,
-                &run,
-                scenario(&api, &run, &pool, &cluster_id, &host_name),
-            )
+            mst_e2e::cleaned_up(&api, &run, async {
+                scenario(&api, &run, &pool, &cluster_id, &host_name).await?;
+                match &rbd {
+                    Some(rbd) => odd_sized(&api, &run, rbd, &cluster_id, &host_name).await,
+                    None => {
+                        eprintln!("no e2e-rbd pool beside e2e-nfs; skipping Ceph");
+                        Ok(())
+                    }
+                }
+            })
             .await
         }
         Err(e) => Err(e),
@@ -170,4 +191,86 @@ async fn scenario(
         .await?;
     assert_eq!(rc, 0, "{out}");
     Ok(())
+}
+
+/// A raw disk of 1 MiB and 512 bytes, kept in Ceph: copied out of the pool,
+/// it holds the same as downloaded (its digest), so it is handed over, not
+/// downloaded again.
+async fn odd_sized(
+    api: &Api,
+    run: &str,
+    pool: &Value,
+    cluster: &str,
+    host: &str,
+) -> anyhow::Result<()> {
+    let at = std::env::var("MST_E2E_SERVE").unwrap_or_else(|_| "10.77.0.1".into());
+    let listener = match tokio::net::TcpListener::bind((at.as_str(), 0)).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("cannot serve an image on {at} ({e}); skipping Ceph");
+            return Ok(());
+        }
+    };
+    let url = format!("http://{}/odd.raw", listener.local_addr()?);
+    let mut disk: Vec<u8> = (0..(1 << 20) + 512).map(|i| (i % 251) as u8).collect();
+    disk[..8].copy_from_slice(b"mst-e2e!");
+    let server = tokio::spawn(serve(listener, disk));
+
+    let added = api
+        .post(
+            "/images",
+            json!({"name": format!("{run}-odd"), "source_url": url, "format": "raw",
+                   "storage_pool_id": pool["id"]}),
+        )
+        .await?;
+    let id = added["id"].as_str().unwrap().to_owned();
+    api.wait_task(added["task_id"].as_str().unwrap(), Duration::from_secs(300))
+        .await?;
+    let img = image(api, &id).await?;
+    assert_eq!(img["state"], "ready", "{img}");
+    assert_eq!(img["virtual_bytes"], (1 << 20) + 512, "{img}");
+    // Not downloaded again: none to download from.
+    server.abort();
+
+    let vm = api
+        .post(
+            "/vms",
+            json!({"name": format!("{run}-odd"), "vcpus": 1, "memory_mib": 512, "disk_gib": 1,
+                   "image_id": id, "password": PW, "cluster_id": cluster}),
+        )
+        .await?;
+    api.wait_task(vm["task_id"].as_str().unwrap(), Duration::from_secs(600))
+        .await?;
+    let img = image(api, &id).await?;
+    let holders: Vec<&str> = img["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(holders.contains(&host), "{img}");
+    assert_eq!(holders.len(), 2, "relayed through one host: {img}");
+    Ok(())
+}
+
+/// Serves `body` to every GET, until aborted.
+async fn serve(listener: tokio::net::TcpListener, body: Vec<u8>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    loop {
+        let Ok((mut conn, _)) = listener.accept().await else {
+            continue;
+        };
+        let body = body.clone();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 4096];
+            let _ = conn.read(&mut buf).await;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = conn.write_all(head.as_bytes()).await;
+            let _ = conn.write_all(&body).await;
+            let _ = conn.shutdown().await;
+        });
+    }
 }

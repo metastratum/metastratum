@@ -218,6 +218,32 @@ async fn concurrent_ip_allocation_never_duplicates(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn concurrent_monitor_addresses_reserve_one(pool: PgPool) {
+    let t = root(&pool).await;
+    let net = networks::default_for(&mut pool.acquire().await.unwrap(), t.id)
+        .await
+        .unwrap();
+    let tasks: Vec<_> = (0..8)
+        .map(|_| {
+            let pool = pool.clone();
+            tokio::spawn(async move {
+                let mut tx = pool.begin().await.unwrap();
+                let ip = networks::monitor_address(&mut tx, net.id).await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                tx.commit().await.unwrap();
+                ip
+            })
+        })
+        .collect();
+    let mut ips = vec![];
+    for t in tasks {
+        ips.push(t.await.unwrap());
+    }
+    ips.dedup();
+    assert_eq!(ips.len(), 1, "{ips:?}");
+}
+
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
 async fn join_tokens_are_single_use_and_expire(pool: PgPool) {
     root(&pool).await;
     let cluster = mst_db::clusters::create(&pool, "c1", 4.0, 1.0, false)
@@ -482,7 +508,7 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
         format!("{}/{}", hex(r.id.0), hex(a.id.0))
     );
 
-    images::failed(&pool, img.id, "HTTP 404").await.unwrap();
+    assert!(images::failed(&pool, img.id, "HTTP 404").await.unwrap());
     let got = images::get(&pool, img.id).await.unwrap();
     assert_eq!(
         (got.state.as_str(), got.error.as_deref()),
@@ -507,20 +533,29 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
     images::set_download_host(&pool, img.id, h1.id)
         .await
         .unwrap();
-    images::downloaded(&mut conn, img.id, Copy::local(h1.id), &stored(400 << 20))
-        .await
-        .unwrap();
+    assert!(
+        images::downloaded(&mut conn, img.id, Copy::local(h1.id), &stored(400 << 20))
+            .await
+            .unwrap()
+    );
     // Copies change nothing of what was downloaded; neither does a second
-    // report of the download.
+    // report of the download (a second run of it), nor its failing.
     images::add_copy(&mut conn, img.id, Copy::local(h2.id))
         .await
         .unwrap();
     images::add_copy(&mut conn, img.id, Copy::local(h2.id))
         .await
         .unwrap();
-    images::downloaded(&mut conn, img.id, Copy::local(h1.id), &stored(9 << 30))
-        .await
-        .unwrap();
+    assert!(
+        !images::downloaded(&mut conn, img.id, Copy::local(h1.id), &stored(9 << 30))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !images::failed(&pool, img.id, "agent session closed")
+            .await
+            .unwrap()
+    );
     let got = images::get(&pool, img.id).await.unwrap();
     assert_eq!(got.state, "ready");
     assert_eq!(
@@ -532,16 +567,49 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
         (Some(400 << 20), Some(3 << 30))
     );
     assert_eq!(got.download_host_id, Some(h1.id));
-    // Downloading again starts on a host yet to pick.
+    // Downloading again starts on the host it was on, where what a download
+    // cut off left may be.
     images::downloading(&pool, img.id).await.unwrap();
     assert_eq!(
         images::get(&pool, img.id).await.unwrap().download_host_id,
-        None
+        Some(h1.id)
     );
-    assert_eq!(images::downloading_count(&pool, a.id).await.unwrap(), 1);
-    images::downloaded(&mut conn, img.id, Copy::local(h1.id), &stored(400 << 20))
+    // Downloads under way count for the provider's child's whole tree,
+    // whoever's they are.
+    let a1 = tenants::create(&pool, Some(a.id), "a1", "A1")
         .await
         .unwrap();
+    let task = mst_db::tasks::enqueue(
+        &pool,
+        mst_db::tasks::NewTask {
+            tenant_id: a1.id,
+            kind: "image.download",
+            target: Some(("image", img.id.0)),
+            params: serde_json::json!({}),
+            created_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    for (t, n) in [(a.id, 1), (a1.id, 1), (r.id, 0)] {
+        assert_eq!(images::downloads_in_tree(&pool, t).await.unwrap(), n);
+    }
+    assert!(
+        images::downloads_under_way(&pool, &[img.id])
+            .await
+            .unwrap()
+            .contains(&img.id)
+    );
+    sqlx::query("UPDATE tasks SET state = 'succeeded' WHERE id = $1")
+        .bind(task.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        images::downloaded(&mut conn, img.id, Copy::local(h1.id), &stored(400 << 20))
+            .await
+            .unwrap()
+    );
     assert_eq!(
         images::copies(&pool, img.id).await.unwrap(),
         [Copy::local(h1.id), Copy::local(h2.id)]

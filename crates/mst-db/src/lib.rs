@@ -49,6 +49,11 @@ pub enum Error {
     Sqlx(#[from] sqlx::Error),
     #[error(transparent)]
     Migrate(#[from] sqlx::migrate::MigrateError),
+    #[error(
+        "this database was made by metastratum 0.4 or older, which 0.5 does not upgrade: \
+         install 0.5 on a new database"
+    )]
+    TooOld,
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -60,10 +65,25 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<PgPool> {
         .await?)
 }
 
+/// The first migration of 0.5's schema.
+const FIRST_MIGRATION: i64 = 20261019000001;
+
 /// Brings the schema up to date. Migrations this build does not know were
 /// applied by a newer controller during a rolling upgrade; they are left
 /// alone, so an older replica can still restart until it is replaced.
 pub async fn migrate(pool: &PgPool) -> Result<()> {
+    // 0.5 starts the schema afresh (its first migration is all of it);
+    // migrations older than that are 0.4's or earlier.
+    let made_before: Option<bool> = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM _sqlx_migrations WHERE version < $1)
+         WHERE to_regclass('_sqlx_migrations') IS NOT NULL",
+    )
+    .bind(FIRST_MIGRATION)
+    .fetch_optional(pool)
+    .await?;
+    if made_before == Some(true) {
+        return Err(Error::TooOld);
+    }
     let mut migrator = sqlx::migrate!("../../migrations");
     migrator.set_ignore_missing(true);
     migrator.run(pool).await?;

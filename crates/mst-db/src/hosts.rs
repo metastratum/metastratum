@@ -218,7 +218,10 @@ pub async fn set_agent_protocol(
 }
 
 /// Whether the host's agent handles `command` (see
-/// `mst_proto::capability`), as it last said.
+/// `mst_proto::capability`), or has a feature (`mst_proto::FEATURES`), as
+/// it last said. Nothing needs to ask while every agent has all there is;
+/// a command or feature added later is gated on it, as agents are upgraded
+/// one by one.
 pub async fn agent_supports(db: impl PgExecutor<'_>, id: HostId, command: &str) -> Result<bool> {
     Ok(sqlx::query_scalar(
         "SELECT coalesce($2 = ANY (agent_capabilities), false) FROM hosts WHERE id = $1",
@@ -458,7 +461,9 @@ pub async fn accepts_cert(db: impl PgExecutor<'_>, id: HostId, fingerprint: &str
     .await?)
 }
 
-/// The hosts whose agents handle `command` (see `mst_proto::capability`).
+/// The hosts whose agents handle `command` (see `mst_proto::capability`),
+/// or have a feature; for placing work on them once a later command or
+/// feature needs to be (see [`agent_supports`]).
 pub async fn supporting(
     db: impl PgExecutor<'_>,
     command: &str,

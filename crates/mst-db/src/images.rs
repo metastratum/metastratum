@@ -155,15 +155,13 @@ pub async fn get_for_update(db: &mut sqlx::PgConnection, id: ImageId) -> Result<
     })
 }
 
-/// Marks the image as being downloaded (again), on a host yet to pick.
+/// Marks the image as being downloaded (again): on the host it was
+/// downloading on, if any, where what a download cut off left may be.
 pub async fn downloading(db: impl PgExecutor<'_>, id: ImageId) -> Result<()> {
-    sqlx::query(
-        "UPDATE images SET state = 'downloading', error = NULL, download_host_id = NULL
-         WHERE id = $1",
-    )
-    .bind(id)
-    .execute(db)
-    .await?;
+    sqlx::query("UPDATE images SET state = 'downloading', error = NULL WHERE id = $1")
+        .bind(id)
+        .execute(db)
+        .await?;
     Ok(())
 }
 
@@ -177,14 +175,35 @@ pub async fn set_download_host(db: impl PgExecutor<'_>, id: ImageId, host: HostI
     Ok(())
 }
 
-/// How many of a tenant's own images are being downloaded.
-pub async fn downloading_count(db: impl PgExecutor<'_>, tenant: TenantId) -> Result<i64> {
+/// How many downloads (tasks pending or running, for images deleted
+/// meanwhile too) the tenant's tree has under way: that of the provider's
+/// child it is in (or the provider's own).
+pub async fn downloads_in_tree(db: impl PgExecutor<'_>, tenant: TenantId) -> Result<i64> {
     Ok(sqlx::query_scalar(
-        "SELECT count(*) FROM images WHERE tenant_id = $1 AND state = 'downloading'",
+        "WITH me AS (SELECT subpath(path, 0, least(nlevel(path), 2)) AS top FROM tenants
+                     WHERE id = $1)
+         SELECT count(*) FROM tasks t JOIN tenants o ON o.id = t.tenant_id, me
+         WHERE t.kind = 'image.download' AND t.state IN ('pending', 'running')
+           AND subpath(o.path, 0, least(nlevel(o.path), 2)) = me.top",
     )
     .bind(tenant)
     .fetch_one(db)
     .await?)
+}
+
+/// Which of the images a task is downloading (pending or running).
+pub async fn downloads_under_way(
+    db: impl PgExecutor<'_>,
+    ids: &[ImageId],
+) -> Result<std::collections::HashSet<ImageId>> {
+    let rows: Vec<(ImageId,)> = sqlx::query_as(
+        "SELECT DISTINCT target_id FROM tasks WHERE target_id = ANY($1)
+         AND kind = 'image.download' AND state IN ('pending', 'running')",
+    )
+    .bind(ids.iter().map(|i| i.0).collect::<Vec<_>>())
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().map(|(i,)| i).collect())
 }
 
 /// Whether a task is downloading the image (pending or running).
@@ -236,14 +255,15 @@ impl Copy {
 
 /// Records the image downloaded, and its first copy: it is ready, with the
 /// sizes, hash and digest of what was downloaded. Only an image being
-/// downloaded becomes so. Fails if the image is gone.
+/// downloaded becomes so: returns false, recording nothing, for one gone,
+/// failed, or ready already (a second run of the same download).
 pub async fn downloaded(
     db: &mut sqlx::PgConnection,
     id: ImageId,
     at: Copy,
     stored: &Stored,
-) -> Result<()> {
-    sqlx::query(
+) -> Result<bool> {
+    let changed = sqlx::query(
         "UPDATE images SET state = 'ready', error = NULL, size_bytes = $2, virtual_bytes = $3,
                 sha256 = nullif($4, ''), digest = $5
          WHERE id = $1 AND state = 'downloading'",
@@ -254,8 +274,13 @@ pub async fn downloaded(
     .bind(&stored.sha256)
     .bind(&stored.digest)
     .execute(&mut *db)
-    .await?;
-    add_copy(db, id, at).await
+    .await?
+    .rows_affected();
+    if changed == 0 {
+        return Ok(false);
+    }
+    add_copy(db, id, at).await?;
+    Ok(true)
 }
 
 /// Records a copy of the image. Fails if the image is gone.
@@ -309,14 +334,19 @@ pub async fn remove_copy(db: impl PgExecutor<'_>, id: ImageId, at: Copy) -> Resu
     Ok(())
 }
 
-/// Marks the download failed, saying why.
-pub async fn failed(db: impl PgExecutor<'_>, id: ImageId, error: &str) -> Result<()> {
-    sqlx::query("UPDATE images SET state = 'failed', error = $2 WHERE id = $1")
-        .bind(id)
-        .bind(error)
-        .execute(db)
-        .await?;
-    Ok(())
+/// Marks the download failed, saying why: only an image being downloaded
+/// (not one another run of the download made ready). Returns whether it
+/// did.
+pub async fn failed(db: impl PgExecutor<'_>, id: ImageId, error: &str) -> Result<bool> {
+    Ok(sqlx::query(
+        "UPDATE images SET state = 'failed', error = $2 WHERE id = $1 AND state = 'downloading'",
+    )
+    .bind(id)
+    .bind(error)
+    .execute(db)
+    .await?
+    .rows_affected()
+        == 1)
 }
 
 /// The copies of an image, oldest first (decommissioned hosts hold

@@ -69,9 +69,9 @@ async fn nodes(agent: &Agent, vm: &str, disks: &[BackupDisk]) -> Result<HashMap<
     disks
         .iter()
         .map(|d| {
-            let target = target(d);
+            let target = target(d)?;
             let index = sources
-                .get(&target)
+                .get(target)
                 .ok_or_else(|| anyhow!("the VM has no disk {target}"))?;
             ["format", "storage"]
                 .iter()

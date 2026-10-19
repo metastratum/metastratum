@@ -71,7 +71,12 @@ pub(crate) struct ImgInfo {
 }
 
 pub(crate) async fn run(tool: &'static str, args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new(tool).args(args).output().await?;
+    // Cut off (an image deleted while it downloads), it stops too.
+    let out = Command::new(tool)
+        .args(args)
+        .kill_on_drop(true)
+        .output()
+        .await?;
     if !out.status.success() {
         return Err(Error::Tool {
             tool,

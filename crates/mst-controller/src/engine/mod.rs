@@ -33,6 +33,10 @@ const MAX_CONCURRENT: usize = 16;
 /// hold up VMs' lifecycles, migrations or recovery.
 const MAX_DOWNLOADS: usize = 4;
 const DOWNLOADS: &[&str] = &["image.download"];
+/// Copies of images onto hosts (for VMs made from them) run in slots of
+/// their own too, given up by the task for the while: many VMs made at once
+/// from an image no host has yet keep no other task from running.
+const MAX_TRANSFERS: usize = 4;
 
 /// Whether an image was published by the provider (the root tenant), whose
 /// downloads may come from internal addresses; tenants' may not.
@@ -53,6 +57,7 @@ pub struct TaskCtx {
     /// The task's slot among those running here, and where it came from.
     slot: tokio::sync::Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
     slots: Arc<Semaphore>,
+    transfers: Arc<Semaphore>,
 }
 
 impl TaskCtx {
@@ -71,6 +76,20 @@ impl TaskCtx {
         out
     }
 
+    /// Runs `fut` (a long copy) in a transfer slot instead of the task's
+    /// own (see [`MAX_TRANSFERS`]).
+    pub async fn transfer<T>(&self, fut: impl std::future::Future<Output = T>) -> T {
+        let transfers = self.transfers.clone();
+        self.idle(async move {
+            let _slot = transfers
+                .acquire_owned()
+                .await
+                .expect("semaphore never closes");
+            fut.await
+        })
+        .await
+    }
+
     /// Records the current step for display. Failures are logged, not fatal.
     pub async fn step(&self, step: &str, progress: f32) {
         if let Err(e) =
@@ -82,13 +101,27 @@ impl TaskCtx {
 }
 
 pub async fn run(state: AppState) {
-    tokio::spawn(work(state.clone(), MAX_DOWNLOADS, DOWNLOADS, true));
-    work(state, MAX_CONCURRENT, DOWNLOADS, false).await;
+    let transfers = Arc::new(Semaphore::new(MAX_TRANSFERS));
+    let downloads = work(
+        state.clone(),
+        MAX_DOWNLOADS,
+        DOWNLOADS,
+        true,
+        transfers.clone(),
+    );
+    tokio::spawn(downloads);
+    work(state, MAX_CONCURRENT, DOWNLOADS, false, transfers).await;
 }
 
 /// Claims and runs tasks of `kinds` (`only`), or of any other kind, up to
 /// `max` at once.
-async fn work(state: AppState, max: usize, kinds: &'static [&'static str], only: bool) {
+async fn work(
+    state: AppState,
+    max: usize,
+    kinds: &'static [&'static str],
+    only: bool,
+    transfers: Arc<Semaphore>,
+) {
     let slots = Arc::new(Semaphore::new(max));
     loop {
         let permit = slots
@@ -113,8 +146,9 @@ async fn work(state: AppState, max: usize, kinds: &'static [&'static str], only:
         };
         let state = state.clone();
         let slots = slots.clone();
+        let transfers = transfers.clone();
         tokio::spawn(async move {
-            execute(state, task, permit, slots).await;
+            execute(state, task, permit, slots, transfers).await;
         });
     }
 }
@@ -124,6 +158,7 @@ async fn execute(
     task: Task,
     permit: tokio::sync::OwnedSemaphorePermit,
     slots: Arc<Semaphore>,
+    transfers: Arc<Semaphore>,
 ) {
     let (id, kind) = (task.id, task.kind.clone());
     let started = std::time::Instant::now();
@@ -148,6 +183,7 @@ async fn execute(
         task,
         slot: tokio::sync::Mutex::new(Some(permit)),
         slots,
+        transfers,
     };
     let outcome = match kind.as_str() {
         "vm.create" => vm::create(&ctx).await,

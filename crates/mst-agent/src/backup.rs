@@ -106,17 +106,12 @@ fn checkpoint_name(backup: &str) -> String {
     format!("mst-{backup}")
 }
 
-pub(crate) fn target_of(index: u32) -> String {
-    // As the VM's domain names its disks: vda, vdb, ...
-    format!("vd{}", (b'a' + index as u8) as char)
-}
-
-/// The disk's target device in its VM's domain.
-pub(crate) fn target(d: &BackupDisk) -> String {
-    if d.target.is_empty() {
-        target_of(d.index)
-    } else {
-        d.target.clone()
+/// The disk's target device in its VM's domain, which the controller names
+/// for any disk of a VM that may be running.
+pub(crate) fn target(d: &BackupDisk) -> Result<&str> {
+    match d.target.as_str() {
+        "" => bail!("no target device named for disk {}", d.index),
+        t => Ok(t),
     }
 }
 
@@ -240,7 +235,7 @@ async fn plan_live(agent: &Agent, c: &BackupVm, dir: &Path) -> Plan {
     let incremental: Vec<u32> = candidates
         .iter()
         .filter(|d| {
-            covered.contains(&target(d))
+            target(d).is_ok_and(|t| covered.contains(t))
                 && bitmaps
                     .get(&d.index)
                     .is_some_and(|b| b.iter().any(|b| b.name == since && !b.inconsistent))
@@ -342,7 +337,7 @@ async fn disk_nodes(
     .await?;
     let mut out = HashMap::new();
     for d in disks {
-        let Some(index) = sources.get(&target(d)) else {
+        let Some(index) = sources.get(target(d)?) else {
             continue;
         };
         let name = format!("libvirt-{index}-format");
@@ -367,8 +362,11 @@ async fn live(agent: &Agent, c: &BackupVm, dir: &Path) -> Result<(bool, Plan)> {
     // A retried request finds its backup still running, and waits.
     if !lv.job_stats(&c.vm_id).await.is_ok_and(|st| ours(&st)) {
         let targets = lv.disk_targets(&c.vm_id).await?;
-        if let Some(missing) = c.disks.iter().map(target).find(|t| !targets.contains(t)) {
-            bail!("the VM has no disk {missing}");
+        for d in &c.disks {
+            let t = target(d)?;
+            if !targets.iter().any(|have| have == t) {
+                bail!("the VM has no disk {t}");
+            }
         }
         let starts = checkpoint_name(&c.backup_id);
         // Left by an attempt that did not finish.
@@ -480,15 +478,15 @@ async fn begin(
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
             _ => {}
         }
-        let t = target(d);
-        let size = lv.disk_capacity(&c.vm_id, &t).await?;
+        let t = target(d)?;
+        let size = lv.disk_capacity(&c.vm_id, t).await?;
         let base = match (plan.incremental.contains(&d.index), d.parent_index) {
             (true, Some(i)) => Some(parent_file(&c.parent_id, i)),
             _ => None,
         };
         mst_storage::backups::create_target(&file, size, base.as_deref()).await?;
         let since = base.and(plan.since.as_deref());
-        wanted.insert(t, (file, since.map(str::to_owned)));
+        wanted.insert(t.to_owned(), (file, since.map(str::to_owned)));
     }
     let xml = backup_xml(targets, &wanted);
     let checkpoint = plan.starts.as_deref().map(|name| {
@@ -496,7 +494,7 @@ async fn begin(
             .disks
             .iter()
             .filter(|d| tracks_changes(d))
-            .map(target)
+            .filter_map(|d| target(d).ok().map(str::to_owned))
             .collect();
         checkpoint_xml(name, targets, &tracked)
     });
@@ -865,7 +863,6 @@ mod tests {
              <disk name='vda' checkpoint='bitmap'/><disk name='sda' checkpoint='no'/>\
              <disk name='sdb' checkpoint='no'/></disks></domaincheckpoint>"
         );
-        assert_eq!(target_of(1), "vdb");
         assert_eq!(parent_file("a", 2), "../a/2.qcow2");
     }
 

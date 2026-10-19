@@ -204,7 +204,7 @@ pub async fn resize_disk(agent: &crate::session::Agent, c: &mst_proto::ResizeDis
     ) {
         agent
             .lv
-            .block_resize(&c.vm_id, &crate::backup::target(disk), c.size_bytes)
+            .block_resize(&c.vm_id, crate::backup::target(disk)?, c.size_bytes)
             .await
             .context("growing the disk")?;
     } else {

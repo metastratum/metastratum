@@ -109,8 +109,9 @@ The boundaries metastratum enforces:
   or chassis, physical networks, more CPUs or memory) waits for a provider
   administrator to accept it.
   Replaced and decommissioned hosts' certificates are revoked: the
-  controllers refuse them, and so do the other hosts' QEMU and libvirt,
-  which install the CA's revocation list.
+  controllers refuse them. Nothing else trusts the controller's CA for
+  hosts: migrations and copies between hosts bring CAs of their own, and a
+  host's own key is never where QEMU can read it.
   Hosts' libvirt does not listen on the network: the controller drives
   live migrations on each host's own libvirt, and only QEMU sends the VM
   over, with TLS. Each migration gets certificates of its own, from a CA
@@ -120,7 +121,10 @@ The boundaries metastratum enforces:
   the source sends; agents from before this are refused. A disk moving
   between hosts is served read-only by `qemu-nbd` over TLS, with a CA and
   certificates made for that copy alone: only the host it moves to can read
-  it, and the server stops after one copy (or an hour). The controller reaches
+  it, and the server stops after one copy (or after 13 hours, longer than
+  any copy is waited for, should the controller not end it). Images are
+  copied between hosts the same way, and every copy is checked against the
+  digest of what was first downloaded. The controller reaches
   OVN's northbound database over TLS with a client certificate from a CA
   that issues to controllers only; hosts reach the southbound one with
   certificates from another CA, naming their chassis, under OVN's RBAC
@@ -165,7 +169,7 @@ A review of the whole system before calling it hardened. Fixed:
 | Hosts' libvirt accepted any certificate the controller's CA issued (replicas' too) | libvirt no longer listens on the network at all |
 | Nothing kept a VM from taking all of a host's disk or network bandwidth | per-VM disk (IOPS, MB/s) and network (Mbit/s each way) limits per cluster, enforced by QEMU and OVN, changed live |
 | The destination of a live migration accepted the incoming VM from any certificate the controller's CA issued: another host could send it a VM of its own instead of the source's | each migration gets a CA and certificates of its own; QEMU on each side trusts only that CA while it sets up the migration's TLS |
-| Host certificates could not be revoked | the controller's CA keeps a revocation list that hosts install for QEMU: a renewed host's previous certificate is revoked once it uses the new one, a decommissioned host's at once |
+| Host certificates could not be revoked | the controllers refuse revoked ones: a renewed host's previous certificate is revoked once it uses the new one, a decommissioned host's at once |
 | For live migration, each host's libvirt accepted connections from the other hosts with full control: one compromised host could take over the rest | the controller drives migrations on each host's own libvirt; libvirt's TLS listener is closed |
 | API tokens carried all of their user's rights | tokens can be limited to roles at tenants |
 | Hosts' ovn-controller used the southbound database with no TLS or RBAC: any host could rewrite every host's flows | agents set up TLS with a certificate per chassis from a separate OVN CA, under OVN's RBAC (`ovn.southbound`) |
@@ -182,7 +186,7 @@ the code after two-factor sign-in was added. Fixed:
 |---|---|
 | Load balancers' health checks were let past every tenant's security groups and guardrails by their source address, which tenants could choose (any range for their networks): one tenant could reach every other's VMs from an address of its own | that rule is gone: OVN lets its own health checks through by its service monitor MAC address, which guests cannot send from |
 | A host taken over could answer a migration away from it with domain XML of its own choosing (other VMs' disks, host devices) and the destination would run it | the destination defines the VM from the controller's description, also its persistent definition afterwards |
-| A host claiming an old agent protocol made every peer in its cluster open libvirt's TLS listener to all host certificates | agents older than the first release's protocol are refused, before anything they say is kept; the listener is never opened |
+| A host claiming an old agent protocol made every peer in its cluster open libvirt's TLS listener to all host certificates | agents older than this release's protocol are refused, before anything they say is kept; the listener is never opened |
 | A host could name itself `mst-controller` and renew its certificate into one that agents and replicas took for the controller's | host names must be host names, never the controllers'; certificates leave out any other |
 | A session opened with the password alone, before the user's first second factor, became a full session when the factor was added | adding a factor ends the user's other sessions |
 | A tenant's administrators could reset the password or second factors of their own users who held roles above or beside the tenant, and take those roles over | roles only at the user's own tenant or below (enforced in the database too; roles held elsewhere were removed) |
@@ -203,6 +207,18 @@ the code after two-factor sign-in was added. Fixed:
 | The sign-in page showed error text from its address, which anyone could put there | error codes, in the page's own words |
 | Live updates told sub-tenants' users about their ancestors' unshared images | only shared ones |
 | SECURITY.md claimed OVN's RBAC held hosts to their own chassis; it does not keep them off other hosts' ports | corrected (known issues), and the controller watches port bindings |
+
+## Review for 0.5, October 2026
+
+Reviewers read what changed for 0.5 (images downloaded once into stores
+and copied between hosts; earlier releases' compatibility removed). Fixed:
+
+| Finding | Fix |
+|---|---|
+| A tenant could hold every download slot of every controller for hours: deleting a downloading image did not stop its download, and the limit of two counted only images that still existed, per tenant | deleting an image cuts its downloads and copies off on the hosts; the limit counts downloads under way (deleted images' too) across the provider's child's whole tree; a download moving less than 16 MiB in 5 minutes is given up on |
+| Every QEMU process on a host could read the host's key (installed for QEMU's TLS, though migrations bring their own): a guest breaking out into QEMU could act as the host towards the controller, and get storage keys | QEMU's TLS directory holds a migration's own credentials only while QEMU loads them, nothing else |
+| Downloading an image again did not check the tenant may still use the pool it is kept in | checked, there and as the download runs |
+| Many VMs made at once from an image no host had yet held every task slot of a controller while they waited for it, so no VM could be stopped, deleted or recovered meanwhile | waiting holds no slot, and copies run in slots of their own |
 
 ## Known issues, and what to do about them
 
@@ -289,8 +305,7 @@ the code after two-factor sign-in was added. Fixed:
   filtered.
 - **Sealed storage pool keys are bound to "a storage pool", not to their
   pool.** Someone able to write to the database could swap two pools'
-  sealed keys, and values written there unsealed are accepted (as they
-  were before sealing existed).
+  sealed keys.
   *Mitigation:* the database reachable by the controllers only, with
   credentials of their own.
 - **QEMU before 9.0 (CVE-2024-4467)** can open files a crafted qcow2

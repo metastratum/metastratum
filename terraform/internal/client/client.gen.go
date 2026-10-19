@@ -724,6 +724,10 @@ type CreatedImage struct {
 	StoragePoolId   StoragePoolId `json:"storage_pool_id"`
 	StoragePoolName string        `json:"storage_pool_name"`
 
+	// Stuck `downloading`, but no task is downloading it (what was ended without
+	// saying how): it can be downloaded again.
+	Stuck bool `json:"stuck"`
+
 	// TaskId The download.
 	TaskId   TaskId   `json:"task_id"`
 	TenantId TenantId `json:"tenant_id"`
@@ -1041,7 +1045,11 @@ type ImageView struct {
 	// disks from directly.
 	StoragePoolId   StoragePoolId `json:"storage_pool_id"`
 	StoragePoolName string        `json:"storage_pool_name"`
-	TenantId        TenantId      `json:"tenant_id"`
+
+	// Stuck `downloading`, but no task is downloading it (what was ended without
+	// saying how): it can be downloaded again.
+	Stuck    bool     `json:"stuck"`
+	TenantId TenantId `json:"tenant_id"`
 
 	// VirtualBytes The size of the disk it holds: VMs' disks made from it are at least
 	// as large.
@@ -3437,8 +3445,8 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/vms/{id}/disks (the `VmDisks` operationId).
 	VmDisks(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// AttachDiskWithBody Attaches a disk to a VM of its tenant (a task): plugged in if it runs
-	// (where it started since disks could be), otherwise from its next start.
+	// AttachDiskWithBody Attaches a disk to a VM of its tenant (a task): plugged in if it runs,
+	// otherwise from its next start.
 	// A disk on local storage attaches to VMs on its host; move it there first
 	// (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
 	// cover the disks it had).
@@ -3448,8 +3456,8 @@ type ClientInterface interface {
 	// Corresponds with POST /api/v1/vms/{id}/disks (the `AttachDisk` operationId).
 	AttachDiskWithBody(ctx context.Context, id VmId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// AttachDisk Attaches a disk to a VM of its tenant (a task): plugged in if it runs
-	// (where it started since disks could be), otherwise from its next start.
+	// AttachDisk Attaches a disk to a VM of its tenant (a task): plugged in if it runs,
+	// otherwise from its next start.
 	// A disk on local storage attaches to VMs on its host; move it there first
 	// (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
 	// cover the disks it had).
@@ -6395,8 +6403,8 @@ func (c *Client) VmDisks(ctx context.Context, id VmId, reqEditors ...RequestEdit
 	return c.Client.Do(req)
 }
 
-// AttachDiskWithBody Attaches a disk to a VM of its tenant (a task): plugged in if it runs
-// (where it started since disks could be), otherwise from its next start.
+// AttachDiskWithBody Attaches a disk to a VM of its tenant (a task): plugged in if it runs,
+// otherwise from its next start.
 // A disk on local storage attaches to VMs on its host; move it there first
 // (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
 // cover the disks it had).
@@ -6416,8 +6424,8 @@ func (c *Client) AttachDiskWithBody(ctx context.Context, id VmId, contentType st
 	return c.Client.Do(req)
 }
 
-// AttachDisk Attaches a disk to a VM of its tenant (a task): plugged in if it runs
-// (where it started since disks could be), otherwise from its next start.
+// AttachDisk Attaches a disk to a VM of its tenant (a task): plugged in if it runs,
+// otherwise from its next start.
 // A disk on local storage attaches to VMs on its host; move it there first
 // (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
 // cover the disks it had).
@@ -14219,8 +14227,8 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/vms/{id}/disks (the `VmDisks` operationId).
 	VmDisksWithResponse(ctx context.Context, id VmId, reqEditors ...RequestEditorFn) (*VmDisksResponse, error)
 
-	// AttachDiskWithBodyWithResponse Attaches a disk to a VM of its tenant (a task): plugged in if it runs
-	// (where it started since disks could be), otherwise from its next start.
+	// AttachDiskWithBodyWithResponse Attaches a disk to a VM of its tenant (a task): plugged in if it runs,
+	// otherwise from its next start.
 	// A disk on local storage attaches to VMs on its host; move it there first
 	// (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
 	// cover the disks it had).
@@ -14230,8 +14238,8 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with POST /api/v1/vms/{id}/disks (the `AttachDisk` operationId).
 	AttachDiskWithBodyWithResponse(ctx context.Context, id VmId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AttachDiskResponse, error)
 
-	// AttachDiskWithResponse Attaches a disk to a VM of its tenant (a task): plugged in if it runs
-	// (where it started since disks could be), otherwise from its next start.
+	// AttachDiskWithResponse Attaches a disk to a VM of its tenant (a task): plugged in if it runs,
+	// otherwise from its next start.
 	// A disk on local storage attaches to VMs on its host; move it there first
 	// (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
 	// cover the disks it had).
@@ -22495,8 +22503,8 @@ func (c *ClientWithResponses) VmDisksWithResponse(ctx context.Context, id VmId, 
 	return ParseVmDisksResponse(rsp)
 }
 
-// AttachDiskWithBodyWithResponse Attaches a disk to a VM of its tenant (a task): plugged in if it runs
-// (where it started since disks could be), otherwise from its next start.
+// AttachDiskWithBodyWithResponse Attaches a disk to a VM of its tenant (a task): plugged in if it runs,
+// otherwise from its next start.
 // A disk on local storage attaches to VMs on its host; move it there first
 // (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
 // cover the disks it had).
@@ -22512,8 +22520,8 @@ func (c *ClientWithResponses) AttachDiskWithBodyWithResponse(ctx context.Context
 	return ParseAttachDiskResponse(rsp)
 }
 
-// AttachDiskWithResponse Attaches a disk to a VM of its tenant (a task): plugged in if it runs
-// (where it started since disks could be), otherwise from its next start.
+// AttachDiskWithResponse Attaches a disk to a VM of its tenant (a task): plugged in if it runs,
+// otherwise from its next start.
 // A disk on local storage attaches to VMs on its host; move it there first
 // (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
 // cover the disks it had).

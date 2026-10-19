@@ -89,8 +89,8 @@ message HostFacts {
   // The host-model CPU (`mst_core::vm::CpuSpec` as JSON), for cluster
   // baselines; empty if unknown.
   string cpu_json = 11;
-  // Whether libvirt accepts TLS connections from other hosts, which live
-  // migration to this host needs.
+  // Whether live migrations can involve this host: QEMU runs in a group
+  // the agent can give a migration's TLS key to.
   bool migration_ready = 12;
 }
 
@@ -154,11 +154,9 @@ message Welcome {
   // OVN southbound remote(s) for ovn-controller, over TLS (ssl:...); empty
   // when the controller leaves southbound access to the deployment.
   string ovn_sb_remote = 3;
-  // The controller CA's revocation list (PEM), for QEMU and libvirt to
-  // refuse revoked host certificates.
-  string crl_pem = 4;
+  reserved 4;
   // What exists, so the agent lets go of the rest: pools deleted and images
-  // deleted while it was away. Absent from controllers that predate it.
+  // deleted while it was away.
   Inventory inventory = 5;
 }
 
@@ -185,7 +183,6 @@ message Command {
     DomainInfo domain_info = 24;
     RenewCertificate renew_certificate = 25;
     MigrationStep migration_step = 26;
-    InstallCrl install_crl = 28;
     SetDiskLimits set_disk_limits = 29;
     RemovePool remove_pool = 30;
     DeleteImage delete_image = 31;
@@ -213,8 +210,9 @@ message Command {
     PruneStore prune_store = 53;
   }
   // 10: EnsureImage, before the image store. 21: MigrateVm, peer to peer.
-  // 27: LibvirtTls, which opened libvirt to other hosts for that.
-  reserved 10, 21, 27;
+  // 27: LibvirtTls, which opened libvirt to other hosts for that. 28:
+  // InstallCrl, for QEMU trusting the controller's CA.
+  reserved 10, 21, 27, 28;
 }
 
 message CommandResult {
@@ -400,8 +398,8 @@ message BackupDisk {
   uint32 index = 1;
   string volume_id = 2;
   Pool pool = 3;
-  // Its target device in the VM's domain (vda, sdb...); from its index
-  // (vda, vdb...) when empty, as older controllers send it.
+  // Its target device in the VM's domain (vda, sdb...); empty only for a
+  // disk of no running VM (one kept as its VM is deleted, say).
   string target = 4;
   // Its place in the parent backup, when the parent has it.
   optional uint32 parent_index = 5;
@@ -512,11 +510,6 @@ message DeleteImage {
 // changed (OVN itself is the admin's and stays); then the agent's identity
 // and service. Returns a report (JSON).
 message Decommission {}
-
-// A newer revocation list of the controller's CA.
-message InstallCrl {
-  string crl_pem = 1;
-}
 
 // Progress of the VM's migration job. Returns mst_libvirt::JobStats as JSON.
 message MigrationStats {
@@ -677,4 +670,7 @@ message VolumeFromImage {
 message PruneStore {
   Pool pool = 1;
   repeated string image_ids = 2;
+  // When image_ids was listed (Unix seconds): images stored since may be
+  // missing from it, and stay.
+  uint64 listed_at = 3;
 }

@@ -109,7 +109,7 @@ pub struct NodeFacts {
 /// Where and how to live-migrate a domain.
 #[derive(Clone, Debug, Default)]
 pub struct MigrateTo<'a> {
-    /// The destination host's address; its daemon must accept TLS.
+    /// The destination host's address, which QEMU sends the VM to over TLS.
     pub address: &'a str,
     /// Disks (target names such as `vda`) on host-local storage, to copy
     /// while the guest runs, whole (they stand on their own). Shared and

@@ -40,9 +40,9 @@ southbound = ["ssl:10.0.0.31:6642", "ssl:10.0.0.32:6642", "ssl:10.0.0.33:6642"]
 ```
 
 Everything else has a default: the API on `127.0.0.1:7820` (for the proxy
-in front), the agent endpoint on port 7821. (They are out of the way of
-the ports other services usually take, such as 8080 and 8443; before 0.4
-those were the defaults.) `deploy/config/controller.toml`
+in front), the agent endpoint on port 7821 (out of the way of the ports
+other services usually take, such as 8080 and 8443).
+`deploy/config/controller.toml`
 lists every setting. A setting the controller does not know is an error, so
 a typo is caught when it starts. The other commands (`bootstrap`,
 `join-token`, `ovn-certificate`) read the same file.
@@ -229,9 +229,8 @@ an external network their VPC routes to, or beyond it.
 Hosts enroll with a single-use join token (Infrastructure → Hosts, or
 `mst-controller join-token`) and get a certificate from the controller's CA,
 valid for 30 days. Agents renew it when a third of that is left, or on
-demand (Renew certificate on the host); migrations use the new one from
-the next on. A renewal revokes any other certificate the host held but did
-not use, so it never holds more than two.
+demand (Renew certificate on the host). A renewal revokes any other
+certificate the host held but did not use, so it never holds more than two.
 `mst_host_cert_expiry_timestamp_seconds` shows how long each has.
 
 What a host reports about itself is taken as it is when it enrolls. Later
@@ -248,14 +247,15 @@ migrations on each host's own libvirt, and QEMU sends the VM over TLS
 between hosts use them too, see Disks). Each migration
 gets certificates of its own from a CA the controller makes for it, so the
 destination accepts the VM from that source only. The agent puts them in
-`/etc/pki/qemu` just while QEMU loads them, and the host's own back after.
-The destination defines the incoming VM from the controller's description
-of it, never from what the source sends.
+`/etc/pki/qemu` just while QEMU loads them, and removes them after; the
+host's own certificate is never there (a guest breaking out into QEMU
+could otherwise act as the host). The destination defines the incoming VM
+from the controller's description of it, never from what the source
+sends. A host shows "No migration" when the agent finds no group QEMU runs
+in (`libvirt-qemu`, `qemu` or `kvm`) to give those keys to.
 
 A renewed certificate's predecessor is revoked as soon as the host has
-connected with the new one. Hosts install the CA's revocation list for
-QEMU (`/etc/pki/qemu/ca-crl.pem`); the controller sends a new one whenever
-it revokes something, and with every welcome.
+connected with the new one; controllers refuse revoked certificates.
 
 To retire a machine, move its VMs off (Evacuate), then decommission it
 (Manage on the host). Either way the host leaves its cluster and its
@@ -315,8 +315,7 @@ host). A host that joins with less (an older CPU) runs the VMs made after
 it joined; Infrastructure shows which VMs of its cluster it cannot run.
 Fit those to the cluster (Details → CPU → Fit to cluster, while stopped):
 they get the model all hosts run now, from their next start, and may see
-fewer CPU features. VMs from before CPU models get theirs at their next
-start from stopped.
+fewer CPU features.
 
 A VM can also be made non-migratable, as it is created or later while it
 is stopped (from its next start): it gets its host's CPU as it is, its
@@ -387,9 +386,12 @@ pool it is kept in (Keep it in, among the pools the tenant may use):
 
 The images page shows when it is there, its size, where it is kept and
 which hosts hold a copy; a download that failed says why, and can be tried
-again (Download again). Two of a tenant's images download at a time, and a
-server that sends nothing for a minute, or takes over two hours, is given
-up on. Two hashes are recorded: the SHA-256 of the file downloaded, and the
+again (Download again), as can one that stopped without saying how. Two
+images download at a time per tenant tree (a tenant of the provider's with
+all its sub-tenants; the provider's own count apart), and a server that
+sends nothing for a minute, sends less than 16 MiB in five minutes, or
+takes over two hours, is given up on. Deleting an image stops its download.
+Two hashes are recorded: the SHA-256 of the file downloaded, and the
 image's digest, the SHA-256 of the disk it holds (read as a raw disk).
 
 A VM made from an image is made on its host from that host's copy, or
@@ -404,13 +406,17 @@ handing over something else (a compromised one) spreads nothing. Hosts
 keep their copy, and each is a source for the next. The VM's disk is a copy of the image of its
 own, in its pool: it depends on nothing, so a VM migrates without its
 image, and keeps working once the image is deleted. VMs made while the
-image downloads wait for it.
+image downloads wait for it (deleting such a VM ends the wait). Each
+controller copies up to four images onto hosts at once; VMs waiting for a
+copy keep no other task from running.
 
 Should no copy of an image be reachable (its hosts are down or
 decommissioned, say), the host that needs it downloads it again, from its
 address; what it downloads must then hold the same disk (the same digest),
 or the VM is not made. An image in a store is never replaced: hosts
-storing the same one in a shared pool at once keep the first. Every hour,
+storing the same one in a shared pool at once keep the first. Only a copy
+that does not hold the image's digest is replaced (one left by a download
+cut off, before the image's address served another file). Every hour,
 each host's store, and each shared pool's, lets go of images that no longer
 exist, and of what downloads and copies cut off left.
 
@@ -490,7 +496,6 @@ for its VMs. It can be turned off per VM (Details → Free memory, or
 keep its memory: one that frees and reuses a lot of it quickly pays for
 getting it back from the host each time. It is part of the VM's balloon,
 so it changes while the VM is stopped and applies from its next start.
-VMs made before it existed get it at their next start from stopped.
 
 ## Disks
 
@@ -510,13 +515,9 @@ never attached in the records but not in the VM, or the other way round.
 Meanwhile the VM is not started, stopped, migrated, snapshotted or backed
 up.
 
-VMs plug disks in while they run from their first start with agents of
-this version on: data disks sit on a virtio-SCSI controller, at places of
-their own. VMs started before plug disks in from their next start from
-stopped (attach to them while stopped meanwhile). Such VMs migrate, and
-restart elsewhere when their host fails, only to hosts whose agents know
-of it: upgrade every agent. Not while a VM has snapshots: they cover the
-disks it had.
+VMs plug disks in while they run: data disks sit on a virtio-SCSI
+controller, at places of their own. Not while a VM has snapshots: they
+cover the disks it had.
 
 Deleting a VM deletes the disks made with it (its boot disk, and the copies
 a clone or restore made); disks of their own attached to it are kept,

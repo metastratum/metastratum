@@ -575,8 +575,8 @@ pub struct AttachDisk {
     disk_id: VolumeId,
 }
 
-/// Attaches a disk to a VM of its tenant (a task): plugged in if it runs
-/// (where it started since disks could be), otherwise from its next start.
+/// Attaches a disk to a VM of its tenant (a task): plugged in if it runs,
+/// otherwise from its next start.
 /// A disk on local storage attaches to VMs on its host; move it there first
 /// (`/disks/{id}/move` with the VM). Not while the VM has snapshots (they
 /// cover the disks it had).

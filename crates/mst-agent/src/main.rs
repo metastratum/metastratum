@@ -80,9 +80,9 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // QEMU uses the host identity for migration TLS.
-    if let Err(e) = tls::install(&identity) {
-        tracing::warn!(error = %format!("{e:#}"), "installing TLS certificates; live migration will fail");
+    // A migration cut off by a restart may have left its credentials.
+    if let Err(e) = tls::remove_installed() {
+        tracing::warn!(error = %format!("{e:#}"), "removing QEMU's TLS files");
     }
 
     let pools = Pools::new(&cfg.data_dir);
@@ -105,6 +105,7 @@ async fn main() -> anyhow::Result<()> {
         },
         changes: tokio::sync::Mutex::new(lv.watch()),
         consoles: Default::default(),
+        image_work: Default::default(),
     });
     // VMs' files are root's and their own QEMU's only, and libvirt should
     // confine each QEMU.

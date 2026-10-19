@@ -58,7 +58,8 @@ async function remove() {
   }
 }
 
-// Downloading it again, after that failed.
+// Downloading it again, after that failed, or stopped without saying how.
+const retryable = (img: Image) => img.state === 'failed' || img.stuck
 const retrying = ref('')
 const retryError = ref<Record<string, string>>({})
 async function downloadAgain(img: Image) {
@@ -102,11 +103,13 @@ const own = (img: Image) => img.tenant_id === scope.current
           <span class="tag label">{{ img.format }}</span>
           <span v-if="img.shared && !scope.solo" class="tag label">Shared with sub-tenants</span>
           <span v-if="!own(img)" class="tag label">From parent tenant</span>
-          <span v-if="img.state === 'downloading'" class="tag label busy">Downloading…</span>
+          <span v-if="img.stuck" class="tag label failed">Download stopped</span>
+          <span v-else-if="img.state === 'downloading'" class="tag label busy">Downloading…</span>
           <span v-else-if="img.state === 'failed'" class="tag label failed">Download failed</span>
         </div>
         <div class="url mono">{{ img.source_url }}</div>
         <p v-if="img.state === 'failed'" class="error-text" role="alert">{{ img.error ?? 'The download failed.' }}</p>
+        <p v-if="img.stuck" class="error-text" role="alert">The download stopped without finishing. Download it again.</p>
         <p v-if="retryError[img.id]" class="error-text" role="alert">{{ retryError[img.id] }}</p>
         <div v-if="img.state === 'ready' && img.virtual_bytes" class="facts muted">
           <span>{{ gib(img.virtual_bytes) }} disk</span>
@@ -118,7 +121,7 @@ const own = (img: Image) => img.tenant_id === scope.current
           <IdChip :value="img.id" short />
           <span class="muted">Added {{ ago(img.created_at) }}</span>
           <button
-            v-if="img.state === 'failed' && own(img) && scope.can('image.write')"
+            v-if="retryable(img) && own(img) && scope.can('image.write')"
             class="btn small push"
             :disabled="retrying === img.id"
             @click="downloadAgain(img)"
@@ -128,7 +131,7 @@ const own = (img: Image) => img.tenant_id === scope.current
           <button
             v-if="own(img) && scope.can('image.write')"
             class="btn danger small"
-            :class="{ push: img.state !== 'failed' }"
+            :class="{ push: !(retryable(img) && own(img)) }"
             @click="(deleteError = ''), (deleting = img)"
           >
             Delete…

@@ -165,7 +165,8 @@ async function submit() {
           </optgroup>
         </select>
         <span v-if="image?.state === 'downloading'" class="hint">
-          The image is still downloading; the VM is made once it is there.
+          The image is still downloading; the VM is made once it is there. Its size is unknown until then: a disk
+          smaller than the image fails the VM.
         </span>
         <span v-if="template" class="hint">
           A copy of {{ template.name }}’s disks, with its {{ template.vcpus }} vCPU{{ template.vcpus === 1 ? '' : 's' }}

@@ -53,10 +53,8 @@ systemctl enable -q mst-agent
 systemctl restart mst-agent
 
 # Live migration needs no libvirt listener: the controller drives it on each
-# host's own libvirt, and QEMU sends the VM over TLS with the host
-# certificate the agent installs. The agent opens libvirt's TLS listener
-# only while a host in its cluster runs an older agent that migrates peer to
-# peer, and closes it otherwise.
+# host's own libvirt, and QEMU sends the VM over TLS, with certificates the
+# controller makes for that migration alone.
 REMOTE
   done
   log "done; follow logs with: $LAB ssh mst-host1 sudo journalctl -fu mst-agent"

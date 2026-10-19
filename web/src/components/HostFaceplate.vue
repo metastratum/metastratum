@@ -31,7 +31,7 @@ const usedPct = computed(() => Math.min(100, (props.host.allocated_memory_mib / 
       <span v-if="!host.kvm" class="error-text">No KVM</span>
       <span v-if="host.state === 'maintenance'" class="tag maint">Maintenance</span>
       <span v-if="host.state === 'fenced'" class="tag fenced" title="It failed and was powered off; its VMs were moved">Fenced</span>
-      <span v-if="host.connected && !host.migration_ready" class="tag stray" title="QEMU has no TLS certificates for migration">
+      <span v-if="host.connected && !host.migration_ready" class="tag stray" title="The agent finds no group QEMU runs in, to give migrations' TLS keys to">
         No migration
       </span>
       <span

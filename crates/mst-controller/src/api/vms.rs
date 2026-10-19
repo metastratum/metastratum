@@ -1130,6 +1130,10 @@ async fn delete_vm(
             "VM is being migrated; cancel the migration first",
         ));
     }
+    // Once deleting fails, the VM is in error, and can be deleted again.
+    if vm.status == "deleting" {
+        return Err(ApiError::conflict("VM is being deleted"));
+    }
     if let Err(e) = super::snapshots::check_idle(&mut *state.db.acquire().await?, id).await {
         return Err(ApiError::conflict(format!(
             "{}; delete the VM once that is done",
@@ -1137,7 +1141,9 @@ async fn delete_vm(
         )));
     }
     let mut tx = state.db.begin().await?;
-    mst_db::vms::set_status(&mut *tx, id, "deleting", None).await?;
+    if !mst_db::vms::start_deleting(&mut *tx, id).await? {
+        return Err(ApiError::conflict("VM is being deleted, or migrated"));
+    }
     let params = json!({"delete_disks": q.delete_disks});
     let task_id = enqueue(&mut tx, &p, vm.tenant_id, "vm.delete", id, params).await?;
     tx.commit().await?;

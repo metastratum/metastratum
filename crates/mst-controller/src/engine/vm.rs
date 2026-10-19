@@ -51,8 +51,8 @@ pub async fn create(ctx: &TaskCtx) -> Result<()> {
     let result = provision(ctx, id, true).await;
     let db = &ctx.state.db;
     match &result {
-        Ok(()) => mst_db::vms::set_status(db, id, "ready", None).await?,
-        Err(e) => mst_db::vms::set_status(db, id, "error", Some(&format!("{e:#}"))).await?,
+        Ok(()) => mst_db::vms::settle(db, id, "ready", None).await?,
+        Err(e) => mst_db::vms::settle(db, id, "error", Some(&format!("{e:#}"))).await?,
     }
     result
 }
@@ -84,7 +84,7 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId, fresh: bool) -> Result<()
     }
 
     if fresh {
-        make_disks(ctx, host, &spec.disks, &pools).await?;
+        make_disks(ctx, id, host, &spec.disks, &pools).await?;
     }
 
     ctx.step("define", 0.8).await;
@@ -133,6 +133,7 @@ pub(super) async fn provision(ctx: &TaskCtx, id: VmId, fresh: bool) -> Result<()
 /// resumed task).
 async fn make_disks(
     ctx: &TaskCtx,
+    vm: VmId,
     host: HostId,
     disks: &[mst_core::vm::DiskSpec],
     pools: &std::collections::BTreeMap<mst_core::ids::StoragePoolId, mst_proto::Pool>,
@@ -147,7 +148,7 @@ async fn make_disks(
             && disk.cloned_from.is_none()
             && disk.restored_from.is_none()
         {
-            let source = super::image::ensure_on(ctx, image_id, host)
+            let source = super::image::ensure_on(ctx, image_id, host, vm)
                 .await
                 .context("getting the image onto the host")?;
             from_image.insert(disk.volume_id, (image_id, source));
@@ -159,7 +160,7 @@ async fn make_disks(
         let pool = Some(pools[&disk.pool_id].clone());
         if let Some((image_id, source)) = from_image.get(&disk.volume_id) {
             let pool = &pools[&disk.pool_id];
-            volume_from_image(ctx, host, disk, *image_id, pool, source.clone()).await?;
+            volume_from_image(ctx, vm, host, disk, *image_id, pool, source.clone()).await?;
             continue;
         }
         let (cmd, timeout) = match disk.restored_from {
@@ -207,6 +208,7 @@ async fn make_disks(
 /// (a shared pool's).
 async fn volume_from_image(
     ctx: &TaskCtx,
+    vm: VmId,
     host: HostId,
     disk: &mst_core::vm::DiskSpec,
     image_id: mst_core::ids::ImageId,
@@ -234,7 +236,7 @@ async fn volume_from_image(
                 None => mst_db::images::Copy::local(host),
             };
             mst_db::images::remove_copy(db, image_id, at).await?;
-            let source = super::image::ensure_on(ctx, image_id, host)
+            let source = super::image::ensure_on(ctx, image_id, host, vm)
                 .await
                 .context("getting the image onto the host")?;
             let mut cmd = cmd;

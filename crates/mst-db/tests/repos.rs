@@ -274,3 +274,17 @@ async fn migrations_from_newer_controllers_are_tolerated(pool: PgPool) {
     .unwrap();
     mst_db::migrate(&pool).await.unwrap();
 }
+
+#[sqlx::test(migrator = "mst_db::MIGRATOR")]
+async fn databases_of_earlier_releases_are_refused(pool: PgPool) {
+    // 0.4's first migration (20261016000001_init).
+    sqlx::query(
+        "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+         VALUES (20261016000001, 'init', true, '\\x00', 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let e = mst_db::migrate(&pool).await.unwrap_err();
+    assert!(matches!(e, mst_db::Error::TooOld), "{e}");
+}

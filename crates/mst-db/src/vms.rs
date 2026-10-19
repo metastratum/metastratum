@@ -149,6 +149,40 @@ pub async fn set_status(
     Ok(())
 }
 
+/// Marks the VM as being deleted, unless it is already, or migrating.
+/// Returns whether it did.
+pub async fn start_deleting(db: impl PgExecutor<'_>, id: VmId) -> Result<bool> {
+    Ok(sqlx::query(
+        "UPDATE vms SET status = 'deleting', error = NULL, updated_at = now()
+         WHERE id = $1 AND status NOT IN ('deleting', 'migrating')",
+    )
+    .bind(id)
+    .execute(db)
+    .await?
+    .rows_affected()
+        == 1)
+}
+
+/// Sets the VM's status as a task on it ends, unless it is being deleted
+/// meanwhile (the delete, queued behind, sees to it).
+pub async fn settle(
+    db: impl PgExecutor<'_>,
+    id: VmId,
+    status: &str,
+    error: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE vms SET status = $2, error = $3, updated_at = now()
+         WHERE id = $1 AND status <> 'deleting'",
+    )
+    .bind(id)
+    .bind(status)
+    .bind(error)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 pub async fn set_desired_power(db: impl PgExecutor<'_>, id: VmId, power: &str) -> Result<()> {
     sqlx::query("UPDATE vms SET desired_power = $2, updated_at = now() WHERE id = $1")
         .bind(id)

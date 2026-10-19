@@ -37,6 +37,9 @@ pub struct ImageView {
     /// Why downloading it failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// `downloading`, but no task is downloading it (what was ended without
+    /// saying how): it can be downloaded again.
+    stuck: bool,
     /// Its size, stored (qcow2).
     #[serde(skip_serializing_if = "Option::is_none")]
     size_bytes: Option<i64>,
@@ -62,8 +65,9 @@ pub struct ImageView {
 }
 
 impl ImageView {
-    fn new(i: mst_db::images::Image, hosts: Vec<String>, pool_name: String) -> Self {
+    fn new(i: mst_db::images::Image, hosts: Vec<String>, pool_name: String, stuck: bool) -> Self {
         Self {
+            stuck: stuck && i.state == "downloading",
             storage_pool_id: i.storage_pool_id,
             storage_pool_name: pool_name,
             id: i.id,
@@ -87,6 +91,7 @@ impl ImageView {
 async fn views(state: &AppState, images: Vec<mst_db::images::Image>) -> ApiResult<Vec<ImageView>> {
     let ids: Vec<ImageId> = images.iter().map(|i| i.id).collect();
     let mut hosts = mst_db::images::copy_hosts(&state.db, &ids).await?;
+    let under_way = mst_db::images::downloads_under_way(&state.db, &ids).await?;
     let pools: std::collections::HashMap<StoragePoolId, String> =
         mst_db::storage_pools::list(&state.db)
             .await?
@@ -98,7 +103,8 @@ async fn views(state: &AppState, images: Vec<mst_db::images::Image>) -> ApiResul
         .map(|i| {
             let h = hosts.remove(&i.id).unwrap_or_default();
             let pool = pools.get(&i.storage_pool_id).cloned().unwrap_or_default();
-            ImageView::new(i, h, pool)
+            let stuck = !under_way.contains(&i.id);
+            ImageView::new(i, h, pool, stuck)
         })
         .collect())
 }
@@ -203,25 +209,28 @@ async fn create_image(
         StatusCode::CREATED,
         Json(CreatedImage {
             task_id,
-            image: ImageView::new(image, vec![], pool.name),
+            image: ImageView::new(image, vec![], pool.name, false),
         }),
     ))
 }
 
-/// How many of a tenant's images may download at once: each can take up
-/// to the host's largest download before it is charged.
+/// How many images a tenant tree (a child of the provider's, and its
+/// sub-tenants; or the provider's own) may download at once: each can take
+/// up to the host's largest download before it is charged, and a download
+/// slot (see the engine) for up to two hours.
 const DOWNLOADS_AT_ONCE: i64 = 2;
 
 /// Refuses a download where the tenant's image quota is used up (an image
-/// is charged what it takes once downloaded, `image_gib`), or two of its
-/// images are downloading already. Locks the tenant's lineage (see
-/// `quotas::reserve`) until the transaction ends.
+/// is charged what it takes once downloaded, `image_gib`), or its tree has
+/// two downloads under way already (of images deleted meanwhile too, until
+/// they stop). Locks the tenant's lineage (see `quotas::reserve`), which
+/// serializes this per tree, until the transaction ends.
 async fn may_download(tx: &mut mst_db::sqlx::PgConnection, tenant: TenantId) -> ApiResult<()> {
     let some = [("image_gib".to_owned(), 1)].into_iter().collect();
     mst_db::quotas::reserve(&mut *tx, tenant, &some).await?;
-    if mst_db::images::downloading_count(&mut *tx, tenant).await? >= DOWNLOADS_AT_ONCE {
+    if mst_db::images::downloads_in_tree(&mut *tx, tenant).await? >= DOWNLOADS_AT_ONCE {
         return Err(ApiError::conflict(format!(
-            "{DOWNLOADS_AT_ONCE} of the tenant's images are downloading; add more once they are done"
+            "{DOWNLOADS_AT_ONCE} images of the tenant's are downloading (its sub-tenants' and parent's count too); add more once they are done"
         )));
     }
     Ok(())
@@ -276,6 +285,13 @@ async fn download_image(
         }
         _ => {}
     }
+    let pool = mst_db::storage_pools::get(&mut *tx, image.storage_pool_id).await?;
+    if !super::storage_pools::may_use(&state, image.tenant_id, &pool).await? {
+        return Err(ApiError::conflict(format!(
+            "the tenant may no longer use storage pool {}; add the image again, kept elsewhere",
+            pool.name
+        )));
+    }
     may_download(&mut tx, image.tenant_id).await?;
     mst_db::images::downloading(&mut *tx, id).await?;
     let task_id = enqueue_download(&mut tx, &p, &image).await?;
@@ -304,13 +320,17 @@ async fn delete_image(
     let image = mst_db::images::get(&state.db, id).await?;
     authorize_resource(&state.db, &p, Perm::ImageWrite, image.tenant_id, "image").await?;
     let tenant_path = mst_db::images::store_path(&state.db, image.tenant_id).await?;
-    // The shared pools holding it: their copies go too.
-    let shared: Vec<StoragePoolId> = mst_db::images::copies(&state.db, id)
+    // The shared pools holding it, or (being downloaded) about to: their
+    // copies go too.
+    let mut shared: Vec<StoragePoolId> = mst_db::images::copies(&state.db, id)
         .await?
         .into_iter()
         .filter(|c| c.host_id.is_none())
         .map(|c| c.pool_id)
         .collect();
+    if image.storage_pool_id != LOCAL_POOL && !shared.contains(&image.storage_pool_id) {
+        shared.push(image.storage_pool_id);
+    }
     mst_db::images::delete(&state.db, id).await?;
     tokio::spawn(crate::engine::image_deleted(
         state.clone(),

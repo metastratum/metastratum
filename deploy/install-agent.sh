@@ -255,9 +255,10 @@ install_metastratum() {
       [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "cannot tell metastratum's latest release"
     fi
     # Older releases lack what the installers set up ([network] settings,
-    # packages that install on RHEL 10).
-    [[ $(printf '%s\n' 0.4.0 "$version" | sort -V | sed -n 1p) == 0.4.0 ]] ||
-      die "the installers need metastratum 0.4.0 or later (not $version)"
+    # packages that install on RHEL 10), and 0.4's agents open libvirt's TLS
+    # listener, which these installers no longer check for.
+    [[ $(printf '%s\n' 0.5.0 "$version" | sort -V | sed -n 1p) == 0.5.0 ]] ||
+      die "the installers need metastratum 0.5.0 or later (not $version)"
     log "installing metastratum-$ROLE $version"
     case $kind in
       deb) file=metastratum-${ROLE}_${version}_amd64.deb ;;

@@ -56,6 +56,8 @@ pub struct Agent {
     pub changes: tokio::sync::Mutex<mpsc::Receiver<Change>>,
     /// Console sessions, by VM.
     pub consoles: Arc<console::Open>,
+    /// Downloads and copies of images under way.
+    pub image_work: crate::cleanup::ImageWork,
 }
 
 fn power(p: Power) -> PowerState {
@@ -230,14 +232,6 @@ impl Agent {
                         if let Some(inventory) = w.inventory.clone() {
                             let this = self.clone();
                             tokio::spawn(async move { crate::cleanup::reconcile(&this, &inventory).await });
-                        }
-                        if !w.crl_pem.is_empty()
-                            && let Err(e) = {
-                                let _held = self.qemu_tls.lock().await;
-                                crate::tls::install_crl(&w.crl_pem, &self.state_dir)
-                            }
-                        {
-                            tracing::warn!(error = %format!("{e:#}"), "installing the revocation list");
                         }
                         if !w.ovn_sb_remote.is_empty() {
                             let this = self.clone();
@@ -478,7 +472,7 @@ impl Agent {
                         let _held = self.qemu_tls.lock().await;
                         crate::tls::install_migration_tls(tls, crate::tls::MigrationEnd::Server)?;
                         let r = self.lv.migration_step(&c.vm_id, &to, step, c.cookie).await;
-                        self.restore_qemu_identity();
+                        self.remove_migration_tls();
                         r?
                     }
                     (Some(tls), Step::Perform) => {
@@ -502,7 +496,7 @@ impl Agent {
                                 }
                             }
                         };
-                        self.restore_qemu_identity();
+                        self.remove_migration_tls();
                         drop(held);
                         match done {
                             Some(r) => r?,
@@ -576,18 +570,20 @@ impl Agent {
                     },
                 };
                 let digest = Some(c.digest.as_str()).filter(|s| !s.is_empty());
+                let pool = self.store_pool(c.pool.as_ref()).await?;
+                let store = self.pools.store();
+                let fetch = pool.fetch_stored(
+                    &c.tenant_path,
+                    &c.image_id,
+                    &c.source_url,
+                    &c.format,
+                    policy,
+                    digest,
+                    store.scratch(),
+                );
                 let stored = self
-                    .store_pool(c.pool.as_ref())
-                    .await?
-                    .fetch_stored(
-                        &c.tenant_path,
-                        &c.image_id,
-                        &c.source_url,
-                        &c.format,
-                        policy,
-                        digest,
-                        self.pools.store().scratch(),
-                    )
+                    .image_work
+                    .run(&c.image_id, async { Ok(fetch.await?) })
                     .await?;
                 return Ok(serde_json::to_string(&stored)?);
             }
@@ -595,10 +591,15 @@ impl Agent {
             Cmd::PruneStore(c) => {
                 let pool = self.store_pool(c.pool.as_ref()).await?;
                 let keep = c.image_ids.iter().map(String::as_str).collect();
-                let removed = crate::cleanup::prune_store(&pool, &keep).await?;
+                let listed_at = (c.listed_at > 0)
+                    .then(|| std::time::UNIX_EPOCH + std::time::Duration::from_secs(c.listed_at));
+                let removed = crate::cleanup::prune_store(&pool, &keep, listed_at).await?;
                 return Ok(serde_json::json!({ "removed": removed }).to_string());
             }
-            Cmd::CopyImage(c) => return crate::transfer::copy_image(self, &c).await,
+            Cmd::CopyImage(c) => {
+                let copy = crate::transfer::copy_image(self, &c);
+                return self.image_work.run(&c.image_id, copy).await;
+            }
             Cmd::VolumeFromImage(c) => {
                 let from = self.store_pool(c.source_pool.as_ref()).await?;
                 let pool = self.pool(c.pool.as_ref()).await?;
@@ -621,11 +622,6 @@ impl Agent {
                 let report = crate::cleanup::decommission(self).await?;
                 crate::cleanup::stop_self();
                 return Ok(serde_json::to_string(&report)?);
-            }
-            Cmd::InstallCrl(c) => {
-                let _held = self.qemu_tls.lock().await;
-                crate::tls::install_crl(&c.crl_pem, &self.state_dir)?;
-                tracing::info!("installed a new revocation list");
             }
             Cmd::MigrationStats(c) => {
                 let st = match self.lv.job_stats(&c.vm_id).await {
@@ -762,20 +758,15 @@ impl Agent {
         renewed
             .save(&self.state_dir)
             .context("storing the renewed certificate")?;
-        {
-            let _held = self.qemu_tls.lock().await;
-            crate::tls::install(&renewed)?;
-        }
         *self.identity.write().unwrap() = renewed;
         tracing::info!("host certificate renewed");
         Ok(())
     }
 
-    /// Puts the host's identity back for QEMU after a migration's own.
-    fn restore_qemu_identity(&self) {
-        let id = self.identity.read().unwrap().clone();
-        if let Err(e) = crate::tls::restore_qemu_identity(&id, &self.state_dir) {
-            tracing::error!(error = %format!("{e:#}"), "restoring QEMU's TLS files");
+    /// Removes a migration's own TLS credentials once QEMU loaded them.
+    fn remove_migration_tls(&self) {
+        if let Err(e) = crate::tls::remove_installed() {
+            tracing::error!(error = %format!("{e:#}"), "removing a migration's TLS files");
         }
     }
 
