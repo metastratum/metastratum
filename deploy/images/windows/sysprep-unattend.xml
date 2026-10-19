@@ -2,7 +2,8 @@
 <!--
   What sysprep runs on each new VM (setup.ps1 generalizes with it): based on
   cloudbase-init's own. While Windows specializes, cloudbase-init sets the
-  hostname from the VM's seed (no reboot later for it), and only then is its
+  hostname from the VM's seed (applied as specializing ends, with Windows
+  restarting anyway; no restart later for it), and only then is its
   service set to start: running during specialize, the service would set the
   hostname too, and reboot Windows in the middle of it (minutes lost, or
   setup broken). Sysprep leaves the Administrator's password blank, to be
@@ -22,9 +23,9 @@
       <RunSynchronous>
         <RunSynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <Path>cmd.exe /c ""C:\Program Files\Cloudbase Solutions\Cloudbase-Init\Python\Scripts\cloudbase-init.exe" --config-file "C:\Program Files\Cloudbase Solutions\Cloudbase-Init\conf\cloudbase-init-unattend.conf" &amp;&amp; exit 1 || exit 2"</Path>
-          <Description>Set the hostname with cloudbase-init</Description>
-          <WillReboot>OnRequest</WillReboot>
+          <Path>"C:\Program Files\Cloudbase Solutions\Cloudbase-Init\Python\Scripts\cloudbase-init.exe" --config-file "C:\Program Files\Cloudbase Solutions\Cloudbase-Init\conf\cloudbase-init-unattend.conf"</Path>
+          <Description>Set the hostname with cloudbase-init (it applies at the restart that ends specializing: no restart of its own)</Description>
+          <WillReboot>Never</WillReboot>
         </RunSynchronousCommand>
         <RunSynchronousCommand wcm:action="add">
           <Order>2</Order>
