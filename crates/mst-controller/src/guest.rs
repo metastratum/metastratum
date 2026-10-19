@@ -48,23 +48,25 @@ pub fn host_spec_json(vm: VmId, spec: &VmSpec) -> Result<String> {
         && spec.guest_os == GuestOs::Windows
     {
         let password = crate::secrets::open(&password_context(vm), &sealed)?;
-        ci.user_data = with_password(&ci.user_data, &password)?;
+        ci.user_data = with_password(&ci.user_data, ci.windows_account(), &password)?;
     }
     Ok(serde_json::to_string(&spec)?)
 }
 
 /// `#cloud-config` user data (as the controller writes it: JSON) with the
-/// Administrator's password set.
-fn with_password(user_data: &str, password: &str) -> Result<String> {
+/// account's password set; cloudbase-init makes the account if it is not
+/// there, an administrator.
+fn with_password(user_data: &str, account: &str, password: &str) -> Result<String> {
     let body = user_data
         .strip_prefix("#cloud-config\n")
         .context("a Windows VM's user data is not the controller's")?;
     let mut doc: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(body).context("a Windows VM's user data is not the controller's")?;
-    doc.insert(
-        "users".into(),
-        json!([{ "name": "Administrator", "passwd": password }]),
-    );
+    let mut user = json!({ "name": account, "passwd": password });
+    if !account.eq_ignore_ascii_case(mst_core::vm::WINDOWS_ADMINISTRATOR) {
+        user["groups"] = json!(["Administrators"]);
+    }
+    doc.insert("users".into(), json!([user]));
     Ok(format!(
         "#cloud-config\n{}\n",
         serde_json::Value::Object(doc)
@@ -140,17 +142,23 @@ mod tests {
 
     #[test]
     fn the_password_goes_in_users_beside_the_rest() {
-        let ud = with_password(&windows_user_data(), "pa\"ss").unwrap();
-        let doc: serde_json::Value =
-            serde_json::from_str(ud.strip_prefix("#cloud-config\n").unwrap()).unwrap();
-        assert_eq!(doc["users"][0]["name"], "Administrator");
-        assert_eq!(doc["users"][0]["passwd"], "pa\"ss");
+        let doc = |ud: String| -> serde_json::Value {
+            serde_json::from_str(ud.strip_prefix("#cloud-config\n").unwrap()).unwrap()
+        };
+        let ud = doc(with_password(&windows_user_data(), "Administrator", "pa\"ss").unwrap());
+        assert_eq!(ud["users"][0]["name"], "Administrator");
+        assert_eq!(ud["users"][0]["passwd"], "pa\"ss");
+        // It is one already.
+        assert!(ud["users"][0].get("groups").is_none());
+        let named = doc(with_password(&windows_user_data(), "ops", "x").unwrap());
+        assert_eq!(named["users"][0]["name"], "ops");
+        assert_eq!(named["users"][0]["groups"], json!(["Administrators"]));
         assert_eq!(
-            doc["runcmd"][0],
+            ud["runcmd"][0],
             format!("echo done> {FIRST_BOOT_DONE}"),
             "the first boot is marked done after the password is set"
         );
         // Someone's own user data is theirs: no password goes in.
-        assert!(with_password("#ps1_sysnative\nwhoami", "x").is_err());
+        assert!(with_password("#ps1_sysnative\nwhoami", "Administrator", "x").is_err());
     }
 }

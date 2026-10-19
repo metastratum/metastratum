@@ -19,6 +19,7 @@ const blank = () => ({
   shared: false,
   secure_boot: false,
   tpm: false,
+  admin_user: '',
   storage_pool_id: LOCAL_POOL,
 })
 const form = ref(blank())
@@ -42,7 +43,8 @@ useLiveRefresh(['image'], load)
 async function add() {
   error.value = ''
   try {
-    await ok(api.POST('/api/v1/images', { body: { ...form.value, tenant_id: scope.current } }))
+    const admin_user = form.value.os === 'windows' ? form.value.admin_user.trim() || null : null
+    await ok(api.POST('/api/v1/images', { body: { ...form.value, admin_user, tenant_id: scope.current } }))
     adding.value = false
     form.value = blank()
     await load()
@@ -193,8 +195,16 @@ const own = (img: Image) => img.tenant_id === scope.current
             <option value="windows">Windows (cloudbase-init)</option>
           </select>
           <span v-if="form.os === 'windows'" class="hint">
-            An image built with <code>deploy/images/windows/build.sh</code>: VMs get their Administrator password at
+            An image built with <code>deploy/images/windows/build.sh</code>: VMs get their account and its password at
             first boot, and run with Hyper-V enlightenments.
+          </span>
+        </label>
+        <label v-if="form.os === 'windows'" class="field">
+          <span class="label">Default account</span>
+          <input v-model="form.admin_user" maxlength="20" placeholder="Administrator" />
+          <span class="hint">
+            What VMs are signed in with unless they name another: Administrator on Windows Server. Leave it empty for
+            Windows 11, which has none: each VM names its own.
           </span>
         </label>
         <fieldset class="field boot">

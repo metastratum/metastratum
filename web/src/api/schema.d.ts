@@ -1938,6 +1938,8 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         Accepted_VmView: {
+            /** @description A Windows VM's account, which its password is for. */
+            account?: string | null;
             /** @description Kind of the task in flight for this VM, e.g. `vm.start`. */
             active_task?: string | null;
             /**
@@ -2445,7 +2447,9 @@ export interface components {
             /**
              * @description Console password for the image's default user. Handy for the serial
              *     console; prefer SSH keys otherwise. Only a SHA-512 crypt hash of it is
-             *     stored or passed to the guest.
+             *     stored or passed to the guest. A Windows VM's account's password
+             *     (required), which Windows takes as it is: kept sealed until the
+             *     VM's first boot has set it.
              */
             password?: string | null;
             /**
@@ -2474,6 +2478,12 @@ export interface components {
              *     `password`.
              */
             user_data?: string | null;
+            /**
+             * @description A Windows VM's account, made as it first boots if it is not there
+             *     (in Administrators): by default the image's (`admin_user`, e.g.
+             *     Administrator on Windows Server); required for images without one.
+             */
+            username?: string | null;
             /** Format: int32 */
             vcpus: number;
         };
@@ -3590,6 +3600,8 @@ export interface components {
             vm_net_mbps?: number | null;
         };
         VmView: {
+            /** @description A Windows VM's account, which its password is for. */
+            account?: string | null;
             /** @description Kind of the task in flight for this VM, e.g. `vm.start`. */
             active_task?: string | null;
             /**

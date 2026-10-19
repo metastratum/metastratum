@@ -92,6 +92,9 @@ pub struct VmView {
     /// A Windows VM's first boot has yet to set its password: the
     /// controller keeps it (sealed) until then.
     first_boot_pending: bool,
+    /// A Windows VM's account, which its password is for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<String>,
     /// Can live-migrate; otherwise it has its host's CPU and disk caching.
     migratable: bool,
     /// The CPU model the guest sees: its cluster's (a model all its hosts
@@ -221,6 +224,10 @@ fn view(vm: Vm, ctx: &Context) -> VmView {
             .cloud_init
             .as_ref()
             .is_some_and(|c| c.first_boot_password.is_some()),
+        account: match (spec.guest_os, &spec.cloud_init) {
+            (GuestOs::Windows, Some(ci)) => Some(ci.windows_account().to_owned()),
+            _ => None,
+        },
         migratable: spec.migratable,
         cpu_model: spec.cpu.as_ref().map(|c| c.model.clone()),
         disks: spec.disks,
@@ -324,8 +331,15 @@ pub struct CreateVm {
     ssh_authorized_keys: Vec<String>,
     /// Console password for the image's default user. Handy for the serial
     /// console; prefer SSH keys otherwise. Only a SHA-512 crypt hash of it is
-    /// stored or passed to the guest.
+    /// stored or passed to the guest. A Windows VM's account's password
+    /// (required), which Windows takes as it is: kept sealed until the
+    /// VM's first boot has set it.
     password: Option<String>,
+    /// A Windows VM's account, made as it first boots if it is not there
+    /// (in Administrators): by default the image's (`admin_user`, e.g.
+    /// Administrator on Windows Server); required for images without one.
+    #[serde(default)]
+    username: Option<String>,
     /// Complete cloud-init user data. Overrides `ssh_authorized_keys` and
     /// `password`.
     user_data: Option<String>,
@@ -416,6 +430,7 @@ async fn restore_backup(
         firmware: spec.firmware,
         ssh_authorized_keys: req.ssh_authorized_keys,
         password: req.password,
+        username: None,
         user_data: None,
         start: req.start,
         cluster_id: req.cluster_id,
@@ -496,6 +511,7 @@ async fn clone_vm(
         firmware: spec.firmware,
         ssh_authorized_keys: req.ssh_authorized_keys,
         password: req.password,
+        username: None,
         user_data: None,
         start: req.start,
         cluster_id: req.cluster_id,
@@ -583,11 +599,15 @@ fn cloud_init(req: &CreateVm, vm_id: VmId, guest_os: GuestOs) -> ApiResult<Cloud
         (None, GuestOs::Windows) => {
             if !req.ssh_authorized_keys.is_empty() {
                 return Err(ApiError::bad_request(
-                    "Windows VMs take a password (the Administrator's), not SSH keys",
+                    "Windows VMs take a password (their account's), not SSH keys",
                 ));
             }
+            let account = req
+                .username
+                .as_deref()
+                .unwrap_or(mst_core::vm::WINDOWS_ADMINISTRATOR);
             if let Some(pw) = &req.password {
-                windows_password(pw)?;
+                windows_password(pw, account)?;
             }
             let sealed = req
                 .password
@@ -600,12 +620,16 @@ fn cloud_init(req: &CreateVm, vm_id: VmId, guest_os: GuestOs) -> ApiResult<Cloud
         hostname,
         user_data,
         first_boot_password,
+        account: match guest_os {
+            GuestOs::Windows => req.username.clone(),
+            GuestOs::Linux => None,
+        },
     })
 }
 
-/// Refuses a password Windows would not take (its default policy): it sets
-/// none then, and the VM could not be signed in to.
-fn windows_password(pw: &str) -> ApiResult<()> {
+/// Refuses a password Windows would not take (its default policy) for the
+/// account: it sets none then, and the VM could not be signed in to.
+fn windows_password(pw: &str, account: &str) -> ApiResult<()> {
     let kinds = [
         pw.chars().any(|c| c.is_uppercase()),
         pw.chars().any(|c| c.is_lowercase()),
@@ -614,12 +638,12 @@ fn windows_password(pw: &str) -> ApiResult<()> {
     ];
     if pw.chars().count() < 8
         || kinds.iter().filter(|k| **k).count() < 3
-        || pw.to_lowercase().contains("administrator")
+        || (account.chars().count() > 2 && pw.to_lowercase().contains(&account.to_lowercase()))
     {
-        return Err(ApiError::bad_request(
+        return Err(ApiError::bad_request(format!(
             "Windows needs a password of 8 characters or more, with three of: upper case, \
-             lower case, digits, symbols (and not the account name, Administrator)",
-        ));
+             lower case, digits, symbols (and not the account name, {account})"
+        )));
     }
     Ok(())
 }
@@ -695,12 +719,20 @@ async fn create_inner(
         req.tpm = req.tpm.or(Some(image.tpm));
         if image.os == "windows" {
             guest_os = GuestOs::Windows;
-            // Its Administrator has a password no one knows until then
+            req.username = req.username.or(image.admin_user);
+            // Its accounts have passwords no one knows until then
             // (deploy/images/windows): without one, no one could sign in.
-            if req.password.is_none() && req.user_data.is_none() {
-                return Err(ApiError::bad_request(
-                    "a Windows VM needs a password (its Administrator's)",
-                ));
+            if req.user_data.is_none() {
+                if req.username.is_none() {
+                    return Err(ApiError::bad_request(
+                        "name the Windows account to sign in with (username): the image has no default",
+                    ));
+                }
+                if req.password.is_none() {
+                    return Err(ApiError::bad_request(
+                        "a Windows VM needs a password, for its account",
+                    ));
+                }
             }
         }
         if image.state == "failed" {
@@ -717,6 +749,26 @@ async fn create_inner(
                 (size as u64).div_ceil(GIB)
             )));
         }
+    }
+    match (guest_os, source) {
+        (GuestOs::Linux, _) if req.username.is_some() => {
+            return Err(ApiError::bad_request(
+                "username is for Windows VMs; Linux images have their default user",
+            ));
+        }
+        // A copy's account is its source's.
+        (GuestOs::Windows, Source::Clone(Vm { spec, .. }))
+        | (GuestOs::Windows, Source::Backup(mst_db::backups::Backup { spec, .. })) => {
+            req.username = spec
+                .0
+                .cloud_init
+                .as_ref()
+                .map(|c| c.windows_account().to_owned());
+        }
+        _ => {}
+    }
+    if let Some(u) = &req.username {
+        super::images::windows_user(u)?;
     }
     let (secure_boot, tpm) = (req.secure_boot == Some(true), req.tpm == Some(true));
     if secure_boot && req.firmware != Firmware::Uefi {
@@ -2401,6 +2453,22 @@ mod tests {
             let r = req(json!({ "password": weak }));
             assert!(cloud_init(&r, vm, GuestOs::Windows).is_err(), "{weak}");
         }
+        // A named account: made with the password, which must not hold it.
+        let named = req(json!({"username": "ops-admin"}));
+        let ci = cloud_init(&named, vm, GuestOs::Windows).unwrap();
+        assert_eq!(ci.windows_account(), "ops-admin");
+        let spec = VmSpec {
+            cloud_init: Some(ci),
+            ..spec.clone()
+        };
+        let host = crate::guest::host_spec_json(vm, &spec).unwrap();
+        assert!(host.contains(r#"\"name\":\"ops-admin\""#), "{host}");
+        let r = req(json!({"username": "ops-admin", "password": "Ops-Admin-1!"}));
+        assert!(cloud_init(&r, vm, GuestOs::Windows).is_err());
+        assert!(super::super::images::windows_user("a/b").is_err());
+        assert!(super::super::images::windows_user("x.").is_err());
+        assert!(super::super::images::windows_user(&"x".repeat(21)).is_err());
+        assert!(super::super::images::windows_user("Jane Doe").is_ok());
         // Someone's own user data is kept as given, and holds no password.
         let own = req(json!({"user_data": "#ps1_sysnative\nwhoami"}));
         let ci = cloud_init(&own, vm, GuestOs::Windows).unwrap();

@@ -3,14 +3,16 @@
   What sysprep runs on each new VM (setup.ps1 generalizes with it): based on
   cloudbase-init's own. While Windows specializes, cloudbase-init sets the
   hostname from the VM's seed (applied as specializing ends, with Windows
-  restarting anyway; no restart later for it), and only then is its
-  service set to start: running during specialize, the service would set the
-  hostname too, and reboot Windows in the middle of it (minutes lost, or
-  setup broken). Sysprep leaves the Administrator's password blank, to be
-  changed at the first sign-in: the sign-in screen would ask for that before
-  cloudbase-init has set the password chosen for the VM. It gets a random
-  one meanwhile instead, known to no one (a blank one, not to be changed,
-  would sign in by itself).
+  restarting anyway; no restart later for it) and runs its user data: the
+  VM's account gets its password (made first if it is not there, as on
+  Windows 11), so the welcome screens that follow have an account to show
+  and ask for none. Only then is its service set to start: running during
+  specialize, the service would set the hostname too, and reboot Windows in
+  the middle of it (minutes lost, or setup broken).
+
+  Before that, specialize.ps1 sees to the built-in Administrator (a random
+  password on Windows Server, off on Windows 11) and Smart App Control.
+  Commands here are at most 259 characters, or the whole file is refused.
 -->
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
   <settings pass="generalize">
@@ -23,27 +25,41 @@
       <RunSynchronous>
         <RunSynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <Path>"C:\Program Files\Cloudbase Solutions\Cloudbase-Init\Python\Scripts\cloudbase-init.exe" --config-file "C:\Program Files\Cloudbase Solutions\Cloudbase-Init\conf\cloudbase-init-unattend.conf"</Path>
-          <Description>Set the hostname with cloudbase-init (it applies at the restart that ends specializing: no restart of its own)</Description>
-          <WillReboot>Never</WillReboot>
+          <Path>powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\Cloudbase Solutions\Cloudbase-Init\conf\specialize.ps1"</Path>
+          <Description>The built-in Administrator and Smart App Control (specialize.ps1)</Description>
         </RunSynchronousCommand>
         <RunSynchronousCommand wcm:action="add">
           <Order>2</Order>
-          <Path>sc.exe config cloudbase-init start= auto</Path>
-          <Description>Start cloudbase-init from the next boot on</Description>
+          <Path>"C:\Program Files\Cloudbase Solutions\Cloudbase-Init\Python\Scripts\cloudbase-init.exe" --config-file "C:\Program Files\Cloudbase Solutions\Cloudbase-Init\conf\cloudbase-init-unattend.conf"</Path>
+          <Description>The hostname (it applies at the restart that ends specializing: no restart of its own), the VM's account and password</Description>
+          <WillReboot>Never</WillReboot>
         </RunSynchronousCommand>
         <RunSynchronousCommand wcm:action="add">
           <Order>3</Order>
-          <Path>powershell.exe -NoProfile -Command "$p = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 32 | ForEach-Object { [char]$_ }) + 'aA1!'; net.exe user Administrator $p /logonpasswordchg:no | Out-Null"</Path>
-          <Description>A random password for the Administrator until cloudbase-init sets the VM's</Description>
+          <Path>sc.exe config cloudbase-init start= auto</Path>
+          <Description>Start cloudbase-init from the next boot on</Description>
         </RunSynchronousCommand>
       </RunSynchronous>
     </component>
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <!-- As the build's, which Windows 11 forgets as it generalizes. -->
+      <TimeZone>UTC</TimeZone>
+    </component>
   </settings>
   <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <InputLocale>en-US</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>en-US</UserLocale>
+    </component>
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
       <OOBE>
         <HideEULAPage>true</HideEULAPage>
+        <HideLocalAccountScreen>true</HideLocalAccountScreen>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
         <NetworkLocation>Work</NetworkLocation>
         <ProtectYourPC>3</ProtectYourPC>
         <SkipMachineOOBE>true</SkipMachineOOBE>

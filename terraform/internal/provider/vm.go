@@ -51,6 +51,7 @@ type vmModel struct {
 	SecurityGroupIDs  types.Set    `tfsdk:"security_group_ids"`
 	SSHAuthorizedKeys types.List   `tfsdk:"ssh_authorized_keys"`
 	Password          types.String `tfsdk:"password"`
+	Username          types.String `tfsdk:"username"`
 	UserData          types.String `tfsdk:"user_data"`
 	ClusterID         types.String `tfsdk:"cluster_id"`
 	StoragePoolID     types.String `tfsdk:"storage_pool_id"`
@@ -170,9 +171,15 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
 			},
 			"password": schema.StringAttribute{
-				Description:   "Console password for the image's default user.",
+				Description:   "Console password for the image's default user; a Windows VM's account's password (required).",
 				Optional:      true,
 				Sensitive:     true,
+				PlanModifiers: replace,
+			},
+			"username": schema.StringAttribute{
+				Description: "A Windows VM's account, made as it first boots (an administrator): the image's by default " +
+					"(Administrator on Windows Server); required for images without one (Windows 11).",
+				Optional:      true,
 				PlanModifiers: replace,
 			},
 			"user_data": schema.StringAttribute{
@@ -442,6 +449,7 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 			SecurityGroupIds:  idSet(ctx, plan.SecurityGroupIDs, d),
 			SshAuthorizedKeys: stringList(ctx, plan.SSHAuthorizedKeys, d),
 			Password:          plan.Password.ValueStringPointer(),
+			Username:          plan.Username.ValueStringPointer(),
 			UserData:          plan.UserData.ValueStringPointer(),
 			ClusterId:         optID(path.Root("cluster_id"), plan.ClusterID, d),
 			StoragePoolId:     optID(path.Root("storage_pool_id"), plan.StoragePoolID, d),

@@ -1,11 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Installs Windows Server unattended, for build.sh: the virtio drivers for
-  the disk and network from the virtio-win ISO, the edition @INDEX@ of the
-  install image on the whole disk (EFI, MSR, Windows; no recovery partition
-  after Windows, so C: grows into a larger disk), then signs in once as
-  Administrator (@PASSWORD@, random per build) to run setup.ps1 from the
-  MSTBUILD disc, which finishes the image and generalizes it.
+  Installs Windows (Server or 11) unattended, for build.sh: the virtio
+  drivers for the disk and network from the virtio-win ISO, the edition
+  @INDEX@ of the install image on the whole disk (EFI, MSR, Windows; no
+  recovery partition after Windows, so C: grows into a larger disk), then
+  signs in once as Administrator (@PASSWORD@, random per build) to run
+  setup.ps1 from the MSTBUILD disc, which finishes the image and
+  generalizes it. Windows 11 does not encrypt its disk by itself (with keys
+  in the TPM): set as Windows specializes, before its welcome screens could
+  start that in the build (sysprep refuses an encrypted disk), and kept in
+  the image (a VM's disk should not depend on its TPM).
 -->
 <unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
   <settings pass="windowsPE">
@@ -55,6 +59,15 @@
     </component>
   </settings>
   <settings pass="specialize">
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Path>reg.exe add HKLM\SYSTEM\CurrentControlSet\Control\BitLocker /v PreventDeviceEncryption /t REG_DWORD /d 1 /f</Path>
+          <Description>No disk encryption by itself</Description>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+    </component>
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <TimeZone>UTC</TimeZone>
     </component>
@@ -63,9 +76,19 @@
     </component>
   </settings>
   <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <InputLocale>en-US</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>en-US</UserLocale>
+    </component>
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <OOBE>
         <HideEULAPage>true</HideEULAPage>
+        <HideLocalAccountScreen>true</HideLocalAccountScreen>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
         <ProtectYourPC>3</ProtectYourPC>
       </OOBE>
       <UserAccounts>

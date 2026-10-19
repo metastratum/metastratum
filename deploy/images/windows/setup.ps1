@@ -26,6 +26,17 @@ Install-Msi "$build\CloudbaseInitSetup_x64.msi" @('RUN_SERVICE_AS_LOCAL_SYSTEM=1
 $cbi = "$env:ProgramFiles\Cloudbase Solutions\Cloudbase-Init"
 Copy-Item "$build\cloudbase-init.conf" "$cbi\conf\cloudbase-init.conf" -Force
 Copy-Item "$build\cloudbase-init-unattend.conf" "$cbi\conf\cloudbase-init-unattend.conf" -Force
+# Run as each VM specializes (sysprep-unattend.xml).
+Copy-Item "$build\specialize.ps1" "$cbi\conf\specialize.ps1" -Force
+# Smart App Control off (Windows 11), here and as each VM specializes,
+# unless the build keeps Windows' default (build.sh writes the disc's
+# marker).
+if (Test-Path "$build\smart-app-control-off") {
+    Copy-Item "$build\smart-app-control-off" "$cbi\conf\smart-app-control-off" -Force
+    if ((Get-CimInstance Win32_OperatingSystem).ProductType -eq 1) {
+        Set-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy VerifiedAndReputablePolicyState -Type DWord -Value 0
+    }
+}
 # Not while a new VM specializes (see sysprep-unattend.xml, which starts it).
 Set-Service cloudbase-init -StartupType Manual
 
@@ -36,6 +47,10 @@ Set-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation Real
 Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' fDenyTSConnections -Type DWord -Value 0
 Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
 Enable-NetFirewallRule -Name FPS-ICMP4-ERQ-In
+
+# Passwords do not expire (by default they would after 42 days): a VM's
+# account gets its password once, as the VM is made.
+net accounts /maxpwage:unlimited | Out-Null
 
 # The serial console: Special Administration Console (SAC) on COM1.
 bcdedit /ems '{current}' on | Out-Null

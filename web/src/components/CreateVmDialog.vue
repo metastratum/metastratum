@@ -53,6 +53,11 @@ watch(image, (i) => {
   secureBoot.value = i?.secure_boot ?? false
   tpm.value = i?.tpm ?? false
 })
+// A Windows VM's account: the image's by default.
+const username = ref('')
+watch(image, (i) => {
+  username.value = i?.admin_user ?? ''
+})
 const sshKey = ref('')
 const password = ref('')
 // Windows takes a password, its Administrator's, and no SSH keys.
@@ -128,6 +133,7 @@ async function submit() {
           tpm: tpm.value,
           ssh_authorized_keys: sshKeys(),
           password: password.value || null,
+          username: windows.value ? username.value.trim() || null : null,
         },
       }),
     )
@@ -289,8 +295,17 @@ async function submit() {
         <span class="label">SSH public keys</span>
         <textarea v-model="sshKey" rows="3" placeholder="ssh-ed25519 AAAA… one per line" />
       </label>
+      <label v-if="windows && !template" class="field">
+        <span class="label">Account</span>
+        <input v-model="username" autocomplete="off" maxlength="20" required :placeholder="image?.admin_user ?? 'e.g. jane'" />
+        <span class="hint">
+          An administrator, made as Windows first starts<template v-if="image?.admin_user">
+            (the image’s is {{ image.admin_user }})</template
+          >.
+        </span>
+      </label>
       <label v-if="windows" class="field">
-        <span class="label">Administrator password</span>
+        <span class="label">{{ template ? 'Password' : 'Account password' }}</span>
         <input v-model="password" type="password" autocomplete="new-password" :required="!template" minlength="8" />
         <span class="hint">
           <template v-if="template">Optional: the copy keeps {{ template.name }}’s otherwise.</template>

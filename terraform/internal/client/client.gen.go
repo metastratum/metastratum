@@ -119,6 +119,9 @@ func (e TaskState) Valid() bool {
 
 // AcceptedVmView defines model for Accepted_VmView.
 type AcceptedVmView struct {
+	// Account A Windows VM's account, which its password is for.
+	Account *string `json:"account,omitempty"`
+
 	// ActiveTask Kind of the task in flight for this VM, e.g. `vm.start`.
 	ActiveTask *string `json:"active_task,omitempty"`
 
@@ -715,7 +718,9 @@ type CreateVm struct {
 
 	// Password Console password for the image's default user. Handy for the serial
 	// console; prefer SSH keys otherwise. Only a SHA-512 crypt hash of it is
-	// stored or passed to the guest.
+	// stored or passed to the guest. A Windows VM's account's password
+	// (required), which Windows takes as it is: kept sealed until the
+	// VM's first boot has set it.
 	Password *string `json:"password,omitempty"`
 
 	// SecureBoot Boot with UEFI Secure Boot (UEFI firmware only): only what is signed
@@ -741,6 +746,11 @@ type CreateVm struct {
 	// UserData Complete cloud-init user data. Overrides `ssh_authorized_keys` and
 	// `password`.
 	UserData *string `json:"user_data,omitempty"`
+
+	// Username A Windows VM's account, made as it first boots if it is not there
+	// (in Administrators): by default the image's (`admin_user`, e.g.
+	// Administrator on Windows Server); required for images without one.
+	Username *string `json:"username,omitempty"`
 	Vcpus    int32   `json:"vcpus"`
 }
 
@@ -2053,6 +2063,9 @@ type VmLimits struct {
 
 // VmView defines model for VmView.
 type VmView struct {
+	// Account A Windows VM's account, which its password is for.
+	Account *string `json:"account,omitempty"`
+
 	// ActiveTask Kind of the task in flight for this VM, e.g. `vm.start`.
 	ActiveTask *string `json:"active_task,omitempty"`
 

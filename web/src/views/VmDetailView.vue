@@ -485,9 +485,9 @@ async function remove() {
             <template v-if="vm.guest_os === 'windows'">
               <dt>System</dt>
               <dd>
-                Windows
+                Windows<template v-if="vm.account">, account {{ vm.account }}</template>
                 <span v-if="vm.first_boot_pending" class="muted">
-                  · first start pending: Windows sets the Administrator password then</span
+                  · first start pending: Windows sets its password then</span
                 >
               </dd>
             </template>

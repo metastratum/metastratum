@@ -229,6 +229,21 @@ pub struct CloudInit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "utoipa", schema(ignore))]
     pub first_boot_password: Option<String>,
+    /// A Windows guest's account, which its password is for: made as it
+    /// first boots if it is not there (in Administrators). None means
+    /// Administrator (VMs made before accounts could be named).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+}
+
+/// The account a Windows guest is signed in with unless named otherwise.
+pub const WINDOWS_ADMINISTRATOR: &str = "Administrator";
+
+impl CloudInit {
+    /// A Windows guest's account: the one named, or Administrator.
+    pub fn windows_account(&self) -> &str {
+        self.account.as_deref().unwrap_or(WINDOWS_ADMINISTRATOR)
+    }
 }
 
 /// Locally administered unicast MAC in metastratum's prefix, derived from the
