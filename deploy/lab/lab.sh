@@ -209,6 +209,26 @@ ssh_vm() { # ssh_vm <name> [cmd...]
     -o LogLevel=ERROR -o ConnectTimeout=5 "mst@$(vm_field "$name" 1)" "$@"
 }
 
+# The cloud image lags the archive, its kernel included, and Debian's
+# 6.12.111 crashes in openvswitch and geneve under OVN load. Every VM
+# therefore runs current packages, and reboots into a newer kernel.
+upgrade_vm() { # upgrade_vm <name>
+  local name=$1 boot
+  log "upgrading packages on $name"
+  ssh_vm "$name" 'sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y -qq -o Dpkg::Options::=--force-confold >/dev/null' ||
+    die "upgrading packages on $name failed: $0 ssh $name sudo apt-get full-upgrade"
+  ssh_vm "$name" '[ "$(ls /boot/vmlinuz-* | sort -V | tail -n1)" != "/boot/vmlinuz-$(uname -r)" ]' || return 0
+  boot=$(ssh_vm "$name" cat /proc/sys/kernel/random/boot_id)
+  log "rebooting $name into its new kernel"
+  ssh_vm "$name" sudo systemctl reboot >/dev/null 2>&1 || true
+  for _ in $(seq 60); do
+    sleep 5
+    [[ $(ssh_vm "$name" cat /proc/sys/kernel/random/boot_id 2>/dev/null) == "${boot:-x}" ]] && continue
+    ssh_vm "$name" true >/dev/null 2>&1 && return 0
+  done
+  die "$name did not come back after its reboot; check its console: virsh -c $LIBVIRT_DEFAULT_URI console $name"
+}
+
 wait_ready() {
   local line name role
   for line in "${VMS[@]}"; do
@@ -229,6 +249,7 @@ then re-create the lab: $0 down && $0 up"
     log "waiting for cloud-init on $name"
     ssh_vm "$name" cloud-init status --wait >/dev/null 2>&1 ||
       die "cloud-init failed on $name: $0 ssh $name sudo cloud-init status --long"
+    upgrade_vm "$name"
     if [[ $role == host ]]; then
       ssh_vm "$name" test -c /dev/kvm || die "$name has no /dev/kvm (nested virtualisation not working)"
       ssh_vm "$name" virsh -c qemu:///system domcapabilities --virttype kvm >/dev/null 2>&1 ||
