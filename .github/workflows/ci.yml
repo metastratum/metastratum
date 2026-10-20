@@ -54,6 +54,16 @@ jobs:
         working-directory: web
       - run: npm run typecheck && npm test && npx vite build
         working-directory: web
+      # The clickable demo: the UI with a backend of its own, as static files.
+      - run: npx vite build --mode demo
+        working-directory: web
+      # A visitor's paths through it, in a browser.
+      - run: npx playwright install --with-deps chromium && npm run test:demo
+        working-directory: web
+      - uses: actions/upload-artifact@v7
+        with:
+          name: demo
+          path: web/dist-demo/
 
   packages:
     runs-on: ubuntu-24.04

@@ -1,5 +1,7 @@
 node_modules
 dist
+dist-demo
 openapi.json
 test-results
+test-results-demo
 playwright-report

@@ -33,6 +33,8 @@ watch(
     } else {
       live.stop()
       tasks.stop()
+      // Whoever signs in next starts from their own tenants, not these.
+      scope.$reset()
     }
   },
   { immediate: true },

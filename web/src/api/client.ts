@@ -53,7 +53,9 @@ const authRedirect: Middleware = {
   },
 }
 
-export const api = createClient<paths>({ baseUrl: '', credentials: 'same-origin' })
+// `fetch` is looked up as each request goes (the demo build answers the
+// API in the page by replacing it).
+export const api = createClient<paths>({ baseUrl: '', credentials: 'same-origin', fetch: (req) => globalThis.fetch(req) })
 api.use(authRedirect)
 
 /** Unwraps an openapi-fetch result, throwing `ApiError` on failure. */

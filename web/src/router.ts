@@ -1,8 +1,9 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHashHistory, createWebHistory } from 'vue-router'
 import { useSession } from './stores/session'
 
 export const router = createRouter({
-  history: createWebHistory(),
+  // The demo is static files, served from wherever: its routes live in the URL's fragment.
+  history: import.meta.env.MODE === 'demo' ? createWebHashHistory() : createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: () => import('./views/LoginView.vue'), meta: { public: true } },
     { path: '/', redirect: '/vms' },

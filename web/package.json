@@ -6,10 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "dev:demo": "vite --mode demo",
+    "build:demo": "vue-tsc --noEmit && vite build --mode demo",
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest run",
     "api": "cargo run -q -p mst-controller -- openapi > openapi.json && npx -y -p typescript@5.9.3 -p openapi-typescript@7.13.0 openapi-typescript openapi.json -o src/api/schema.d.ts",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "test:demo": "playwright test -c playwright.demo.config.ts"
   },
   "dependencies": {
     "@fontsource/chakra-petch": "^5.3.0",

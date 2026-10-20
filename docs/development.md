@@ -55,6 +55,30 @@ npm run build   # into web/dist, which the controller serves
 npm run api     # regenerate the typed API client after changing the REST API
 ```
 
+### The demo
+
+`npm run build:demo` builds a clickable demo into `web/dist-demo`: the UI
+with a backend of its own running in the page (`web/src/demo`), seeded
+with a provider, customer tenants, hosts, networks and VMs. It is static
+files that work from any path on any web server (routes live in the URL's
+fragment), so it can be uploaded anywhere; CI keeps each build as the
+`demo` artifact. `npm run dev:demo` serves it while working on it, and
+`npm run test:demo` (after `build:demo`) clicks through it in a browser,
+as CI does.
+
+Visitors start signed in as `admin` (the provider's administrator); signed
+out, they can sign in as `alice` (tenant `northwind`) or `gina` (tenant
+`globex`) too, each with the password `demo`. What they
+change is kept in their browser until they press Reset. Tasks run on
+timers, the serial console is a small scripted shell, and the graphical
+console a drawn screen.
+
+The demo's handlers are typed against the API's schema
+(`src/api/schema.d.ts`): after the API changes, `npm run api` and the
+typecheck point at the handlers to follow. They mirror the controller's
+(`crates/mst-controller/src/api`), one file per area in
+`web/src/demo/handlers`.
+
 CI fails when the API clients (the web UI's and the Terraform provider's)
 are not regenerated after the API changed. `deploy/packaging/build.sh`
 builds the `.deb` and `.rpm` packages; it takes
