@@ -29,8 +29,10 @@
   --shadow: 0 1px 0 rgb(28 35 41 / 6%), 0 8px 24px -12px rgb(28 35 41 / 18%);
 }
 
+/* Dark when the system is, unless the root element names a theme (a
+ * claude.ai artifact's viewer does, for the demo), which then wins. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme='light']) {
     --aisle: #121619;
     --panel: #1a1f24;
     --sunken: #0e1214;
@@ -40,5 +42,19 @@
     --led-off: #3d464e;
     --bar: #0b0e10;
     --shadow: 0 1px 0 rgb(0 0 0 / 30%), 0 8px 24px -12px rgb(0 0 0 / 60%);
+    color-scheme: dark;
   }
+}
+
+:root[data-theme='dark'] {
+  --aisle: #121619;
+  --panel: #1a1f24;
+  --sunken: #0e1214;
+  --ink: #e3e8ec;
+  --muted: #93a0ab;
+  --rule: #2c343b;
+  --led-off: #3d464e;
+  --bar: #0b0e10;
+  --shadow: 0 1px 0 rgb(0 0 0 / 30%), 0 8px 24px -12px rgb(0 0 0 / 60%);
+  color-scheme: dark;
 }
