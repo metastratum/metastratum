@@ -32,7 +32,10 @@ fn lock(vm: &str) -> Arc<tokio::sync::Mutex<()>> {
 }
 
 async fn running(agent: &Agent, vm: &str) -> bool {
-    matches!(agent.lv.power(vm).await, Ok(Power::Running | Power::Paused))
+    matches!(
+        agent.lv.power(vm).await,
+        Ok(Power::Running | Power::Paused | Power::Suspended)
+    )
 }
 
 /// The VM's disks asked for, each with its pool.

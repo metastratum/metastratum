@@ -2011,7 +2011,8 @@ export interface components {
             nics: components["schemas"]["NicView"][];
             /**
              * @description What the host last reported: `running`, `stopped`, `paused`,
-             *     `crashed`, `shutting_down`, `missing` or `unknown`.
+             *     `suspended` (asleep: starting it wakes it), `crashed`,
+             *     `shutting_down`, `missing` or `unknown`.
              */
             power: string;
             /**
@@ -2027,6 +2028,11 @@ export interface components {
             power_reason?: string | null;
             /** @description Boots with UEFI Secure Boot. */
             secure_boot: boolean;
+            /**
+             * @description The guest may sleep (suspend to RAM or to disk); asleep (power
+             *     `suspended`), starting it wakes it.
+             */
+            sleep: boolean;
             /** @description Lifecycle: `creating`, `ready`, `error` or `deleting`. */
             status: string;
             /** @description A template: kept to be cloned, never started. */
@@ -2338,6 +2344,12 @@ export interface components {
             secure_boot?: boolean;
             shared?: boolean;
             /**
+             * @description VMs made from it may sleep (suspend to RAM or to disk) unless told
+             *     otherwise, as desktops do when idle; asleep, starting one wakes it.
+             *     By default they may.
+             */
+            sleep?: boolean;
+            /**
              * @description HTTP(S) URL the controller downloads the image from, as it is added
              *     (and only then: the image keeps no URL). Or none, with
              *     `upload_bytes`.
@@ -2482,6 +2494,11 @@ export interface components {
              *     otherwise. An empty list blocks all traffic but DHCP.
              */
             security_group_ids?: components["schemas"]["SecurityGroupId"][] | null;
+            /**
+             * @description The guest may sleep (suspend to RAM or to disk), as desktops do when
+             *     idle; asleep, starting it wakes it. As the image says by default.
+             */
+            sleep?: boolean | null;
             /** @description SSH public keys for the image's default user. */
             ssh_authorized_keys?: string[];
             /** @description Start the VM once created (default true). */
@@ -2792,7 +2809,7 @@ export interface components {
             received_bytes?: number | null;
             /**
              * @description What VMs made from it get unless told otherwise: UEFI Secure Boot,
-             *     a TPM.
+             *     a TPM, and whether they may sleep.
              */
             secure_boot: boolean;
             /** @description SHA-256 of the file as it came. */
@@ -2804,6 +2821,7 @@ export interface components {
              * @description Its size, stored (qcow2).
              */
             size_bytes?: number | null;
+            sleep: boolean;
             /**
              * @description Being added: `downloading` or `uploading` (its file coming to the
              *     host picked for it), `storing` (that host checking it and adding it
@@ -3549,6 +3567,11 @@ export interface components {
              */
             secure_boot?: boolean | null;
             /**
+             * @description The guest may sleep (suspend to RAM or to disk). Only while it is
+             *     stopped; it applies from the next start.
+             */
+            sleep?: boolean | null;
+            /**
              * @description Make the stopped VM a template, kept to be cloned and never started,
              *     or a VM again.
              */
@@ -3696,7 +3719,8 @@ export interface components {
             nics: components["schemas"]["NicView"][];
             /**
              * @description What the host last reported: `running`, `stopped`, `paused`,
-             *     `crashed`, `shutting_down`, `missing` or `unknown`.
+             *     `suspended` (asleep: starting it wakes it), `crashed`,
+             *     `shutting_down`, `missing` or `unknown`.
              */
             power: string;
             /**
@@ -3712,6 +3736,11 @@ export interface components {
             power_reason?: string | null;
             /** @description Boots with UEFI Secure Boot. */
             secure_boot: boolean;
+            /**
+             * @description The guest may sleep (suspend to RAM or to disk); asleep (power
+             *     `suspended`), starting it wakes it.
+             */
+            sleep: boolean;
             /** @description Lifecycle: `creating`, `ready`, `error` or `deleting`. */
             status: string;
             /** @description A template: kept to be cloned, never started. */

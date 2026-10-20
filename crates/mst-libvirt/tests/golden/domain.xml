@@ -35,6 +35,10 @@
   <on_poweroff>destroy</on_poweroff>
   <on_reboot>restart</on_reboot>
   <on_crash>destroy</on_crash>
+  <pm>
+    <suspend-to-mem enabled='no'/>
+    <suspend-to-disk enabled='no'/>
+  </pm>
   <devices>
     <controller type='scsi' index='0' model='virtio-scsi'/>
     <controller type='pci' index='0' model='pcie-root'/>

@@ -35,6 +35,8 @@ pub enum Power {
     Running,
     Stopped,
     Paused,
+    /// Asleep: the guest suspended itself to RAM (ACPI S3).
+    Suspended,
     Crashed,
     ShuttingDown,
     Unknown,
@@ -50,7 +52,8 @@ impl Power {
             // CRASHED; the reason tells the two apart.
             5 if reason == SHUTOFF_CRASHED => Self::Crashed,
             5 => Self::Stopped,      // SHUTOFF
-            3 | 7 => Self::Paused,   // PAUSED, PMSUSPENDED
+            3 => Self::Paused,       // PAUSED
+            7 => Self::Suspended,    // PMSUSPENDED
             6 => Self::Crashed,      // CRASHED
             4 => Self::ShuttingDown, // SHUTDOWN
             _ => Self::Unknown,      // NOSTATE
@@ -305,8 +308,15 @@ impl Libvirt {
         const RESET_NVRAM: u32 = 1 << 5;
         let c = self.client().await?;
         let dom = self.lookup(&c, uuid).await?;
-        if self.power_of(&c, &dom).await? != Power::Running {
-            match reset_nvram {
+        match self.power_of(&c, &dom).await? {
+            Power::Running => {}
+            // Started already: woken if asleep, resumed if paused.
+            Power::Suspended => {
+                c.domain_pm_wakeup(&DomainPmWakeupArgs { dom, flags: 0 })
+                    .await?;
+            }
+            Power::Paused => c.domain_resume(&DomainResumeArgs { dom }).await?,
+            _ => match reset_nvram {
                 true => {
                     c.domain_create_with_flags(&DomainCreateWithFlagsArgs {
                         dom,
@@ -315,7 +325,7 @@ impl Libvirt {
                     .await?;
                 }
                 false => c.domain_create(&DomainCreateArgs { dom }).await?,
-            }
+            },
         }
         Ok(())
     }
@@ -887,7 +897,10 @@ impl Libvirt {
         const AFFECT_CONFIG: u32 = 2;
         let c = self.client().await?;
         let dom = self.lookup(&c, uuid).await?;
-        let running = self.dom_state(&c, &dom).await?.power == Power::Running;
+        let running = matches!(
+            self.dom_state(&c, &dom).await?.power,
+            Power::Running | Power::Paused | Power::Suspended
+        );
         let flags = AFFECT_CONFIG | if running { AFFECT_LIVE } else { 0 };
         let ullong = |field: &str, v: Option<u64>| TypedParam {
             field: field.into(),
@@ -1384,6 +1397,12 @@ mod tests {
                 reason: None
             }
         );
+    }
+
+    #[test]
+    fn asleep_is_not_paused() {
+        assert_eq!(Power::from_state(3, 1), Power::Paused);
+        assert_eq!(Power::from_state(7, 1), Power::Suspended);
     }
 }
 

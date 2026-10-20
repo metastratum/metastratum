@@ -141,7 +141,7 @@ pub async fn backup(agent: &Agent, c: &BackupVm) -> Result<String> {
     mst_storage::private_dir(&dir).await?;
     let (consistent, plan) = if matches!(
         agent.lv.power(&c.vm_id).await,
-        Ok(Power::Running | Power::Paused)
+        Ok(Power::Running | Power::Paused | Power::Suspended)
     ) {
         live(agent, c, &dir).await?
     } else {

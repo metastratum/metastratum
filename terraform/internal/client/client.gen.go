@@ -174,7 +174,8 @@ type AcceptedVmView struct {
 	Nics       []NicView      `json:"nics"`
 
 	// Power What the host last reported: `running`, `stopped`, `paused`,
-	// `crashed`, `shutting_down`, `missing` or `unknown`.
+	// `suspended` (asleep: starting it wakes it), `crashed`,
+	// `shutting_down`, `missing` or `unknown`.
 	Power string `json:"power"`
 
 	// PowerObservedAt When `power` (or its reason) last changed.
@@ -187,6 +188,10 @@ type AcceptedVmView struct {
 
 	// SecureBoot Boots with UEFI Secure Boot.
 	SecureBoot bool `json:"secure_boot"`
+
+	// Sleep The guest may sleep (suspend to RAM or to disk); asleep (power
+	// `suspended`), starting it wakes it.
+	Sleep bool `json:"sleep"`
 
 	// Status Lifecycle: `creating`, `ready`, `error` or `deleting`.
 	Status string `json:"status"`
@@ -589,6 +594,11 @@ type CreateImage struct {
 	SecureBoot *bool `json:"secure_boot,omitempty"`
 	Shared     *bool `json:"shared,omitempty"`
 
+	// Sleep VMs made from it may sleep (suspend to RAM or to disk) unless told
+	// otherwise, as desktops do when idle; asleep, starting one wakes it.
+	// By default they may.
+	Sleep *bool `json:"sleep,omitempty"`
+
 	// SourceUrl HTTP(S) URL the controller downloads the image from, as it is added
 	// (and only then: the image keeps no URL). Or none, with
 	// `upload_bytes`.
@@ -736,6 +746,10 @@ type CreateVm struct {
 	// SecurityGroupIds Security groups for the NIC (the tenant's own); its `default` group
 	// otherwise. An empty list blocks all traffic but DHCP.
 	SecurityGroupIds *[]SecurityGroupId `json:"security_group_ids,omitempty"`
+
+	// Sleep The guest may sleep (suspend to RAM or to disk), as desktops do when
+	// idle; asleep, starting it wakes it. As the image says by default.
+	Sleep *bool `json:"sleep,omitempty"`
 
 	// SshAuthorizedKeys SSH public keys for the image's default user.
 	SshAuthorizedKeys *[]string `json:"ssh_authorized_keys,omitempty"`
@@ -1086,7 +1100,7 @@ type ImageView struct {
 	ReceivedBytes *int64 `json:"received_bytes,omitempty"`
 
 	// SecureBoot What VMs made from it get unless told otherwise: UEFI Secure Boot,
-	// a TPM.
+	// a TPM, and whether they may sleep.
 	SecureBoot bool `json:"secure_boot"`
 
 	// Sha256 SHA-256 of the file as it came.
@@ -1097,6 +1111,7 @@ type ImageView struct {
 
 	// SizeBytes Its size, stored (qcow2).
 	SizeBytes *int64 `json:"size_bytes,omitempty"`
+	Sleep     bool   `json:"sleep"`
 
 	// State Being added: `downloading` or `uploading` (its file coming to the
 	// host picked for it), `storing` (that host checking it and adding it
@@ -1923,6 +1938,10 @@ type UpdateVm struct {
 	// stopped; its UEFI variables start anew at its next start.
 	SecureBoot *bool `json:"secure_boot,omitempty"`
 
+	// Sleep The guest may sleep (suspend to RAM or to disk). Only while it is
+	// stopped; it applies from the next start.
+	Sleep *bool `json:"sleep,omitempty"`
+
 	// Template Make the stopped VM a template, kept to be cloned and never started,
 	// or a VM again.
 	Template *bool `json:"template,omitempty"`
@@ -2069,7 +2088,8 @@ type VmView struct {
 	Nics       []NicView      `json:"nics"`
 
 	// Power What the host last reported: `running`, `stopped`, `paused`,
-	// `crashed`, `shutting_down`, `missing` or `unknown`.
+	// `suspended` (asleep: starting it wakes it), `crashed`,
+	// `shutting_down`, `missing` or `unknown`.
 	Power string `json:"power"`
 
 	// PowerObservedAt When `power` (or its reason) last changed.
@@ -2082,6 +2102,10 @@ type VmView struct {
 
 	// SecureBoot Boots with UEFI Secure Boot.
 	SecureBoot bool `json:"secure_boot"`
+
+	// Sleep The guest may sleep (suspend to RAM or to disk); asleep (power
+	// `suspended`), starting it wakes it.
+	Sleep bool `json:"sleep"`
 
 	// Status Lifecycle: `creating`, `ready`, `error` or `deleting`.
 	Status string `json:"status"`

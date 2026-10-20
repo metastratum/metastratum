@@ -146,6 +146,7 @@ pub fn power_name(p: i32) -> &'static str {
         PowerState::Running => "running",
         PowerState::Stopped => "stopped",
         PowerState::Paused => "paused",
+        PowerState::Suspended => "suspended",
         PowerState::Crashed => "crashed",
         PowerState::ShuttingDown => "shutting_down",
         PowerState::Unspecified => "unknown",

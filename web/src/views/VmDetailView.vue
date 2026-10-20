@@ -106,6 +106,17 @@ async function setFreePageReporting(on: boolean) {
     switching.value = false
   }
 }
+async function setSleep(on: boolean) {
+  actionError.value = ''
+  switching.value = true
+  try {
+    vm.value = await ok(api.PATCH('/api/v1/vms/{id}', { params: { path: { id: props.id } }, body: { sleep: on } }))
+  } catch (e) {
+    actionError.value = errorText(e)
+  } finally {
+    switching.value = false
+  }
+}
 // Taking a TPM away loses what it holds: asked twice.
 const removingTpm = ref(false)
 async function setBootSecurity(body: { secure_boot?: boolean; tpm?: boolean }) {
@@ -327,7 +338,7 @@ async function remove() {
           :title="vm.template ? 'A template is not started: clone it' : undefined"
           @click="act('start')"
         >
-          Start
+          {{ vm.power === 'suspended' ? 'Wake' : 'Start' }}
         </button>
         <button class="btn" :disabled="!running" title="Ask the guest OS to shut down" @click="act('stop')">Shut down</button>
         <button class="btn" :disabled="!running" title="Cut power immediately" @click="act('force')">Power off</button>
@@ -536,6 +547,24 @@ async function remove() {
                 @click="setFreePageReporting(!vm.free_page_reporting)"
               >
                 {{ vm.free_page_reporting ? 'Keep it' : 'Hand it back' }}
+              </button>
+            </dd>
+            <dt>Sleep</dt>
+            <dd class="migratable">
+              {{ vm.sleep ? 'Allowed: asleep, Wake wakes it' : 'Off' }}
+              <button
+                class="btn small"
+                :disabled="!stopped || switching"
+                :title="
+                  stopped
+                    ? vm.sleep
+                      ? 'The guest cannot sleep (suspend to RAM or to disk), from its next start'
+                      : 'The guest may sleep when idle, as desktops do, from its next start'
+                    : 'Stop the VM to change this'
+                "
+                @click="setSleep(!vm.sleep)"
+              >
+                {{ vm.sleep ? 'Turn off' : 'Allow' }}
               </button>
             </dd>
             <dt>Template</dt>

@@ -24,6 +24,7 @@ export function vmState(vm: VmLike): { tone: Tone; text: string } {
 
   switch (vm.active_task) {
     case 'vm.start':
+      if (vm.power === 'suspended') return { tone: 'busy', text: 'Waking' }
       if (vm.power !== 'running') return { tone: 'busy', text: 'Starting' }
       break
     case 'vm.stop':
@@ -42,6 +43,8 @@ export function vmState(vm: VmLike): { tone: Tone; text: string } {
       return { tone: 'off', text: 'Stopped' }
     case 'paused':
       return { tone: 'busy', text: 'Paused' }
+    case 'suspended':
+      return { tone: 'off', text: 'Asleep' }
     case 'crashed':
       return { tone: 'fault', text: 'Crashed' }
     case 'missing':
@@ -75,6 +78,7 @@ export function powerNote(vm: Pick<Vm, 'status' | 'power' | 'power_reason' | 'po
   if (vm.power === 'running' && vm.desired_power === 'stopped') {
     return 'A shutdown was requested, but the guest is still running. If it ignores the request, use Power off.'
   }
+  if (vm.power === 'suspended') return `The guest went to sleep; Wake wakes it · ${ago(vm.power_observed_at)}`
   if (vm.power === 'stopped' || vm.power === 'crashed') {
     const reason = vm.power_reason ? REASONS[vm.power_reason] : null
     if (reason) return `${reason} · ${ago(vm.power_observed_at)}`

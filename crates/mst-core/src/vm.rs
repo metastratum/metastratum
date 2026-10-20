@@ -62,6 +62,10 @@ pub struct VmSpec {
     /// moves with it.
     #[serde(default)]
     pub tpm: bool,
+    /// The guest may sleep (suspend to RAM or to disk), as on hardware:
+    /// asleep, starting it wakes it. Off, it is offered neither.
+    #[serde(default = "yes")]
+    pub sleep: bool,
     /// Its UEFI variables are made afresh as it next starts (Secure Boot was
     /// turned on or off: the template holds the keys, or none).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -154,6 +158,10 @@ pub struct DiskSlot {
     pub target: String,
     /// Its unit on the virtio-SCSI controller, for data disks.
     pub scsi_unit: Option<u32>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn letter(i: u32) -> char {
@@ -280,6 +288,8 @@ mod tests {
         assert_eq!(spec.firmware, Firmware::Uefi);
         assert!(spec.cloud_init.is_none());
         assert_eq!(spec.disks[0].pool_id, LOCAL_POOL);
+        // Made before it could be told not to, it may sleep.
+        assert!(spec.sleep);
         let again: VmSpec = serde_json::from_str(&serde_json::to_string(&spec).unwrap()).unwrap();
         assert_eq!(again, spec);
     }

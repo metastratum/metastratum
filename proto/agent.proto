@@ -142,6 +142,8 @@ enum PowerState {
   POWER_STATE_PAUSED = 3;
   POWER_STATE_CRASHED = 4;
   POWER_STATE_SHUTTING_DOWN = 5;
+  // Asleep: the guest suspended itself (to RAM); starting it wakes it.
+  POWER_STATE_SUSPENDED = 6;
 }
 
 message ControllerMessage {

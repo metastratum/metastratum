@@ -54,3 +54,5 @@ A Windows VM's computer name is its name cut to 15 characters (Windows'
 NetBIOS limit): give Windows VMs names that differ in their first 15.
 
 Windows 11 needs Secure Boot and a TPM (see [Secure Boot and TPM](boot-security.md)), and 4 GiB of memory.
+It sleeps when idle, as desktops do: starting it wakes it, and VMs that
+should stay reachable are made with sleep off (see [Sleep](sleep.md)).

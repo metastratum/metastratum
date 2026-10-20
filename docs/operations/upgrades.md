@@ -41,4 +41,10 @@ From 0.5 to 0.6:
   0.6 installer and agent package bring them. Hosts without them say so
   (No TPM, No Secure Boot), and VMs that need them are not placed there.
 
+From 0.6.0:
+
+- Until a host's agent is upgraded, VMs started there may sleep whatever
+  their setting (see [Sleep](sleep.md)), and one asleep shows as Paused
+  and is not woken by starting it (`virsh dompmwakeup` on the host does).
+
 The release notes say when a release drops support for an agent revision.

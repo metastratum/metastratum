@@ -58,7 +58,8 @@ pub struct VmView {
     /// `stopped`. Never changed by what happens on the host.
     desired_power: String,
     /// What the host last reported: `running`, `stopped`, `paused`,
-    /// `crashed`, `shutting_down`, `missing` or `unknown`.
+    /// `suspended` (asleep: starting it wakes it), `crashed`,
+    /// `shutting_down`, `missing` or `unknown`.
     power: String,
     /// Why a stopped or crashed VM stopped, when the host knew: `shutdown`
     /// (by the guest, or a shutdown request it honoured), `destroyed`
@@ -87,6 +88,9 @@ pub struct VmView {
     secure_boot: bool,
     /// Has a TPM 2.0 (its state goes where the VM goes).
     tpm: bool,
+    /// The guest may sleep (suspend to RAM or to disk); asleep (power
+    /// `suspended`), starting it wakes it.
+    sleep: bool,
     /// What it runs (from its image).
     guest_os: GuestOs,
     /// A Windows VM's first boot has yet to set its password: the
@@ -219,6 +223,7 @@ fn view(vm: Vm, ctx: &Context) -> VmView {
         firmware: spec.firmware,
         secure_boot: spec.secure_boot,
         tpm: spec.tpm,
+        sleep: spec.sleep,
         guest_os: spec.guest_os,
         first_boot_pending: spec
             .cloud_init
@@ -368,6 +373,10 @@ pub struct CreateVm {
     /// As the image says by default.
     #[serde(default)]
     tpm: Option<bool>,
+    /// The guest may sleep (suspend to RAM or to disk), as desktops do when
+    /// idle; asleep, starting it wakes it. As the image says by default.
+    #[serde(default)]
+    sleep: Option<bool>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -440,6 +449,7 @@ async fn restore_backup(
         migratable: None,
         secure_boot: Some(spec.secure_boot),
         tpm: Some(spec.tpm),
+        sleep: Some(spec.sleep),
     };
     let out = create_inner(state.clone(), p.clone(), create, Source::Backup(&backup)).await?;
     audit(
@@ -521,6 +531,7 @@ async fn clone_vm(
         migratable: Some(spec.migratable),
         secure_boot: Some(spec.secure_boot),
         tpm: Some(spec.tpm),
+        sleep: Some(spec.sleep),
     };
     create_inner(state, p, create, Source::Clone(&source)).await
 }
@@ -717,6 +728,7 @@ async fn create_inner(
         let image = mst_db::images::get(&state.db, req.image_id).await?;
         req.secure_boot = req.secure_boot.or(Some(image.secure_boot));
         req.tpm = req.tpm.or(Some(image.tpm));
+        req.sleep = req.sleep.or(Some(image.sleep));
         if image.os == "windows" {
             guest_os = GuestOs::Windows;
             req.username = req.username.map(|u| u.trim().to_owned());
@@ -957,6 +969,7 @@ async fn create_inner(
         firmware: req.firmware,
         secure_boot,
         tpm,
+        sleep: req.sleep != Some(false),
         reset_nvram: false,
         guest_os,
         disks: disks.clone(),
@@ -1022,7 +1035,7 @@ async fn create_inner(
         "vm.create",
         Some(("vm", vm_id.0)),
         json!({"name": req.name, "vcpus": req.vcpus, "memory_mib": req.memory_mib, "disk_gib": req.disk_gib, "host": host.name,
-               "secure_boot": secure_boot, "tpm": tpm,
+               "secure_boot": secure_boot, "tpm": tpm, "sleep": req.sleep != Some(false),
                "restored_from": match source { Source::Backup(b) => Some(b.id), _ => None },
                "cloned_from": match source { Source::Clone(vm) => Some(vm.id), _ => None }}),
     )
@@ -1677,6 +1690,9 @@ pub struct UpdateVm {
     /// Give it a TPM 2.0. Only while it is stopped; taken away, its TPM's
     /// state is gone for good.
     tpm: Option<bool>,
+    /// The guest may sleep (suspend to RAM or to disk). Only while it is
+    /// stopped; it applies from the next start.
+    sleep: Option<bool>,
 }
 
 /// Changes a VM's settings. A running VM's memory changes at once, within
@@ -1708,6 +1724,7 @@ async fn update_vm(
     let reporting = req.free_page_reporting.unwrap_or(old.free_page_reporting);
     let secure_boot = req.secure_boot.unwrap_or(old.secure_boot);
     let tpm = req.tpm.unwrap_or(old.tpm);
+    let sleep = req.sleep.unwrap_or(old.sleep);
     if secure_boot && old.firmware != Firmware::Uefi {
         return Err(ApiError::bad_request("Secure Boot needs UEFI firmware"));
     }
@@ -1725,7 +1742,7 @@ async fn update_vm(
             max_memory_mib,
             template,
             reporting,
-            (secure_boot, tpm),
+            (secure_boot, tpm, sleep),
         ) == (
             old.migratable,
             old.vcpus,
@@ -1734,7 +1751,7 @@ async fn update_vm(
             old.reserved_memory_mib(),
             vm.template,
             old.free_page_reporting,
-            (old.secure_boot, old.tpm),
+            (old.secure_boot, old.tpm, old.sleep),
         )
     {
         return Ok(Json(view(vm, &context(&state).await?)));
@@ -1762,14 +1779,14 @@ async fn update_vm(
                 max_memory_mib,
                 template,
                 reporting,
-                (secure_boot, tpm),
+                (secure_boot, tpm, sleep),
             ) != (
                 old.migratable,
                 old.reserved_vcpus(),
                 old.reserved_memory_mib(),
                 vm.template,
                 old.free_page_reporting,
-                (old.secure_boot, old.tpm),
+                (old.secure_boot, old.tpm, old.sleep),
             )
         {
             return Err(ApiError::conflict(format!(
@@ -1814,6 +1831,7 @@ async fn update_vm(
     }
     let tpm_removed = spec.tpm && !tpm;
     spec.tpm = tpm;
+    spec.sleep = sleep;
     let migratable_changed = migratable != spec.migratable;
     spec.migratable = migratable;
     let fitted = migratable && (migratable_changed || req.fit_cpu);
@@ -1853,7 +1871,7 @@ async fn update_vm(
                "max_vcpus": req.max_vcpus, "memory_mib": req.memory_mib,
                "max_memory_mib": req.max_memory_mib, "template": req.template,
                "free_page_reporting": req.free_page_reporting, "fit_cpu": req.fit_cpu,
-               "secure_boot": req.secure_boot, "tpm": req.tpm}),
+               "secure_boot": req.secure_boot, "tpm": req.tpm, "sleep": req.sleep}),
     )
     .await;
     let vm = mst_db::vms::get(&state.db, id).await?;
@@ -2494,6 +2512,7 @@ mod tests {
             firmware: Firmware::Uefi,
             secure_boot: false,
             tpm: false,
+            sleep: true,
             reset_nvram: false,
             guest_os: GuestOs::Windows,
             disks: vec![],

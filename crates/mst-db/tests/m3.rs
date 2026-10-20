@@ -282,6 +282,7 @@ async fn the_model_snapshot_has_everything_the_compiler_needs(pool: PgPool) {
                 guest_os: Default::default(),
                 secure_boot: false,
                 tpm: false,
+                sleep: true,
                 reset_nvram: false,
                 disks: vec![],
                 nics: vec![],

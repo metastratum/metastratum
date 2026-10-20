@@ -162,7 +162,11 @@ pub async fn evacuate(ctx: &TaskCtx) -> Result<()> {
     let staying: Vec<String> = bound
         .iter()
         .map(|v| format!("{} (not migratable)", v.name))
-        .chain(stopped.iter().map(|v| format!("{} (stopped)", v.name)))
+        .chain(stopped.iter().map(|v| match v.power.as_str() {
+            "suspended" => format!("{} (asleep)", v.name),
+            "stopped" => format!("{} (stopped)", v.name),
+            other => format!("{} ({other})", v.name),
+        }))
         .collect();
     if !staying.is_empty() {
         tracing::info!(%host, staying = ?staying, "VMs that stay on the evacuated host");
@@ -677,7 +681,9 @@ async fn settle(ctx: &TaskCtx, m: &Migration) -> Result<Settled> {
         (Ok(h), Ok(t)) if !h.defined && t.defined && t.power == "running" => {
             Ok(Settled::Destination)
         }
-        (Ok(h), _) if h.defined && matches!(h.power.as_str(), "running" | "paused") => {
+        (Ok(h), _)
+            if h.defined && matches!(h.power.as_str(), "running" | "paused" | "suspended") =>
+        {
             Ok(Settled::Source)
         }
         (Ok(h), Ok(t)) => bail!("source: {}, destination: {}", h.power, t.power),

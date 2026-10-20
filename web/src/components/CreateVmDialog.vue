@@ -49,9 +49,11 @@ watch(minDisk, (m) => {
 // As the image says, unless changed.
 const secureBoot = ref(false)
 const tpm = ref(false)
+const sleep = ref(true)
 watch(image, (i) => {
   secureBoot.value = i?.secure_boot ?? false
   tpm.value = i?.tpm ?? false
+  sleep.value = i?.sleep ?? true
 })
 // A Windows VM's account: the image's by default.
 const username = ref('')
@@ -131,6 +133,7 @@ async function submit() {
           disk_gib: disk.value,
           secure_boot: secureBoot.value,
           tpm: tpm.value,
+          sleep: sleep.value,
           ssh_authorized_keys: sshKeys(),
           password: password.value || null,
           username: windows.value ? username.value.trim() || null : null,
@@ -290,6 +293,11 @@ async function submit() {
         <span class="hint">
           Windows 11 needs both. The TPM’s contents move with the VM to whichever host it runs on.
         </span>
+      </fieldset>
+      <fieldset v-if="!template" class="groups">
+        <legend class="label">Sleep</legend>
+        <label class="check"><input v-model="sleep" type="checkbox" /> The guest may sleep when idle</label>
+        <span class="hint">As desktops do. A VM asleep is woken by starting it.</span>
       </fieldset>
       <label v-if="!windows" class="field">
         <span class="label">SSH public keys</span>

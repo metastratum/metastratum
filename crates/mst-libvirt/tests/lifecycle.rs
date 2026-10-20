@@ -28,6 +28,7 @@ fn def(uuid: &str) -> DomainDef {
         hyperv: false,
         secure_boot: false,
         tpm: false,
+        sleep: true,
     }
 }
 

@@ -232,6 +232,7 @@ pub async fn domain(
         hyperv: spec.guest_os == mst_core::vm::GuestOs::Windows,
         secure_boot: spec.secure_boot,
         tpm: spec.tpm,
+        sleep: spec.sleep,
         nics: spec
             .nics
             .iter()
@@ -276,7 +277,9 @@ pub async fn resize_disk(agent: &crate::session::Agent, c: &mst_proto::ResizeDis
     let pool = agent.pool(disk.pool.as_ref()).await?;
     if matches!(
         agent.lv.power(&c.vm_id).await,
-        Ok(mst_libvirt::Power::Running | mst_libvirt::Power::Paused)
+        Ok(mst_libvirt::Power::Running
+            | mst_libvirt::Power::Paused
+            | mst_libvirt::Power::Suspended)
     ) {
         agent
             .lv

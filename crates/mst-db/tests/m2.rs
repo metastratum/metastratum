@@ -104,6 +104,7 @@ async fn allocate(
         guest_os: Default::default(),
         secure_boot: false,
         tpm: false,
+        sleep: true,
         reset_nvram: false,
         disks: vec![],
         nics: vec![],

@@ -42,6 +42,7 @@ their traffic keeps flowing while every controller is down.
 - [Disks](disks.md): extra disks: attaching, detaching, moving between VMs and pools
 - [Network interfaces](network-interfaces.md): adding, moving and removing a VM's interfaces
 - [Secure Boot and TPM](boot-security.md): Secure Boot, TPMs, and where a TPM's state lives
+- [Sleep](sleep.md): guests that sleep when idle, waking them, and VMs that may not
 - [Templates and clones](templates.md): templates, and VMs cloned from them
 - [Snapshots](snapshots.md): disk snapshots, and reverting to them
 - [Backups](backups.md): backup repositories, incremental backups, schedules, restores

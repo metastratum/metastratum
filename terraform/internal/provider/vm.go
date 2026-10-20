@@ -58,6 +58,7 @@ type vmModel struct {
 	Migratable        types.Bool   `tfsdk:"migratable"`
 	SecureBoot        types.Bool   `tfsdk:"secure_boot"`
 	TPM               types.Bool   `tfsdk:"tpm"`
+	Sleep             types.Bool   `tfsdk:"sleep"`
 	Running           types.Bool   `tfsdk:"running"`
 	Template          types.Bool   `tfsdk:"template"`
 	IP                types.String `tfsdk:"ip"`
@@ -218,6 +219,13 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 				Computed:      true,
 				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
 			},
+			"sleep": schema.BoolAttribute{
+				Description: "Whether the guest may sleep (suspend to RAM or to disk) when idle; starting it wakes it. " +
+					"As its image says by default.",
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
+			},
 			"running": schema.BoolAttribute{
 				Description: "Whether it should be running (default true).",
 				Optional:    true,
@@ -283,6 +291,7 @@ func (m *vmModel) set(ctx context.Context, v *client.VmView, diags *diag.Diagnos
 	m.Migratable = types.BoolValue(v.Migratable)
 	m.SecureBoot = types.BoolValue(v.SecureBoot)
 	m.TPM = types.BoolValue(v.Tpm)
+	m.Sleep = types.BoolValue(v.Sleep)
 	m.Running = types.BoolValue(v.DesiredPower == "running")
 	m.Template = types.BoolValue(v.Template)
 	m.HostID = optIDValue(v.HostId)
@@ -456,6 +465,7 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 			Migratable:        optBool(plan.Migratable),
 			SecureBoot:        optBool(plan.SecureBoot),
 			Tpm:               optBool(plan.TPM),
+			Sleep:             optBool(plan.Sleep),
 		}
 		if !plan.Firmware.IsNull() && !plan.Firmware.IsUnknown() {
 			f := client.Firmware(plan.Firmware.ValueString())
@@ -596,6 +606,9 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 	}
 	if !plan.TPM.IsUnknown() && !plan.TPM.Equal(state.TPM) {
 		change.Tpm = plan.TPM.ValueBoolPointer()
+	}
+	if !plan.Sleep.IsUnknown() && !plan.Sleep.Equal(state.Sleep) {
+		change.Sleep = plan.Sleep.ValueBoolPointer()
 	}
 	if !plan.Template.Equal(state.Template) {
 		change.Template = plan.Template.ValueBoolPointer()

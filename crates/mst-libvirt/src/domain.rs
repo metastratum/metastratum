@@ -102,6 +102,9 @@ pub struct DomainDef {
     pub secure_boot: bool,
     /// A TPM 2.0 of its own (swtpm), its state on this host.
     pub tpm: bool,
+    /// The guest may sleep (suspend to RAM or to disk); off, its firmware
+    /// offers neither.
+    pub sleep: bool,
     /// A Windows guest: Hyper-V enlightenments (what Windows uses when it
     /// knows it runs virtualized, for timers, interrupts and spinlocks), and
     /// the timers Windows expects. All of them migrate.
@@ -353,6 +356,11 @@ impl DomainDef {
             .child(El::new("on_poweroff").text("destroy"))
             .child(El::new("on_reboot").text("restart"))
             .child(El::new("on_crash").text("destroy"))
+            .maybe((!self.sleep).then(|| {
+                El::new("pm")
+                    .child(El::new("suspend-to-mem").attr("enabled", "no"))
+                    .child(El::new("suspend-to-disk").attr("enabled", "no"))
+            }))
             .child(
                 El::new("devices")
                     // For data disks, which plug in while it runs.
@@ -614,8 +622,22 @@ mod tests {
             }],
             secure_boot: false,
             tpm: false,
+            sleep: false,
             hyperv: false,
         }
+    }
+
+    #[test]
+    fn guests_sleep_unless_told_not_to() {
+        let xml = sample().to_xml();
+        assert!(xml.contains("<suspend-to-mem enabled='no'/>"), "{xml}");
+        assert!(xml.contains("<suspend-to-disk enabled='no'/>"), "{xml}");
+        // Left to the hypervisor, which offers both.
+        let sleeps = DomainDef {
+            sleep: true,
+            ..sample()
+        };
+        assert!(!sleeps.to_xml().contains("<pm>"));
     }
 
     #[test]

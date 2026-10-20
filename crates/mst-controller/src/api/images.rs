@@ -41,9 +41,10 @@ pub struct ImageView {
     /// Usable by the owning tenant's descendants too.
     shared: bool,
     /// What VMs made from it get unless told otherwise: UEFI Secure Boot,
-    /// a TPM.
+    /// a TPM, and whether they may sleep.
     secure_boot: bool,
     tpm: bool,
+    sleep: bool,
     /// A Windows image's: the account its VMs are signed in with unless
     /// told otherwise (`Administrator` on Windows Server); none when each
     /// VM names one.
@@ -104,6 +105,7 @@ impl ImageView {
             shared: i.shared,
             secure_boot: i.secure_boot,
             tpm: i.tpm,
+            sleep: i.sleep,
             admin_user: i.admin_user,
             created_at: i.created_at,
             state: i.state,
@@ -189,6 +191,11 @@ pub struct CreateImage {
     /// requires one).
     #[serde(default)]
     tpm: bool,
+    /// VMs made from it may sleep (suspend to RAM or to disk) unless told
+    /// otherwise, as desktops do when idle; asleep, starting one wakes it.
+    /// By default they may.
+    #[serde(default = "yes")]
+    sleep: bool,
     /// For a Windows image: the account its VMs are signed in with unless
     /// a VM names another, e.g. `Administrator` on Windows Server. Without
     /// it, each VM names one (Windows 11 has no Administrator to use).
@@ -197,6 +204,10 @@ pub struct CreateImage {
     /// The pool to keep it in (one the tenant may use): by default the
     /// local pool, on the local disk of a host picked at random.
     storage_pool_id: Option<StoragePoolId>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Adds an image. Its file comes to a host that can keep it in its pool
@@ -283,6 +294,7 @@ async fn create_image(
             os,
             secure_boot: req.secure_boot,
             tpm: req.tpm,
+            sleep: req.sleep,
             admin_user,
             file_bytes: req.upload_bytes.map(|n| n as i64),
             host,
@@ -306,7 +318,8 @@ async fn create_image(
         Some(("image", image.id.0)),
         json!({"name": image.name, "url": source_url, "upload_bytes": req.upload_bytes,
                "storage_pool": pool.name, "os": image.os,
-               "secure_boot": image.secure_boot, "tpm": image.tpm, "admin_user": image.admin_user}),
+               "secure_boot": image.secure_boot, "tpm": image.tpm, "sleep": image.sleep,
+               "admin_user": image.admin_user}),
     )
     .await;
     Ok((
