@@ -613,7 +613,7 @@ fn cloud_init(req: &CreateVm, vm_id: VmId, guest_os: GuestOs) -> ApiResult<Cloud
                 .password
                 .as_deref()
                 .map(|pw| crate::guest::seal_password(vm_id, pw));
-            (crate::guest::windows_user_data(), sealed)
+            (crate::guest::windows_user_data(vm_id, account), sealed)
         }
     };
     Ok(CloudInit {
@@ -719,6 +719,19 @@ async fn create_inner(
         req.tpm = req.tpm.or(Some(image.tpm));
         if image.os == "windows" {
             guest_os = GuestOs::Windows;
+            req.username = req.username.map(|u| u.trim().to_owned());
+            // Its Administrator is the image's to use (on Windows 11, it is
+            // switched off).
+            if req.username.as_deref().is_some_and(|u| {
+                u.eq_ignore_ascii_case(mst_core::vm::WINDOWS_ADMINISTRATOR)
+                    && !image.admin_user.as_deref().is_some_and(|a| {
+                        a.eq_ignore_ascii_case(mst_core::vm::WINDOWS_ADMINISTRATOR)
+                    })
+            }) {
+                return Err(ApiError::bad_request(
+                    "the image does not use its Administrator (as Windows 11 does not): name another account",
+                ));
+            }
             req.username = req.username.or(image.admin_user.clone());
             // Its accounts have passwords no one knows until then
             // (deploy/images/windows): without one, no one could sign in.
@@ -1086,17 +1099,38 @@ async fn set_nic_groups(
 const MAX_NICS: usize = 8;
 
 /// Refuses changes to a VM's interfaces while it is not settled: being
-/// created, migrated or deleted (or after creating it failed).
-fn nics_changeable(vm: &Vm) -> ApiResult<()> {
+/// created, migrated or deleted (or after creating it failed), or while a
+/// task or a disk change works on it (which would define it on its host
+/// from what it read before, without the change).
+async fn nics_changeable(tx: &mut mst_db::sqlx::PgConnection, vm: &Vm) -> ApiResult<()> {
     match vm.status.as_str() {
-        "ready" => Ok(()),
-        "migrating" => Err(ApiError::conflict(
-            "the VM is being migrated; change its interfaces once it is done",
-        )),
-        other => Err(ApiError::conflict(format!(
-            "the VM is {other}; its interfaces cannot change now"
-        ))),
+        "ready" => {}
+        "migrating" => {
+            return Err(ApiError::conflict(
+                "the VM is being migrated; change its interfaces once it is done",
+            ));
+        }
+        other => {
+            return Err(ApiError::conflict(format!(
+                "the VM is {other}; its interfaces cannot change now"
+            )));
+        }
     }
+    let busy = mst_db::tasks::active_by_target(&mut *tx)
+        .await?
+        .into_iter()
+        .find(|(t, _)| *t == vm.id.0);
+    if let Some((_, kind)) = busy {
+        return Err(ApiError::conflict(format!(
+            "a task ({kind}) is working on the VM; change its interfaces once it is done"
+        )));
+    }
+    if let Some(what) = mst_db::disks::busy_on_vm(&mut *tx, vm.id).await? {
+        return Err(ApiError::conflict(format!(
+            "a disk of the VM is {what}; change its interfaces once that is done"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1126,7 +1160,7 @@ async fn add_nic(
     load(&state, &p, id, Perm::VmWrite).await?;
     let mut tx = state.db.begin().await?;
     let vm = mst_db::vms::get_for_update(&mut tx, id).await?;
-    nics_changeable(&vm)?;
+    nics_changeable(&mut tx, &vm).await?;
     let mut spec = vm.spec.0.clone();
     if spec.nics.len() >= MAX_NICS {
         return Err(ApiError::conflict(format!(
@@ -1216,7 +1250,7 @@ async fn update_nic(
     load(&state, &p, id, Perm::VmWrite).await?;
     let mut tx = state.db.begin().await?;
     let vm = mst_db::vms::get_for_update(&mut tx, id).await?;
-    nics_changeable(&vm)?;
+    nics_changeable(&mut tx, &vm).await?;
     let mut spec = vm.spec.0.clone();
     let Some(at) = spec.nics.iter().position(|n| n.id == nic_id) else {
         return Err(ApiError::not_found("NIC"));
@@ -1312,7 +1346,7 @@ async fn delete_nic(
     load(&state, &p, id, Perm::VmWrite).await?;
     let mut tx = state.db.begin().await?;
     let vm = mst_db::vms::get_for_update(&mut tx, id).await?;
-    nics_changeable(&vm)?;
+    nics_changeable(&mut tx, &vm).await?;
     let mut spec = vm.spec.0.clone();
     let Some(at) = spec.nics.iter().position(|n| n.id == nic_id) else {
         return Err(ApiError::not_found("NIC"));
@@ -1799,7 +1833,7 @@ async fn update_vm(
     }
     define_on_host(&state, &mut tx, &vm, host, &spec, generation).await?;
     if tpm_removed {
-        crate::tpm::discard(&state, id, host)
+        crate::tpm::discard(&state, &mut tx, id, host)
             .await
             .map_err(|e| ApiError::unavailable(format!("removing the VM's TPM: {e:#}")))?;
     }
@@ -2193,8 +2227,6 @@ fn check_size(vcpus: u32, memory_mib: u64) -> ApiResult<()> {
     Ok(())
 }
 
-/// Whether a VM's host can give it `vcpus` more CPUs and `memory_mib` more
-/// memory, within its cluster's overcommit.
 /// A VM stopped takes nothing on its host (see `clusters::candidates_locked`):
 /// starting it, its host needs room for it again. If it has none, a VM whose
 /// disks are all on shared storage starts on another host of its cluster
@@ -2219,21 +2251,38 @@ async fn make_room(
         spec.reserved_vcpus() as i64,
         spec.reserved_memory_mib() as i64,
     );
-    let mut lacking = host_has_room(tx, host, vcpus, memory).await.err();
-    if lacking.is_none() {
-        lacking = host_supports(tx, host, spec).await.err();
-    }
-    let Some(full) = lacking else {
-        return Ok(());
-    };
+    // What its host lacks: being up and in service, what the VM needs of
+    // it, or room (which stopping another VM there would make).
     let mut local = false;
     for d in &spec.disks {
         local |= mst_db::storage_pools::get(&mut *tx, d.pool_id).await?.kind == "local";
     }
-    if local || vm.status != "ready" {
+    let mut no_room = false;
+    // One on its host's own storage starts there in maintenance too (it
+    // can start nowhere else); one on shared storage moves.
+    let mut lacking = host_supports(tx, host, spec, local).await.err();
+    if lacking.is_none() {
+        lacking = host_has_room(tx, host, vcpus, memory).await.err();
+        no_room = lacking.is_some();
+    }
+    let Some(full) = lacking else {
+        return Ok(());
+    };
+    if local {
         return Err(ApiError::conflict(format!(
-            "{}; it starts only there (its disks are on that host's own storage): stop another VM there first",
-            full.message
+            "{}; it starts only there (its disks are on that host's own storage){}",
+            full.message,
+            if no_room {
+                ": stop another VM there first"
+            } else {
+                ""
+            }
+        )));
+    }
+    if vm.status != "ready" {
+        return Err(ApiError::conflict(format!(
+            "{}; the VM is {}, so it is not moved to another host",
+            full.message, vm.status
         )));
     }
     match crate::engine::another_host(tx, &vm, host)
@@ -2256,18 +2305,26 @@ async fn make_room(
     }
 }
 
-/// Refuses a host that lacks what the VM's spec needs of it: a TPM, Secure
-/// Boot (switched on while it was stopped).
+/// Refuses a host that cannot start the VM whatever its room: down, out of
+/// service (maintenance, fenced), or lacking what the VM's spec needs of it
+/// (a TPM, Secure Boot, switched on while it was stopped).
 async fn host_supports(
     tx: &mut mst_db::sqlx::PgConnection,
     host: HostId,
     spec: &VmSpec,
+    maintenance_ok: bool,
 ) -> ApiResult<()> {
     let hosts = mst_db::clusters::candidates_locked(tx).await?;
     let h = hosts
         .iter()
         .find(|h| h.id == host)
         .ok_or_else(|| ApiError::conflict("the VM's host no longer exists"))?;
+    if !h.live {
+        return Err(ApiError::conflict(format!("{} is not connected", h.name)));
+    }
+    if h.state != "ready" && !(maintenance_ok && h.state == "maintenance") {
+        return Err(ApiError::conflict(format!("{} is in {}", h.name, h.state)));
+    }
     if spec.tpm && !h.tpm {
         return Err(ApiError::conflict(format!(
             "{} has no TPM for guests (swtpm)",
@@ -2283,6 +2340,8 @@ async fn host_supports(
     Ok(())
 }
 
+/// Whether a VM's host can give it `vcpus` more CPUs and `memory_mib` more
+/// memory, within its cluster's overcommit.
 async fn host_has_room(
     tx: &mut mst_db::sqlx::PgConnection,
     host: HostId,
@@ -2481,6 +2540,9 @@ mod tests {
         assert!(super::super::images::windows_user("x.").is_err());
         assert!(super::super::images::windows_user(&"x".repeat(21)).is_err());
         assert!(super::super::images::windows_user("Jane Doe").is_ok());
+        for bad in ["Guest", "administrators", "  ", "..", " ops"] {
+            assert!(super::super::images::windows_user(bad).is_err(), "{bad:?}");
+        }
         // Someone's own user data is kept as given, and holds no password.
         let own = req(json!({"user_data": "#ps1_sysnative\nwhoami"}));
         let ci = cloud_init(&own, vm, GuestOs::Windows).unwrap();

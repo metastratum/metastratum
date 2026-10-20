@@ -23,7 +23,7 @@ controllers = ["https://ctl1.example.net:7821", "https://ctl2.example.net:7821"]
 # VM data: images, volumes, cloud-init seeds.
 #data_dir = "/var/lib/metastratum"
 
-# The largest image the host downloads, in GiB.
+# The largest image the host takes (its file, and the disk it describes), in GiB.
 #image_max_gib = 64
 
 #libvirt_uri = "qemu:///system"

@@ -10,7 +10,7 @@ pub struct Image {
     pub tenant_id: TenantId,
     pub name: String,
     /// `download` (the controller downloaded it from a URL, as it was added:
-    /// no URL is kept) or `upload`.
+    /// it keeps no URL) or `upload`.
     pub origin: String,
     pub format: String,
     pub shared: bool,
@@ -122,6 +122,28 @@ pub async fn received_so_far(db: impl PgExecutor<'_>, id: ImageId, bytes: i64) -
     )
     .bind(id)
     .bind(bytes)
+    .execute(db)
+    .await?
+    .rows_affected()
+        == 1)
+}
+
+/// Records a part of an upload having come: `from` (what had, as the part
+/// was taken) to `to`. Returns false, recording nothing, when another part
+/// came meanwhile (parts sent at once), or the upload ended.
+pub async fn received_part(
+    db: impl PgExecutor<'_>,
+    id: ImageId,
+    from: i64,
+    to: i64,
+) -> Result<bool> {
+    Ok(sqlx::query(
+        "UPDATE images SET received_bytes = $3, received_at = now()
+         WHERE id = $1 AND state = 'uploading' AND received_bytes = $2",
+    )
+    .bind(id)
+    .bind(from)
+    .bind(to)
     .execute(db)
     .await?
     .rows_affected()
@@ -264,7 +286,7 @@ pub async fn get_for_update(db: &mut sqlx::PgConnection, id: ImageId) -> Result<
 /// How many images the tenant's tree is adding (their files coming, or
 /// being stored), and images deleted meanwhile still being stored (tasks):
 /// that of the provider's child it is in (or the provider's own).
-pub async fn downloads_in_tree(db: impl PgExecutor<'_>, tenant: TenantId) -> Result<i64> {
+pub async fn adding_in_tree(db: impl PgExecutor<'_>, tenant: TenantId) -> Result<i64> {
     Ok(sqlx::query_scalar(
         "WITH me AS (SELECT subpath(path, 0, least(nlevel(path), 2)) AS top FROM tenants
                      WHERE id = $1)

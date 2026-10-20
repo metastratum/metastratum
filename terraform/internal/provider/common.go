@@ -98,6 +98,17 @@ func optIDValue(id *uuid.UUID) types.String {
 	return types.StringValue(id.String())
 }
 
+// optBool is a planned bool for the API: none when it is unset (null) or
+// left to the server (unknown, for computed attributes), so the server's
+// default applies. (ValueBoolPointer gives false for unknown.)
+func optBool(v types.Bool) *bool {
+	if v.IsNull() || v.IsUnknown() {
+		return nil
+	}
+	b := v.ValueBool()
+	return &b
+}
+
 func optString(v *string) types.String {
 	if v == nil {
 		return types.StringNull()

@@ -244,8 +244,6 @@ pub async fn domain(
     })
 }
 
-/// Grows one of a VM's disks: through libvirt while the VM runs, so the
-/// guest sees it at once; otherwise the volume itself.
 /// Whether a file exists in the guest, asked through its guest agent:
 /// "true" or "false". Fails while the guest agent does not answer.
 pub async fn guest_file_exists(
@@ -271,6 +269,8 @@ pub async fn guest_file_exists(
     Ok("true".into())
 }
 
+/// Grows one of a VM's disks: through libvirt while the VM runs, so the
+/// guest sees it at once; otherwise the volume itself.
 pub async fn resize_disk(agent: &crate::session::Agent, c: &mst_proto::ResizeDisk) -> Result<()> {
     let disk = c.disk.as_ref().context("no disk given")?;
     let pool = agent.pool(disk.pool.as_ref()).await?;

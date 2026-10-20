@@ -192,7 +192,7 @@ async fn failed_downloads_say_why_and_are_final() -> anyhow::Result<()> {
         let img = api.wait_image(id, Duration::from_secs(120)).await?;
         assert_eq!(img["state"], "failed", "{img}");
         assert!(img["error"].as_str().unwrap_or("").contains("404"), "{img}");
-        assert!(img.get("source_url").is_none(), "no URL is kept: {img}");
+        assert!(img.get("source_url").is_none(), "it keeps no URL: {img}");
 
         let (status, body) = api
             .try_send(

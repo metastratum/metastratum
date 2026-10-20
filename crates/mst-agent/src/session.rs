@@ -627,6 +627,18 @@ impl Agent {
             Cmd::StoreImage(c) => {
                 let file = crate::uploads::path(self.pools.data_dir(), &c.image_id)?;
                 tracing::info!(image = %c.image_id, file = %file.display(), "adding a received image to the store");
+                // What came, all of it (a host going down may have lost the
+                // end of what it said it had). Not there: stored already.
+                if let Ok(m) = tokio::fs::metadata(&file).await
+                    && c.size > 0
+                    && m.len() != c.size
+                {
+                    bail!(
+                        "the image's file here has {} bytes, not the {} it came with",
+                        m.len(),
+                        c.size
+                    );
+                }
                 let policy = mst_storage::FetchPolicy {
                     allow_private: false,
                     max_bytes: self.max_image_bytes,

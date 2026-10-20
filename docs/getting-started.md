@@ -205,7 +205,8 @@ token works once; the agent keeps its own identity from then on.
    hosts is enough to start).
 2. Images: add a cloud image, for example
    `https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2`.
-   A host downloads it at once; a VM created meanwhile waits for it.
+   The controller downloads it at once (or upload a file instead), and a
+   host stores it; a VM created meanwhile waits for it.
 3. Machines → Create VM, with an SSH key or a password for the console. It
    goes on a default private network; to let it reach outside, attach that
    network's VPC to an external network (Networks).

@@ -9,10 +9,12 @@ too: Windows and Linux images boot from the fallback path).
 
 A TPM's state is the VM's: it lives on the host the VM runs on and goes
 where the VM goes. A live migration carries it; a stopped VM started on
-another host (its own had no room) brings it from the host it left. The
-leader keeps a copy in the database, sealed with the master key, at most a
-minute old, for a VM restarted elsewhere after its host failed (whatever
-the guest wrote to its TPM in that last minute is lost). A TPM taken away
+another host (its own had no room, lacks what it needs, or is down or in
+maintenance) brings it from the host it left, or, with that host down,
+from the copy. The leader keeps that copy in the database, sealed with the
+master key, refreshed each minute when the state changed (later should a
+host not answer), for a VM restarted elsewhere after its host failed
+(whatever the guest wrote to its TPM since is lost). A TPM taken away
 from a VM is gone, and one given again is new; clones and restored VMs get
 new ones (a TPM's keys are its own VM's).
 

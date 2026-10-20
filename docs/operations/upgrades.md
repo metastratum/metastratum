@@ -22,4 +22,23 @@ side do not undo each other's changes.
 
 0.5 does not upgrade earlier installations: install it afresh.
 
+From 0.5 to 0.6:
+
+- **Stop every 0.5 controller before starting the first 0.6 one.** Its
+  migrations change the images table under 0.5 controllers (their image
+  calls would fail, and they would fail 0.6's image tasks), so this is
+  not a rolling upgrade; agents still are (they keep their VMs running
+  meanwhile).
+- Hosts no longer download images: the controller does, as an image is
+  added, and never again (images keep no URL). Images being downloaded as the
+  first 0.6 controller starts fail (delete them and add them again), and
+  so do images no copy of which is left (every host holding one was
+  decommissioned; 0.5 would have downloaded them again). The URLs they
+  came from are in the audit log (`image.create`).
+- Adding images needs upgraded agents (`receive_image`, `store_image`):
+  until a host's agent is upgraded, images are not added there.
+- Secure Boot and TPMs need `swtpm` (and `swtpm-tools`) on hosts; the
+  0.6 installer and agent package bring them. Hosts without them say so
+  (No TPM, No Secure Boot), and VMs that need them are not placed there.
+
 The release notes say when a release drops support for an agent revision.

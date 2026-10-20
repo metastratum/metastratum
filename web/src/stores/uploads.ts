@@ -63,8 +63,15 @@ export async function upload(image: Image, file: File, from: number, tenant: str
       // Not the next part (one was lost on the way): go on from what arrived.
       if (res.status === 409) {
         const now = await arrivedIn(image.id, tenant)
+        // All of it came (the answer to the last part was lost).
+        if (now.state === 'storing' || now.state === 'ready') break
         if (now.state !== 'uploading' || ++failures >= 5) throw await failure(res)
         entry.sent = now.received_bytes ?? 0
+        continue
+      }
+      // Too many parts on their way to the controller: again shortly.
+      if (res.status === 503 && ++failures < 5) {
+        await new Promise((r) => setTimeout(r, 2000 * failures))
         continue
       }
       throw await failure(res)

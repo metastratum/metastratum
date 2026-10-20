@@ -31,6 +31,9 @@ use crate::state::AppState;
 
 /// Storing an image (checking and converting it) can take a while.
 const STORE: Duration = Duration::from_secs(3 * 3600);
+/// How long the host an image's file came to may be away before storing it
+/// fails (its file is there alone).
+const HOST_AWAY: Duration = Duration::from_secs(30 * 60);
 /// So can copies.
 const COPY: Duration = Duration::from_secs(3 * 3600);
 const QUICK: Duration = Duration::from_secs(60);
@@ -130,19 +133,45 @@ async fn first_store(ctx: &TaskCtx, image: &Image) -> Result<()> {
         bail!("the tenant may no longer use storage pool {}", pool.name);
     }
     let shared = pool.kind != "local";
-    // Where its file came to.
-    let host = store_hosts(state)
-        .await?
-        .into_iter()
-        .find(|h| Some(h.id) == image.download_host_id)
-        .context("the host the image's file came to is not connected")?;
-    ctx.step(&format!("storing on {}", host.name), 0.1).await;
     let path = mst_db::images::store_path(db, image.tenant_id).await?;
-    let (at, into) = match shared {
-        true => (Copy::shared(pool.id), Some(crate::api::agent_pool(&pool)?)),
-        false => (Copy::local(host.id), None),
+    let want = image
+        .download_host_id
+        .context("no host has the image's file")?;
+    // Where its file came to, which holds it alone: a host away for a while
+    // (its agent restarting, the network) is waited for, and storing it is
+    // asked again (the host keeps what it stored).
+    let deadline = tokio::time::Instant::now() + HOST_AWAY;
+    let (stored, host, at) = loop {
+        let host = store_hosts(state).await?.into_iter().find(|h| h.id == want);
+        let Some(host) = host else {
+            if tokio::time::Instant::now() > deadline {
+                bail!(
+                    "the host the image's file came to has not been back for {} minutes",
+                    HOST_AWAY.as_secs() / 60
+                );
+            }
+            ctx.step("waiting for the host the image's file came to", 0.1)
+                .await;
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            continue;
+        };
+        ctx.step(&format!("storing on {}", host.name), 0.1).await;
+        let (at, into) = match shared {
+            true => (Copy::shared(pool.id), Some(crate::api::agent_pool(&pool)?)),
+            false => (Copy::local(host.id), None),
+        };
+        match store_on(state, image, &path, host.id, into).await {
+            Ok(stored) => break (stored, host, at),
+            // Cut off from it: once it is back, asked again.
+            Err(_)
+                if !mst_db::hosts::get(db, want).await?.is_live()
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tracing::info!(image = %image.id, host = %host.name, "the host storing an image went away; waiting for it");
+            }
+            Err(e) => return Err(e),
+        }
     };
-    let stored = store_on(state, image, &path, host.id, into).await?;
     if stored.digest.is_empty() {
         bail!("{} reported no digest for the image", host.name);
     }
@@ -188,6 +217,7 @@ async fn store_on(
         tenant_path: tenant_path.to_owned(),
         format: image.format.clone(),
         trusted: super::image_trusted(&state.db, image).await?,
+        size: image.file_bytes.unwrap_or_default() as u64,
     });
     let out = send(state, host, cmd, STORE).await?;
     Ok(serde_json::from_str(&out)?)

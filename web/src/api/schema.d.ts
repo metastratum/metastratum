@@ -654,7 +654,7 @@ export interface paths {
          *     to the pool's image store (its own local disk, or the shared pool,
          *     which its hosts make disks from directly). Other hosts copy it from
          *     there to make VMs from it. It is downloaded as it is added, and never
-         *     again: the URL is kept nowhere.
+         *     again: the image keeps no URL (the audit log records it).
          */
         post: operations["create_image"];
         delete?: never;
@@ -696,7 +696,7 @@ export interface paths {
          *     32 MiB of the file, as the request's body, from `offset` (what has
          *     arrived: `received_bytes`). Parts go to the host picked for it as they
          *     come. Once all of it has arrived, it is added to its pool as a download
-         *     is (`downloading`, then `ready`), checked the same way. An upload no part
+         *     is (`storing`, then `ready`), checked the same way. An upload no part
          *     reaches for a day fails. A failed upload has failed for good: delete it
          *     and add it again.
          */
@@ -2339,7 +2339,7 @@ export interface components {
             shared?: boolean;
             /**
              * @description HTTP(S) URL the controller downloads the image from, as it is added
-             *     (and only then: the URL is kept nowhere). Or none, with
+             *     (and only then: the image keeps no URL). Or none, with
              *     `upload_bytes`.
              */
             source_url?: string | null;
@@ -2783,7 +2783,7 @@ export interface components {
             name: string;
             /**
              * @description `download` (from a URL, by the controller, as it was added: the URL
-             *     is kept nowhere) or `upload`.
+             *     is not kept with it; the audit log records it) or `upload`.
              */
             origin: string;
             /** @description What VMs made from it run: `linux` or `windows`. */
@@ -5498,13 +5498,14 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description A part larger than 32 MiB */
+            /** @description A part larger than 32 MiB, or an image larger than its host takes (it fails) */
             413: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
+            /** @description The host does not answer, or too many parts are on their way: send it again */
             503: {
                 headers: {
                     [name: string]: unknown;

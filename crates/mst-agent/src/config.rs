@@ -32,7 +32,8 @@ pub struct Config {
     /// VM data: images, volumes, cloud-init seeds.
     #[serde(default = "default_data_dir")]
     pub data_dir: PathBuf,
-    /// Largest image the host downloads, in GiB.
+    /// Largest image the host takes (its file, and the disk it describes), in
+    /// GiB.
     #[serde(default = "default_image_max_gib")]
     pub image_max_gib: u64,
     #[serde(default = "default_libvirt_uri")]

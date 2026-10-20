@@ -254,7 +254,8 @@ pub async fn tpm_state(db: impl PgExecutor<'_>, id: VmId) -> Result<Option<(Stri
 }
 
 /// Keeps a copy of a VM's TPM state (sealed), in place of the one before.
-/// Nothing if the VM is gone.
+/// Nothing if the VM is gone, or has no TPM (taken away meanwhile: it waits
+/// for a change of the VM under way, and sees it).
 pub async fn set_tpm_state(
     db: impl PgExecutor<'_>,
     id: VmId,
@@ -263,7 +264,7 @@ pub async fn set_tpm_state(
 ) -> Result<()> {
     sqlx::query(
         "INSERT INTO vm_tpm_states (vm_id, state, digest)
-         SELECT id, $2, $3 FROM vms WHERE id = $1
+         SELECT id, $2, $3 FROM vms WHERE id = $1 AND (spec->>'tpm')::boolean FOR SHARE
          ON CONFLICT (vm_id) DO UPDATE SET state = $2, digest = $3, updated_at = now()",
     )
     .bind(id)

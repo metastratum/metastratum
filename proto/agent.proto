@@ -642,24 +642,19 @@ message CopyVolume {
   MigrationTls tls = 7;
 }
 
-// Download an image into an image store: this host's (the local pool's
-// images/<tenant path>/<image id>.qcow2, converted to qcow2), or with `pool`
-// that pool's (the same in a pool of files; on Ceph a raw RBD image,
-// store_<tenant path, '_' for '/'>_<image id>). `tenant_path` is the owning
-// tenant's lineage (tenant IDs in simple hex form, root first, separated by
-// '/'). Tenants' images come from public addresses only, and
-// describe disks of at most the host's largest download (`image_max_gib`).
-// With `digest`, the disk must hold that (an image downloaded again). An
-// image already in the store is kept, never replaced. Returns {"size_bytes":
-// N, "virtual_bytes": N, "sha256": "...", "digest": "..."}: the SHA-256 of
-// the file downloaded, and of the disk it holds (its contents as a raw
-// disk), which copies are checked against.
 // Add an image this host received (ReceiveImage: uploaded, or downloaded
-// by the controller) to its store, or `pool`'s: checked (it refers to no
-// other files, and its disk is no larger than allowed, more for `trusted`
-// images, the provider's) and converted to qcow2, and the file received
-// then goes. An image in the store already is kept. Returns
-// {"size_bytes", "virtual_bytes", "sha256", "digest"}.
+// by the controller) to an image store: this host's (the local pool's
+// images/<tenant path>/<image id>.qcow2), or with `pool` that pool's (the
+// same in a pool of files; on Ceph an RBD image, store_<tenant path, '_'
+// for '/'>_<image id>). `tenant_path` is the owning tenant's lineage
+// (tenant IDs in simple hex form, root first, separated by '/'). It is
+// checked (it refers to no other files, and describes a disk of at most
+// the host's largest image, `image_max_gib`, or more for `trusted` images,
+// the provider's) and converted to qcow2, and the file received then goes.
+// An image already in the store is kept, never replaced. Returns
+// {"size_bytes": N, "virtual_bytes": N, "sha256": "...", "digest": "..."}:
+// the SHA-256 of the file as it came, and of the disk it holds (its
+// contents as a raw disk), which copies are checked against.
 message StoreImage {
   string image_id = 1;
   string tenant_path = 2;
@@ -667,6 +662,9 @@ message StoreImage {
   string format = 3;
   bool trusted = 4;
   Pool pool = 5;
+  // The file's size as received: a file of another size (cut short as the
+  // host went down) is refused.
+  uint64 size = 6;
 }
 
 // A part of an image coming to this host (uploaded, or downloaded by the
@@ -719,10 +717,6 @@ message VolumeFromImage {
   Pool source_pool = 6;
 }
 
-// Remove from an image store (this host's, or with `pool` that shared
-// pool's) the images not among `image_ids` that are an hour old or more,
-// and downloads or copies cut off a day ago or more. Returns {"removed":
-// [image ids]}.
 // The VM's TPM state on this host. Returns {"digest": SHA-256 (hex) of the
 // state, "state": the state (base64)}, without "state" when its digest is
 // `known` (nothing changed), and {} when the VM has no TPM state here.
@@ -747,6 +741,11 @@ message GuestFileExists {
   string path = 2;
 }
 
+// Remove from an image store (this host's, or with `pool` that shared
+// pool's) the images not among `image_ids` that are an hour old or more,
+// and stores or copies cut off a day ago or more (and, for this host's,
+// files received for images two days untouched). Returns {"removed":
+// [image ids]}.
 message PruneStore {
   Pool pool = 1;
   repeated string image_ids = 2;

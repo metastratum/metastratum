@@ -26,7 +26,8 @@ what a new installation runs, may switch itself on and from then on block
 software without a good reputation with Microsoft) is off, so VMs do not
 change how they run software on their own; off, it cannot be switched on
 again without reinstalling Windows. `--keep-smart-app-control` leaves it
-as Windows has it. Serve the result where hosts can download it,
+as Windows has it. Serve the result where the controller can download it
+(or upload it),
 and add it with operating system Windows (only the provider's images may
 come from internal addresses): Windows Server's with default account
 `Administrator`, Windows 11's with Secure Boot and TPM and no default
@@ -45,7 +46,11 @@ cloud-init seed for its first boot only, and dropped once the guest reports
 that boot done, through its guest agent; the VM's details say while it is
 pending. A VM made from a Windows image needs one: until it is set, the
 image's accounts have random passwords no one knows (sysprep would leave
-them blank). Clones and restored VMs keep their source's account, and its
+them blank). A VM made with user data of its own needs none: the user
+data is used as it is given, and `password` and `username` go unused. Clones and restored VMs keep their source's account, and its
 password unless given another. Windows VMs take no SSH keys.
+
+A Windows VM's computer name is its name cut to 15 characters (Windows'
+NetBIOS limit): give Windows VMs names that differ in their first 15.
 
 Windows 11 needs Secure Boot and a TPM (see [Secure Boot and TPM](boot-security.md)), and 4 GiB of memory.

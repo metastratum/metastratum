@@ -183,7 +183,8 @@ async fn create_snapshot(
         .into_iter()
         .collect();
     mst_db::quotas::reserve(&mut tx, vm.tenant_id, &delta).await?;
-    let sid = mst_db::snapshots::create(&mut *tx, vm.tenant_id, vm.id, &name, &vm.spec.0).await?;
+    let spec = vm.spec.0.without_first_boot_password();
+    let sid = mst_db::snapshots::create(&mut *tx, vm.tenant_id, vm.id, &name, &spec).await?;
     let task = enqueue(&mut tx, &p, vm.tenant_id, "snapshot.create", sid).await?;
     tx.commit().await?;
     audit(

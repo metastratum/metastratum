@@ -590,7 +590,7 @@ type CreateImage struct {
 	Shared     *bool `json:"shared,omitempty"`
 
 	// SourceUrl HTTP(S) URL the controller downloads the image from, as it is added
-	// (and only then: the URL is kept nowhere). Or none, with
+	// (and only then: the image keeps no URL). Or none, with
 	// `upload_bytes`.
 	SourceUrl     *string        `json:"source_url,omitempty"`
 	StoragePoolId *StoragePoolId `json:"storage_pool_id,omitempty"`
@@ -1078,7 +1078,7 @@ type ImageView struct {
 	Name  string   `json:"name"`
 
 	// Origin `download` (from a URL, by the controller, as it was added: the URL
-	// is kept nowhere) or `upload`.
+	// is not kept with it; the audit log records it) or `upload`.
 	Origin string `json:"origin"`
 
 	// Os What VMs made from it run: `linux` or `windows`.
@@ -2907,7 +2907,7 @@ type ClientInterface interface {
 	// to the pool's image store (its own local disk, or the shared pool,
 	// which its hosts make disks from directly). Other hosts copy it from
 	// there to make VMs from it. It is downloaded as it is added, and never
-	// again: the URL is kept nowhere.
+	// again: the image keeps no URL (the audit log records it).
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -2922,7 +2922,7 @@ type ClientInterface interface {
 	// to the pool's image store (its own local disk, or the shared pool,
 	// which its hosts make disks from directly). Other hosts copy it from
 	// there to make VMs from it. It is downloaded as it is added, and never
-	// again: the URL is kept nowhere.
+	// again: the image keeps no URL (the audit log records it).
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -2939,7 +2939,7 @@ type ClientInterface interface {
 	// 32 MiB of the file, as the request's body, from `offset` (what has
 	// arrived: `received_bytes`). Parts go to the host picked for it as they
 	// come. Once all of it has arrived, it is added to its pool as a download
-	// is (`downloading`, then `ready`), checked the same way. An upload no part
+	// is (`storing`, then `ready`), checked the same way. An upload no part
 	// reaches for a day fails. A failed upload has failed for good: delete it
 	// and add it again.
 	//
@@ -4777,7 +4777,7 @@ func (c *Client) ListImages(ctx context.Context, params *ListImagesParams, reqEd
 // to the pool's image store (its own local disk, or the shared pool,
 // which its hosts make disks from directly). Other hosts copy it from
 // there to make VMs from it. It is downloaded as it is added, and never
-// again: the URL is kept nowhere.
+// again: the image keeps no URL (the audit log records it).
 //
 // Takes any type of body and a specified content type.
 //
@@ -4802,7 +4802,7 @@ func (c *Client) CreateImageWithBody(ctx context.Context, contentType string, bo
 // to the pool's image store (its own local disk, or the shared pool,
 // which its hosts make disks from directly). Other hosts copy it from
 // there to make VMs from it. It is downloaded as it is added, and never
-// again: the URL is kept nowhere.
+// again: the image keeps no URL (the audit log records it).
 //
 // Takes a body of the `application/json` content type.
 //
@@ -4839,7 +4839,7 @@ func (c *Client) DeleteImage(ctx context.Context, id ImageId, reqEditors ...Requ
 // 32 MiB of the file, as the request's body, from `offset` (what has
 // arrived: `received_bytes`). Parts go to the host picked for it as they
 // come. Once all of it has arrived, it is added to its pool as a download
-// is (`downloading`, then `ready`), checked the same way. An upload no part
+// is (`storing`, then `ready`), checked the same way. An upload no part
 // reaches for a day fails. A failed upload has failed for good: delete it
 // and add it again.
 //
@@ -13926,7 +13926,7 @@ type ClientWithResponsesInterface interface {
 	// to the pool's image store (its own local disk, or the shared pool,
 	// which its hosts make disks from directly). Other hosts copy it from
 	// there to make VMs from it. It is downloaded as it is added, and never
-	// again: the URL is kept nowhere.
+	// again: the image keeps no URL (the audit log records it).
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -13941,7 +13941,7 @@ type ClientWithResponsesInterface interface {
 	// to the pool's image store (its own local disk, or the shared pool,
 	// which its hosts make disks from directly). Other hosts copy it from
 	// there to make VMs from it. It is downloaded as it is added, and never
-	// again: the URL is kept nowhere.
+	// again: the image keeps no URL (the audit log records it).
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -13960,7 +13960,7 @@ type ClientWithResponsesInterface interface {
 	// 32 MiB of the file, as the request's body, from `offset` (what has
 	// arrived: `received_bytes`). Parts go to the host picked for it as they
 	// come. Once all of it has arrived, it is added to its pool as a download
-	// is (`downloading`, then `ready`), checked the same way. An upload no part
+	// is (`storing`, then `ready`), checked the same way. An upload no part
 	// reaches for a day fails. A failed upload has failed for good: delete it
 	// and add it again.
 	//
@@ -21701,7 +21701,7 @@ func (c *ClientWithResponses) ListImagesWithResponse(ctx context.Context, params
 // to the pool's image store (its own local disk, or the shared pool,
 // which its hosts make disks from directly). Other hosts copy it from
 // there to make VMs from it. It is downloaded as it is added, and never
-// again: the URL is kept nowhere.
+// again: the image keeps no URL (the audit log records it).
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -21722,7 +21722,7 @@ func (c *ClientWithResponses) CreateImageWithBodyWithResponse(ctx context.Contex
 // to the pool's image store (its own local disk, or the shared pool,
 // which its hosts make disks from directly). Other hosts copy it from
 // there to make VMs from it. It is downloaded as it is added, and never
-// again: the URL is kept nowhere.
+// again: the image keeps no URL (the audit log records it).
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -21753,7 +21753,7 @@ func (c *ClientWithResponses) DeleteImageWithResponse(ctx context.Context, id Im
 // 32 MiB of the file, as the request's body, from `offset` (what has
 // arrived: `received_bytes`). Parts go to the host picked for it as they
 // come. Once all of it has arrived, it is added to its pool as a download
-// is (`downloading`, then `ready`), checked the same way. An upload no part
+// is (`storing`, then `ready`), checked the same way. An upload no part
 // reaches for a day fails. A failed upload has failed for good: delete it
 // and add it again.
 //

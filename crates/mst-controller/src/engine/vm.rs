@@ -101,6 +101,13 @@ pub(super) async fn provision(
         mst_db::vms::set_spec(db, vm.id, &spec).await?;
     }
     let spec = &spec;
+    // Its TPM's state first: a VM defined on the host has it there (a
+    // start failing after leaves no definition there with a new TPM).
+    if spec.tpm && !fresh {
+        crate::tpm::carry(&ctx.state, vm.id, host, from)
+            .await
+            .context("carrying the VM's TPM state")?;
+    }
     call(
         ctx,
         host,
@@ -117,11 +124,6 @@ pub(super) async fn provision(
     )
     .await
     .context("defining VM")?;
-    if spec.tpm && !fresh {
-        crate::tpm::carry(&ctx.state, vm.id, host, from)
-            .await
-            .context("carrying the VM's TPM state")?;
-    }
 
     if vm.desired_power == "running" {
         ctx.step("start", 0.9).await;

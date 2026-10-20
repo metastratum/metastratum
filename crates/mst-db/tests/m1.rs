@@ -249,6 +249,11 @@ async fn tpm_state_copies_are_kept_per_vm(pool: PgPool) {
     assert_eq!(vms::tpm_state(&pool, gone).await.unwrap(), None);
     vms::drop_tpm_state(&pool, a.id).await.unwrap();
     assert_eq!(vms::tpm_state(&pool, a.id).await.unwrap(), None);
+    // Taken away: no copy is kept again (a copy under way as it went).
+    spec.tpm = false;
+    vms::set_spec(&pool, a.id, &spec).await.unwrap();
+    vms::set_tpm_state(&pool, a.id, "s3", "d3").await.unwrap();
+    assert_eq!(vms::tpm_state(&pool, a.id).await.unwrap(), None);
 }
 
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]
@@ -647,7 +652,7 @@ async fn image_files_are_received_then_stored(pool: PgPool) {
         ("downloading", false)
     );
     // Both count as being added.
-    assert_eq!(images::downloads_in_tree(&pool, r.id).await.unwrap(), 2);
+    assert_eq!(images::adding_in_tree(&pool, r.id).await.unwrap(), 2);
     assert!(images::received_so_far(&pool, up.id, 4).await.unwrap());
     assert_eq!(images::get(&pool, up.id).await.unwrap().received_bytes, 4);
     // Beyond its size: refused.
@@ -823,7 +828,7 @@ async fn images_are_downloaded_then_copied_to_hosts(pool: PgPool) {
     .await
     .unwrap();
     for (t, n) in [(a.id, 1), (a1.id, 1), (r.id, 0)] {
-        assert_eq!(images::downloads_in_tree(&pool, t).await.unwrap(), n);
+        assert_eq!(images::adding_in_tree(&pool, t).await.unwrap(), n);
     }
     let task = mst_db::tasks::enqueue(
         &pool,

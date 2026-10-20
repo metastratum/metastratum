@@ -32,10 +32,11 @@ const LEASE: Duration = Duration::from_secs(60);
 const RENEW_EVERY: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(500);
 const MAX_CONCURRENT: usize = 16;
-/// Downloads run beside other tasks, in slots of their own: slow ones never
-/// hold up VMs' lifecycles, migrations or recovery.
-const MAX_DOWNLOADS: usize = 4;
-const DOWNLOADS: &[&str] = &["image.store"];
+/// Images being stored (checked and converted, which can take long) run
+/// beside other tasks, in slots of their own: they never hold up VMs'
+/// lifecycles, migrations or recovery.
+const MAX_STORES: usize = 4;
+const STORES: &[&str] = &["image.store"];
 /// Copies of images onto hosts (for VMs made from them) run in slots of
 /// their own too, given up by the task for the while: many VMs made at once
 /// from an image no host has yet keep no other task from running.
@@ -65,7 +66,7 @@ pub struct TaskCtx {
 
 impl TaskCtx {
     /// Waits for `fut` without holding a slot: a task waiting on something
-    /// else (an image downloading) does not keep others from running.
+    /// else (an image being added) does not keep others from running.
     pub async fn idle<T>(&self, fut: impl std::future::Future<Output = T>) -> T {
         drop(self.slot.lock().await.take());
         let out = fut.await;
@@ -105,15 +106,9 @@ impl TaskCtx {
 
 pub async fn run(state: AppState) {
     let transfers = Arc::new(Semaphore::new(MAX_TRANSFERS));
-    let downloads = work(
-        state.clone(),
-        MAX_DOWNLOADS,
-        DOWNLOADS,
-        true,
-        transfers.clone(),
-    );
-    tokio::spawn(downloads);
-    work(state, MAX_CONCURRENT, DOWNLOADS, false, transfers).await;
+    let stores = work(state.clone(), MAX_STORES, STORES, true, transfers.clone());
+    tokio::spawn(stores);
+    work(state, MAX_CONCURRENT, STORES, false, transfers).await;
 }
 
 /// Claims and runs tasks of `kinds` (`only`), or of any other kind, up to

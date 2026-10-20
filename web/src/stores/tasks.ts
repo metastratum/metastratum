@@ -63,7 +63,6 @@ const LABELS: Record<string, string> = {
   'disk.move': 'Move disk',
   'disk.attach': 'Attach disk',
   'disk.detach': 'Detach disk',
-  'image.download': 'Download image',
   'image.store': 'Store image',
 }
 

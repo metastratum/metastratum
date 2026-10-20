@@ -125,8 +125,13 @@ pub async fn carry(state: &AppState, vm: VmId, host: HostId, from: Option<HostId
 }
 
 /// Removes the VM's TPM state from its host and the copy (its TPM was
-/// removed: one added later is new).
-pub async fn discard(state: &AppState, vm: VmId, host: HostId) -> Result<()> {
+/// removed: one added later is new), in the transaction taking it away.
+pub async fn discard(
+    state: &AppState,
+    tx: &mut mst_db::sqlx::PgConnection,
+    vm: VmId,
+    host: HostId,
+) -> Result<()> {
     let cmd = Cmd::ImportTpm(mst_proto::ImportTpm {
         vm_id: vm.to_string(),
         state: vec![],
@@ -137,7 +142,7 @@ pub async fn discard(state: &AppState, vm: VmId, host: HostId) -> Result<()> {
         .call(host, cmd, QUICK)
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
-    mst_db::vms::drop_tpm_state(&state.db, vm).await?;
+    mst_db::vms::drop_tpm_state(&mut *tx, vm).await?;
     Ok(())
 }
 
@@ -152,11 +157,21 @@ pub async fn sync(state: AppState) {
                 continue;
             }
         };
+        // Hosts at once, each host's VMs in turn: one host not answering
+        // holds up only its own.
+        let mut by_host: std::collections::HashMap<HostId, Vec<VmId>> = Default::default();
         for (vm, host) in vms {
-            if let Err(e) = refresh(&state, vm, host).await {
-                tracing::debug!(%vm, error = %format!("{e:#}"), "copying TPM state");
-            }
+            by_host.entry(host).or_default().push(vm);
         }
+        let state = &state;
+        futures::future::join_all(by_host.into_iter().map(|(host, vms)| async move {
+            for vm in vms {
+                if let Err(e) = refresh(state, vm, host).await {
+                    tracing::debug!(%vm, error = %format!("{e:#}"), "copying TPM state");
+                }
+            }
+        }))
+        .await;
     }
 }
 

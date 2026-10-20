@@ -1,7 +1,7 @@
 //! An image's file, coming to the host that stores it (picked as the image
 //! is added): in parts, as whoever uploads it sends them, or as the
 //! controller downloads it from a URL. A download happens as the image is
-//! added, and only then: the URL is kept nowhere, so a download cut off
+//! added, and only then: the image keeps no URL, so a download cut off
 //! (the controller went away) fails, and the image is added again. Once all
 //! of the file is there, the host adds it to the store (`image.store`).
 
@@ -105,6 +105,19 @@ pub fn download(state: AppState, image: Image, url: String, by: Option<UserId>) 
     });
 }
 
+/// Has the host let go of a deleted image's file.
+async fn forget(state: &AppState, image: &Image, host: HostId) {
+    let Ok(tenant_path) = mst_db::images::store_path(&state.db, image.tenant_id).await else {
+        return;
+    };
+    let cmd = mst_proto::command::Cmd::DeleteImage(mst_proto::DeleteImage {
+        image_id: image.id.to_string(),
+        pools: vec![],
+        tenant_path,
+    });
+    let _ = state.agents.call(host, cmd, Duration::from_secs(60)).await;
+}
+
 async fn fetch(state: &AppState, image: &Image, url: &str, by: Option<UserId>) -> Result<()> {
     let host = image.download_host_id.context("no host to send it to")?;
     // The provider's images may come from internal addresses; tenants'
@@ -116,6 +129,11 @@ async fn fetch(state: &AppState, image: &Image, url: &str, by: Option<UserId>) -
         ..mst_storage::FetchPolicy::default()
     };
     let mut download = mst_storage::Download::start(url, policy).await?;
+    // Deleted while it connected: nothing is sent (a first part would make
+    // the file again on the host after it let go of the image's).
+    if !mst_db::images::received_so_far(&state.db, image.id, 0).await? {
+        return Ok(());
+    }
     let total = download.content_length().unwrap_or(0);
     if total > 0 {
         mst_db::images::set_file_bytes(&state.db, image.id, total as i64).await?;
@@ -141,7 +159,10 @@ async fn fetch(state: &AppState, image: &Image, url: &str, by: Option<UserId>) -
             buf.drain(..n);
             at += n as u64;
             if !mst_db::images::received_so_far(&state.db, image.id, at as i64).await? {
-                bail!("the image was deleted meanwhile");
+                // Deleted meanwhile: the host lets go of what came (the part
+                // just sent may have come after it let go of the rest).
+                forget(state, image, host).await;
+                return Ok(());
             }
         }
         if last {

@@ -480,7 +480,7 @@ pub async fn start(
     // Locked: its disks stay as recorded here until the task has them (an
     // attach or detach waits, or is seen as busy below).
     let vm = &mst_db::vms::get_for_update(&mut tx, vm.id).await?;
-    let spec = &vm.spec.0;
+    let spec = &vm.spec.0.without_first_boot_password();
     let size: u64 = spec.disks.iter().map(|d| d.size_bytes).sum();
     // One at a time per VM, and not while a snapshot (or a disk) is worked on.
     super::snapshots::check_idle(&mut tx, vm.id).await?;

@@ -16,16 +16,27 @@ use serde_json::json;
 
 use crate::state::AppState;
 
-/// Written as cloudbase-init has run the user data, password set.
-pub const FIRST_BOOT_DONE: &str = r"C:\ProgramData\metastratum-first-boot.txt";
+/// Written as cloudbase-init has run the user data, password set, by VMs
+/// made before the marker named its VM.
+const LEGACY_FIRST_BOOT_DONE: &str = r"C:\ProgramData\metastratum-first-boot.txt";
+
+/// Written as cloudbase-init has run the VM's user data, its account there
+/// with its password: named after the VM, as a clone's or restored VM's
+/// disk holds its source's.
+pub fn first_boot_done(vm: VmId) -> String {
+    format!(r"C:\ProgramData\metastratum-first-boot-{vm}.txt")
+}
 
 /// How often VMs whose first boot is pending are asked.
 const EVERY: Duration = Duration::from_secs(30);
 
-/// User data for a Windows VM, but its password: marks its first boot done,
-/// once the password is set (`users` runs before `runcmd`).
-pub fn windows_user_data() -> String {
-    let doc = json!({ "runcmd": [format!("echo done> {FIRST_BOOT_DONE}")] });
+/// User data for a Windows VM, but its password: marks its first boot done
+/// once the account is there (`users` runs before `runcmd`, and goes on
+/// after failing: the marker is written only if the account exists).
+pub fn windows_user_data(vm: VmId, account: &str) -> String {
+    let marker = first_boot_done(vm);
+    let doc =
+        json!({ "runcmd": [format!("net user \"{account}\" >nul 2>&1 && echo done> {marker}")] });
     format!("#cloud-config\n{doc}\n")
 }
 
@@ -102,9 +113,20 @@ async fn settle(state: &AppState, id: VmId) -> Result<()> {
     if vm.power != "running" || vm.status != "ready" {
         return Ok(());
     }
+    // VMs made before the marker named its VM write the old one.
+    let legacy = vm
+        .spec
+        .0
+        .cloud_init
+        .as_ref()
+        .is_some_and(|c| c.user_data.contains("metastratum-first-boot.txt"));
+    let path = match legacy {
+        true => LEGACY_FIRST_BOOT_DONE.to_owned(),
+        false => first_boot_done(id),
+    };
     let cmd = mst_proto::command::Cmd::GuestFileExists(mst_proto::GuestFileExists {
         vm_id: id.to_string(),
-        path: FIRST_BOOT_DONE.to_owned(),
+        path,
     });
     let out = state
         .agents
@@ -117,6 +139,10 @@ async fn settle(state: &AppState, id: VmId) -> Result<()> {
     let mut tx = state.db.begin().await?;
     // As it is now (locked), should it have changed meanwhile.
     let vm = mst_db::vms::get_for_update(&mut tx, id).await?;
+    // Moved, or migrating, meanwhile: asked again later.
+    if vm.status != "ready" || vm.host_id != Some(host) {
+        return Ok(());
+    }
     let mut spec = vm.spec.0.clone();
     let Some(ci) = &mut spec.cloud_init else {
         return Ok(());
@@ -145,19 +171,30 @@ mod tests {
         let doc = |ud: String| -> serde_json::Value {
             serde_json::from_str(ud.strip_prefix("#cloud-config\n").unwrap()).unwrap()
         };
-        let ud = doc(with_password(&windows_user_data(), "Administrator", "pa\"ss").unwrap());
+        let vm = VmId::new();
+        let ud = doc(with_password(
+            &windows_user_data(vm, "Administrator"),
+            "Administrator",
+            "pa\"ss",
+        )
+        .unwrap());
         assert_eq!(ud["users"][0]["name"], "Administrator");
         assert_eq!(ud["users"][0]["passwd"], "pa\"ss");
         // It is one already.
         assert!(ud["users"][0].get("groups").is_none());
-        let named = doc(with_password(&windows_user_data(), "ops", "x").unwrap());
+        let named = doc(with_password(&windows_user_data(vm, "ops"), "ops", "x").unwrap());
         assert_eq!(named["users"][0]["name"], "ops");
         assert_eq!(named["users"][0]["groups"], json!(["Administrators"]));
+        // The first boot is marked done once the account is there, named
+        // after the VM (a clone's disk holds its source's marker).
         assert_eq!(
             ud["runcmd"][0],
-            format!("echo done> {FIRST_BOOT_DONE}"),
-            "the first boot is marked done after the password is set"
+            format!(
+                "net user \"Administrator\" >nul 2>&1 && echo done> {}",
+                first_boot_done(vm)
+            ),
         );
+        assert!(first_boot_done(vm).contains(&vm.to_string()));
         // Someone's own user data is theirs: no password goes in.
         assert!(with_password("#ps1_sysnative\nwhoami", "Administrator", "x").is_err());
     }

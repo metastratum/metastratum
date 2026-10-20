@@ -89,6 +89,17 @@ pub struct VmSpec {
 }
 
 impl VmSpec {
+    /// The spec as copies of it keep it (snapshots, backups): without a
+    /// Windows guest's sealed first-boot password, which is the VM's alone
+    /// and let go of once used.
+    pub fn without_first_boot_password(&self) -> VmSpec {
+        let mut spec = self.clone();
+        if let Some(ci) = &mut spec.cloud_init {
+            ci.first_boot_password = None;
+        }
+        spec
+    }
+
     /// The most memory the VM can have without a restart: what is reserved
     /// for it on its host, and counted against its tenant's quota.
     pub fn reserved_memory_mib(&self) -> u64 {

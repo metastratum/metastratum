@@ -1,5 +1,4 @@
 use axum::Json;
-use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
@@ -27,7 +26,7 @@ pub struct ImageView {
     tenant_id: TenantId,
     name: String,
     /// `download` (from a URL, by the controller, as it was added: the URL
-    /// is kept nowhere) or `upload`.
+    /// is not kept with it; the audit log records it) or `upload`.
     origin: String,
     /// `qcow2` or `raw`.
     format: String,
@@ -165,7 +164,7 @@ pub struct CreateImage {
     tenant_id: Option<TenantId>,
     name: String,
     /// HTTP(S) URL the controller downloads the image from, as it is added
-    /// (and only then: the URL is kept nowhere). Or none, with
+    /// (and only then: the image keeps no URL). Or none, with
     /// `upload_bytes`.
     #[serde(default)]
     source_url: Option<String>,
@@ -208,7 +207,7 @@ pub struct CreateImage {
 /// to the pool's image store (its own local disk, or the shared pool,
 /// which its hosts make disks from directly). Other hosts copy it from
 /// there to make VMs from it. It is downloaded as it is added, and never
-/// again: the URL is kept nowhere.
+/// again: the image keeps no URL (the audit log records it).
 #[utoipa::path(post, path = "/images", tag = "images", request_body = CreateImage,
     responses((status = 201, body = ImageView), (status = 400), (status = 409)))]
 async fn create_image(
@@ -267,7 +266,7 @@ async fn create_image(
     }
     let host = receiving_host(&state, &pool).await?;
     let mut tx = state.db.begin().await?;
-    may_download(&mut tx, tenant).await?;
+    may_add(&mut tx, tenant).await?;
     let image = mst_db::images::create(
         &mut *tx,
         mst_db::images::NewImage {
@@ -317,18 +316,30 @@ async fn create_image(
 }
 
 /// A host for an image's file to come to: one that can take it into the
-/// pool's store (connected, and reaching a shared pool), at random.
+/// pool's store (connected, in service: not in maintenance or being
+/// evacuated, reaching a shared pool, and with an agent that receives and
+/// stores images), at random.
 async fn receiving_host(state: &AppState, pool: &mst_db::storage_pools::Pool) -> ApiResult<HostId> {
+    let receive = mst_db::hosts::supporting(&state.db, "receive_image").await?;
+    let store = mst_db::hosts::supporting(&state.db, "store_image").await?;
     let hosts: Vec<_> = crate::engine::store_hosts(state)
         .await
         .map_err(ApiError::internal)?
         .into_iter()
+        .filter(|h| h.state == "ready")
+        .filter(|h| receive.contains(&h.id) && store.contains(&h.id))
         .filter(|h| pool.kind == "local" || crate::engine::reaches(h, pool))
         .collect();
     if hosts.is_empty() {
         return Err(ApiError::unavailable(match pool.kind.as_str() {
-            "local" => "no connected host to keep the image".to_owned(),
-            _ => format!("no connected host reaches {}", pool.name),
+            "local" => {
+                "no connected host in service to keep the image (with an agent that takes images: upgrade it)"
+                    .to_owned()
+            }
+            _ => format!(
+                "no connected host in service reaches {} (with an agent that takes images: upgrade it)",
+                pool.name
+            ),
         }));
     }
     Ok(hosts[rand::random_range(0..hosts.len())].id)
@@ -336,6 +347,9 @@ async fn receiving_host(state: &AppState, pool: &mst_db::storage_pools::Pool) ->
 
 /// The most one request may carry of an upload.
 const MAX_PART: usize = 32 << 20;
+/// How many upload parts a controller holds at once (each read whole, up to
+/// `MAX_PART`, before it goes on to its host).
+static UPLOAD_PARTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
 
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -349,7 +363,7 @@ pub struct UploadQuery {
 /// 32 MiB of the file, as the request's body, from `offset` (what has
 /// arrived: `received_bytes`). Parts go to the host picked for it as they
 /// come. Once all of it has arrived, it is added to its pool as a download
-/// is (`downloading`, then `ready`), checked the same way. An upload no part
+/// is (`storing`, then `ready`), checked the same way. An upload no part
 /// reaches for a day fails. A failed upload has failed for good: delete it
 /// and add it again.
 #[utoipa::path(put, path = "/images/{id}/upload", tag = "images",
@@ -357,23 +371,21 @@ pub struct UploadQuery {
     request_body(content = Vec<u8>, content_type = "application/octet-stream"),
     responses((status = 200, body = ImageView), (status = 400), (status = 404),
         (status = 409, description = "Not being uploaded, or the part is not the next one: see `received_bytes`"),
-        (status = 413, description = "A part larger than 32 MiB"), (status = 503)))]
+        (status = 413, description = "A part larger than 32 MiB, or an image larger than its host takes (it fails)"),
+        (status = 503, description = "The host does not answer, or too many parts are on their way: send it again")))]
 async fn upload_image(
     State(state): State<AppState>,
     p: Principal,
     Path(id): Path<ImageId>,
     Query(q): Query<UploadQuery>,
-    body: Bytes,
+    body: axum::body::Body,
 ) -> ApiResult<Json<ImageView>> {
+    // Checked before the part is read.
     let image = mst_db::images::get(&state.db, id).await?;
     authorize_resource(&state.db, &p, Perm::ImageWrite, image.tenant_id, "image").await?;
     if !image.uploaded() {
         return Err(ApiError::conflict("the image is downloaded, not uploaded"));
     }
-    let total = image.file_bytes.unwrap_or_default() as u64;
-    // Held until the part is through: parts arrive one after the other.
-    let mut tx = state.db.begin().await?;
-    let image = mst_db::images::get_for_update(&mut tx, id).await?;
     match image.state.as_str() {
         "uploading" => {}
         "failed" => {
@@ -384,12 +396,27 @@ async fn upload_image(
         }
         _ => return Err(ApiError::conflict("all of the image has been uploaded")),
     }
+    let total = image.file_bytes.unwrap_or_default() as u64;
     let here = image.received_bytes as u64;
     if q.offset != here {
         return Err(ApiError::conflict(format!(
             "{here} bytes of the image have arrived: send the part from offset {here}"
         )));
     }
+    let host = image.download_host_id.ok_or_else(|| {
+        ApiError::conflict("the host the upload went to is gone; delete it and add it again")
+    })?;
+    // Parts held at once here are bounded (each is read whole first).
+    let _permit = UPLOAD_PARTS.try_acquire().map_err(|_| {
+        ApiError::unavailable("too many upload parts are on their way here; send it again shortly")
+    })?;
+    let body = axum::body::to_bytes(body, MAX_PART).await.map_err(|_| {
+        ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "too_large",
+            format!("a part is at most {} MiB", MAX_PART >> 20),
+        )
+    })?;
     let end = here + body.len() as u64;
     if end > total {
         return Err(ApiError::bad_request(format!(
@@ -399,29 +426,50 @@ async fn upload_image(
     if body.is_empty() {
         return Err(ApiError::bad_request("the part is empty"));
     }
-    let host = image.download_host_id.ok_or_else(|| {
-        ApiError::conflict("the host the upload went to is gone; upload it again")
-    })?;
+    // No transaction is held while the host takes it: parts sent at once go
+    // to the same place, and only one of them is recorded.
     match crate::receive::send_part(&state, host, id, here, &body, total).await {
         Ok(()) => {}
         // It has less than was sent (it lost some): sent again from there.
         Err(crate::receive::PartError::Behind(had)) => {
-            mst_db::images::received_so_far(&mut *tx, id, had as i64).await?;
-            tx.commit().await?;
+            mst_db::images::received_so_far(&state.db, id, had as i64).await?;
             return Err(ApiError::conflict(format!(
                 "the host has {had} bytes of the image: send the part from offset {had}"
             )));
+        }
+        // It will never take it: the upload fails, for good.
+        Err(crate::receive::PartError::Failed(e))
+            if format!("{e:#}").contains("larger than the") =>
+        {
+            let why = format!("{e:#}");
+            if mst_db::images::failed(&state.db, id, &why).await? {
+                crate::engine::remove_leftover(&state, id).await;
+            }
+            return Err(ApiError::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "too_large",
+                why,
+            ));
         }
         Err(crate::receive::PartError::Failed(e)) => {
             return Err(ApiError::unavailable(format!("{e:#}")));
         }
     }
-    mst_db::images::received_so_far(&mut *tx, id, end as i64).await?;
-    let done = end == total
-        && crate::receive::done(&mut tx, &image, total, Some(p.user_id))
+    if !mst_db::images::received_part(&state.db, id, here as i64, end as i64).await? {
+        return Err(ApiError::conflict(
+            "another part arrived meanwhile: see received_bytes for where to go on",
+        ));
+    }
+    let done = if end == total {
+        let mut tx = state.db.begin().await?;
+        let done = crate::receive::done(&mut tx, &image, total, Some(p.user_id))
             .await
             .map_err(ApiError::internal)?;
-    tx.commit().await?;
+        tx.commit().await?;
+        done
+    } else {
+        false
+    };
     if done {
         audit(
             &state.db,
@@ -444,32 +492,62 @@ async fn upload_image(
 /// Refuses what Windows does not take as an account name.
 pub(crate) fn windows_user(name: &str) -> ApiResult<()> {
     let bad = |c: char| c.is_control() || "\"/\\[]:;|=,+*?<>@%".contains(c);
-    if name.is_empty() || name.chars().count() > 20 || name.chars().any(bad) || name.ends_with('.')
+    if name.is_empty()
+        || name.chars().count() > 20
+        || name.chars().any(bad)
+        || name.ends_with('.')
+        || name.chars().all(|c| c == '.' || c == ' ')
+        || name != name.trim()
     {
         return Err(ApiError::bad_request(
-            "a Windows account name is 1-20 characters, none of \" / \\ [ ] : ; | = , + * ? < > @ %, and does not end in a dot",
+            "a Windows account name is 1-20 characters, none of \" / \\ [ ] : ; | = , + * ? < > @ %, not only dots and spaces, and does not start or end in a space or end in a dot",
         ));
+    }
+    // Windows' own accounts (switched off) and groups: no one signs in as
+    // them.
+    const BUILT_IN: &[&str] = &[
+        "guest",
+        "defaultaccount",
+        "wdagutilityaccount",
+        "krbtgt",
+        "administrators",
+        "users",
+        "guests",
+        "power users",
+        "remote desktop users",
+        "backup operators",
+        "system",
+        "local service",
+        "network service",
+        "everyone",
+        "authenticated users",
+    ];
+    if BUILT_IN.contains(&name.to_lowercase().as_str()) {
+        return Err(ApiError::bad_request(format!(
+            "{name} is one of Windows' own accounts or groups: name another"
+        )));
     }
     Ok(())
 }
 
 /// How many images a tenant tree (a child of the provider's, and its
-/// sub-tenants; or the provider's own) may download at once: each can take
-/// up to the host's largest download before it is charged, and a download
-/// slot (see the engine) for up to two hours.
-const DOWNLOADS_AT_ONCE: i64 = 2;
+/// sub-tenants; or the provider's own) may add at once (their files coming,
+/// or being stored): each can take up to the host's largest image before
+/// it is charged, and a store slot (see the engine) for hours.
+const ADDING_AT_ONCE: i64 = 2;
 
-/// Refuses a download where the tenant's image quota is used up (an image
-/// is charged what it takes once downloaded, `image_gib`), or its tree has
-/// two downloads under way already (of images deleted meanwhile too, until
-/// they stop). Locks the tenant's lineage (see `quotas::reserve`), which
-/// serializes this per tree, until the transaction ends.
-async fn may_download(tx: &mut mst_db::sqlx::PgConnection, tenant: TenantId) -> ApiResult<()> {
+/// Refuses adding an image where the tenant's image quota is used up (an
+/// image is charged what it takes once stored, `image_gib`), or its tree is
+/// adding two already (images being stored for deleted images count too,
+/// until their tasks stop). Locks the tenant's lineage (see
+/// `quotas::reserve`), which serializes this per tree, until the
+/// transaction ends.
+async fn may_add(tx: &mut mst_db::sqlx::PgConnection, tenant: TenantId) -> ApiResult<()> {
     let some = [("image_gib".to_owned(), 1)].into_iter().collect();
     mst_db::quotas::reserve(&mut *tx, tenant, &some).await?;
-    if mst_db::images::downloads_in_tree(&mut *tx, tenant).await? >= DOWNLOADS_AT_ONCE {
+    if mst_db::images::adding_in_tree(&mut *tx, tenant).await? >= ADDING_AT_ONCE {
         return Err(ApiError::conflict(format!(
-            "{DOWNLOADS_AT_ONCE} images of the tenant's are downloading (its sub-tenants' and parent's count too); add more once they are done"
+            "{ADDING_AT_ONCE} images of the tenant's are being added (its sub-tenants' and parent's count too); add more once they are done"
         )));
     }
     Ok(())

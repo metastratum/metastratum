@@ -84,9 +84,18 @@ ISO=$(realpath "$ISO") VIRTIO=$(realpath "$VIRTIO")
 umask 077
 WORK=$(mktemp -d "${TMPDIR:-/var/tmp}/mst-windows.XXXXXX")
 NAME=mst-windows-build-$$
+# Set when the build VM is left to look at (an install that went wrong).
+KEEP=""
 cleanup() {
+  rm -f "$OUT.part"
+  if [[ -n $KEEP ]]; then
+    log "left $NAME and its disk ($WORK/disk.qcow2) to look at; remove them with: virsh undefine --nvram --tpm $NAME; rm -r $WORK"
+    return
+  fi
   virsh destroy "$NAME" >/dev/null 2>&1 || true
-  virsh undefine --nvram --tpm "$NAME" >/dev/null 2>&1 || true
+  # --tpm is newer than some libvirts.
+  virsh undefine --nvram --tpm "$NAME" >/dev/null 2>&1 ||
+    virsh undefine --nvram "$NAME" >/dev/null 2>&1 || true
   rm -f "$WORK"/disk.qcow2 "$WORK"/build.iso "$WORK"/CloudbaseInitSetup_x64.msi
   rm -f "$WORK"/build/* && rmdir "$WORK"/build 2>/dev/null || true
   rmdir "$WORK" 2>/dev/null || true
@@ -146,15 +155,25 @@ fi
 # Sysprep shuts it down once the image is done.
 start=$SECONDS
 until [[ $(virsh domstate "$NAME" 2>/dev/null) == "shut off" ]]; do
-  ((SECONDS - start < 3 * 3600)) || die "the install did not finish within 3 hours (the VM is $NAME)"
+  if ((SECONDS - start >= 3 * 3600)); then
+    KEEP=1
+    die "the install did not finish within 3 hours (see its screen: virt-viewer -c $LIBVIRT_DEFAULT_URI $NAME, and C:\\Windows\\Temp\\mst-image-setup.log in it)"
+  fi
   if (((SECONDS - start) % 300 < 10 && SECONDS - start > 10)); then
     log "still installing ($(((SECONDS - start) / 60)) minutes)"
   fi
   sleep 10
 done
+# Sysprep shuts it down; anything else (it crashed) made no image.
+reason=$(virsh domstate --reason "$NAME" 2>/dev/null)
+if [[ $reason != "shut off (shutdown)" ]]; then
+  KEEP=1
+  die "the build VM stopped without finishing: $reason"
+fi
 log "installed in $(((SECONDS - start) / 60)) minutes; compressing into $OUT"
-qemu-img convert -c -O qcow2 "$WORK/disk.qcow2" "$OUT"
-chmod 0644 "$OUT"
+qemu-img convert -c -O qcow2 "$WORK/disk.qcow2" "$OUT.part"
+chmod 0644 "$OUT.part"
+mv "$OUT.part" "$OUT"
 if [[ -n $WIN11 ]]; then
   log "done: $OUT ($(du -h "$OUT" | cut -f1)); add it as an image with operating system Windows, Secure Boot and TPM, and no default account"
 else

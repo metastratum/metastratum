@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"os"
 	"testing"
 	"time"
@@ -211,4 +212,13 @@ resource "metastratum_load_balancer" "web" {
 			},
 		},
 	})
+}
+
+func TestUnsetBoolsAreLeftToTheServer(t *testing.T) {
+	if optBool(types.BoolNull()) != nil || optBool(types.BoolUnknown()) != nil {
+		t.Fatal("an unset or computed bool must be sent as none")
+	}
+	if v := optBool(types.BoolValue(false)); v == nil || *v {
+		t.Fatal("false must be sent as false")
+	}
 }

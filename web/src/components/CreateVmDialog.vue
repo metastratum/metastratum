@@ -60,7 +60,7 @@ watch(image, (i) => {
 })
 const sshKey = ref('')
 const password = ref('')
-// Windows takes a password, its Administrator's, and no SSH keys.
+// Windows takes a password, its account's, and no SSH keys.
 const windows = computed(() => (template.value ? template.value.guest_os : image.value?.os) === 'windows')
 const sshKeys = () => (windows.value ? [] : sshKey.value.split('\n').map((k) => k.trim()).filter(Boolean))
 const error = ref('')

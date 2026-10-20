@@ -17,6 +17,10 @@ sets it up afresh and asks DHCP for its new address (settings made by hand
 in the guest for that interface go). Guests configure new interfaces with
 DHCP: Windows does so by itself, and Linux VMs' cloud-init seed configures
 every virtio interface so, the first one's default route preferred (VMs
-made before this release configure only their first one). A VM with
+made before this release configure only their first one). That seed
+matches interfaces by driver, which cloud-init renders for netplan
+(Debian 13, Ubuntu); on images rendering otherwise (ifupdown,
+NetworkManager's ifcfg), configure interfaces after the first in the
+guest. A VM with
 interfaces plugged in while it ran migrates as it is: the destination lays
 its devices out as the source has them.

@@ -45,8 +45,8 @@ The boundaries metastratum enforces:
 - **Between tenants' input and the infrastructure.** Images that tenants
   add from a URL are downloaded by the controller, only from public
   internet addresses (checked when connecting, so redirects and DNS tricks
-  do not get around it), as they are added and never again (no URL is
-  kept). An image's file, downloaded or uploaded, comes to one host in
+  do not get around it), as they are added and never again (images keep
+  no URL; the audit log records it). An image's file, downloaded or uploaded, comes to one host in
   parts, capped in size, and is refused there if it refers to other files
   (backing files, external data files) or describes a disk larger than the
   host's largest image (checked before unpacking); `qemu-img` runs under

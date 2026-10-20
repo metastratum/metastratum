@@ -124,9 +124,8 @@ const own = (img: Image) => img.tenant_id === scope.current
       <button v-if="scope.can('image.write')" class="btn primary" @click="openAdd">Add image</button>
     </header>
     <p class="intro">
-      A host downloads an image as you add it, or takes it as you upload it: only then, never again later. Hosts copy
-      it from there to make VMs from it, and keep their copy
-      for the next. A VM’s disk is a copy of its own, so it doesn’t depend on the image: VMs keep working when the
+      An image comes to a host as you add it, downloaded from its URL or uploaded from a file: only then, never again
+      later. Hosts copy it from there to make VMs from it, and keep their copy for the next. A VM’s disk is a copy of its own, so it doesn’t depend on the image: VMs keep working when the
       image is gone.
     </p>
 

@@ -457,14 +457,17 @@ impl Console {
         self.send(b"\r").await?;
         self.expect("SAC>", Duration::from_secs(600)).await?;
         self.send(b"cmd\r").await?;
-        // The channel comes a moment later, announced by name.
-        self.expect("Channel: ", Duration::from_secs(120)).await?;
-        let channel = self.expect("SAC>", Duration::from_secs(30)).await?;
-        let channel = channel
-            .split_whitespace()
-            .next()
-            .unwrap_or_default()
-            .to_owned();
+        // The channel comes a moment later, announced by name (CmdNNNN);
+        // Windows announces channels of its own (setup's logs) meanwhile.
+        self.expect("Channel: Cmd", Duration::from_secs(120))
+            .await?;
+        let digits = self
+            .expect_with(Duration::from_secs(30), |s| {
+                let n: String = s.chars().take_while(char::is_ascii_digit).collect();
+                (!n.is_empty() && s.len() > n.len()).then_some(n)
+            })
+            .await?;
+        let channel = format!("Cmd{digits}");
         self.send(format!("ch -sn {channel}\r").as_bytes()).await?;
         self.expect("any other key", Duration::from_secs(30))
             .await?;

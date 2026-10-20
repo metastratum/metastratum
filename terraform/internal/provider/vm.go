@@ -442,7 +442,7 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 			MaxVcpus:          plan.MaxVcpus.ValueInt32Pointer(),
 			MemoryMib:         plan.MemoryMib.ValueInt64(),
 			MaxMemoryMib:      plan.MaxMemoryMib.ValueInt64Pointer(),
-			FreePageReporting: plan.FreePageReporting.ValueBoolPointer(),
+			FreePageReporting: optBool(plan.FreePageReporting),
 			DiskGib:           plan.DiskGib.ValueInt64(),
 			Start:             &start,
 			NetworkId:         optID(path.Root("network_id"), plan.NetworkID, d),
@@ -453,9 +453,9 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 			UserData:          plan.UserData.ValueStringPointer(),
 			ClusterId:         optID(path.Root("cluster_id"), plan.ClusterID, d),
 			StoragePoolId:     optID(path.Root("storage_pool_id"), plan.StoragePoolID, d),
-			Migratable:        plan.Migratable.ValueBoolPointer(),
-			SecureBoot:        plan.SecureBoot.ValueBoolPointer(),
-			Tpm:               plan.TPM.ValueBoolPointer(),
+			Migratable:        optBool(plan.Migratable),
+			SecureBoot:        optBool(plan.SecureBoot),
+			Tpm:               optBool(plan.TPM),
 		}
 		if !plan.Firmware.IsNull() && !plan.Firmware.IsUnknown() {
 			f := client.Firmware(plan.Firmware.ValueString())

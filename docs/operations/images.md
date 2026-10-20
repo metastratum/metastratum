@@ -14,8 +14,9 @@ tenant may use):
 Either way its file comes to that host first, in parts, and the host then
 checks it and adds it to the store (Checking and storing). From a URL, the
 controller downloads it as it is added, passing each part on as it comes:
-hosts download nothing. That is the only time it is downloaded. The URL
-is kept nowhere, and nothing downloads the image again later: a download
+hosts download nothing. That is the only time it is downloaded. The image
+keeps no URL (the audit log records where it came from), and nothing
+downloads it again later: a download
 cut off (the controller went away) fails within ten minutes, for good.
 From a file, the browser uploads it (below).
 
