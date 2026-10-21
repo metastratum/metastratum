@@ -51,21 +51,16 @@ const gauges = computed(() => {
     // The ancestor's limit matters only where it is tighter than our own.
     const ceiling = inherited && (own === undefined || inherited.max < own) ? inherited : undefined
     const effective = Math.min(own ?? Infinity, ceiling?.max ?? Infinity)
-    const span = Math.max(used, own ?? 0, ceiling?.max ?? 0) * 1.08 || 1
-    const pct = (v: number) => Math.min(100, (v / span) * 100)
+    const bounded = Number.isFinite(effective)
     return {
       ...r,
       used,
       own,
       ceiling,
-      full: Number.isFinite(effective) && used >= effective,
-      near: Number.isFinite(effective) && used >= effective * 0.85,
-      unlimited: !Number.isFinite(effective),
-      usedPct: Number.isFinite(effective) ? pct(used) : used ? 6 : 0,
-      ownPct: own !== undefined ? pct(own) : undefined,
-      ceilingPct: ceiling ? pct(ceiling.max) : undefined,
-      // Ticks at round fractions of the span, like a meter face.
-      ticks: [0.25, 0.5, 0.75].map((f) => f * 100),
+      bounded,
+      full: bounded && used >= effective,
+      near: bounded && used >= effective * 0.8,
+      usedPct: bounded ? Math.min(100, (used / (effective || 1)) * 100) : 0,
     }
   })
 })
@@ -108,20 +103,23 @@ async function save() {
   <div class="panel">
     <p v-if="loadError" class="error-text">{{ loadError }}</p>
     <template v-else-if="quotas">
-      <p class="muted lead">
-        Usage counts {{ tenant.name }} and all its sub-tenants.
-        <template v-if="!tenant.parent_id">The provider has no limits of its own.</template>
-        <template v-else-if="!editable">
-          Limits are set by the administrators of {{ parent?.name ?? 'the tenant above' }}.
-        </template>
-      </p>
+      <div class="lead-row">
+        <p class="muted lead">
+          Usage counts {{ tenant.name }} and all its sub-tenants.
+          <template v-if="!tenant.parent_id">The provider has no limits of its own.</template>
+          <template v-else-if="!editable">
+            Limits are set by the administrators of {{ parent?.name ?? 'the tenant above' }}.
+          </template>
+        </p>
+        <button v-if="editable && !editing" class="btn small change" @click="edit">Change limits</button>
+      </div>
 
       <ul v-if="!editing" class="gauges">
         <li v-for="g in gauges" :key="g.key" class="gauge" :class="{ near: g.near, full: g.full }">
           <div class="gauge-head">
             <span class="label">{{ g.label }}</span>
             <span class="reading mono">
-              {{ fmt(g.used, g.scale) }}<template v-if="g.unlimited && g.unit"> {{ g.unit }}</template>
+              {{ fmt(g.used, g.scale) }}{{ !g.bounded && g.unit ? ` ${g.unit}` : '' }}
               <span class="muted">
                 /
                 <template v-if="g.own !== undefined">{{ fmt(g.own, g.scale) }} {{ g.unit }}</template>
@@ -132,24 +130,16 @@ async function save() {
           </div>
           <div
             class="track"
+            :class="{ open: !g.bounded }"
             role="meter"
             :aria-label="`${g.label} used`"
             :aria-valuenow="g.used"
             aria-valuemin="0"
-            :aria-valuemax="g.unlimited ? undefined : Math.min(g.own ?? Infinity, g.ceiling?.max ?? Infinity)"
+            :aria-valuemax="g.bounded ? Math.min(g.own ?? Infinity, g.ceiling?.max ?? Infinity) : undefined"
           >
-            <span v-for="t in g.ticks" :key="t" class="tick" :style="{ left: `${t}%` }" aria-hidden="true" />
-            <span class="fill" :class="{ open: g.unlimited }" :style="{ width: `${g.usedPct}%` }" />
-            <span v-if="g.ownPct !== undefined" class="stop" :style="{ left: `${g.ownPct}%` }" title="This tenant’s limit" />
-            <span
-              v-if="g.ceilingPct !== undefined"
-              class="notch"
-              :style="{ left: `${g.ceilingPct}%` }"
-              :title="`Limit set at ${g.ceiling!.tenant_name}`"
-            />
+            <span class="fill" :style="{ width: `${g.usedPct}%` }" />
           </div>
           <div v-if="g.ceiling" class="ceiling-note">
-            <span class="notch-key" aria-hidden="true" />
             {{ g.ceiling.tenant_name }} allows {{ fmt(g.ceiling.max, g.scale) }} {{ g.unit }} in total
           </div>
         </li>
@@ -170,7 +160,6 @@ async function save() {
         </footer>
       </form>
 
-      <button v-if="editable && !editing" class="btn small" @click="edit">Change limits</button>
     </template>
   </div>
 </template>
@@ -179,23 +168,30 @@ async function save() {
 .panel {
   display: grid;
   gap: 18px;
-  justify-items: start;
+}
+.lead-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
 }
 .lead {
   margin: 0;
 }
+.change {
+  margin-left: auto;
+}
 .gauges {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 22px 28px;
-  width: 100%;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 18px 28px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 .gauge {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 .gauge-head {
   display: flex;
@@ -203,36 +199,22 @@ async function save() {
   justify-content: space-between;
   gap: 8px;
 }
-.reading {
-  font-size: 13px;
-}
-/* A load meter: sunken track, graduated, with the limit as an end stop. */
 .track {
   position: relative;
-  height: 14px;
+  height: 8px;
+  overflow: hidden;
   border-radius: 2px;
   background: var(--sunken);
-  box-shadow: inset 0 1px 2px rgb(0 0 0 / 12%);
 }
-.tick {
-  position: absolute;
-  bottom: 0;
-  width: 1px;
-  height: 5px;
-  background: var(--muted);
-  opacity: 0.4;
+/* No limit anywhere: hatched, with nothing to fill. */
+.track.open {
+  background: repeating-linear-gradient(135deg, var(--sunken) 0 4px, var(--aisle) 4px 8px);
 }
 .fill {
-  position: absolute;
-  inset: 2px auto 2px 2px;
-  max-width: calc(100% - 4px);
-  border-radius: 1px;
-  background: var(--led-on);
+  display: block;
+  height: 100%;
+  background: var(--ink);
   transition: width 0.4s ease;
-}
-/* No limit anywhere: a stub, faded out, rather than a misleading fraction. */
-.fill.open {
-  background: linear-gradient(90deg, var(--led-on), transparent);
 }
 .near .fill {
   background: var(--led-busy);
@@ -240,33 +222,10 @@ async function save() {
 .full .fill {
   background: var(--led-fault);
 }
-.stop {
-  position: absolute;
-  top: -3px;
-  bottom: -3px;
-  width: 3px;
-  margin-left: -1.5px;
-  border-radius: 1px;
-  background: var(--ink);
-}
-/* An ancestor's tighter limit: a red notch cut into the top of the track. */
-.notch,
-.notch-key {
-  width: 0;
-  height: 0;
-  border-right: 5px solid transparent;
-  border-left: 5px solid transparent;
-  border-top: 7px solid var(--led-fault);
-}
-.notch {
-  position: absolute;
-  top: -7px;
-  margin-left: -5px;
-}
-.notch-key {
-  display: inline-block;
-  margin-right: 4px;
-  vertical-align: 1px;
+@media (prefers-reduced-motion: reduce) {
+  .fill {
+    transition: none;
+  }
 }
 .ceiling-note {
   font-size: 12px;
@@ -274,9 +233,11 @@ async function save() {
 }
 .edit {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 14px;
-  width: 100%;
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+  gap: 14px 16px;
+}
+.edit .field {
+  align-content: start;
 }
 .edit .wide {
   grid-column: 1 / -1;

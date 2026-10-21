@@ -105,14 +105,14 @@ test('an authenticator app, backup codes, and U2F and FIDO2 security keys', asyn
   await expect(dialog.getByRole('img', { name: /QR code/ })).toBeVisible()
   const secret = (await dialog.locator('.secret-key').innerText()).replace(/\s/g, '')
   const enrolled = step()
-  await dialog.getByLabel('Code from the app').fill(totp(secret, enrolled))
+  await dialog.getByLabel('Code', { exact: true }).fill(totp(secret, enrolled))
   await dialog.getByRole('button', { name: 'Add' }).click()
   await expect(page.getByRole('dialog', { name: 'Save your backup codes' })).toBeVisible()
   const codes = await page.locator('.code-list li').allInnerTexts()
   expect(codes).toHaveLength(10)
   await page.getByRole('button', { name: 'I’ve saved them' }).click()
   await expect(panel.getByText('On', { exact: true })).toBeVisible()
-  await expect(panel.getByText('10 of 10 backup codes left.')).toBeVisible()
+  await expect(panel.getByText('10 of 10 backup codes left')).toBeVisible()
 
   // Signing in takes a code now: the app's next one, then a backup code.
   await signOut(page)
@@ -157,7 +157,7 @@ test('an authenticator app, backup codes, and U2F and FIDO2 security keys', asyn
   await dialog.getByRole('button', { name: 'Remove' }).click()
   await expect(dialog).toBeHidden()
   await expect(panel.getByText('U2F key', { exact: true })).toBeHidden()
-  await expect(panel.getByText('9 of 10 backup codes left.')).toBeVisible()
+  await expect(panel.getByText('9 of 10 backup codes left')).toBeVisible()
 })
 
 test('a tenant requiring a second factor, and an administrator resetting one', async ({ browser, page }) => {
@@ -166,9 +166,9 @@ test('a tenant requiring a second factor, and an administrator resetting one', a
   await expect(page.getByRole('heading', { name: 'Virtual machines' })).toBeVisible()
   await page.goto(`/tenants/${tenantId}`)
   await page.getByRole('tab', { name: 'Sign-in' }).click()
-  const require = page.getByLabel(/Require a second factor/)
-  await require.check()
-  await expect(require).toBeChecked()
+  const require = page.getByRole('switch', { name: 'Require a second factor' })
+  await require.click()
+  await expect(require).toHaveAttribute('aria-checked', 'true')
 
   // Quinn has none: setting one up is all there is until then.
   const ctx = await browser.newContext({ baseURL: base })
@@ -181,7 +181,7 @@ test('a tenant requiring a second factor, and an administrator resetting one', a
   await dialog.getByLabel('Your password').fill(PASSWORD)
   await dialog.getByRole('button', { name: 'Continue' }).click()
   const secret = (await dialog.locator('.secret-key').innerText()).replace(/\s/g, '')
-  await dialog.getByLabel('Code from the app').fill(totp(secret, step()))
+  await dialog.getByLabel('Code', { exact: true }).fill(totp(secret, step()))
   await dialog.getByRole('button', { name: 'Add' }).click()
   await quinn.getByRole('button', { name: 'I’ve saved them' }).click()
   await expect(quinn.getByRole('heading', { name: 'Virtual machines' })).toBeVisible()
@@ -199,6 +199,6 @@ test('a tenant requiring a second factor, and an administrator resetting one', a
   await ctx.close()
 
   await page.getByRole('tab', { name: 'Sign-in' }).click()
-  await require.uncheck()
-  await expect(require).not.toBeChecked()
+  await require.click()
+  await expect(require).toHaveAttribute('aria-checked', 'false')
 })

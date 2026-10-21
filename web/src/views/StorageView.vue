@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api, errorText, ok, type Cluster, type Pool } from '../api/client'
-import InfraTabs from '../components/InfraTabs.vue'
 import ModalDialog from '../components/ModalDialog.vue'
 import SplitButton from '../components/SplitButton.vue'
 import TypeToConfirm from '../components/TypeToConfirm.vue'
@@ -21,6 +20,7 @@ async function load() {
 onMounted(load)
 useLiveRefresh(['storage_pool', 'cluster'], load)
 
+const KINDS: Record<string, string> = { local: 'local', nfs: 'NFS', rbd: 'Ceph RBD' }
 const clusterName = (id: string) => clusters.value.find((c) => c.id === id)?.name ?? shortId(id)
 type Config = Record<string, unknown>
 const cfg = (p: Pool) => (p.config ?? {}) as Config
@@ -121,14 +121,13 @@ async function submit() {
 
 <template>
   <section>
-    <InfraTabs />
     <header class="page-head">
-      <h1>Storage</h1>
+      <h1>Storage pools</h1>
+      <span v-if="pools" class="mono muted">{{ pools.length }}</span>
       <div class="actions"><button class="btn primary" @click="edit()">Add storage pool</button></div>
     </header>
     <p class="intro">
-      Where VM disks live. Local disks are on each host. Shared pools (NFS, Ceph RBD) are reachable from every host
-      in the clusters they are attached to, so tenants given them can keep disks off the host.
+      Where VM disks live. Shared pools are reachable from every host in the clusters they are attached to.
     </p>
 
     <div v-if="pools" class="table-wrap">
@@ -146,7 +145,7 @@ async function submit() {
         <tbody>
           <tr v-for="p in pools" :key="p.id">
             <td><strong>{{ p.name }}</strong></td>
-            <td><span class="tag">{{ p.kind }}</span></td>
+            <td><span class="tag">{{ KINDS[p.kind] ?? p.kind }}</span></td>
             <td class="mono">{{ where(p) }}</td>
             <td>
               <template v-if="p.kind === 'local'"><span class="muted">All hosts</span></template>
@@ -155,7 +154,7 @@ async function submit() {
             </td>
             <td class="num mono">{{ p.volumes }}</td>
             <td class="end">
-              <template v-if="p.kind !== 'local'">
+              <div v-if="p.kind !== 'local'" class="row-actions">
                 <button class="btn small" @click="edit(p)">Edit</button>
                 <SplitButton
                   label="Unlink…"
@@ -165,7 +164,7 @@ async function submit() {
                   @main="remove(p, 'unlink')"
                   @select="remove(p, 'delete')"
                 />
-              </template>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -281,12 +280,14 @@ async function submit() {
           </template>
           <fieldset class="clusters">
             <legend class="label">Attached to</legend>
-            <label v-for="c in clusters" :key="c.id" class="check">
-              <input v-model="form.cluster_ids" type="checkbox" :value="c.id" />
-              {{ c.name }}
-            </label>
+            <div class="choices">
+              <label v-for="c in clusters" :key="c.id" class="check">
+                <input v-model="form.cluster_ids" type="checkbox" :value="c.id" />
+                {{ c.name }}
+              </label>
+            </div>
             <p v-if="!clusters.length" class="muted">Add a cluster first.</p>
-            <p class="hint muted">Every host in these clusters must be able to reach the storage.</p>
+            <p class="hint muted">Every host in these clusters must reach the storage.</p>
           </fieldset>
         </template>
         <p v-if="error" class="error-text" role="alert">{{ error }}</p>
@@ -312,8 +313,15 @@ async function submit() {
   display: grid;
   gap: 6px;
 }
-.end .btn + .btn {
-  margin-left: 6px;
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
 }
 .clusters {
   display: grid;

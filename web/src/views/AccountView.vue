@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { api, errorText, ok, type Token } from '../api/client'
 import IdChip from '../components/IdChip.vue'
 import ModalDialog from '../components/ModalDialog.vue'
+import SegmentedFilter from '../components/SegmentedFilter.vue'
 import TwoFactorPanel from '../components/TwoFactorPanel.vue'
 import { ago } from '../state'
 import { useScope, type Role } from '../stores/scope'
@@ -79,8 +80,18 @@ async function changePassword() {
   }
 }
 
+// Everything the user can do, or one role at one tenant.
+const access = computed({
+  get: () => (form.value.limited ? 'limited' : 'all'),
+  set: (v: string) => (form.value.limited = v === 'limited'),
+})
+const ACCESS = [
+  { id: 'all', label: 'Everything you can do' },
+  { id: 'limited', label: 'One role, at one tenant' },
+]
+
 const tenantName = (id: string) => scope.byId.get(id)?.name ?? 'a tenant you can no longer see'
-const access = (t: Token) =>
+const accessOf = (t: Token) =>
   t.scopes ? t.scopes.map((s) => `${s.role} at ${tenantName(s.tenant_id)}`).join(', ') : 'Everything you can do'
 const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDateString() : 'Never')
 </script>
@@ -98,7 +109,7 @@ const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDate
         <ul class="roles">
           <li v-for="r in session.me.roles" :key="`${r.tenant_id}${r.role}`">
             <strong>{{ r.role }}</strong><template v-if="!scope.solo"> at {{ r.tenant_name }}</template>
-            <span v-if="!scope.solo" class="mono muted">/{{ r.tenant }}</span>
+            <span v-if="!scope.solo && r.tenant" class="mono muted">/{{ r.tenant }}</span>
           </li>
         </ul>
         <p v-if="!scope.solo" class="muted small">A role covers the tenant and everything below it.</p>
@@ -120,22 +131,25 @@ const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDate
             <input v-model="pw.again" type="password" minlength="10" required autocomplete="new-password" />
           </label>
           <p v-if="pwError" class="error-text" role="alert">{{ pwError }}</p>
-          <p v-if="pwMessage" class="muted" role="status">{{ pwMessage }}</p>
-          <button class="btn">Change password</button>
+          <div class="pw-row">
+            <button class="btn">Change password</button>
+            <span v-if="pwMessage" class="muted status" role="status">{{ pwMessage }}</span>
+          </div>
         </form>
       </article>
 
       <TwoFactorPanel v-if="session.me.local" @changed="session.load()" />
     </div>
 
-    <header class="page-head tokens-head">
+    <section class="tokens">
+    <header class="tokens-head">
       <h2>API tokens</h2>
-      <div class="actions"><button class="btn primary" @click="startCreate">Create token</button></div>
+      <span class="muted">
+        For scripts and automation. They act as you, with your roles or fewer. Send as
+        <span class="mono">Authorization: Bearer …</span>
+      </span>
+      <button class="btn primary" @click="startCreate">Create token</button>
     </header>
-    <p class="intro">
-      For scripts and automation. A token acts as you, with your roles or fewer; send it as
-      <span class="mono">Authorization: Bearer …</span>.
-    </p>
     <p v-if="error && !creating" class="error-text">{{ error }}</p>
     <div v-if="tokens && tokens.length" class="table-wrap">
       <table class="data">
@@ -151,8 +165,8 @@ const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDate
         </thead>
         <tbody>
           <tr v-for="t in tokens" :key="t.id">
-            <td>{{ t.name }}</td>
-            <td class="muted">{{ access(t) }}</td>
+            <td class="token-name">{{ t.name }}</td>
+            <td class="muted">{{ accessOf(t) }}</td>
             <td class="muted">{{ ago(t.created_at) }}</td>
             <td class="muted">{{ t.last_used_at ? ago(t.last_used_at) : 'Never' }}</td>
             <td class="muted">{{ expiry(t) }}</td>
@@ -162,10 +176,11 @@ const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDate
       </table>
     </div>
     <div v-else-if="tokens" class="empty-state"><p>You have no API tokens.</p></div>
+    </section>
 
     <ModalDialog v-if="creating" title="Create API token" @close="creating = false">
       <div v-if="secret" class="form">
-        <p>Copy the token now. It won’t be shown again.</p>
+        <p>Copy it now. It won’t be shown again.</p>
         <IdChip :value="secret" />
         <footer><button class="btn primary" @click="creating = false">Done</button></footer>
       </div>
@@ -175,30 +190,29 @@ const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDate
           <input v-model="form.name" required maxlength="128" placeholder="terraform" autofocus />
           <span class="hint">So you can tell your tokens apart.</span>
         </label>
-        <label class="field">
-          <span class="label">Access</span>
-          <select v-model="form.limited">
-            <option :value="false">Everything you can do</option>
-            <option :value="true">One role, at one tenant</option>
-          </select>
-          <span class="hint">A limited token can’t change your account or make other tokens.</span>
-        </label>
-        <div v-if="form.limited" class="pair">
-          <label class="field">
-            <span class="label">Role</span>
-            <select v-model="form.role">
-              <option value="viewer">Viewer</option>
-              <option value="operator">Operator</option>
-              <option value="admin">Admin</option>
-            </select>
-          </label>
-          <label class="field">
-            <span class="label">At tenant</span>
-            <select v-model="form.tenant" required>
-              <option v-for="t in scope.tenants" :key="t.id" :value="t.id">{{ t.name }}{{ t.slug_path ? ` (/${t.slug_path})` : '' }}</option>
-            </select>
-          </label>
-        </div>
+        <fieldset class="access">
+          <legend class="label">Access</legend>
+          <SegmentedFilter v-model="access" :options="ACCESS" label="Access" class="choice" />
+          <template v-if="form.limited">
+            <div class="pair">
+              <label class="field">
+                <span class="hint">Role</span>
+                <select v-model="form.role">
+                  <option value="viewer">Viewer</option>
+                  <option value="operator">Operator</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="hint">At tenant</span>
+                <select v-model="form.tenant" required>
+                  <option v-for="t in scope.tenants" :key="t.id" :value="t.id">{{ t.name }}{{ t.slug_path ? ` (/${t.slug_path})` : '' }}</option>
+                </select>
+              </label>
+            </div>
+            <span class="hint">A limited token can’t change your account or make other tokens.</span>
+          </template>
+        </fieldset>
         <label class="field">
           <span class="label">Expires</span>
           <select v-model="form.days">
@@ -220,22 +234,24 @@ const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDate
 </template>
 
 <style scoped>
-.pair {
+.account {
   display: grid;
-  grid-template-columns: 1fr 2fr;
-  gap: 12px;
+  gap: 20px;
+}
+.page-head {
+  margin: 0;
 }
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
   gap: 16px;
-  margin: 16px 0 32px;
+  align-items: start;
 }
 .card {
   display: grid;
   gap: 12px;
   align-content: start;
-  padding: 18px;
+  padding: 16px 18px;
   border: 1px solid var(--rule);
   border-radius: var(--radius);
   background: var(--panel);
@@ -259,14 +275,60 @@ const expiry = (t: Token) => (t.expires_at ? new Date(t.expires_at).toLocaleDate
 }
 .pw {
   display: grid;
-  gap: 12px;
-  justify-items: start;
-}
-.pw .field {
-  width: 100%;
+  gap: 10px;
 }
 .pw p {
   margin: 0;
+}
+.pw-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.status {
+  font-size: 13px;
+}
+.tokens {
+  display: grid;
+  gap: 12px;
+}
+.tokens-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.tokens-head .btn {
+  margin-left: auto;
+}
+.tokens .error-text {
+  margin: 0;
+}
+.token-name {
+  font-weight: 500;
+}
+.access {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.access legend {
+  padding: 0 0 4px;
+}
+.choice {
+  justify-self: start;
+}
+.access > .hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+.pair {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 12px;
 }
 .form :deep(.chip) {
   overflow-wrap: anywhere;

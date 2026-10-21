@@ -50,6 +50,22 @@ function field(scope: Locator, label: string) {
   return scope.locator('label.field', { has: scope.page().locator('span.label', { hasText: new RegExp(`^${label}$`) }) }).locator('select, input')
 }
 
+/** One of the VM page's sections: Overview, Console, Serial or Settings. */
+async function vmSection(page: Page, name: string) {
+  await page.getByRole('navigation', { name: 'VM sections' }).getByRole('link', { name, exact: true }).click()
+}
+
+/** The VM page's More menu, open. */
+async function vmMore(page: Page) {
+  await page.getByRole('button', { name: 'More', exact: true }).click()
+  return page.getByRole('menu')
+}
+
+/** Chooses an item of the VM page's More menu (its label, then a hint). */
+async function vmMenu(page: Page, item: string) {
+  await (await vmMore(page)).getByRole('menuitem', { name: new RegExp(`^${item}`) }).click()
+}
+
 async function signIn(page: Page) {
   await page.goto('/vms')
   await page.getByLabel('Username').fill(user)
@@ -66,8 +82,8 @@ test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
   for (const [link, heading] of [
     ['Images', 'Images'],
     [/^(Tenants|People)$/, /^(Tenants|People)$/],
-    ['Audit', 'Audit log'],
-    ['Infrastructure', 'Hosts'],
+    ['Audit log', 'Audit log'],
+    ['Hosts & clusters', 'Hosts & clusters'],
     ['Machines', 'Virtual machines'],
   ]) {
     await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: link }).click()
@@ -86,25 +102,25 @@ test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
   await expect(page.getByRole('heading', { name, level: 1 })).toBeVisible()
   await expect(page.getByText('Running', { exact: true })).toBeVisible({ timeout: 3 * 60_000 })
 
-  await page.getByRole('tab', { name: 'Console' }).click()
+  await vmSection(page, 'Console')
   await expect(page.locator('.screen canvas')).toBeVisible({ timeout: 30_000 })
   await expect(page.getByText('Connected', { exact: true })).toBeVisible()
 
-  await page.getByRole('tab', { name: 'Serial' }).click()
+  await vmSection(page, 'Serial')
   await expect(page.locator('.xterm')).toBeVisible()
   await expect(page.getByText('Connected', { exact: true })).toBeVisible({ timeout: 30_000 })
 
   // Live-migrate it from the VM page; it keeps running on another host.
-  await page.getByRole('tab', { name: 'Details' }).click()
-  const host = page.locator('.facts div', { hasText: 'Host' }).locator('dd')
+  await vmSection(page, 'Overview')
+  const host = page.locator('dl.kv dt', { hasText: /^Host$/ }).locator('xpath=following-sibling::dd[1]')
   const before = (await host.textContent())!.trim()
-  await page.getByRole('button', { name: 'Migrate' }).click()
+  await vmMenu(page, 'Migrate…')
   await page.getByRole('dialog').getByRole('button', { name: 'Migrate' }).click()
   await expect(host).not.toHaveText(before, { timeout: 3 * 60_000 })
   await expect(page.getByText('Running', { exact: true })).toBeVisible({ timeout: 60_000 })
 
   // A snapshot of the running VM; reverting asks for it to be stopped.
-  const snapshots = page.locator('section.snapshots')
+  const snapshots = page.locator('.snapshots')
   await snapshots.getByRole('button', { name: 'Take snapshot' }).click()
   await snapshots.getByLabel('Name').fill('first')
   await snapshots.getByRole('button', { name: 'Take', exact: true }).click()
@@ -124,7 +140,7 @@ test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
   await adding.getByLabel('Name').fill(`${name}-data`)
   await adding.getByLabel('Size (GiB)').fill('1')
   await adding.getByRole('button', { name: 'Add disk' }).click()
-  const data = page.locator('.disks li', { hasText: `${name}-data` })
+  const data = page.locator('.disk', { hasText: `${name}-data` })
   await expect(data).toContainText('/dev/disk/by-id/')
   await data.getByRole('button', { name: 'Detach…' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Detach disk' }).click()
@@ -133,11 +149,14 @@ test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
   // While it runs: its disk grows, a CPU is plugged in and memory shrinks
   // (through its balloon), within what they can grow to; that waits for it
   // to stop.
-  const memory = page.locator('.facts div', { hasText: 'Memory' }).locator('dd')
-  const cpus = page.locator('.facts div', { hasText: 'vCPU' }).locator('dd')
-  await expect(memory).toContainText('1 GiB / 2 GiB')
-  await expect(cpus).toHaveText('2 / 4')
-  await page.getByRole('button', { name: 'Resize' }).click()
+  const resource = (label: string) => page.locator('.resources > div', { has: page.locator('.label', { hasText: label }) })
+  const memory = resource('Memory')
+  const cpus = resource('vCPU')
+  await expect(memory.locator('.big')).toHaveText('1 GiB')
+  await expect(memory).toContainText('Can grow to 2 GiB')
+  await expect(cpus.locator('.big')).toHaveText('2')
+  await expect(cpus).toContainText('Can grow to 4')
+  await vmMenu(page, 'Resize…')
   const resize = page.getByRole('dialog')
   await expect(resize.getByLabel('CPUs can grow to')).toBeDisabled()
   await expect(resize.getByLabel('Memory can grow to')).toBeDisabled()
@@ -146,36 +165,40 @@ test('sign in, create a VM, use both consoles, delete it', async ({ page }) => {
   await resize.getByLabel('Boot disk (GiB)').fill('6')
   await resize.getByRole('button', { name: 'Resize' }).click()
   await expect(resize).toHaveCount(0)
-  await expect(page.locator('.facts div', { hasText: 'Disk' }).locator('dd')).toHaveText('6 GiB')
-  await expect(memory).toContainText('512 MiB / 2 GiB')
-  await expect(cpus).toHaveText('3 / 4')
-  await expect(memory.locator('meter')).toBeVisible({ timeout: 30_000 })
+  await expect(resource('Disk').locator('.big')).toHaveText('6 GiB')
+  await expect(memory.locator('.big')).toHaveText('512 MiB')
+  await expect(cpus.locator('.big')).toHaveText('3')
+  // What the guest uses, once its balloon says.
+  await expect(memory.locator('.used')).toBeVisible({ timeout: 30_000 })
   await expect(page.getByText('Running', { exact: true })).toBeVisible()
 
   // Stopped, it becomes a template: never started, cloned instead.
   await page.getByRole('button', { name: 'Power off' }).click()
   await expect(page.getByText('Stopped', { exact: true })).toBeVisible({ timeout: 60_000 })
   // Stopped, it can keep the memory it frees instead of handing it back.
-  await expect(page.getByText('Handed back to the host')).toBeVisible()
-  await page.getByRole('button', { name: 'Keep it' }).click()
-  await expect(page.getByText('Kept by the guest')).toBeVisible()
+  await vmSection(page, 'Settings')
+  const reporting = page.getByRole('switch', { name: 'Return free memory to the host' })
+  await expect(reporting).toHaveAttribute('aria-checked', 'true')
+  await reporting.click()
+  await expect(reporting).toHaveAttribute('aria-checked', 'false')
   await page.getByRole('button', { name: 'Make template' }).click()
   await expect(page.locator('.title .tag', { hasText: 'Template' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Start' })).toBeDisabled()
-  await page.getByRole('button', { name: 'Clone' }).click()
+  await expect((await vmMore(page)).getByRole('menuitem', { name: /^Start/ })).toBeDisabled()
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: 'Clone…', exact: true }).click()
   await page.getByRole('dialog').getByLabel('Name').fill(`${name}-c`)
   await page.getByRole('dialog').getByRole('button', { name: 'Clone' }).click()
   await expect(page.getByRole('heading', { name: `${name}-c`, level: 1 })).toBeVisible()
   await expect(page.getByText('Running', { exact: true })).toBeVisible({ timeout: 3 * 60_000 })
-  await page.getByRole('button', { name: 'Delete VM' }).click()
-  await page.getByRole('button', { name: `Delete ${name}-c and its disk` }).click()
+  await vmMenu(page, 'Delete VM…')
+  await page.getByRole('dialog').getByRole('button', { name: `Delete ${name}-c and its disk` }).click()
   await expect(page.getByRole('heading', { name: 'Virtual machines' })).toBeVisible()
   await expect(page.getByRole('link', { name: `${name}-c`, exact: true })).toHaveCount(0, { timeout: 2 * 60_000 })
   await page.getByRole('link', { name, exact: true }).click()
   await expect(page.getByRole('heading', { name, level: 1 })).toBeVisible()
 
-  await page.getByRole('button', { name: 'Delete VM' }).click()
-  await page.getByRole('button', { name: `Delete ${name} and its disk` }).click()
+  await vmMenu(page, 'Delete VM…')
+  await page.getByRole('dialog').getByRole('button', { name: `Delete ${name} and its disk` }).click()
   await expect(page.getByRole('heading', { name: 'Virtual machines' })).toBeVisible()
   await expect(page.getByRole('link', { name, exact: true })).toHaveCount(0, { timeout: 2 * 60_000 })
 
@@ -227,7 +250,7 @@ test('manage a sub-tenant: quotas, people, removal', async ({ page }) => {
   await expect(page.getByRole('cell', { name: 'carol' }).first()).toBeVisible()
 
   // Remove the tenant again.
-  await page.getByRole('button', { name: 'Delete', exact: true }).first().click()
+  await page.getByRole('button', { name: 'Delete…', exact: true }).first().click()
   await page.getByRole('dialog').getByRole('button', { name: 'Delete tenant' }).click()
   await expect(tree.getByRole('button', { name })).toHaveCount(0)
 })
@@ -260,14 +283,14 @@ test('pages update live when things change elsewhere', async ({ page }) => {
 test('networks: a VPC with a network, a security group with a rule', async ({ page }) => {
   const id = Date.now().toString(36)
   await signIn(page)
-  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Networks' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'VPCs' }).click()
   await expect(page.getByRole('heading', { name: 'VPCs', level: 1 })).toBeVisible()
 
   await page.getByRole('button', { name: 'New VPC' }).first().click()
   let dialog = page.getByRole('dialog')
   await dialog.getByLabel('Name').fill(`vpc-${id}`)
   await dialog.getByRole('button', { name: 'Create' }).click()
-  const vpc = page.locator('li.vpc', { hasText: `vpc-${id}` })
+  const vpc = page.locator('section.vpc', { has: page.getByRole('heading', { name: `vpc-${id}`, exact: true }) })
   await expect(vpc).toBeVisible()
   await expect(vpc.getByText('Internal only')).toBeVisible()
 
@@ -278,12 +301,12 @@ test('networks: a VPC with a network, a security group with a rule', async ({ pa
   await dialog.getByRole('button', { name: 'Create' }).click()
   await expect(vpc.getByText('10.42.0.0/24')).toBeVisible()
 
-  await page.getByRole('navigation', { name: 'Networking' }).getByRole('link', { name: 'Security groups' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Security groups' }).click()
   await page.getByRole('button', { name: 'New group' }).click()
   dialog = page.getByRole('dialog')
   await dialog.getByLabel('Name').fill(`sg-${id}`)
   await dialog.getByRole('button', { name: 'Create group' }).click()
-  const group = page.locator('li.group', { hasText: `sg-${id}` })
+  const group = page.locator('section.group', { has: page.getByRole('heading', { name: `sg-${id}`, exact: true }) })
   await group.getByRole('button', { name: 'Add rule' }).click()
   await group.getByRole('button', { name: 'HTTPS' }).click()
   await expect(group.getByText('TCP 443 from anywhere').first()).toBeVisible()
@@ -295,7 +318,7 @@ test('networks: a VPC with a network, a security group with a rule', async ({ pa
   await expect(group).toHaveCount(0)
 
   // A load balancer with its address inside the VPC.
-  await page.getByRole('navigation', { name: 'Networking' }).getByRole('link', { name: 'Load balancers' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Load balancers' }).click()
   await expect(page.getByRole('heading', { name: 'Load balancers', level: 1 })).toBeVisible()
   await page.getByRole('button', { name: 'Create load balancer' }).click()
   dialog = page.getByRole('dialog')
@@ -311,8 +334,8 @@ test('networks: a VPC with a network, a security group with a rule', async ({ pa
   await expect(lb).toHaveCount(0)
 
   // Clean up.
-  await page.getByRole('navigation', { name: 'Networking' }).getByRole('link', { name: 'VPCs' }).click()
-  await vpc.locator('li.net', { hasText: 'app' }).getByRole('button', { name: 'Delete' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'VPCs' }).click()
+  await vpc.getByRole('row').filter({ hasText: '10.42.0.0/24' }).getByRole('button', { name: 'Delete' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Delete' }).click()
   await vpc.getByRole('button', { name: 'Delete' }).first().click()
   await page.getByRole('dialog').getByRole('button', { name: 'Delete' }).click()
@@ -330,7 +353,7 @@ test('destructive operations say what they remove, and ask first', async ({ page
   })
   expect(image.ok()).toBeTruthy()
   await page.goto('/images')
-  const row = page.getByRole('listitem').filter({ hasText: `e2e-img-${run}` })
+  const row = page.getByRole('row').filter({ hasText: `e2e-img-${run}` })
   await expect(row.getByText('Download failed', { exact: true })).toBeVisible({ timeout: 60_000 })
   await expect(row).toContainText('Delete it and add it again.')
   await expect(row.getByRole('button', { name: 'Download again' })).toHaveCount(0)
@@ -378,10 +401,8 @@ test('destructive operations say what they remove, and ask first', async ({ page
   const hosts = await (await page.request.get('/api/v1/hosts')).json()
   const idle = hosts.find((h: { vm_count: number; state: string }) => !h.vm_count && h.state !== 'decommissioned')
   test.skip(!idle, 'no host without VMs to open the dialog for')
-  await page
-    .locator('article', { hasText: idle.name, hasNotText: 'Decommissioned' })
-    .getByRole('button', { name: 'Manage' })
-    .click()
+  const hostRow = page.getByRole('row').filter({ has: page.locator('strong', { hasText: new RegExp(`^${idle.name}$`) }) })
+  await hostRow.getByRole('button', { name: 'Manage' }).click()
   // Unlink: the machine is left alone; Delete: metastratum is removed from it,
   // OVN stays. Both wait for the name. (Cancelled here.)
   for (const [action, says] of [
@@ -391,10 +412,7 @@ test('destructive operations say what they remove, and ask first', async ({ page
     if (action === 'Unlink') {
       await page.getByRole('dialog').getByRole('button', { name: 'Unlink…' }).click()
     } else {
-      await page
-        .locator('article', { hasText: idle.name, hasNotText: 'Decommissioned' })
-        .getByRole('button', { name: 'Manage' })
-        .click()
+      await hostRow.getByRole('button', { name: 'Manage' }).click()
       const more = page.getByRole('dialog').getByRole('button', { name: `More ways to decommission ${idle.name}` })
       // Escape closes the menu, not the dialog around it.
       await more.click()
@@ -426,10 +444,12 @@ test('the account page uses the full width, on desktop and phone', async ({ page
     await page.goto('/account')
     const roles = page.getByRole('heading', { name: 'Your roles' })
     await expect(roles).toBeVisible()
-    // The header's styles once leaked onto this page (it shared a class with
-    // the header's account link), squeezing it to 160px or hiding it.
-    const box = await page.locator('main > section').boundingBox()
-    expect(box!.width).toBeGreaterThan(width * 0.8)
+    // The account link's styles once leaked onto this page (it shared a
+    // class with it), squeezing it to 160px or hiding it: it fills the
+    // space beside (or, on a phone, below) the sidebar.
+    const main = (await page.locator('main').boundingBox())!
+    const box = (await page.locator('main > section').boundingBox())!
+    expect(box.width).toBeGreaterThan((main.width - 64) * 0.95)
   }
 })
 
@@ -513,9 +533,8 @@ test('with the provider alone, tenancy stays out of the way', async ({ page }) =
   await expect(page.getByRole('tab', { name: 'People' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Add tenant' })).toBeVisible()
   // No guardrails among the network pages.
-  await nav.getByRole('link', { name: 'Networks' }).click()
-  await expect(page.getByRole('link', { name: 'Security groups' })).toBeVisible()
-  await expect(page.getByRole('link', { name: 'Guardrails' })).toHaveCount(0)
+  await expect(nav.getByRole('link', { name: 'Security groups' })).toBeVisible()
+  await expect(nav.getByRole('link', { name: 'Guardrails' })).toHaveCount(0)
 })
 
 test('backup repositories, and the backups page', async ({ page }) => {
@@ -542,7 +561,7 @@ test('backup repositories, and the backups page', async ({ page }) => {
     })
     expect(made.ok()).toBeTruthy()
     await page.goto(`/vms/${((await made.json()) as { id: string }).id}`)
-    const backups = page.locator('section.backups')
+    const backups = page.locator('.backups')
     await backups.getByRole('button', { name: 'Back up now…' }).click({ timeout: 3 * 60_000 })
     const taking = page.getByRole('dialog')
     if (await taking.getByLabel('Repository').count()) {
@@ -560,8 +579,7 @@ test('backup repositories, and the backups page', async ({ page }) => {
   }
 
   // Backups sit beside the machines.
-  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Machines' }).click()
-  await page.getByRole('navigation', { name: 'Machines' }).getByRole('link', { name: 'Backups' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Backups', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Backups', level: 1 })).toBeVisible()
 
   await page.goto('/backup-repositories')
@@ -588,11 +606,11 @@ test('an image uploaded from a file', async ({ page }) => {
     await expect(field(dialog, 'Name')).toHaveValue(name)
     await expect(field(dialog, 'Format')).toHaveValue('raw')
     await dialog.getByRole('button', { name: 'Add and upload' }).click()
-    const row = page.getByRole('listitem').filter({ hasText: name })
+    const row = page.getByRole('row').filter({ hasText: name })
     // Checked and stored as a download is: then it shows its disk.
-    await expect(row.locator('.facts')).toContainText('disk', { timeout: 3 * 60_000 })
-    await expect(row).toContainText('Uploaded,')
-    await expect(row.locator('.tag.failed')).toHaveCount(0)
+    await expect(row.getByText('Uploaded', { exact: true })).toBeVisible({ timeout: 3 * 60_000 })
+    await expect(row.locator('td.num').first()).not.toHaveText('—')
+    await expect(row.getByText(/failed/i)).toHaveCount(0)
   } finally {
     const images = (await (await page.request.get('/api/v1/images')).json()) as { id: string; name: string }[]
     for (const i of images.filter((i) => i.name === name)) await page.request.delete(`/api/v1/images/${i.id}`)

@@ -104,64 +104,43 @@ async function remove() {
 
 <template>
   <div v-if="loaded" class="panel">
-    <template v-if="!editing">
-      <p class="muted lead">
-        People{{ scope.solo ? '' : ` in ${tenant.name}` }} can sign in with your organization’s identity provider (any OpenID Connect
-        provider: Entra ID, Google, Keycloak, Okta…). Their account is created at their first sign-in, and their
-        groups decide their role.
-      </p>
-
-      <dl v-if="existing" class="summary">
-        <div><dt class="label">Provider</dt><dd>{{ existing.name }}</dd></div>
-        <div><dt class="label">Issuer</dt><dd class="mono">{{ existing.issuer }}</dd></div>
-        <div><dt class="label">Client ID</dt><dd class="mono">{{ existing.client_id }}</dd></div>
-        <div>
-          <dt class="label">Roles</dt>
-          <dd>
-            <div v-for="m in existing.role_mappings ?? []" :key="m.group">
-              Group <span class="mono">{{ m.group }}</span> → <strong>{{ m.role }}</strong>
-            </div>
-            <div>
-              <template v-if="existing.default_role">Anyone else → <strong>{{ existing.default_role }}</strong></template>
-              <span v-else class="muted">Anyone else is turned away.</span>
-            </div>
-          </dd>
+    <section class="idp">
+      <header class="sub-head">
+        <h3>Identity provider</h3>
+        <div v-if="canManage && !editing" class="buttons">
+          <button class="btn small" :class="{ primary: !existing }" @click="edit">
+            {{ existing ? 'Change' : 'Set up an identity provider' }}
+          </button>
+          <button v-if="existing" class="btn small danger" :disabled="busy" @click="remove">Remove</button>
         </div>
-      </dl>
-      <p v-else class="muted">{{ scope.solo ? 'People sign in' : `${tenant.name} signs in` }} with passwords only.</p>
-      <dl v-if="signIn" class="summary">
-        <div>
-          <dt class="label">Sign-in page</dt>
-          <dd><a :href="signIn.page" class="mono">{{ signIn.page }}</a></dd>
-        </div>
-      </dl>
-
-      <div v-if="canManage" class="buttons">
-        <button class="btn" :class="{ primary: !existing }" @click="edit">
-          {{ existing ? 'Change' : 'Set up an identity provider' }}
-        </button>
-        <button v-if="existing" class="btn danger" :disabled="busy" @click="remove">Remove</button>
-      </div>
-
-      <section v-if="policy" class="two-factor">
-        <h3 class="label">Two-factor sign-in</h3>
-        <label class="check">
-          <input
-            type="checkbox"
-            :checked="policy.required || !!policy.required_by"
-            :disabled="!canManage || !!policy.required_by || busy"
-            @change="setRequired(($event.target as HTMLInputElement).checked)"
-          />
-          <span>Require a second factor of password accounts{{ scope.solo ? '' : ` in ${tenant.name} and below` }}</span>
-        </label>
-        <p v-if="policy.required_by" class="muted">Required by {{ policy.required_by.name }}.</p>
-        <p class="muted">
-          An authenticator app, a security key or a YubiKey. People without one can only add one when they next sign
-          in. Accounts that sign in through an identity provider use its own second factors.
+      </header>
+      <template v-if="!editing">
+        <p class="muted note">
+          Any OpenID Connect provider: Entra ID, Google, Keycloak, Okta… Accounts are created at first sign-in; groups
+          decide the role.
         </p>
-      </section>
-    </template>
-
+        <dl v-if="existing" class="summary">
+          <dt>Provider</dt>
+          <dd>{{ existing.name }}</dd>
+          <dt>Issuer</dt>
+          <dd class="mono">{{ existing.issuer }}</dd>
+          <dt>Client ID</dt>
+          <dd class="mono">{{ existing.client_id }}</dd>
+          <dt>Roles</dt>
+          <dd class="roles">
+            <span v-for="m in existing.role_mappings ?? []" :key="m.group">
+              Group <span class="mono">{{ m.group }}</span> → <strong>{{ m.role }}</strong>
+            </span>
+            <span v-if="existing.default_role">Anyone else → <strong>{{ existing.default_role }}</strong></span>
+            <span v-else class="muted">Anyone else is turned away.</span>
+          </dd>
+        </dl>
+        <p v-else class="plain">{{ scope.solo ? 'People sign in' : `${tenant.name} signs in` }} with passwords only.</p>
+        <dl v-if="signIn" class="summary">
+          <dt>Sign-in page</dt>
+          <dd><a :href="signIn.page" class="mono">{{ signIn.page }}</a></dd>
+        </dl>
+      </template>
     <form v-else class="edit" @submit.prevent="save">
       <div class="callout">
         <span class="label">Register this redirect URI with the provider</span>
@@ -178,8 +157,6 @@ async function remove() {
           <input v-model="form.issuer" required type="url" placeholder="https://login.example.com/realms/acme" />
           <span class="hint">Checked when you save.</span>
         </label>
-      </div>
-      <div class="row">
         <label class="field">
           <span class="label">Client ID</span>
           <input v-model="form.client_id" required autocomplete="off" />
@@ -229,14 +206,14 @@ async function remove() {
           Add group
         </button>
         <label class="field default">
-          <span class="label">Everyone else</span>
+          <span class="muted small">Everyone else</span>
           <select v-model="form.default_role">
             <option :value="null">Turn away</option>
             <option value="viewer">viewer</option>
             <option value="operator">operator</option>
             <option value="admin">admin</option>
           </select>
-          <span class="hint">For people in none of these groups. Roles you give by hand also let people in.</span>
+          <span class="hint">For people in none of these groups. Roles given by hand also let people in.</span>
         </label>
       </fieldset>
 
@@ -246,7 +223,37 @@ async function remove() {
         <button class="btn primary" :disabled="busy">{{ busy ? 'Checking…' : 'Save' }}</button>
       </footer>
     </form>
+    </section>
     <p v-if="error && !editing" class="error-text" role="alert">{{ error }}</p>
+
+    <section v-if="policy" class="divided">
+      <h3>Two-factor sign-in</h3>
+      <div class="setting">
+        <div class="setting-text">
+          <span id="tfa-label" class="setting-name">Require a second factor</span>
+          <span class="muted small">
+            <template v-if="policy.required_by">Required by {{ policy.required_by.name }}.</template>
+            <template v-else>
+              For password accounts{{ scope.solo ? '' : ` in ${tenant.name} and below` }}: an authenticator app, a security
+              key or a YubiKey. People without one can only add one when they next sign in. Identity-provider accounts use
+              its own.
+            </template>
+          </span>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          class="switch"
+          aria-labelledby="tfa-label"
+          :aria-checked="policy.required || !!policy.required_by"
+          :disabled="!canManage || !!policy.required_by || busy"
+          :title="policy.required_by ? `Required by ${policy.required_by.name}` : undefined"
+          @click="setRequired(!policy.required)"
+        >
+          <span class="knob" />
+        </button>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -255,62 +262,130 @@ async function remove() {
   display: grid;
   gap: 18px;
 }
-.lead {
-  max-width: 72ch;
+section {
+  display: grid;
+  gap: 12px;
+}
+/* Each part of signing in after the first, ruled off. */
+.divided {
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--rule);
+}
+h3 {
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.sub-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+.note {
   margin: 0;
+  font-size: 13px;
+}
+.plain {
+  margin: 0;
+}
+.small {
+  font-size: 13px;
 }
 .summary {
   display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 10px 20px;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 8px 16px;
   margin: 0;
 }
-.summary > div {
-  display: contents;
+.summary dt {
+  color: var(--muted);
 }
 .summary dd {
   margin: 0;
   overflow-wrap: anywhere;
 }
-.buttons {
-  display: flex;
-  gap: 8px;
-}
-.two-factor {
+.summary .roles {
   display: grid;
-  gap: 10px;
-  max-width: 72ch;
-  padding-top: 18px;
-  border-top: 1px solid var(--rule);
+  gap: 2px;
 }
-.two-factor h3 {
-  margin: 0;
-  font-size: 13px;
-}
-.two-factor p {
-  margin: 0;
-}
-.check {
+/* A setting and its switch, side by side. */
+.setting {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 12px 24px;
+}
+.setting-text {
+  display: grid;
+  flex: 1 1 320px;
+  gap: 2px;
+  max-width: 72ch;
+}
+.setting-name {
+  font-weight: 500;
+}
+.switch {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 11px;
+  background: var(--led-off);
+  cursor: pointer;
+}
+.switch[aria-checked='true'] {
+  background: var(--ink);
+}
+.switch:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--panel);
+  transition: left 0.12s;
+}
+.switch[aria-checked='true'] .knob {
+  left: 21px;
+  background: var(--tape);
+}
+@media (prefers-reduced-motion: reduce) {
+  .knob {
+    transition: none;
+  }
 }
 .edit {
   display: grid;
-  gap: 16px;
+  gap: 14px;
+  padding: 14px;
+  border-radius: var(--radius);
+  background: var(--aisle);
 }
 .row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
   gap: 12px;
 }
 .callout {
-  display: grid;
-  gap: 6px;
-  justify-items: start;
-  padding: 12px 14px;
-  border-left: 3px solid var(--tape);
-  background: var(--sunken);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 .callout :deep(.chip) {
   max-width: 100%;
@@ -319,22 +394,31 @@ async function remove() {
 }
 details summary {
   cursor: pointer;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 .mappings {
   display: grid;
   gap: 8px;
-  justify-items: start;
   margin: 0;
-  padding: 14px;
+  padding: 12px 14px 14px;
   border: 1px solid var(--rule);
   border-radius: var(--radius);
 }
+.mappings legend {
+  padding: 0 6px;
+}
+.mappings > .btn {
+  justify-self: start;
+}
 .mapping {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 120px auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
-  width: 100%;
+}
+.mapping input {
+  flex: 1;
+  min-width: 160px;
 }
 .mapping input,
 .mapping select {
@@ -347,8 +431,10 @@ details summary {
   font: 400 14px var(--font-body);
 }
 .default {
-  width: 100%;
-  margin-top: 8px;
+  margin-top: 6px;
+}
+.default select {
+  justify-self: start;
 }
 footer {
   display: flex;
@@ -360,13 +446,7 @@ footer {
 }
 @media (max-width: 520px) {
   .summary {
-    grid-template-columns: 1fr;
-  }
-  .mapping {
-    grid-template-columns: 1fr auto;
-  }
-  .mapping input {
-    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 </style>

@@ -75,16 +75,22 @@ const revert = (s: Snapshot) =>
 const remove = (s: Snapshot) =>
   act(() => ok(api.DELETE('/api/v1/snapshots/{id}', { params: { path: { id: s.id } } })))
 
+// A few at first; all of them, scrolling, on request.
+const FEW = 3
+const all = ref(false)
+const shown = computed(() => (all.value ? snapshots.value : snapshots.value?.slice(0, FEW)) ?? [])
+
 const tone = (s: Snapshot) => (s.state === 'failed' ? 'fault' : s.state === 'ready' ? 'on' : 'busy')
 const doing: Record<string, string> = { creating: 'Taking', reverting: 'Reverting', deleting: 'Deleting' }
 </script>
 
 <template>
-  <section class="snapshots">
-    <div class="head">
-      <h2 class="label">Snapshots</h2>
+  <div class="snapshots">
+    <div class="vm-sub-head">
+      <span class="label">Snapshots</span>
       <button
         v-if="canWrite && !taking"
+        type="button"
         class="btn small"
         :disabled="busy || working || vm.status !== 'ready'"
         @click="taking = true"
@@ -95,56 +101,61 @@ const doing: Record<string, string> = { creating: 'Taking', reverting: 'Revertin
 
     <form v-if="taking" class="take" @submit.prevent="take">
       <label class="field">
-        <span class="label">Name</span>
+        <span class="name-label">Name</span>
         <input id="snapshot-name" v-model="name" maxlength="64" placeholder="The date and time" />
       </label>
-      <button type="button" class="btn small" @click="taking = false">Cancel</button>
-      <button class="btn small primary" :disabled="busy">Take</button>
+      <button type="button" class="btn" @click="taking = false">Cancel</button>
+      <button class="btn primary" :disabled="busy">Take</button>
     </form>
 
-    <ul v-if="snapshots?.length" class="list">
-      <li v-for="s in snapshots" :key="s.id">
-        <StatusLed :tone="tone(s)" />
-        <span class="main">
-          <span class="name">{{ s.name }}</span>
+    <div v-if="snapshots?.length" class="vm-rows">
+      <ul :class="{ all }">
+        <li v-for="s in shown" :key="s.id">
+          <StatusLed :tone="tone(s)" />
+          <strong class="name">{{ s.name }}</strong>
           <span class="muted" :title="new Date(s.created_at).toLocaleString()">{{ ago(s.created_at) }}</span>
-        </span>
-        <span v-if="canWrite && s.state !== 'creating'" class="actions">
-          <button
-            v-if="s.state === 'ready'"
-            class="btn small"
-            :disabled="busy || working"
-            :title="stopped ? undefined : 'Stop the VM to revert it'"
-            @click="reverting = s"
-          >
-            Revert…
-          </button>
-          <button
-            v-if="s.state === 'ready' || s.state === 'failed'"
-            class="btn small danger"
-            :disabled="busy || working"
-            @click="deleting = s"
-          >
-            Delete…
-          </button>
-        </span>
-        <span class="meta">
-          <span v-if="doing[s.state]" class="tag">{{ doing[s.state] }}</span>
-          <span
-            v-if="s.state === 'ready' && s.consistent != null"
-            class="tag"
-            :title="
-              s.consistent
-                ? 'The VM was stopped, or its guest agent froze its file systems'
-                : 'Taken without a guest agent: as after a crash, which journaling file systems recover from'
-            "
-            >{{ s.consistent ? 'Consistent' : 'Crash-consistent' }}</span
-          >
-          <span v-if="s.error" class="error-text">{{ s.error }}</span>
-        </span>
-      </li>
-    </ul>
-    <p v-else-if="snapshots && !taking" class="muted">
+          <span v-if="canWrite && s.state !== 'creating'" class="end">
+            <button
+              v-if="s.state === 'ready'"
+              type="button"
+              class="btn small"
+              :disabled="busy || working"
+              :title="stopped ? undefined : 'Stop the VM to revert it'"
+              @click="reverting = s"
+            >
+              Revert…
+            </button>
+            <button
+              v-if="s.state === 'ready' || s.state === 'failed'"
+              type="button"
+              class="btn small danger"
+              :disabled="busy || working"
+              @click="deleting = s"
+            >
+              Delete…
+            </button>
+          </span>
+          <span class="meta">
+            <span v-if="doing[s.state]" class="tag">{{ doing[s.state] }}</span>
+            <span
+              v-if="s.state === 'ready' && s.consistent != null"
+              class="tag"
+              :title="
+                s.consistent
+                  ? 'The VM was stopped, or its guest agent froze its file systems'
+                  : 'Taken without a guest agent: as after a crash, which journaling file systems recover from'
+              "
+              >{{ s.consistent ? 'Consistent' : 'Crash-consistent' }}</span
+            >
+            <span v-if="s.error" class="error-text">{{ s.error }}</span>
+          </span>
+        </li>
+      </ul>
+      <button v-if="snapshots.length > FEW" type="button" class="more-rows" @click="all = !all">
+        {{ all ? 'Show fewer' : `Show ${snapshots.length - FEW} more snapshots` }}
+      </button>
+    </div>
+    <p v-else-if="snapshots && !taking" class="vm-none">
       No snapshots. A snapshot keeps the VM’s disks as they are now, to put them back to later.
     </p>
     <p v-if="error" class="error-text" role="alert">{{ error }}</p>
@@ -174,7 +185,7 @@ const doing: Record<string, string> = { creating: 'Taking', reverting: 'Revertin
         </footer>
       </form>
     </ModalDialog>
-  </section>
+  </div>
 </template>
 
 <style scoped>
@@ -182,12 +193,6 @@ const doing: Record<string, string> = { creating: 'Taking', reverting: 'Revertin
   display: grid;
   align-content: start;
   gap: 10px;
-}
-.head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
 }
 .take {
   display: flex;
@@ -199,39 +204,12 @@ const doing: Record<string, string> = { creating: 'Taking', reverting: 'Revertin
   flex: 1;
   min-width: 140px;
 }
-.list {
-  display: grid;
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.name-label {
+  font-size: 12px;
+  color: var(--muted);
 }
-.list li {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: 4px 8px;
-}
-.list .main {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  min-width: 0;
-}
-.list .name {
+.name {
+  font-weight: 500;
   overflow-wrap: anywhere;
-}
-.list .actions {
-  display: flex;
-  gap: 6px;
-}
-.list .meta {
-  grid-column: 2 / -1;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.list .meta:empty {
-  display: none;
 }
 </style>

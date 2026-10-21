@@ -1,12 +1,20 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api, errorText, ok, type ExternalNetwork } from '../api/client'
-import InfraTabs from '../components/InfraTabs.vue'
 import ModalDialog from '../components/ModalDialog.vue'
 import { useLiveRefresh } from '../stores/live'
 
 const nets = ref<ExternalNetwork[] | null>(null)
 const error = ref('')
+
+// A network's gateway hosts, a few at a time.
+const HOST_LIMIT = 4
+const allHosts = ref(new Set<string>())
+function toggleHosts(id: string) {
+  const s = new Set(allHosts.value)
+  if (!s.delete(id)) s.add(id)
+  allHosts.value = s
+}
 
 async function load() {
   nets.value = await ok(api.GET('/api/v1/external-networks'))
@@ -58,15 +66,14 @@ async function submit() {
 
 <template>
   <section>
-    <InfraTabs />
     <header class="page-head">
       <h1>External networks</h1>
+      <span v-if="nets" class="mono muted">{{ nets.length }}</span>
       <div class="actions"><button class="btn primary" @click="edit()">Add external network</button></div>
     </header>
     <p class="intro">
-      Networks outside metastratum that VPCs route to: the internet uplink, a datacenter VLAN. Each is a physical network
-      on the hosts’ OVS bridges (<span class="mono">ovn-bridge-mappings</span>); VPC gateways run on hosts that reach it.
-      Tenants use the ones granted to them.
+      Networks outside metastratum that VPCs route to, such as the internet uplink. Each is a physical network in the
+      hosts’ <span class="mono">ovn-bridge-mappings</span>.
     </p>
 
     <div v-if="nets && !nets.length" class="empty-state">
@@ -88,19 +95,38 @@ async function submit() {
         <tbody>
           <tr v-for="n in nets" :key="n.id">
             <td>
-              <strong>{{ n.name }}</strong>
-              <div class="mono muted">{{ n.physical_network }}</div>
+              <div class="stack">
+                <strong>{{ n.name }}</strong>
+                <span class="mono muted small">{{ n.physical_network }}</span>
+              </div>
             </td>
-            <td class="mono">{{ n.cidr }}<div class="muted">gw {{ n.gateway }}</div></td>
-            <td class="mono">{{ n.pool_start }} – {{ n.pool_end }}</td>
             <td>
-              <template v-if="n.hosts.length">{{ n.hosts.join(', ') }}</template>
+              <div class="stack">
+                <span class="mono">{{ n.cidr }}</span>
+                <span class="mono muted small">gw {{ n.gateway }}</span>
+              </div>
+            </td>
+            <td class="mono nowrap">{{ n.pool_start }} – {{ n.pool_end }}</td>
+            <td>
+              <div v-if="n.hosts.length" class="hosts mono">
+                <RouterLink v-for="h in allHosts.has(n.id) ? n.hosts : n.hosts.slice(0, HOST_LIMIT)" :key="h" to="/hosts">
+                  {{ h }}
+                </RouterLink>
+                <button v-if="n.hosts.length > HOST_LIMIT" type="button" class="more" @click="toggleHosts(n.id)">
+                  {{ allHosts.has(n.id) ? 'Show fewer' : `+${n.hosts.length - HOST_LIMIT} more` }}
+                </button>
+              </div>
               <span v-else class="error-text">No host reaches it</span>
             </td>
             <td class="num mono">{{ n.used }}</td>
             <td class="end">
               <button class="btn small" @click="edit(n)">Edit</button>
-              <button class="btn small danger" :disabled="n.used > 0" @click="((error = ''), (dialog = { kind: 'delete', net: n }))">
+              <button
+                class="btn small danger"
+                :disabled="n.used > 0"
+                :title="n.used > 0 ? `In use by ${n.used} addresses: release them first` : undefined"
+                @click="((error = ''), (dialog = { kind: 'delete', net: n }))"
+              >
                 Delete
               </button>
             </td>
@@ -144,7 +170,7 @@ async function submit() {
               <input v-model="form.pool_start" required class="mono" />
             </label>
             <label class="field">
-              <span class="label">to</span>
+              <span class="label">To</span>
               <input v-model="form.pool_end" required class="mono" />
             </label>
           </div>
@@ -166,7 +192,30 @@ async function submit() {
 .end .btn + .btn {
   margin-left: 6px;
 }
-.data td div {
-  font-size: 12px;
+.stack {
+  display: grid;
+  gap: 2px;
+}
+.small {
+  font-size: 11px;
+}
+.nowrap {
+  white-space: nowrap;
+}
+.hosts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+.more {
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--panel);
+  color: var(--ink);
+  font: 500 12px var(--font-body);
+  cursor: pointer;
 }
 </style>

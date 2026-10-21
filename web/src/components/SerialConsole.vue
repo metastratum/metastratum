@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { api, ApiError, ok, wsUrl } from '../api/client'
+import StatusLed from './StatusLed.vue'
 
 const props = defineProps<{ vmId: string }>()
 const host = ref<HTMLDivElement>()
@@ -47,6 +48,11 @@ async function connect() {
   }
 }
 
+const tone = computed(() => (status.value === 'connected' ? 'on' : status.value === 'connecting' ? 'busy' : 'fault'))
+const statusText = computed(() =>
+  status.value === 'connected' ? 'Connected' : status.value === 'connecting' ? 'Connecting…' : 'Disconnected',
+)
+
 onMounted(() => {
   if (!host.value) return
   term.open(host.value)
@@ -64,27 +70,38 @@ onBeforeUnmount(() => {
 <template>
   <div>
     <div class="toolbar">
-      <span class="label">{{ status === 'connected' ? 'Connected' : status === 'connecting' ? 'Connecting…' : 'Disconnected' }}</span>
-      <button v-if="status === 'closed'" class="btn primary" @click="connect">Reconnect</button>
+      <StatusLed :tone="tone" :label="statusText" class="label" />
+      <template v-if="status === 'closed'">
+        <span v-if="message" class="muted">{{ message }}</span>
+        <button type="button" class="btn primary reconnect" @click="connect">Reconnect</button>
+      </template>
     </div>
-    <p v-if="status === 'closed' && message" class="muted">{{ message }}</p>
-    <div ref="host" class="term" />
+    <div ref="host" role="log" aria-label="Serial output" class="term" :class="{ closed: status === 'closed' }" />
   </div>
 </template>
 
 <style scoped>
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  gap: 10px;
   min-height: 32px;
   margin-bottom: 10px;
 }
+.reconnect {
+  margin-left: auto;
+}
 .term {
   height: 60vh;
-  padding: 10px;
+  min-height: 420px;
+  padding: 14px 16px;
+  overflow: hidden;
   border-radius: var(--radius);
   background: #000;
+}
+.term.closed {
+  opacity: 0.6;
 }
 .muted {
   color: var(--muted);

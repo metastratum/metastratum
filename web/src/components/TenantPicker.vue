@@ -10,7 +10,7 @@ const indent = (depth: number) => (depth > top.value ? '  '.repeat(depth - top
 
 <template>
   <label v-if="scope.tenants.length > 1" class="picker">
-    <span class="label">Tenant</span>
+    <span class="label">Tenant scope</span>
     <select :value="scope.current" @change="scope.select(($event.target as HTMLSelectElement).value)">
       <option v-for="t in scope.tenants" :key="t.id" :value="t.id">{{ indent(t.depth) }}{{ t.name }}</option>
     </select>
@@ -19,20 +19,20 @@ const indent = (depth: number) => (depth > top.value ? '  '.repeat(depth - top
 
 <style scoped>
 .picker {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 0 8px;
 }
 .label {
   color: rgb(227 232 236 / 55%);
 }
 select {
-  max-width: 220px;
-  height: 30px;
+  width: 100%;
+  height: 34px;
   padding: 0 8px;
   border: 1px solid rgb(227 232 236 / 22%);
   border-radius: var(--radius);
-  background: transparent;
+  background: rgb(255 255 255 / 5%);
   color: var(--bar-ink);
   font: 500 13px var(--font-body);
 }

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api, errorText, ok, type BackupRepository } from '../api/client'
-import InfraTabs from '../components/InfraTabs.vue'
 import ModalDialog from '../components/ModalDialog.vue'
 import { ago } from '../state'
 import { useLiveRefresh } from '../stores/live'
@@ -54,15 +53,12 @@ async function submit() {
 
 <template>
   <section>
-    <InfraTabs />
     <header class="page-head">
       <h1>Backup repositories</h1>
+      <span v-if="repos" class="mono muted">{{ repos.length }}</span>
       <div class="actions"><button class="btn primary" @click="add()">Add repository</button></div>
     </header>
-    <p class="intro">
-      Where VM backups are kept: NFS exports the hosts mount, apart from the storage VMs run on, so backups survive
-      losing that. Tenants use the ones granted to them.
-    </p>
+    <p class="intro">NFS exports where VM backups are kept, apart from the storage VMs run on.</p>
 
     <div v-if="repos && !repos.length" class="empty-state">
       <p>No backup repositories. Without one, VMs can’t be backed up.</p>
@@ -102,11 +98,12 @@ async function submit() {
     >
       <form class="form" @submit.prevent="submit">
         <template v-if="dialog.kind === 'delete'">
-          <p>
-            Delete <strong>{{ dialog.repo.name }}</strong
-            >? Only a repository without backups can go: delete those first. Hosts unmount it; the files on the server
-            stay. VM schedules that use it stop.
-          </p>
+          <p>Delete <strong>{{ dialog.repo.name }}</strong>?</p>
+          <ul class="consequences">
+            <li>Only a repository without backups can go: delete those first.</li>
+            <li>Hosts unmount it; the files on the server stay.</li>
+            <li>VM schedules that use it stop.</li>
+          </ul>
         </template>
         <template v-else>
           <label class="field">
@@ -128,7 +125,7 @@ async function submit() {
             <input id="repo-options" v-model="form.options" class="mono" placeholder="vers=4.2,hard,noatime" />
           </label>
           <p class="muted">
-            QEMU writes the backups as root: export it with <span class="mono">no_root_squash</span> to the hosts.
+            QEMU writes backups as root: export it with <span class="mono">no_root_squash</span> to the hosts.
           </p>
         </template>
         <p v-if="error" class="error-text" role="alert">{{ error }}</p>
@@ -142,3 +139,13 @@ async function submit() {
     </ModalDialog>
   </section>
 </template>
+
+<style scoped>
+.consequences {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+</style>

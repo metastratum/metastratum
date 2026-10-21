@@ -2,11 +2,14 @@
 import { computed, ref, watch } from 'vue'
 import { api, errorText, ok, type FloatingIp, type Schemas, type Vm } from '../api/client'
 import ModalDialog from '../components/ModalDialog.vue'
-import NetTabs from '../components/NetTabs.vue'
+import ListPager from '../components/ListPager.vue'
+import { usePaging } from '../paging'
 import { useLiveRefresh } from '../stores/live'
 import { useScope } from '../stores/scope'
+import { useSession } from '../stores/session'
 
 const scope = useScope()
+const session = useSession()
 const ips = ref<FloatingIp[] | null>(null)
 const vms = ref<Vm[]>([])
 const externals = ref<Schemas['UsableExternalNetwork'][]>([])
@@ -37,6 +40,11 @@ const nics = computed(() =>
     vm.nics.map((n) => ({ id: n.id, label: `${vm.name} (${n.ip}${n.network_name ? ` on ${n.network_name}` : ''})` })),
   ),
 )
+
+/** The address a NIC has on its network: where its floating IP forwards. */
+const nicIp = computed(() => new Map(vms.value.flatMap((vm) => vm.nics.map((n) => [n.id, n.ip] as const))))
+
+const { page, perPage, shown } = usePaging(computed(() => ips.value ?? []))
 
 const dialog = ref<{ kind: 'allocate' } | { kind: 'attach'; ip: FloatingIp } | null>(null)
 const form = ref({ external: '', nic: '' as string | null })
@@ -86,16 +94,23 @@ async function release(ip: FloatingIp) {
 
 <template>
   <section>
-    <NetTabs />
     <header class="page-head">
       <h1>Floating IPs</h1>
+      <span v-if="ips" class="mono muted">{{ ips.length }}</span>
       <div v-if="canWrite" class="actions">
-        <button class="btn primary" :disabled="!externals.length" @click="open({ kind: 'allocate' })">Allocate address</button>
+        <button
+          class="btn primary"
+          :disabled="!externals.length"
+          :title="externals.length ? undefined : 'No external network is available'"
+          @click="open({ kind: 'allocate' })"
+        >
+          Allocate address
+        </button>
       </div>
     </header>
     <p class="intro">
-      An address on an external network that forwards to a VM, so it can be reached from outside. The VM’s VPC must
-      route to that external network, and its security groups decide what gets through.
+      An external address that forwards to a VM. Its VPC must route to that network; its security groups decide what
+      gets through.
     </p>
     <p v-if="error" class="error-text" role="alert">{{ error }}</p>
 
@@ -104,34 +119,43 @@ async function release(ip: FloatingIp) {
       <p v-else-if="scope.solo">There is no external network yet: create one under Infrastructure → External networks.</p>
       <p v-else>No external network is available to {{ scope.tenant?.name }}. Ask an administrator of the tenant above it.</p>
     </div>
-    <div v-else-if="ips" class="table-wrap">
-      <table class="data">
-        <thead>
-          <tr>
-            <th>Address</th>
-            <th>Network</th>
-            <th>Forwards to</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="ip in ips" :key="ip.id">
-            <td class="mono strong">{{ ip.ip }}</td>
-            <td>{{ ip.external_network_name }}</td>
-            <td>
-              <RouterLink v-if="ip.vm_id" :to="{ name: 'vm', params: { id: ip.vm_id } }">{{ ip.vm_name }}</RouterLink>
-              <span v-else class="muted">Nothing</span>
-            </td>
-            <td class="end">
-              <template v-if="canWrite">
-                <button class="btn small" @click="open({ kind: 'attach', ip })">{{ ip.vm_id ? 'Move' : 'Attach' }}</button>
-                <button class="btn small danger" @click="release(ip)">Release</button>
-              </template>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <template v-else-if="ips">
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>Address</th>
+              <th>Network</th>
+              <th>Forwards to</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="ip in shown" :key="ip.id">
+              <td class="mono strong">{{ ip.ip }}</td>
+              <td>
+                <RouterLink v-if="session.me?.provider_admin" to="/external-networks">{{ ip.external_network_name }}</RouterLink>
+                <template v-else>{{ ip.external_network_name }}</template>
+              </td>
+              <td>
+                <template v-if="ip.vm_id">
+                  <RouterLink :to="{ name: 'vm', params: { id: ip.vm_id } }">{{ ip.vm_name }}</RouterLink>
+                  <span v-if="ip.nic_id && nicIp.get(ip.nic_id)" class="mono muted target">{{ nicIp.get(ip.nic_id) }}</span>
+                </template>
+                <span v-else class="muted">Nothing</span>
+              </td>
+              <td class="end">
+                <template v-if="canWrite">
+                  <button class="btn small" @click="open({ kind: 'attach', ip })">{{ ip.vm_id ? 'Move' : 'Attach' }}</button>
+                  <button class="btn small danger" @click="release(ip)">Release</button>
+                </template>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <ListPager v-model:page="page" v-model:per-page="perPage" :total="ips.length" class="pager" />
+    </template>
 
     <ModalDialog v-if="dialog" :title="dialog.kind === 'allocate' ? 'Allocate a floating IP' : `Forward ${dialog.ip.ip}`" @close="dialog = null">
       <form class="form" @submit.prevent="submit">
@@ -159,8 +183,14 @@ async function release(ip: FloatingIp) {
 </template>
 
 <style scoped>
+.page-head {
+  margin-bottom: 4px;
+}
 .strong {
   font-weight: 600;
+}
+.target {
+  margin-left: 8px;
 }
 .end .btn + .btn {
   margin-left: 6px;

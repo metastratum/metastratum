@@ -1,18 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api, ApiError, errorText, ok, type Cluster, type Host, type Schemas, type Vm } from '../api/client'
+import ClusterDialog from '../components/ClusterDialog.vue'
 import FencingForm from '../components/FencingForm.vue'
-import HostFaceplate from '../components/HostFaceplate.vue'
-import InfraTabs from '../components/InfraTabs.vue'
 import ModalDialog from '../components/ModalDialog.vue'
 import SplitButton from '../components/SplitButton.vue'
+import StatusLed from '../components/StatusLed.vue'
 import TypeToConfirm from '../components/TypeToConfirm.vue'
-import { mib } from '../state'
+import { mib, vmState } from '../state'
 import { useLiveRefresh } from '../stores/live'
 
 const hosts = ref<Host[] | null>(null)
-const inService = computed(() => (hosts.value ?? []).filter((h) => h.state !== 'decommissioned'))
-const retired = computed(() => (hosts.value ?? []).filter((h) => h.state === 'decommissioned'))
 const vms = ref<Vm[]>([])
 const token = ref<Schemas['JoinTokenView'] | null>(null)
 const tokenError = ref('')
@@ -150,11 +148,107 @@ async function saveHost() {
 onMounted(load)
 useLiveRefresh(['host', 'vm', 'cluster'], load)
 
+// A host's VMs, the largest first.
 const byHost = computed(() => {
   const m = new Map<string, Vm[]>()
   for (const vm of vms.value) if (vm.host_id) m.set(vm.host_id, [...(m.get(vm.host_id) ?? []), vm])
+  for (const list of m.values()) list.sort((a, b) => b.memory_mib - a.memory_mib)
   return m
 })
+
+// The hosts by cluster; then those in none, and those retired for good.
+type Group = { key: string; title: string; cluster?: Cluster; note?: string; hosts: Host[] }
+const groups = computed<Group[]>(() => {
+  const all = hosts.value ?? []
+  const live = all.filter((h) => h.state !== 'decommissioned')
+  const out: Group[] = [...clusters.value]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((c) => ({ key: c.id, title: c.name, cluster: c, hosts: live.filter((h) => h.cluster_id === c.id) }))
+  const loose = live.filter((h) => !h.cluster_id)
+  if (loose.length) {
+    out.push({ key: 'none', title: 'Not in a cluster', note: 'Nothing is placed on these hosts until they join a cluster.', hosts: loose })
+  }
+  const retired = all.filter((h) => h.state === 'decommissioned')
+  if (retired.length) {
+    out.push({ key: 'retired', title: 'Decommissioned', note: 'Taken out of service for good, and kept here for the record.', hosts: retired })
+  }
+  return out
+})
+const collapsed = ref(new Set<string>())
+function toggle(key: string) {
+  const s = new Set(collapsed.value)
+  if (!s.delete(key)) s.add(key)
+  collapsed.value = s
+}
+const summary = (g: Group) => {
+  const n = g.hosts.reduce((sum, h) => sum + (byHost.value.get(h.id)?.length ?? 0), 0)
+  return `${g.hosts.length} host${g.hosts.length === 1 ? '' : 's'} · ${n} VM${n === 1 ? '' : 's'}`
+}
+const totals = (g: Group) =>
+  `${g.hosts.reduce((n, h) => n + h.cpu_count, 0)} cpu · ${mib(g.hosts.reduce((n, h) => n + h.memory_mib, 0))}`
+
+type Tag = { label: string; title?: string; tone?: 'ha' | 'warn' | 'fault' }
+function clusterTags(c: Cluster): Tag[] {
+  const disk = [c.vm_disk_iops && `${c.vm_disk_iops} IOPS`, c.vm_disk_mbps && `${c.vm_disk_mbps} MB/s`].filter(Boolean)
+  return [
+    { label: `cpu ×${c.cpu_overcommit}` },
+    { label: `mem ×${c.memory_overcommit}` },
+    ...(c.vm_net_mbps ? [{ label: `net ${c.vm_net_mbps} Mbit/s`, title: 'Network limit per VM NIC, each way' }] : []),
+    ...(disk.length ? [{ label: `disk ${disk.join(' · ')}`, title: 'Disk limits per VM disk' }] : []),
+    ...(c.ha_enabled ? [{ label: 'HA', title: 'Failed hosts are fenced and their VMs restarted elsewhere', tone: 'ha' as const }] : []),
+  ]
+}
+/** What keeps a host from taking every VM, or wants a hand. */
+function hostTags(h: Host): Tag[] {
+  if (h.state === 'decommissioned') return []
+  const out: Tag[] = []
+  if (!h.kvm) out.push({ label: 'No KVM', tone: 'fault' })
+  if (h.state === 'maintenance') out.push({ label: 'Maintenance', title: 'No new VMs are placed here' })
+  if (h.state === 'fenced') out.push({ label: 'Fenced', title: 'It failed and was powered off; its VMs were moved', tone: 'fault' })
+  if (h.connected && !h.migration_ready) {
+    out.push({ label: 'No migration', title: "The agent finds no group QEMU runs in, to give migrations' TLS keys to", tone: 'warn' })
+  }
+  if (h.connected && !h.tpm) out.push({ label: 'No TPM', title: 'swtpm is not installed: VMs with a TPM do not run here', tone: 'warn' })
+  if (h.connected && !h.secure_boot) {
+    out.push({ label: 'No Secure Boot', title: 'No OVMF firmware with Secure Boot: VMs with Secure Boot do not run here', tone: 'warn' })
+  }
+  if (h.pending_facts) {
+    out.push({ label: 'Changes waiting', title: 'It reports changes about itself that wait for you to accept them (Manage)', tone: 'warn' })
+  }
+  if (h.cannot_run.length) {
+    out.push({
+      label: `${h.cannot_run.length} VM${h.cannot_run.length === 1 ? '' : 's'} can’t run here`,
+      title: `Its CPU lacks features these VMs of its cluster use, so they do not move here: ${h.cannot_run.join(', ')}. Fit their CPU to the cluster (Settings) to change that.`,
+      tone: 'warn',
+    })
+  }
+  return out
+}
+const stateOf = (h: Host) =>
+  h.state === 'decommissioned'
+    ? { tone: 'off' as const, text: 'Decommissioned' }
+    : h.connected
+      ? { tone: 'on' as const, text: 'Connected' }
+      : { tone: 'fault' as const, text: 'Not connected' }
+/** Each VM's share of the host's memory. */
+const share = (h: Host, vm: Vm) => `${((vm.memory_mib / Math.max(h.memory_mib, 1)) * 100).toFixed(2)}%`
+
+// A host's VMs, a few at a time.
+const VM_LIMIT = 4
+const allVms = ref(new Set<string>())
+function toggleVms(id: string) {
+  const s = new Set(allVms.value)
+  if (!s.delete(id)) s.add(id)
+  allVms.value = s
+}
+const shownVms = (h: Host) => (byHost.value.get(h.id) ?? []).slice(0, allVms.value.has(h.id) ? undefined : VM_LIMIT)
+
+// Clusters: add, edit, delete.
+const clusterDialog = ref<{ cluster?: Cluster; remove?: boolean } | null>(null)
+async function clusterSaved() {
+  clusterDialog.value = null
+  await load()
+}
 
 function addHost() {
   adding.value = true
@@ -176,29 +270,150 @@ async function createToken() {
 
 <template>
   <section>
-    <InfraTabs />
-    <header class="head">
-      <h1>Hosts</h1>
-      <button class="btn primary" @click="addHost">Add host</button>
+    <header class="page-head">
+      <h1>Hosts &amp; clusters</h1>
+      <div class="actions">
+        <button class="btn" @click="clusterDialog = {}">Add cluster</button>
+        <button class="btn primary" @click="addHost">Add host</button>
+      </div>
     </header>
-    <p class="intro">Each bar is a host’s memory. VMs take up space in proportion to what they were given.</p>
+    <p class="intro">
+      A cluster is a group of hosts that VMs are placed on. Tenants are given clusters to use; overcommit sets how much
+      more vCPU and memory VMs may be given than the hosts have. Each bar is a host’s memory: VMs take up space in
+      proportion to what they were given.
+    </p>
 
-    <div v-if="hosts && !hosts.length" class="empty">
+    <div v-if="hosts && !hosts.length" class="empty-state">
       <p>No hosts are enrolled. Add a hypervisor so VMs have somewhere to run.</p>
       <button class="btn primary" @click="addHost">Add host</button>
     </div>
-    <template v-else-if="hosts">
-      <div class="rack">
-        <HostFaceplate v-for="h in inService" :key="h.id" :host="h" :vms="byHost.get(h.id) ?? []" @manage="manage(h)" />
-      </div>
-      <template v-if="retired.length">
-        <h2 class="retired-head">Decommissioned</h2>
-        <p class="muted">Taken out of service for good, and kept here for the record.</p>
-        <div class="rack retired">
-          <HostFaceplate v-for="h in retired" :key="h.id" :host="h" :vms="[]" />
-        </div>
-      </template>
-    </template>
+    <div v-if="hosts" class="groups">
+      <section v-for="g in groups" :key="g.key" class="group">
+        <header>
+          <button
+            type="button"
+            class="fold"
+            :aria-expanded="!collapsed.has(g.key)"
+            :aria-label="`${collapsed.has(g.key) ? 'Show' : 'Hide'} ${g.title} hosts`"
+            @click="toggle(g.key)"
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" :class="{ shut: collapsed.has(g.key) }">
+              <path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+            </svg>
+          </button>
+          <h2>{{ g.title }}</h2>
+          <span class="mono muted">{{ summary(g) }}</span>
+          <span v-if="g.cluster" class="mono muted">{{ totals(g) }}</span>
+          <span v-for="t in g.cluster ? clusterTags(g.cluster) : []" :key="t.label" class="tag" :class="t.tone" :title="t.title">
+            {{ t.label }}
+          </span>
+          <div v-if="g.cluster" class="buttons">
+            <button class="btn small" @click="clusterDialog = { cluster: g.cluster }">Edit</button>
+            <button class="btn small danger" @click="clusterDialog = { cluster: g.cluster, remove: true }">Delete</button>
+          </div>
+        </header>
+        <p v-if="g.note" class="note muted">{{ g.note }}</p>
+        <template v-if="!collapsed.has(g.key)">
+          <p v-if="!g.hosts.length" class="note muted none">No hosts. Move hosts into it with Manage.</p>
+          <div v-else class="scroll">
+            <table class="data">
+              <thead>
+                <tr>
+                  <th>Host</th>
+                  <th>State</th>
+                  <th>Address</th>
+                  <th class="num">CPU</th>
+                  <th>Memory</th>
+                  <th>VMs</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="h in g.hosts"
+                  :key="h.id"
+                  :class="{ retired: h.state === 'decommissioned', down: h.state !== 'decommissioned' && !h.connected }"
+                >
+                  <td>
+                    <div class="host">
+                      <strong class="mono">{{ h.name }}</strong>
+                      <span class="platform">
+                        {{ h.cpu_model || 'unknown cpu' }} · libvirt {{ h.libvirt_version }} · agent {{ h.agent_version }}
+                      </span>
+                      <div v-if="hostTags(h).length" class="tags">
+                        <span v-for="t in hostTags(h)" :key="t.label" class="tag" :class="t.tone" :title="t.title">
+                          {{ t.label }}
+                        </span>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="nowrap"><StatusLed :tone="stateOf(h).tone" :label="stateOf(h).text" /></td>
+                  <td class="mono">{{ h.address }}</td>
+                  <td class="num mono">{{ h.cpu_count }}</td>
+                  <td>
+                    <div class="memory">
+                    <div
+                      class="meter"
+                      role="meter"
+                      :aria-valuenow="Math.round((h.allocated_memory_mib / Math.max(h.memory_mib, 1)) * 100)"
+                      aria-valuemin="0"
+                      aria-valuemax="100"
+                      :aria-label="`${h.name} memory allocated`"
+                    >
+                      <span
+                        v-for="vm in byHost.get(h.id) ?? []"
+                        :key="vm.id"
+                        :class="{ off: vm.power !== 'running' }"
+                        :style="{ width: share(h, vm) }"
+                        :title="`${vm.name} · ${mib(vm.memory_mib)}`"
+                      />
+                    </div>
+                    <span class="mono muted">
+                      {{ h.state === 'decommissioned' ? '—' : `${mib(h.allocated_memory_mib)} / ${mib(h.memory_mib)}` }}
+                    </span>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="vms">
+                      <RouterLink
+                        v-for="vm in shownVms(h)"
+                        :key="vm.id"
+                        :to="{ name: 'vm', params: { id: vm.id } }"
+                        :title="`${vm.name} · ${mib(vm.memory_mib)} · ${vmState(vm).text}`"
+                      >
+                        <StatusLed :tone="vmState(vm).tone" />{{ vm.name }}
+                      </RouterLink>
+                      <button
+                        v-if="(byHost.get(h.id)?.length ?? 0) > VM_LIMIT"
+                        type="button"
+                        class="more"
+                        :aria-expanded="allVms.has(h.id)"
+                        @click="toggleVms(h.id)"
+                      >
+                        {{ allVms.has(h.id) ? 'Show fewer' : `+${(byHost.get(h.id)?.length ?? 0) - VM_LIMIT} more` }}
+                      </button>
+                    </div>
+                  </td>
+                  <td class="end">
+                    <button v-if="h.state !== 'decommissioned'" type="button" class="btn small" @click="manage(h)">
+                      Manage
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
+      </section>
+    </div>
+
+    <ClusterDialog
+      v-if="clusterDialog"
+      :cluster="clusterDialog.cluster"
+      :remove="clusterDialog.remove"
+      @close="clusterDialog = null"
+      @saved="clusterSaved"
+    />
 
     <ModalDialog v-if="adding" title="Add host" @close="adding = false">
       <div class="body">
@@ -314,7 +529,7 @@ async function createToken() {
       </form>
     </ModalDialog>
 
-    <ModalDialog v-if="managing" :title="`Manage ${managing.name}`" @close="managing = null">
+    <ModalDialog v-if="managing" class="drawer" :title="`Manage ${managing.name}`" @close="managing = null">
       <form class="form" @submit.prevent="saveHost">
         <label class="field">
           <span class="label">Cluster</span>
@@ -406,46 +621,186 @@ async function createToken() {
 </template>
 
 <style scoped>
-.retired-head {
-  margin: 28px 0 4px;
+.page-head {
+  margin-bottom: 8px;
 }
-.rack.retired {
+.empty-state {
+  margin-bottom: 18px;
+}
+.groups {
+  display: grid;
+  gap: 18px;
+}
+.group {
+  min-width: 0;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.group > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--rule);
+}
+.group h2 {
+  font-size: 16px;
+}
+.fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-left: -6px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--ink);
+  cursor: pointer;
+}
+.fold:hover {
+  background: var(--sunken);
+}
+.fold svg.shut {
+  transform: rotate(-90deg);
+}
+.buttons {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.note {
+  margin: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--rule);
+}
+.note.none {
+  border-bottom: 0;
+}
+.scroll {
+  overflow-x: auto;
+}
+.data td {
+  padding-block: 12px;
+}
+.data th:first-child,
+.data td:first-child {
+  padding-left: 16px;
+}
+.data th:last-child,
+.data td:last-child {
+  padding-right: 16px;
+}
+tr.retired {
   opacity: 0.6;
+}
+tr.down {
+  opacity: 0.75;
+}
+.host {
+  display: grid;
+  gap: 4px;
+}
+.host strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+.platform {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+/* Tags that mean something: good, worth a look, broken. */
+.tag.ha {
+  border-color: var(--led-on);
+  color: color-mix(in srgb, var(--led-on) 70%, var(--ink));
+}
+.tag.warn {
+  border-color: var(--led-busy);
+  color: color-mix(in srgb, var(--led-busy) 60%, var(--ink));
+}
+.tag.fault {
+  border-color: var(--led-fault);
+  color: color-mix(in srgb, var(--led-fault) 75%, var(--ink));
+}
+.nowrap {
+  white-space: nowrap;
+}
+.memory {
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+}
+/* The host's memory: a segment per VM, in proportion to what it was given. */
+.meter {
+  display: flex;
+  gap: 1px;
+  height: 10px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--sunken);
+}
+.meter span {
+  flex: none;
+  height: 100%;
+  background: var(--ink);
+}
+.meter span.off {
+  background: repeating-linear-gradient(135deg, var(--led-off) 0 2px, var(--sunken) 2px 4px);
+}
+.memory .mono {
+  font-size: 11px;
+}
+.vms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.vms a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.vms a:hover {
+  text-decoration: underline;
+}
+.more {
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--panel);
+  color: var(--ink);
+  font: 500 12px var(--font-body);
+  white-space: nowrap;
+  cursor: pointer;
+}
+/* Managing a host: a panel at the side, over the page. */
+.modal.drawer {
+  width: min(540px, 100vw);
+  max-width: 100vw;
+  height: 100vh;
+  max-height: 100vh;
+  margin: 0 0 0 auto;
+  border-width: 0 0 0 1px;
+  border-radius: 0;
 }
 .report {
   margin: 0;
   padding-left: 18px;
   display: grid;
   gap: 6px;
-}
-.head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-h1 {
-  font-size: 22px;
-}
-.intro {
-  margin: 0 0 20px;
-  color: var(--muted);
-}
-.rack {
-  display: grid;
-  gap: 10px;
-}
-.empty {
-  display: grid;
-  gap: 14px;
-  justify-items: start;
-  padding: 32px;
-  border: 1px dashed var(--rule);
-  border-radius: var(--radius);
-}
-.empty p {
-  margin: 0;
-  color: var(--muted);
 }
 .body {
   display: grid;
@@ -462,9 +817,6 @@ h1 {
   border-radius: var(--radius);
   background: var(--sunken);
   white-space: pre;
-}
-.muted {
-  color: var(--muted);
 }
 footer {
   display: flex;

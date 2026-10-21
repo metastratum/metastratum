@@ -46,10 +46,10 @@ function tone(state: string) {
   gap: 8px;
   height: 30px;
   padding: 0 10px;
-  border: 1px solid rgb(255 255 255 / 18%);
+  border: 1px solid var(--rule);
   border-radius: var(--radius);
-  background: none;
-  color: inherit;
+  background: var(--panel);
+  color: var(--ink);
   font: 500 13px var(--font-body);
   cursor: pointer;
 }

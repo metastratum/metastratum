@@ -173,20 +173,20 @@ async function save() {
 }
 .grants {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: 16px;
 }
 fieldset {
   display: grid;
   gap: 8px;
   align-content: start;
   margin: 0;
-  padding: 14px;
+  padding: 12px 14px 14px;
   border: 1px solid var(--rule);
   border-radius: var(--radius);
 }
 legend {
-  padding: 0 4px;
+  padding: 0 6px;
 }
 fieldset p {
   margin: 0;
@@ -201,16 +201,29 @@ footer {
   gap: 12px;
   grid-column: 1 / -1;
 }
+/* What the tenant has, a row per kind. */
 .read {
   display: grid;
-  gap: 14px;
+  gap: 10px;
   margin: 0;
+}
+.read > div {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
 }
 .read dd {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 16px;
-  margin: 6px 0 0;
+  margin: 0;
+}
+@media (max-width: 560px) {
+  .read > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
 }
 .item {
   display: inline-flex;

@@ -203,14 +203,19 @@ function used(f: SecondFactor) {
 
     <ul v-if="status?.factors.length" class="factors">
       <li v-for="f in status.factors" :key="f.id">
-        <span v-if="f.name !== KINDS[f.kind]" class="kind label">{{ KINDS[f.kind] ?? f.kind }}</span>
+        <span v-if="f.name !== KINDS[f.kind]" class="tag">{{ KINDS[f.kind] ?? f.kind }}</span>
         <span class="name">{{ f.name }}</span>
         <span class="muted meta">
           added {{ ago(f.created_at) }} · {{ used(f) }}<template v-if="f.site"> · works at {{ f.site }}</template>
         </span>
-        <button type="button" class="btn small" @click="open('remove', f)">Remove</button>
+        <button type="button" class="btn small danger" @click="open('remove', f)">Remove</button>
       </li>
     </ul>
+
+    <div v-if="on && status" class="codes-row">
+      <span class="muted small">{{ status.backup_codes_left }} of 10 backup codes left</span>
+      <button type="button" class="btn small" @click="open('codes')">New backup codes</button>
+    </div>
 
     <div v-if="status" class="add">
       <span class="label">Add</span>
@@ -229,11 +234,6 @@ function used(f: SecondFactor) {
     <p v-if="status && !keysHere" class="muted small">
       Security keys can’t be added at this address: browsers use them only at a domain name over HTTPS.
     </p>
-
-    <div v-if="on && status" class="codes-row">
-      <span class="muted">{{ status.backup_codes_left }} of 10 backup codes left.</span>
-      <button type="button" class="btn small" @click="open('codes')">New backup codes</button>
-    </div>
   </article>
 
   <ModalDialog v-if="mode" :title="step === 'codes' ? 'Save your backup codes' : title" @close="close">
@@ -287,22 +287,24 @@ function used(f: SecondFactor) {
         <p class="muted small">
           Can’t scan it? Enter this key instead: <span class="mono secret-key">{{ groupedSecret }}</span>
         </p>
-        <label class="field">
-          <span class="label">Code from the app</span>
-          <input
-            ref="answerInput"
-            v-model="answer"
-            required
-            inputmode="numeric"
-            autocomplete="one-time-code"
-            pattern="[0-9 ]{6,7}"
-            class="mono"
-          />
-        </label>
-        <label class="field">
-          <span class="label">Name</span>
-          <input v-model="name" required maxlength="64" />
-        </label>
+        <div class="pair">
+          <label class="field">
+            <span class="label">Code</span>
+            <input
+              ref="answerInput"
+              v-model="answer"
+              required
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              pattern="[0-9 ]{6,7}"
+              class="mono"
+            />
+          </label>
+          <label class="field">
+            <span class="label">Name</span>
+            <input v-model="name" required maxlength="64" />
+          </label>
+        </div>
       </template>
 
       <template v-else-if="mode === 'key'">
@@ -336,15 +338,16 @@ function used(f: SecondFactor) {
   display: grid;
   gap: 12px;
   align-content: start;
-  padding: 18px;
+  padding: 16px 18px;
   border: 1px solid var(--rule);
   border-radius: var(--radius);
   background: var(--panel);
 }
 .head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
+  gap: 12px;
 }
 h2 {
   font-size: 15px;
@@ -352,9 +355,7 @@ h2 {
   text-transform: uppercase;
 }
 .state {
-  font: 600 12px var(--font-label);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  flex: none;
 }
 p {
   margin: 0;
@@ -364,55 +365,63 @@ p {
   border-left: 3px solid var(--tape);
   background: var(--sunken);
 }
+/* The factors, a ruled list; each one's Remove at its right. */
 .factors {
-  display: grid;
-  gap: 0;
   margin: 0;
   padding: 0;
   list-style: none;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
 }
 .factors li {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  grid-template-areas: 'kind button' 'name button' 'meta button';
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  column-gap: 12px;
-  padding: 10px 0;
+  gap: 4px 8px;
+  padding: 10px 92px 10px 12px;
+}
+.factors li + li {
   border-top: 1px solid var(--rule);
 }
-.kind {
-  grid-area: kind;
-  font-size: 11px;
-  color: var(--muted);
-}
 .name {
-  grid-area: name;
   font-weight: 500;
 }
 .meta {
-  grid-area: meta;
+  flex-basis: 100%;
   font-size: 12px;
 }
 .factors .btn {
-  grid-area: button;
+  position: absolute;
+  top: 10px;
+  right: 12px;
 }
 .add,
 .codes-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px 10px;
+}
+.add {
+  gap: 6px;
 }
 .add .label {
   margin-right: 4px;
 }
-.codes-row {
-  justify-content: space-between;
-  padding-top: 10px;
-  border-top: 1px solid var(--rule);
+.codes-row .btn {
+  margin-left: auto;
+}
+.pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
 }
 .small {
   font-size: 12px;
+}
+.codes-row .small {
+  font-size: 13px;
 }
 .qr {
   justify-self: center;
@@ -430,12 +439,12 @@ p {
 }
 .code-list {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 6px 24px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 20px;
   margin: 0;
-  padding: 14px 14px 14px 36px;
+  padding: 12px 12px 12px 34px;
   border-radius: var(--radius);
   background: var(--sunken);
-  font-size: 15px;
+  font-size: 13px;
 }
 </style>

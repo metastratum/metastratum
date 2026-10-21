@@ -2,7 +2,6 @@
 import { computed, ref, watch } from 'vue'
 import { api, errorText, ok, type LoadBalancer, type Vm, type Vpc } from '../api/client'
 import ModalDialog from '../components/ModalDialog.vue'
-import NetTabs from '../components/NetTabs.vue'
 import { useLiveRefresh } from '../stores/live'
 import { useScope } from '../stores/scope'
 
@@ -141,31 +140,45 @@ async function remove() {
   }
 }
 
-const listenerText = (lb: LoadBalancer) =>
-  lb.listeners
-    .map((l) => `${l.protocol.toUpperCase()} ${l.port}${l.target_port !== l.port ? ` → ${l.target_port}` : ''}`)
-    .join(', ')
+const listenerText = (l: LoadBalancer['listeners'][number]) =>
+  `${l.protocol.toUpperCase()} ${l.port}${l.target_port != null && l.target_port !== l.port ? ` → ${l.target_port}` : ''}`
+
+/** A member's address in the VPC (its first NIC there). */
+const memberIp = (vm: Vm) => {
+  const nets = new Set(vpc.value?.networks.map((n) => n.id) ?? [])
+  return vm.nics.find((n) => nets.has(n.network_id))?.ip
+}
 </script>
 
 <template>
   <section>
-    <NetTabs />
     <header class="page-head">
       <h1>Load balancers</h1>
+      <span v-if="lbs" class="mono muted">{{ lbs.length }}</span>
       <div v-if="canWrite" class="actions">
-        <button class="btn primary" :disabled="!vpcs.length" @click="open('new')">Create load balancer</button>
+        <button
+          class="btn primary"
+          :disabled="!vpcs.length"
+          :title="vpcs.length ? undefined : 'Create a VPC with a network first'"
+          @click="open('new')"
+        >
+          Create load balancer
+        </button>
       </div>
     </header>
     <p class="intro">
-      An address whose ports spread connections over several VMs, done by the network itself. Put it on the VPC’s
-      external network to be reached from outside, or in one of its networks for its own VMs. Members’ security groups
-      decide who gets through; connections keep the client’s address.
+      Spreads connections to one address over several VMs, done by the network itself: on the VPC’s external network
+      to be reached from outside, or in one of its networks for its own VMs. Members’ security groups decide who gets
+      through, and connections keep the client’s address.
     </p>
     <p v-if="error" class="error-text" role="alert">{{ error }}</p>
 
     <div v-if="lbs && !lbs.length" class="empty-state">
       <p v-if="vpcs.length">No load balancers yet.</p>
-      <p v-else>Create a VPC with a network first.</p>
+      <template v-else>
+        <p>Create a VPC with a network first.</p>
+        <RouterLink to="/networks" class="btn">Go to VPCs</RouterLink>
+      </template>
     </div>
     <div v-else-if="lbs" class="table-wrap">
       <table class="data">
@@ -182,27 +195,35 @@ const listenerText = (lb: LoadBalancer) =>
           <tr v-for="lb in lbs" :key="lb.id">
             <td class="strong">{{ lb.name }}</td>
             <td>
-              <span class="mono">{{ lb.ip }}</span>
-              <span class="muted">
-                {{ lb.external ? 'external' : `in ${networkName(lb.network_id)}` }} · VPC {{ lb.vpc_name }}
-              </span>
+              <div class="stack">
+                <span class="mono">{{ lb.ip }}</span>
+                <span class="muted small">
+                  {{ lb.external ? 'External' : `In ${networkName(lb.network_id)}` }} · VPC {{ lb.vpc_name }}
+                </span>
+              </div>
             </td>
-            <td class="mono">{{ listenerText(lb) || '—' }}</td>
             <td>
-              <template v-for="(m, i) in lb.members" :key="m.nic_id">
-                <template v-if="i">, </template>
-                <RouterLink :to="{ name: 'vm', params: { id: m.vm_id } }">{{ m.vm_name }}</RouterLink>
-              </template>
-              <span v-if="!lb.members.length" class="muted">None</span>
-              <span v-if="lb.health_check && lb.members.length" class="tag" title="Members that do not answer are left out">
-                Checked
-              </span>
+              <div class="chips">
+                <span v-for="(l, i) in lb.listeners" :key="i" class="chip mono">{{ listenerText(l) }}</span>
+                <span v-if="!lb.listeners.length" class="muted">—</span>
+              </div>
+            </td>
+            <td>
+              <div class="members">
+                <RouterLink v-for="m in lb.members" :key="m.nic_id" :to="{ name: 'vm', params: { id: m.vm_id } }">
+                  {{ m.vm_name }}
+                </RouterLink>
+                <span v-if="!lb.members.length" class="muted">None</span>
+                <span v-if="lb.health_check && lb.members.length" class="tag" title="Members that do not answer are left out">
+                  Health-checked
+                </span>
+              </div>
             </td>
             <td class="end">
-              <template v-if="canWrite">
+              <div v-if="canWrite" class="buttons">
                 <button class="btn small" @click="open(lb)">Edit</button>
                 <button class="btn small danger" @click="deleting = lb">Delete…</button>
-              </template>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -244,7 +265,7 @@ const listenerText = (lb: LoadBalancer) =>
               <option value="udp">UDP</option>
             </select>
             <input v-model.number="l.port" type="number" min="1" max="65535" required aria-label="Port" placeholder="Port" />
-            <span class="muted">to</span>
+            <span class="muted">to members’ port</span>
             <input
               v-model.number="l.target_port"
               type="number"
@@ -267,13 +288,14 @@ const listenerText = (lb: LoadBalancer) =>
           <legend class="label">Members</legend>
           <label v-for="vm in candidates" :key="vm.id" class="check">
             <input v-model="form.members" type="checkbox" :value="vm.id" />
-            {{ vm.name }}
+            <span>{{ vm.name }}</span>
+            <span v-if="memberIp(vm)" class="mono muted">{{ memberIp(vm) }}</span>
           </label>
           <span v-if="!candidates.length" class="hint">No VMs in this VPC yet.</span>
         </fieldset>
         <label class="check">
           <input v-model="form.health" type="checkbox" />
-          Check members, and leave out those that do not answer
+          Leave out members that fail health checks
         </label>
         <p v-if="formError" class="error-text" role="alert">{{ formError }}</p>
         <footer>
@@ -299,14 +321,42 @@ const listenerText = (lb: LoadBalancer) =>
 </template>
 
 <style scoped>
+.page-head {
+  margin-bottom: 4px;
+}
+.data td {
+  padding-block: 12px;
+}
 .strong {
   font-weight: 600;
 }
-.muted {
-  margin-left: 6px;
+.stack {
+  display: grid;
+  gap: 2px;
 }
-.end .btn + .btn {
-  margin-left: 6px;
+.small {
+  font-size: 12px;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.chip {
+  padding: 1px 6px;
+  border-radius: var(--radius);
+  background: var(--sunken);
+  font-size: 11px;
+}
+.members {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+.buttons {
+  display: inline-flex;
+  gap: 6px;
 }
 fieldset.field {
   margin: 0;
@@ -326,8 +376,5 @@ fieldset.field > .btn {
   align-items: center;
   gap: 6px;
   margin-bottom: 6px;
-}
-td .tag {
-  margin-left: 8px;
 }
 </style>

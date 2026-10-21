@@ -3,9 +3,11 @@ import { ref, watch } from 'vue'
 import { api, ApiError, ok, type Image, type Schemas } from '../api/client'
 import IdChip from '../components/IdChip.vue'
 import ModalDialog from '../components/ModalDialog.vue'
-import { ago, gib } from '../state'
+import StatusLed from '../components/StatusLed.vue'
+import { ago, gib, type Tone } from '../state'
 import { useLiveRefresh } from '../stores/live'
 import { useScope } from '../stores/scope'
+import { useSession } from '../stores/session'
 import { detectFormat, dismissUpload, stopUpload, upload, uploads } from '../stores/uploads'
 
 const scope = useScope()
@@ -116,100 +118,149 @@ const receivedPct = (img: Image) =>
   img.file_bytes ? Math.floor((100 * received(img)) / img.file_bytes) : undefined
 
 const own = (img: Image) => img.tenant_id === scope.current
+// Being uploaded from this tab right now.
+const live = (img: Image) => img.state === 'uploading' && uploads.has(img.id) && !uploads.get(img.id)?.error
+
+/** Where the image is in being added, as its LED and words say it. */
+function state(img: Image): { tone: Tone; text: string } {
+  if (img.stuck) return { tone: 'fault', text: 'Storing stopped' }
+  switch (img.state) {
+    case 'ready':
+      return { tone: 'on', text: img.origin === 'upload' ? 'Uploaded' : 'Downloaded' }
+    case 'uploading':
+      return live(img) ? { tone: 'busy', text: 'Uploading' } : { tone: 'fault', text: 'Upload incomplete' }
+    case 'downloading':
+      return { tone: 'busy', text: 'Downloading' }
+    case 'storing':
+      return { tone: 'busy', text: 'Checking and storing' }
+    case 'failed':
+      return { tone: 'fault', text: img.origin === 'upload' ? 'Upload failed' : 'Download failed' }
+    default:
+      return { tone: 'unknown', text: img.state }
+  }
+}
+
+// The hosts holding a copy: all of them, or how many (named on hover).
+const hostCount = ref(0)
+async function loadHosts() {
+  // Only the provider's administrators see the hosts.
+  if (!useSession().me?.provider_admin) return
+  const { data } = await api.GET('/api/v1/hosts')
+  if (data) hostCount.value = data.filter((h) => h.state !== 'decommissioned').length
+}
+void loadHosts()
+function keptOn(img: Image): string {
+  if (img.state !== 'ready') return '—'
+  const pool = img.storage_pool_id !== LOCAL_POOL ? `${img.storage_pool_name}` : ''
+  const hosts = !img.hosts.length
+    ? ''
+    : hostCount.value && img.hosts.length >= hostCount.value
+      ? 'All hosts'
+      : `${img.hosts.length} host${img.hosts.length === 1 ? '' : 's'}`
+  return [pool, hosts].filter(Boolean).join(' · ') || '—'
+}
 </script>
 
 <template>
   <section>
-    <header class="head">
+    <header class="page-head">
       <h1>Images</h1>
-      <button v-if="scope.can('image.write')" class="btn primary" @click="openAdd">Add image</button>
+      <span v-if="images" class="mono muted">{{ images.length }}</span>
+      <div class="actions">
+        <button v-if="scope.can('image.write')" class="btn primary" @click="openAdd">Add image</button>
+      </div>
     </header>
     <p class="intro">
-      An image comes to a host as you add it, downloaded from its URL or uploaded from a file: only then, never again
-      later. Hosts copy it from there to make VMs from it, and keep their copy for the next. A VM’s disk is a copy of its own, so it doesn’t depend on the image: VMs keep working when the
-      image is gone.
+      Hosts fetch an image once and keep a copy. VMs’ disks are copies of their own, so VMs keep working when an image
+      is gone.
     </p>
 
-    <div v-if="images && !images.length" class="empty">
+    <div v-if="images && !images.length" class="empty-state">
       <p>Add an image so VMs have something to boot. Any cloud image in qcow2 or raw format works.</p>
       <button v-if="scope.can('image.write')" class="btn primary" @click="openAdd">Add image</button>
     </div>
 
-    <ul v-else-if="images" class="list">
-      <li v-for="img in images" :key="img.id">
-        <div class="main">
-          <strong>{{ img.name }}</strong>
-          <span class="tag label">{{ img.format }}</span>
-          <span v-if="img.os === 'windows'" class="tag label">Windows</span>
-          <span v-if="img.secure_boot" class="tag label">Secure Boot</span>
-          <span v-if="img.tpm" class="tag label">TPM</span>
-          <span v-if="!img.sleep" class="tag label">No sleep</span>
-          <span v-if="img.shared && !scope.solo" class="tag label">Shared with sub-tenants</span>
-          <span v-if="!own(img)" class="tag label">From parent tenant</span>
-          <span v-if="img.stuck" class="tag label failed">Storing stopped</span>
-          <span v-else-if="img.state === 'uploading' && uploads.has(img.id) && !uploads.get(img.id)?.error" class="tag label busy">
-            Uploading… {{ receivedPct(img) }}%
-          </span>
-          <span v-else-if="img.state === 'uploading'" class="tag label failed">Upload incomplete</span>
-          <span v-else-if="img.state === 'downloading'" class="tag label busy">
-            Downloading…<template v-if="receivedPct(img) !== undefined"> {{ receivedPct(img) }}%</template>
-          </span>
-          <span v-else-if="img.state === 'storing'" class="tag label busy">Checking and storing…</span>
-          <span v-else-if="img.state === 'failed'" class="tag label failed">
-            {{ img.origin === 'upload' ? 'Upload failed' : 'Download failed' }}
-          </span>
-        </div>
-        <div v-if="img.file_bytes && img.state === 'ready'" class="url muted">
-          {{ img.origin === 'upload' ? 'Uploaded' : 'Downloaded' }}, {{ gib(img.file_bytes) }}
-        </div>
-        <div v-if="img.state === 'uploading' || img.state === 'downloading'" class="upload">
-          <progress v-if="receivedPct(img) !== undefined" :value="receivedPct(img)" max="100" />
-          <span class="muted">
-            {{ gib(received(img)) }}<template v-if="img.file_bytes"> of {{ gib(img.file_bytes) }}</template>
-          </span>
-        </div>
-        <p v-if="uploads.get(img.id)?.error" class="error-text" role="alert">{{ uploads.get(img.id)?.error }}</p>
-        <p v-if="resumeError[img.id]" class="error-text" role="alert">{{ resumeError[img.id] }}</p>
-        <p v-if="img.state === 'failed'" class="error-text" role="alert">
-          {{ img.error ?? 'Adding it failed.' }} Delete it and add it again.
-        </p>
-        <p v-if="img.stuck" class="error-text" role="alert">
-          Adding it stopped without finishing. Delete it and add it again.
-        </p>
-        <div v-if="img.state === 'ready' && img.virtual_bytes" class="facts muted">
-          <span>{{ gib(img.virtual_bytes) }} disk</span>
-          <span v-if="img.size_bytes">{{ gib(img.size_bytes) }} stored</span>
-          <span v-if="img.storage_pool_id !== LOCAL_POOL">Kept in {{ img.storage_pool_name }}</span>
-          <span v-if="img.hosts.length">On {{ img.hosts.join(', ') }}</span>
-        </div>
-        <div class="meta">
-          <IdChip :value="img.id" short />
-          <span class="muted">Added {{ ago(img.created_at) }}</span>
-          <button
-            v-if="img.state === 'uploading' && uploads.has(img.id) && !uploads.get(img.id)?.error"
-            class="btn small push"
-            @click="stopUpload(img.id)"
-          >
-            Stop upload
-          </button>
-          <button
-            v-else-if="img.state === 'uploading' && own(img) && scope.can('image.write')"
-            class="btn small push"
-            @click="resume(img)"
-          >
-            Resume upload…
-          </button>
-          <button
-            v-if="own(img) && scope.can('image.write')"
-            class="btn danger small"
-            :class="{ push: img.state !== 'uploading' }"
-            @click="(deleteError = ''), (deleting = img)"
-          >
-            Delete…
-          </button>
-        </div>
-      </li>
-    </ul>
+    <div v-else-if="images" class="table-wrap">
+      <table class="data images">
+        <thead>
+          <tr>
+            <th>Image</th>
+            <th>State</th>
+            <th class="num">Disk</th>
+            <th class="num">Stored</th>
+            <th>Kept on</th>
+            <th>Added</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="img in images" :key="img.id">
+            <td>
+              <div class="ident">
+                <div class="title">
+                  <strong>{{ img.name }}</strong>
+                  <IdChip :value="img.id" short />
+                </div>
+                <div class="tags">
+                  <span class="tag">{{ img.format }}</span>
+                  <span v-if="img.os === 'windows'" class="tag">Windows</span>
+                  <span v-if="img.secure_boot" class="tag">Secure Boot</span>
+                  <span v-if="img.tpm" class="tag">TPM</span>
+                  <span v-if="!img.sleep" class="tag">No sleep</span>
+                  <span v-if="img.shared && !scope.solo" class="tag" title="Sub-tenants can use it">Shared</span>
+                  <span v-if="!own(img)" class="tag">From parent tenant</span>
+                </div>
+              </div>
+            </td>
+            <td>
+              <div class="state">
+                <StatusLed :tone="state(img).tone" :label="state(img).text" />
+                <div v-if="img.state === 'uploading' || img.state === 'downloading'" class="progress">
+                  <progress v-if="receivedPct(img) !== undefined" :value="receivedPct(img)" max="100" />
+                  <span class="muted">
+                    <template v-if="receivedPct(img) !== undefined">{{ receivedPct(img) }}% · </template>{{
+                      gib(received(img))
+                    }}<template v-if="img.file_bytes"> of {{ gib(img.file_bytes) }}</template>
+                  </span>
+                </div>
+                <span v-if="uploads.get(img.id)?.error" class="error-text" role="alert">{{ uploads.get(img.id)?.error }}</span>
+                <span v-if="resumeError[img.id]" class="error-text" role="alert">{{ resumeError[img.id] }}</span>
+                <span v-if="img.state === 'failed'" class="error-text" role="alert">
+                  {{ img.error ?? 'Adding it failed.' }} Delete it and add it again.
+                </span>
+                <span v-if="img.stuck" class="error-text" role="alert">
+                  Adding it stopped without finishing. Delete it and add it again.
+                </span>
+              </div>
+            </td>
+            <td class="num mono nowrap">{{ img.state === 'ready' && img.virtual_bytes ? gib(img.virtual_bytes) : '—' }}</td>
+            <td class="num mono nowrap">{{ img.state === 'ready' && img.size_bytes ? gib(img.size_bytes) : '—' }}</td>
+            <td>
+              <span :title="img.hosts.join(', ') || undefined">{{ keptOn(img) }}</span>
+            </td>
+            <td class="muted nowrap">{{ ago(img.created_at) }}</td>
+            <td class="end">
+              <button v-if="live(img)" class="btn small" @click="stopUpload(img.id)">Stop upload</button>
+              <button
+                v-else-if="img.state === 'uploading' && own(img) && scope.can('image.write')"
+                class="btn small"
+                title="Pick the same file again; it continues from where it stopped"
+                @click="resume(img)"
+              >
+                Resume upload…
+              </button>
+              <button
+                v-if="own(img) && scope.can('image.write')"
+                class="btn danger small"
+                @click="(deleteError = ''), (deleting = img)"
+              >
+                Delete…
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <ModalDialog v-if="deleting" title="Delete image" @close="deleting = null">
       <form class="body" @submit.prevent="remove">
@@ -239,8 +290,12 @@ const own = (img: Image) => img.tenant_id === scope.current
         </label>
         <fieldset class="field boot">
           <legend class="label">From</legend>
-          <label class="check"><input v-model="source" type="radio" value="url" /> A download URL</label>
-          <label class="check"><input v-model="source" type="radio" value="file" /> A file on this computer</label>
+          <div class="choice">
+            <label :class="{ on: source === 'url' }"><input v-model="source" type="radio" value="url" /> A download URL</label>
+            <label :class="{ on: source === 'file' }">
+              <input v-model="source" type="radio" value="file" /> A file on this computer
+            </label>
+          </div>
         </fieldset>
         <label v-if="source === 'url'" class="field">
           <span class="label">Download URL</span>
@@ -254,24 +309,26 @@ const own = (img: Image) => img.tenant_id === scope.current
             resumed from where it was.
           </span>
         </label>
-        <label class="field">
-          <span class="label">Format</span>
-          <select v-model="form.format">
-            <option value="qcow2">qcow2</option>
-            <option value="raw">raw</option>
-          </select>
-        </label>
-        <label class="field">
-          <span class="label">Operating system</span>
-          <select v-model="form.os">
-            <option value="linux">Linux (cloud-init)</option>
-            <option value="windows">Windows (cloudbase-init)</option>
-          </select>
-          <span v-if="form.os === 'windows'" class="hint">
-            An image built with <code>deploy/images/windows/build.sh</code>: VMs get their account and its password at
-            first boot, and run with Hyper-V enlightenments.
-          </span>
-        </label>
+        <div class="pair">
+          <label class="field">
+            <span class="label">Format</span>
+            <select v-model="form.format">
+              <option value="qcow2">qcow2</option>
+              <option value="raw">raw</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="label">Operating system</span>
+            <select v-model="form.os">
+              <option value="linux">Linux (cloud-init)</option>
+              <option value="windows">Windows (cloudbase-init)</option>
+            </select>
+          </label>
+        </div>
+        <p v-if="form.os === 'windows'" class="hint muted">
+          An image built with <code>deploy/images/windows/build.sh</code>: VMs get their account and its password at first
+          boot, and run with Hyper-V enlightenments.
+        </p>
         <label v-if="form.os === 'windows'" class="field">
           <span class="label">Default account</span>
           <input v-model="form.admin_user" maxlength="20" placeholder="Administrator" />
@@ -315,15 +372,46 @@ const own = (img: Image) => img.tenant_id === scope.current
 </template>
 
 <style scoped>
-.upload {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 6px;
+.images td {
+  vertical-align: top;
 }
-.upload progress {
-  flex: 1;
-  max-width: 320px;
+.ident,
+.state {
+  display: grid;
+  gap: 6px;
+}
+.title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.progress {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+.progress progress {
+  width: 100%;
+  max-width: 200px;
+  accent-color: var(--led-busy);
+}
+.state .error-text {
+  font-size: 12px;
+}
+.nowrap {
+  white-space: nowrap;
+}
+.end {
+  white-space: nowrap;
+}
+.end .btn + .btn {
+  margin-left: 6px;
 }
 .boot {
   margin: 0;
@@ -333,96 +421,60 @@ const own = (img: Image) => img.tenant_id === scope.current
 .boot legend {
   margin-bottom: 4px;
 }
+/* The source as a segmented choice, still radio buttons underneath. */
+.choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  width: fit-content;
+  padding: 3px;
+  border-radius: var(--radius);
+  background: var(--sunken);
+}
+.choice label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 2px;
+  color: var(--muted);
+  font: 500 13px var(--font-body);
+  cursor: pointer;
+}
+.choice label:has(:focus-visible) {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+.choice label.on {
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 1px 0 rgb(28 35 41 / 6%);
+}
+/* Over its label, unseen: a click anywhere on it picks it. */
+.choice input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.hint {
+  margin: -8px 0 0;
+  font-size: 12px;
+}
 .consequences {
   margin: 0;
   padding-left: 18px;
   display: grid;
   gap: 6px;
-}
-.head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-h1 {
-  font-size: 22px;
-}
-.intro {
-  max-width: 68ch;
-  margin: 0 0 20px;
-  color: var(--muted);
-}
-.list {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.list li {
-  display: grid;
-  gap: 6px;
-  padding: 14px 16px;
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-  background: var(--panel);
-}
-.main {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-}
-.tag {
-  padding: 1px 6px;
-  border: 1px solid var(--rule);
-  border-radius: 2px;
-}
-.url {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted);
-}
-.meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-}
-.small {
-  height: 26px;
-}
-.push {
-  margin-left: auto;
-}
-.facts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-.busy {
-  color: var(--muted);
-}
-.failed {
-  color: var(--led-fault);
-  border-color: currentColor;
-}
-.muted {
-  color: var(--muted);
-}
-.empty {
-  display: grid;
-  gap: 14px;
-  justify-items: start;
-  padding: 32px;
-  border: 1px dashed var(--rule);
-  border-radius: var(--radius);
-}
-.empty p {
-  margin: 0;
-  color: var(--muted);
 }
 .body {
   display: grid;

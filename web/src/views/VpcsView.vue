@@ -2,11 +2,13 @@
 import { computed, ref, watch } from 'vue'
 import { api, errorText, ok, type Schemas, type Vpc } from '../api/client'
 import ModalDialog from '../components/ModalDialog.vue'
-import NetTabs from '../components/NetTabs.vue'
+import StatusLed from '../components/StatusLed.vue'
 import { useLiveRefresh } from '../stores/live'
 import { useScope } from '../stores/scope'
+import { useSession } from '../stores/session'
 
 const scope = useScope()
+const session = useSession()
 const vpcs = ref<Vpc[] | null>(null)
 const externals = ref<Schemas['UsableExternalNetwork'][]>([])
 const error = ref('')
@@ -93,25 +95,32 @@ async function submit() {
   }
 }
 
-const TITLES: Record<Dialog['kind'], string> = {
-  vpc: 'New VPC',
-  network: 'Add network',
-  uplink: 'Route to an external network',
-  'delete-vpc': 'Delete VPC',
-  'delete-network': 'Delete network',
+function title(d: Dialog): string {
+  switch (d.kind) {
+    case 'vpc':
+      return 'New VPC'
+    case 'network':
+      return `Add network to ${d.vpc.name}`
+    case 'uplink':
+      return `Route ${d.vpc.name} to an external network`
+    case 'delete-vpc':
+      return 'Delete VPC'
+    case 'delete-network':
+      return 'Delete network'
+  }
 }
 </script>
 
 <template>
   <section>
-    <NetTabs />
     <header class="page-head">
       <h1>VPCs</h1>
+      <span v-if="vpcs" class="mono muted">{{ vpcs.length }}</span>
       <div v-if="canWrite" class="actions"><button class="btn primary" @click="open({ kind: 'vpc' })">New VPC</button></div>
     </header>
     <p class="intro">
-      A VPC is a private routing domain: its networks reach each other, and nothing else does unless the VPC routes
-      to an external network. Networks in different VPCs may use the same addresses.
+      Networks in a VPC reach each other and nothing else, unless the VPC routes to an external network. Networks in
+      different VPCs may use the same addresses.
     </p>
     <p v-if="error" class="error-text">{{ error }}</p>
 
@@ -123,53 +132,67 @@ const TITLES: Record<Dialog['kind'], string> = {
       <button v-if="canWrite" class="btn primary" @click="open({ kind: 'vpc' })">New VPC</button>
     </div>
 
-    <ul v-else-if="vpcs" class="vpcs">
-      <li v-for="v in vpcs" :key="v.id" class="vpc">
-        <!-- Uplink: where the VPC's traffic leaves it. -->
-        <div class="uplink" :class="{ none: !v.external_network_id }">
-          <template v-if="v.external_network_id">
-            <span class="ext">{{ v.external_network_name }}</span>
-            <span class="mono muted">via {{ v.gateway_ip }}</span>
-          </template>
-          <span v-else class="muted">Internal only — no route out</span>
+    <div v-else-if="vpcs" class="vpcs">
+      <section v-for="v in vpcs" :key="v.id" class="vpc">
+        <div class="vpc-head">
+          <h2>{{ v.name }}</h2>
+          <!-- Uplink: where the VPC's traffic leaves it. -->
+          <span class="uplink">
+            <StatusLed :tone="v.external_network_id ? 'on' : 'off'" />
+            <span v-if="v.external_network_id">
+              Routes to
+              <RouterLink v-if="session.me?.provider_admin" to="/external-networks" class="ext">{{
+                v.external_network_name
+              }}</RouterLink>
+              <span v-else class="ext">{{ v.external_network_name }}</span>
+              <span class="mono muted"> via {{ v.gateway_ip }}</span>
+            </span>
+            <span v-else class="muted">Internal only</span>
+          </span>
           <button v-if="canWrite" class="btn small" @click="open({ kind: 'uplink', vpc: v })">
             {{ v.external_network_id ? 'Change' : 'Connect' }}
           </button>
-        </div>
-        <div class="router">
-          <span class="tape">{{ v.name }}</span>
-          <span class="label">VPC router</span>
-          <div class="router-actions">
-            <button v-if="canWrite" class="btn small" @click="open({ kind: 'network', vpc: v })">Add network</button>
-            <button v-if="canWrite" class="btn small danger" @click="open({ kind: 'delete-vpc', vpc: v })">Delete</button>
+          <div v-if="canWrite" class="vpc-actions">
+            <button class="btn small" @click="open({ kind: 'network', vpc: v })">Add network</button>
+            <button class="btn small danger" @click="open({ kind: 'delete-vpc', vpc: v })">Delete</button>
           </div>
         </div>
-        <ul class="bus">
-          <li v-for="n in v.networks" :key="n.id" class="net">
-            <span class="drop" aria-hidden="true" />
-            <strong>{{ n.name }}</strong>
-            <span class="mono">{{ n.cidr }}</span>
-            <span class="mono muted">gateway {{ n.gateway }}</span>
-            <span class="muted">{{ n.ports }} {{ n.ports === 1 ? 'VM' : 'VMs' }}</span>
-            <button
-              v-if="canWrite"
-              class="btn small danger"
-              :disabled="n.ports > 0"
-              :title="n.ports > 0 ? 'VMs are connected' : undefined"
-              @click="open({ kind: 'delete-network', vpc: v, network: n })"
-            >
-              Delete
-            </button>
-          </li>
-          <li v-if="!v.networks.length" class="net empty">
-            <span class="drop" aria-hidden="true" />
-            <span class="muted">No networks yet.</span>
-          </li>
-        </ul>
-      </li>
-    </ul>
+        <div v-if="v.networks.length" class="nets">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>Network</th>
+                <th>Range</th>
+                <th>Gateway</th>
+                <th class="num">VMs</th>
+                <th v-if="canWrite"><span class="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="n in v.networks" :key="n.id">
+                <td class="name">{{ n.name }}</td>
+                <td class="mono">{{ n.cidr }}</td>
+                <td class="mono muted">{{ n.gateway }}</td>
+                <td class="num mono">{{ n.ports }}</td>
+                <td v-if="canWrite" class="end">
+                  <button
+                    class="btn small danger"
+                    :disabled="n.ports > 0"
+                    :title="n.ports > 0 ? 'VMs are connected' : undefined"
+                    @click="open({ kind: 'delete-network', vpc: v, network: n })"
+                  >
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p v-else class="none muted">No networks yet.</p>
+      </section>
+    </div>
 
-    <ModalDialog v-if="dialog" :title="TITLES[dialog.kind]" @close="dialog = null">
+    <ModalDialog v-if="dialog" :title="title(dialog)" @close="dialog = null">
       <form class="form" @submit.prevent="submit">
         <template v-if="dialog.kind === 'vpc'">
           <label class="field">
@@ -229,107 +252,67 @@ const TITLES: Record<Dialog['kind'], string> = {
 </template>
 
 <style scoped>
+.page-head {
+  margin-bottom: 4px;
+}
 .vpcs {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr));
-  gap: 16px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  gap: 18px;
 }
 .vpc {
-  padding: 0 0 12px;
   border: 1px solid var(--rule);
   border-radius: var(--radius);
   background: var(--panel);
 }
-/* The uplink sits above the router like a cable to the patch panel. */
-.uplink {
-  position: relative;
+.vpc-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  padding: 10px 16px 18px;
-  border-bottom: 1px dashed var(--rule);
+  gap: 10px 14px;
+  padding: 14px 16px;
 }
-.uplink::after {
-  content: '';
-  position: absolute;
-  bottom: -1px;
-  left: 31px;
-  height: 14px;
-  border-left: 2px solid var(--led-on);
+.vpc-head h2 {
+  font-size: 16px;
 }
-.uplink.none::after {
-  border-left-style: dotted;
-  border-left-color: var(--led-off);
-}
-.uplink .btn {
-  margin-left: auto;
+.uplink {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 .ext {
-  font-weight: 600;
+  font-weight: 500;
 }
-.router {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 16px 4px;
-}
-.tape {
-  padding: 3px 9px 2px;
-  background: var(--tape);
-  color: var(--tape-ink);
-  font: 600 13px var(--font-label);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  clip-path: polygon(4px 0, 100% 0, calc(100% - 4px) 100%, 0 100%);
-}
-.router-actions {
+.vpc-actions {
   display: flex;
   gap: 6px;
   margin-left: auto;
 }
-/* Networks hang off a bus, drawn like the tenant tree's connectors. */
-.bus {
-  margin: 4px 0 0;
-  padding: 0 16px 0 31px;
-  list-style: none;
+.nets {
+  overflow-x: auto;
+  border-top: 1px solid var(--rule);
 }
-.net {
-  position: relative;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-  min-height: 38px;
-  padding-left: 22px;
+.data th:first-child,
+.data td:first-child {
+  padding-left: 16px;
 }
-.drop {
+.data th:last-child,
+.data td:last-child {
+  padding-right: 16px;
+}
+.name {
+  font-weight: 600;
+}
+.none {
+  margin: 0;
+  padding: 14px 16px;
+  border-top: 1px solid var(--rule);
+}
+.sr-only {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  border-left: 1px solid var(--muted);
-  opacity: 0.6;
-}
-.net:last-child .drop {
-  bottom: 50%;
-}
-.drop::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 0;
-  width: 14px;
-  border-top: 1px solid var(--muted);
-}
-.net .btn {
-  margin-left: auto;
-}
-.net.empty {
-  color: var(--muted);
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 </style>

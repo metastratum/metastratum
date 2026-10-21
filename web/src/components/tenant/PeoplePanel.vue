@@ -38,6 +38,18 @@ onMounted(load)
 
 const rolesOf = (u: User) => (bindings.value ?? []).filter((b) => b.user_id === u.id)
 
+// Accounts: filtered by name, the first few shown until asked for all.
+const SHOWN = 5
+const accountQuery = ref('')
+const allAccounts = ref(false)
+const matching = computed(() => {
+  const q = accountQuery.value.trim().toLowerCase()
+  return (users.value ?? []).filter(
+    (u) => !q || u.username.toLowerCase().includes(q) || u.display_name.toLowerCase().includes(q),
+  )
+})
+const shownAccounts = computed(() => (allAccounts.value ? matching.value : matching.value.slice(0, SHOWN)))
+
 async function revoke(b: Binding) {
   rowError.value = {}
   try {
@@ -143,13 +155,11 @@ async function submit() {
     <section>
       <header class="sub-head">
         <h3>{{ scope.solo ? 'Roles' : `Roles at ${tenant.name}` }}</h3>
-        <button v-if="canManage" class="btn small primary" @click="openGrant">Give access</button>
+        <button v-if="canManage" class="btn small primary push" @click="openGrant">Give access</button>
       </header>
       <p class="muted note">
         <template v-if="scope.solo">What each person may do.</template>
-        <template v-else>
-          These apply here and in every sub-tenant. People with a role at a tenant above this one have access too.
-        </template>
+        <template v-else>Also apply in every sub-tenant. Roles at a tenant above give access too.</template>
       </p>
       <div v-if="bindings && bindings.length" class="table-wrap">
         <table class="data">
@@ -165,10 +175,12 @@ async function submit() {
             <tr v-for="b in bindings" :key="b.id">
               <td>{{ b.username }}</td>
               <td>
-                <span class="role" :class="b.role">{{ b.role }}</span>
-                <span v-if="b.source === 'oidc'" class="tag" title="From the identity provider’s groups; set again at each sign-in">
-                  From groups
-                </span>
+                <div class="tags">
+                  <span class="role" :class="b.role">{{ b.role }}</span>
+                  <span v-if="b.source === 'oidc'" class="tag" title="From the identity provider’s groups; set again at each sign-in">
+                    From groups
+                  </span>
+                </div>
               </td>
               <td class="muted">{{ ago(b.created_at) }}</td>
               <td class="end">
@@ -185,52 +197,71 @@ async function submit() {
     <section>
       <header class="sub-head">
         <h3>{{ scope.solo ? 'Accounts' : `Accounts in ${tenant.name}` }}</h3>
-        <button v-if="canManage" class="btn small" @click="open({ kind: 'add' })">Add user</button>
+        <span v-if="users" class="mono muted">{{ users.length }}</span>
+        <div class="push tools">
+          <label v-if="users && users.length">
+            <span class="visually-hidden">Filter accounts</span>
+            <input v-model="accountQuery" type="search" placeholder="Filter accounts" />
+          </label>
+          <button v-if="canManage" class="btn small" @click="open({ kind: 'add' })">Add user</button>
+        </div>
       </header>
       <p class="muted note">
-        People sign in{{ scope.solo ? '' : ' to this tenant' }} with these accounts. Accounts from an identity provider
-        are created at their first sign-in.
+        <template v-if="scope.solo">People sign in with these accounts. </template>Accounts from an identity provider
+        appear at their first sign-in.
       </p>
-      <div v-if="users && users.length" class="table-wrap">
-        <table class="data">
-          <thead>
-            <tr>
-              <th>User</th>
-              <th>Signs in with</th>
-              <th>Roles here</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="u in users" :key="u.id" :class="{ disabled: u.disabled }">
-              <td>
-                <strong>{{ u.display_name || u.username }}</strong>
-                <div class="muted small-text">{{ u.username }}<template v-if="u.email"> · {{ u.email }}</template></div>
-              </td>
-              <td>
-                {{ u.local ? (u.two_factor ? 'Password and second factor' : 'Password') : 'Identity provider' }}
-                <span v-if="u.disabled" class="tag">Disabled</span>
-              </td>
-              <td>
-                <span v-for="b in rolesOf(u)" :key="b.id" class="role" :class="b.role">{{ b.role }}</span>
-                <span v-if="!rolesOf(u).length" class="muted">—</span>
-              </td>
-              <td class="end">
-                <span v-if="rowError[u.id]" class="error-text">{{ rowError[u.id] }}</span>
-                <template v-if="canManage && u.id !== session.me?.user_id">
-                  <button v-if="u.local" class="btn small" @click="open({ kind: 'password', user: u })">Set password</button>
-                  <button v-if="u.two_factor" class="btn small" @click="open({ kind: 'reset', user: u })">
-                    Reset second factor
-                  </button>
-                  <button class="btn small" @click="setDisabled(u, !u.disabled)">{{ u.disabled ? 'Enable' : 'Disable' }}</button>
-                  <button class="btn small danger" @click="open({ kind: 'delete', user: u })">Delete</button>
-                </template>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <div v-if="matching.length" class="table-wrap accounts">
+        <div :class="{ scroll: allAccounts }">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Signs in with</th>
+                <th>Roles here</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="u in shownAccounts" :key="u.id" :class="{ disabled: u.disabled }">
+                <td>
+                  <strong>{{ u.display_name || u.username }}</strong>
+                  <div class="muted small-text">{{ u.username }}<template v-if="u.email"> · {{ u.email }}</template></div>
+                </td>
+                <td>
+                  <div class="tags">
+                    <span>{{ u.local ? (u.two_factor ? 'Password and second factor' : 'Password') : 'Identity provider' }}</span>
+                    <span v-if="u.disabled" class="tag">Disabled</span>
+                  </div>
+                </td>
+                <td>
+                  <div class="tags">
+                    <span v-for="b in rolesOf(u)" :key="b.id" class="role" :class="b.role">{{ b.role }}</span>
+                    <span v-if="!rolesOf(u).length" class="muted">—</span>
+                  </div>
+                </td>
+                <td class="end">
+                  <span v-if="rowError[u.id]" class="error-text">{{ rowError[u.id] }}</span>
+                  <RouterLink v-if="u.id === session.me?.user_id" to="/account" class="small-link">Your account</RouterLink>
+                  <div v-else-if="canManage" class="row-actions">
+                    <button v-if="u.local" class="btn small" @click="open({ kind: 'password', user: u })">Set password</button>
+                    <button v-if="u.two_factor" class="btn small" @click="open({ kind: 'reset', user: u })">
+                      Reset second factor
+                    </button>
+                    <button class="btn small" @click="setDisabled(u, !u.disabled)">{{ u.disabled ? 'Enable' : 'Disable' }}</button>
+                    <button class="btn small danger" @click="open({ kind: 'delete', user: u })">Delete…</button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <button v-if="matching.length > SHOWN" type="button" class="more" @click="allAccounts = !allAccounts">
+          {{ allAccounts ? 'Show fewer' : `Show ${matching.length - SHOWN} more accounts` }}
+        </button>
       </div>
-      <p v-else-if="users" class="muted">No accounts belong to this tenant.</p>
+      <p v-else-if="users" class="muted">
+        {{ users.length ? 'No accounts match.' : 'No accounts belong to this tenant.' }}
+      </p>
     </section>
 
     <ModalDialog
@@ -356,17 +387,35 @@ section {
 }
 .sub-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 8px 12px;
+}
+.push {
+  margin-left: auto;
+}
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tools input {
+  width: 180px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  font: 400 13px var(--font-body);
 }
 h3 {
-  font-size: 13px;
+  font-size: 15px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 .note {
-  margin: -4px 0 4px;
+  margin: 0;
   font-size: 13px;
 }
 section > p {
@@ -375,34 +424,74 @@ section > p {
 .small-text {
   font-size: 12px;
 }
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+/* Roles as outlined tags, heavier the more they allow. */
 .role {
   display: inline-block;
-  margin-right: 6px;
-  padding: 1px 7px;
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
   border-radius: 2px;
-  font: 600 11px var(--font-label);
+  font: 500 10.5px var(--font-label);
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  background: var(--sunken);
-}
-/* Admin is the role that changes the most; it wears the tape. */
-.role.admin {
-  background: var(--tape);
-  color: var(--tape-ink);
-}
-.role.viewer {
-  background: none;
-  box-shadow: inset 0 0 0 1px var(--rule);
   color: var(--muted);
+  white-space: nowrap;
+}
+.role.admin {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+.role.operator {
+  border-color: var(--muted);
+  color: var(--ink);
 }
 tr.disabled td {
-  color: var(--muted);
+  opacity: 0.6;
 }
-.end .btn + .btn {
-  margin-left: 6px;
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.row-actions .btn {
+  white-space: nowrap;
 }
 .end .error-text {
   margin-right: 8px;
+}
+.small-link {
+  font-size: 13px;
+}
+.accounts .scroll {
+  max-height: 420px;
+  overflow-y: auto;
+}
+.more {
+  width: 100%;
+  height: 34px;
+  border: 0;
+  border-top: 1px solid var(--rule);
+  background: none;
+  color: var(--ink);
+  font: 500 12px var(--font-body);
+  cursor: pointer;
+}
+.more:hover {
+  background: var(--sunken);
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 .roles {
   display: grid;

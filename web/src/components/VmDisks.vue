@@ -48,32 +48,43 @@ async function detach(d: Disk) {
 </script>
 
 <template>
-  <section class="disks">
-    <div class="head">
-      <h2 class="label">Disks</h2>
-      <button v-if="canWrite" class="btn small" :disabled="!settled" @click="adding = true">Add disk…</button>
+  <section class="vm-card">
+    <div class="vm-card-head">
+      <h2>Disks</h2>
+      <button
+        v-if="canWrite"
+        type="button"
+        class="btn small"
+        :disabled="!settled"
+        title="A new, empty disk, or one attached to no VM"
+        @click="adding = true"
+      >
+        Add disk…
+      </button>
     </div>
-    <ul v-if="disks" class="list">
-      <li v-for="d in disks" :key="d.id">
-        <StatusLed :tone="d.state === 'failed' ? 'fault' : d.state === 'ready' ? 'on' : 'busy'" />
-        <span class="main">
-          <span class="name">{{ d.boot ? 'Boot disk' : (d.name ?? 'Disk') }}</span>
-          <span class="muted">{{ d.size_gib }} GiB · {{ diskWhere(d) }}</span>
-          <span v-if="d.guest_path" class="path mono" :title="`In the guest: ${d.guest_path}`">{{ d.guest_path }}</span>
-        </span>
-        <span v-if="canWrite" class="actions">
-          <button class="btn small" :disabled="busy || !settled || d.state !== 'ready'" @click="editing = d">Grow…</button>
-          <button v-if="!d.boot" class="btn small" :disabled="busy || !settled || d.state !== 'ready'" @click="detaching = d">
-            Detach…
-          </button>
-        </span>
-        <span class="meta">
-          <IdChip :value="d.id" short />
-          <span v-if="DISK_STATES[d.state]" class="tag">{{ DISK_STATES[d.state] }}</span>
-          <span v-if="d.error" class="error-text">{{ d.error }}</span>
-        </span>
-      </li>
-    </ul>
+    <div v-for="d in disks ?? []" :key="d.id" class="disk">
+      <StatusLed :tone="d.state === 'failed' ? 'fault' : d.state === 'ready' ? 'on' : 'busy'" />
+      <strong class="name">{{ d.boot ? 'Boot disk' : (d.name ?? 'Disk') }}</strong>
+      <span class="muted">{{ d.size_gib }} GiB · {{ diskWhere(d) }}</span>
+      <span v-if="d.guest_path" class="path mono" :title="`In the guest: ${d.guest_path}`">{{ d.guest_path }}</span>
+      <IdChip :value="d.id" short />
+      <span v-if="DISK_STATES[d.state]" class="tag">{{ DISK_STATES[d.state] }}</span>
+      <span v-if="canWrite" class="actions">
+        <button type="button" class="btn small" :disabled="busy || !settled || d.state !== 'ready'" @click="editing = d">
+          Grow…
+        </button>
+        <button
+          v-if="!d.boot"
+          type="button"
+          class="btn small"
+          :disabled="busy || !settled || d.state !== 'ready'"
+          @click="detaching = d"
+        >
+          Detach…
+        </button>
+      </span>
+      <span v-if="d.error" class="error-text err">{{ d.error }}</span>
+    </div>
     <p v-if="error" class="error-text" role="alert">{{ error }}</p>
 
     <AddDiskDialog v-if="adding" :vm="vm" @close="adding = false" @done="((adding = false), load())" />
@@ -85,7 +96,7 @@ async function detach(d: Disk) {
           <template v-if="vm.power !== 'stopped'">
             It is unplugged while the VM runs: unmount it in the guest first, or what is still being written is lost.
           </template>
-          The disk and what it holds are kept, to attach again (Machines → Disks).
+          The disk and what it holds are kept, to attach again (Compute → Disks).
         </p>
         <footer>
           <button type="button" class="btn" @click="detaching = null">Cancel</button>
@@ -97,40 +108,21 @@ async function detach(d: Disk) {
 </template>
 
 <style scoped>
-.disks {
-  display: grid;
-  align-content: start;
-  gap: 10px;
-}
-.head {
+.disk {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.list {
-  display: grid;
-  gap: 8px;
-  padding: 0;
-  margin: 0;
-  list-style: none;
-}
-.list li {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: start;
-  gap: 4px 10px;
-}
-.main {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
 }
 .name {
   font-weight: 500;
 }
 .path {
   overflow: hidden;
+  max-width: 100%;
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -139,12 +131,10 @@ async function detach(d: Disk) {
 .actions {
   display: flex;
   gap: 6px;
+  margin-left: auto;
 }
-.meta {
-  display: flex;
-  flex-wrap: wrap;
-  grid-column: 2 / -1;
-  align-items: center;
-  gap: 6px;
+.err {
+  flex-basis: 100%;
+  font-size: 12px;
 }
 </style>

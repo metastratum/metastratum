@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import type { RouteLocationRaw } from 'vue-router'
 import { api, errorText, ok, type AuditEntry } from '../api/client'
 import { shortId } from '../state'
 import { useScope } from '../stores/scope'
+import { useSession } from '../stores/session'
 
 const scope = useScope()
+const session = useSession()
 const PAGE = 100
 
 const entries = ref<AuditEntry[] | null>(null)
@@ -33,6 +36,36 @@ watch(
 const when = (at: string) =>
   new Date(at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' })
 const tenantName = (id?: string | null) => (id ? (scope.byId.get(id)?.name ?? '—') : '—')
+// Where a target is shown: its own page, or the list it is on (infrastructure
+// pages only for those who may see them).
+const PAGES: Record<string, string> = {
+  image: '/images',
+  disk: '/disks',
+  backup: '/backups',
+  vpc: '/networks',
+  network: '/networks',
+  security_group: '/security-groups',
+  floating_ip: '/floating-ips',
+  load_balancer: '/load-balancers',
+  network_policy: '/guardrails',
+}
+const INFRA: Record<string, string> = {
+  host: '/hosts',
+  cluster: '/clusters',
+  storage_pool: '/storage',
+  external_network: '/external-networks',
+  backup_repository: '/backup-repositories',
+}
+function targetLink(e: AuditEntry): RouteLocationRaw | null {
+  const kind = e.target_kind ?? ''
+  if (!e.target_id) return null
+  if (kind === 'vm') return { name: 'vm', params: { id: e.target_id } }
+  if (kind === 'tenant') return { name: 'tenants', params: { id: e.target_id } }
+  if (PAGES[kind]) return PAGES[kind]
+  if (INFRA[kind] && session.me?.provider_admin) return INFRA[kind]
+  return null
+}
+
 // Sign-ins only record how; the action already says enough.
 const hasDetails = (e: AuditEntry) =>
   !!e.details && Object.keys(e.details as object).some((k) => k !== 'method' || e.outcome !== 'success')
@@ -63,75 +96,109 @@ const hasDetails = (e: AuditEntry) =>
             <th>Action</th>
             <th v-if="!scope.solo">Tenant</th>
             <th>Target</th>
+            <th />
           </tr>
         </thead>
         <tbody>
           <template v-for="e in entries" :key="e.id">
-            <tr :class="{ failed: e.outcome !== 'success', clickable: hasDetails(e) }" @click="open = open === e.id ? null : e.id">
-              <td class="mono when">{{ when(e.at) }}</td>
+            <tr :class="{ clickable: hasDetails(e), opened: open === e.id }" @click="hasDetails(e) && (open = open === e.id ? null : e.id)">
+              <td class="mono nowrap">{{ when(e.at) }}</td>
               <td>{{ e.username ?? 'system' }}</td>
-              <td>
+              <td class="nowrap">
                 <span class="mono">{{ e.action }}</span>
                 <span v-if="e.outcome !== 'success'" class="tag fail">Failed</span>
               </td>
-              <td v-if="!scope.solo">{{ tenantName(e.tenant_id) }}</td>
-              <td class="mono muted">
-                <template v-if="e.target_kind">{{ e.target_kind }} {{ e.target_id && shortId(e.target_id) }}</template>
+              <td v-if="!scope.solo" class="muted">{{ tenantName(e.tenant_id) }}</td>
+              <td>
+                <span v-if="e.target_kind" class="target">
+                  <span class="muted">{{ e.target_kind }}</span>
+                  <template v-if="e.target_id">
+                    <RouterLink v-if="targetLink(e)" :to="targetLink(e)!" class="mono" @click.stop>{{ shortId(e.target_id) }}</RouterLink>
+                    <span v-else class="mono">{{ shortId(e.target_id) }}</span>
+                  </template>
+                </span>
+              </td>
+              <td class="end">
                 <button
                   v-if="hasDetails(e)"
                   type="button"
-                  class="more"
+                  class="chevron"
                   :aria-expanded="open === e.id"
                   :aria-label="`Details of ${e.action}`"
                   @click.stop="open = open === e.id ? null : e.id"
                 >
-                  {{ open === e.id ? '−' : '+' }}
+                  <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                    <path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+                  </svg>
                 </button>
               </td>
             </tr>
             <tr v-if="open === e.id" class="details">
-              <td :colspan="scope.solo ? 4 : 5"><pre class="secret">{{ JSON.stringify(e.details, null, 2) }}</pre></td>
+              <td :colspan="scope.solo ? 5 : 6"><pre>{{ JSON.stringify(e.details, null, 2) }}</pre></td>
             </tr>
           </template>
         </tbody>
       </table>
     </div>
-    <button v-if="more && entries" class="btn older" @click="load(entries[entries.length - 1]!.id)">Show older</button>
+    <button v-if="more && entries" class="btn older" title="Loads the next 100" @click="load(entries[entries.length - 1]!.id)">
+      Show older
+    </button>
   </section>
 </template>
 
 <style scoped>
-.when {
+.nowrap {
   white-space: nowrap;
 }
 tr.clickable {
   cursor: pointer;
 }
-tr.clickable:hover {
+tr.clickable:hover td {
   background: var(--sunken);
 }
-tr.failed td:first-child {
-  box-shadow: inset 3px 0 0 var(--led-fault);
+/* An entry and its details read as one. */
+tr.opened td {
+  border-bottom: 0;
 }
 .fail {
   margin-left: 8px;
   border-color: var(--led-fault);
   color: var(--led-fault);
 }
-.more {
-  margin-left: 8px;
-  padding: 0 6px;
+.target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
   border: 1px solid var(--rule);
-  border-radius: 2px;
-  background: none;
+  border-radius: var(--radius);
+  background: var(--panel);
   color: var(--ink);
-  font: 500 12px var(--font-mono);
   cursor: pointer;
 }
+.chevron[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}
 .details td {
+  padding: 0 14px 12px;
+}
+.details pre {
+  margin: 0;
+  padding: 12px;
+  border-radius: var(--radius);
   background: var(--sunken);
+  font: 400 12px/1.5 var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 .older {
-  margin-top: 14px;
+  margin-top: 18px;
 }
 </style>

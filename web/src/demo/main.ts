@@ -30,7 +30,7 @@ document.body.append(tag)
 const style = document.createElement('style')
 style.textContent = `
 .demo-tag {
-  position: fixed; left: 12px; bottom: 12px; z-index: 50; max-width: min(420px, calc(100vw - 24px));
+  position: fixed; right: 12px; bottom: 12px; z-index: 50; max-width: min(420px, calc(100vw - 24px));
   display: flex; align-items: center; gap: 10px; padding: 6px 6px 6px 10px;
   background: var(--tape); color: var(--tape-ink); border-radius: var(--radius); box-shadow: var(--shadow);
   font: 12px/1.35 var(--font-body);

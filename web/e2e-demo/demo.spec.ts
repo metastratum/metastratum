@@ -34,7 +34,7 @@ async function go(page: Page, route: string) {
 
 /** The VM detail page's status, once it says `text`. */
 async function vmState(page: Page, text: string, timeout = 30_000) {
-  await expect(page.locator('header.head .title').getByText(text, { exact: true })).toBeVisible({ timeout })
+  await expect(page.locator('.vm .head .title').getByText(text, { exact: true })).toBeVisible({ timeout })
 }
 
 async function openVm(page: Page, name: string) {
@@ -55,6 +55,17 @@ async function idle(page: Page, timeout = 30_000) {
       { timeout },
     )
     .toBe(0)
+}
+
+/** One of the VM page's sections: Overview, Console, Serial or Settings. */
+async function vmSection(page: Page, name: string) {
+  await page.getByRole('navigation', { name: 'VM sections' }).getByRole('link', { name, exact: true }).click()
+}
+
+/** An item of the VM page's More menu (its label, then a hint). */
+async function vmMenu(page: Page, item: string) {
+  await page.getByRole('button', { name: 'More', exact: true }).click()
+  await page.getByRole('menuitem', { name: new RegExp(`^${item}`) }).click()
 }
 
 /** Picks the option whose text matches (once the list has it). */
@@ -89,13 +100,13 @@ test.describe('VMs', () => {
     await vmState(page, 'Running')
 
     // Interfaces: add one, then remove it.
-    await page.getByRole('tab', { name: 'Details' }).click()
+    await vmSection(page, 'Overview')
     await page.getByRole('button', { name: 'Add interface' }).click()
-    await page.locator('form.nic-action').getByRole('button', { name: 'Add' }).click()
+    await page.locator('form.nic-form').getByRole('button', { name: 'Add' }).click()
     await expect(page.getByRole('button', { name: 'Remove…' }).first()).toBeVisible()
     const nics = await page.getByRole('button', { name: 'Remove…' }).count()
     await page.getByRole('button', { name: 'Remove…' }).last().click()
-    await page.locator('form.nic-action').getByRole('button', { name: 'Remove' }).click()
+    await page.locator('form.nic-form').getByRole('button', { name: 'Remove' }).click()
     await expect(page.getByRole('button', { name: 'Remove…' })).toHaveCount(nics === 2 ? 0 : nics - 1)
 
     // A new data disk.
@@ -121,10 +132,10 @@ test.describe('VMs', () => {
     // Off, then resized and reverted.
     await page.getByRole('button', { name: 'Power off' }).click()
     await vmState(page, 'Stopped')
-    await page.getByRole('button', { name: 'Resize' }).click()
+    await vmMenu(page, 'Resize…')
     await modal(page).getByLabel('vCPUs').fill('4')
     await modal(page).getByRole('button', { name: 'Resize' }).click()
-    await expect(page.locator('.stats, dl').getByText('4', { exact: true }).first()).toBeVisible()
+    await expect(page.locator('.resources').getByText('4', { exact: true }).first()).toBeVisible()
     await page.locator('.snapshots').getByRole('button', { name: 'Revert…' }).click()
     await modal(page).getByRole('button', { name: 'Revert' }).click()
     await expect(modal(page)).toBeHidden()
@@ -139,10 +150,10 @@ test.describe('VMs', () => {
 
     // Deleted, with its disks.
     await openVm(page, 'pw-linux')
-    await page.getByRole('button', { name: 'Delete VM' }).click()
-    const deleteDisks = page.locator('#delete-disks')
+    await vmMenu(page, 'Delete VM…')
+    const deleteDisks = modal(page).locator('#delete-disks')
     if (await deleteDisks.count()) await deleteDisks.check()
-    await page.getByRole('button', { name: /^Delete pw-linux/ }).click()
+    await modal(page).getByRole('button', { name: /^Delete pw-linux/ }).click()
     await go(page, 'vms')
     await expect(page.getByRole('cell', { name: 'pw-linux', exact: true })).toHaveCount(0, { timeout: 20_000 })
   })
@@ -161,7 +172,7 @@ test.describe('VMs', () => {
     await vmState(page, 'Running')
 
     await openVm(page, 'debian-base')
-    await page.getByRole('button', { name: 'Clone' }).click()
+    await page.getByRole('button', { name: 'Clone…', exact: true }).click()
     await modal(page).getByLabel('Name').fill('pw-clone')
     await modal(page).getByRole('button', { name: 'Clone' }).click()
     await openVm(page, 'pw-clone')
@@ -201,8 +212,8 @@ test('images: from a URL, and uploaded', async ({ page, problems }) => {
   await field(page, 'Name').fill('pw-alpine')
   await field(page, 'Download URL').fill('https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/alpine.qcow2')
   await modal(page).getByRole('button', { name: 'Add image' }).click()
-  const fromUrl = page.locator('li').filter({ has: page.getByText('pw-alpine', { exact: true }) })
-  await expect(fromUrl.locator('.facts')).toBeVisible({ timeout: 60_000 })
+  const fromUrl = page.locator('tbody tr').filter({ has: page.getByText('pw-alpine', { exact: true }) })
+  await expect(fromUrl.getByText('Downloaded', { exact: true })).toBeVisible({ timeout: 60_000 })
 
   await page.getByRole('button', { name: 'Add image' }).first().click()
   await modal(page).getByLabel('A file on this computer').check()
@@ -212,14 +223,13 @@ test('images: from a URL, and uploaded', async ({ page, problems }) => {
   await modal(page).locator('input[type=file]').setInputFiles({ name: 'pw-upload.qcow2', mimeType: 'application/octet-stream', buffer: bytes })
   await expect(field(page, 'Name')).toHaveValue('pw-upload')
   await modal(page).getByRole('button', { name: 'Add and upload' }).click()
-  const uploaded = page.locator('li').filter({ has: page.getByText('pw-upload', { exact: true }) })
-  await expect(uploaded.locator('.facts')).toBeVisible({ timeout: 60_000 })
-  await expect(uploaded.getByText(/^Uploaded/)).toBeVisible()
+  const uploaded = page.locator('tbody tr').filter({ has: page.getByText('pw-upload', { exact: true }) })
+  await expect(uploaded.getByText('Uploaded', { exact: true })).toBeVisible({ timeout: 60_000 })
 })
 
-/** Works in a tenant, as picked in the header. */
+/** Works in a tenant, as picked in the sidebar. */
 async function inTenant(page: Page, name: RegExp) {
-  await choose(page.getByRole('combobox', { name: 'Tenant' }), name)
+  await choose(page.getByRole('combobox', { name: 'Tenant scope' }), name)
 }
 
 test('networks: a VPC and network, a security group, a floating IP, a load balancer, a guardrail', async ({ page, problems }) => {
@@ -230,7 +240,7 @@ test('networks: a VPC and network, a security group, a floating IP, a load balan
   await field(page, 'Name').fill('pw-vpc')
   await choose(field(page, 'External network'), /internet/)
   await modal(page).getByRole('button', { name: 'Create' }).click()
-  const vpc = page.locator('li.vpc').filter({ has: page.locator('.tape', { hasText: /^pw-vpc$/ }) })
+  const vpc = page.locator('section.vpc').filter({ has: page.getByRole('heading', { name: 'pw-vpc', exact: true }) })
   await expect(vpc.getByText(/via 203\.0\.113\./)).toBeVisible()
   await vpc.getByRole('button', { name: 'Add network' }).click()
   await field(page, 'Name').fill('pw-net')
@@ -242,7 +252,7 @@ test('networks: a VPC and network, a security group, a floating IP, a load balan
   await page.getByRole('button', { name: 'New group' }).click()
   await field(page, 'Name').fill('pw-sg')
   await modal(page).getByRole('button', { name: 'Create group' }).click()
-  const group = page.locator('li.group').filter({ has: page.getByRole('heading', { name: 'pw-sg', exact: true }) })
+  const group = page.locator('section.group').filter({ has: page.getByRole('heading', { name: 'pw-sg', exact: true }) })
   await group.getByRole('button', { name: 'Add rule' }).click()
   await page.getByRole('group', { name: 'Common rules' }).getByRole('button', { name: 'HTTPS' }).click()
   await page.locator('form').getByRole('button', { name: 'Add rule' }).click()
@@ -258,7 +268,7 @@ test('networks: a VPC and network, a security group, a floating IP, a load balan
   await page.getByRole('button', { name: 'Create load balancer' }).click()
   await field(page, 'Name').fill('pw-lb')
   await choose(field(page, 'VPC'), /^webshop$/)
-  await modal(page).getByLabel('web-1').check()
+  await modal(page).getByRole('checkbox', { name: /^web-1 / }).check()
   await modal(page).getByRole('button', { name: 'Create' }).click()
   await expect(page.getByText('pw-lb', { exact: true })).toBeVisible()
 
@@ -344,7 +354,7 @@ test('account: an API token, and an authenticator app', async ({ page, problems 
   await field(page, 'Your password').fill('demo')
   await modal(page).getByRole('button', { name: 'Continue' }).click()
   const secret = await modal(page).locator('.secret-key').innerText()
-  await field(page, 'Code from the app').fill(totp(secret))
+  await field(page, 'Code').fill(totp(secret))
   await field(page, 'Name').fill('pw-phone')
   await modal(page).getByRole('button', { name: 'Add' }).click()
   await expect(modal(page).getByRole('heading', { name: 'Save your backup codes' })).toBeVisible()
@@ -354,7 +364,7 @@ test('account: an API token, and an authenticator app', async ({ page, problems 
 
 test('infrastructure: maintenance, evacuation, a cluster, storage, a repository, an external network', async ({ page, problems }) => {
   void problems
-  const plate = (name: string) => page.locator('article.plate').filter({ has: page.locator('.tape', { hasText: new RegExp(`^${name}$`) }) })
+  const plate = (name: string) => page.locator('tbody tr').filter({ has: page.locator('strong', { hasText: new RegExp(`^${name}$`) }) })
 
   await go(page, 'hosts')
   await plate('rtm-hv02').getByRole('button', { name: 'Manage' }).click()
@@ -372,7 +382,7 @@ test('infrastructure: maintenance, evacuation, a cluster, storage, a repository,
   await idle(page, 60_000)
   await expect(plate('ams-hv02').locator('text=web-2')).toHaveCount(0)
 
-  await go(page, 'clusters')
+  await go(page, 'hosts')
   await page.getByRole('button', { name: 'Add cluster' }).first().click()
   await field(page, 'Name').fill('pw-cluster')
   await modal(page).getByRole('button', { name: 'Save' }).click()
@@ -398,7 +408,7 @@ test('infrastructure: maintenance, evacuation, a cluster, storage, a repository,
   await field(page, 'Physical network').fill('external')
   await field(page, 'Range').fill('198.51.100.0/24')
   await field(page, 'Hand out from').fill('198.51.100.10')
-  await field(page, 'to').fill('198.51.100.200')
+  await field(page, 'To').fill('198.51.100.200')
   await modal(page).getByRole('button', { name: 'Save' }).click()
   await expect(page.getByText('pw-ext')).toBeVisible()
 })

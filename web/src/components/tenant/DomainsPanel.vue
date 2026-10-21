@@ -76,12 +76,12 @@ async function unbind(name: string) {
 <style scoped>
 .domains {
   display: grid;
-  gap: 12px;
-  padding-top: 18px;
+  gap: 10px;
+  padding-top: 16px;
   border-top: 1px solid var(--rule);
 }
 h3 {
-  font-size: 13px;
+  font-size: 15px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -90,18 +90,26 @@ h3 {
   margin: 0;
   font-size: 13px;
 }
+/* Bound names, a ruled list. */
 .list {
-  display: grid;
-  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
 }
 .list li {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  padding: 8px 12px;
   overflow-wrap: anywhere;
+}
+.list li + li {
+  border-top: 1px solid var(--rule);
+}
+.list .btn {
+  margin-left: auto;
 }
 .add {
   display: flex;
@@ -110,7 +118,7 @@ h3 {
   gap: 8px;
 }
 .add .field {
-  flex: 1 1 260px;
+  flex: 1 1 200px;
   max-width: 360px;
 }
 .error-text {

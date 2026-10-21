@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
+import AppSidebar from './components/AppSidebar.vue'
 import BrandMark from './components/BrandMark.vue'
 import TaskTray from './components/TaskTray.vue'
 import TwoFactorPanel from './components/TwoFactorPanel.vue'
-import TenantPicker from './components/TenantPicker.vue'
 import { onLive, useLive } from './stores/live'
 import { useScope } from './stores/scope'
 import { useSession } from './stores/session'
+import { useShell } from './stores/shell'
 import { useTasks } from './stores/tasks'
 
 const session = useSession()
@@ -15,6 +17,14 @@ const scope = useScope()
 const tasks = useTasks()
 const live = useLive()
 const router = useRouter()
+const route = useRoute()
+const shell = useShell()
+
+// A page names its record (a VM's name) once it has it; another page, none.
+watch(
+  () => route.name,
+  () => (shell.crumb = null),
+)
 
 // The tenant tree changes when tenants are added, renamed or removed.
 onLive(['tenant'], () => session.me && void scope.load())
@@ -35,6 +45,7 @@ watch(
       tasks.stop()
       // Whoever signs in next starts from their own tenants, not these.
       scope.$reset()
+      shell.$reset()
     }
   },
   { immediate: true },
@@ -59,42 +70,35 @@ async function signOut() {
       <TwoFactorPanel required @changed="session.load()" />
     </main>
   </template>
-  <template v-else-if="session.me">
-    <header class="bar">
-      <RouterLink to="/vms" class="mark" aria-label="metastratum home">
-        <BrandMark bar />
-      </RouterLink>
-      <nav aria-label="Main">
-        <RouterLink to="/vms" :class="{ 'router-link-active': $route.meta.machines }">Machines</RouterLink>
-        <RouterLink to="/images">Images</RouterLink>
-        <RouterLink to="/networks" :class="{ 'router-link-active': $route.meta.net }">Networks</RouterLink>
-        <RouterLink to="/tenants">{{ scope.solo ? 'People' : 'Tenants' }}</RouterLink>
-        <RouterLink v-if="scope.can('audit.read')" to="/audit">Audit</RouterLink>
-        <RouterLink v-if="session.me.provider_admin" to="/infrastructure" :class="{ 'router-link-active': $route.meta.infra }">
-          Infrastructure
-        </RouterLink>
-      </nav>
-      <div class="right">
-        <TenantPicker class="tenant" />
-        <TaskTray />
-        <RouterLink to="/account" class="me" :title="`Signed in as ${session.me.username}`">
-          {{ session.me.display_name || session.me.username }}
-        </RouterLink>
-        <button type="button" class="signout" @click="signOut">Sign out</button>
-      </div>
-    </header>
-    <main>
-      <RouterView />
-    </main>
-  </template>
+  <div v-else-if="session.me" class="shell">
+    <AppSidebar @sign-out="signOut" />
+    <div class="column">
+      <header class="head">
+        <nav aria-label="Breadcrumb" class="crumbs label">
+          <template v-if="route.meta.section">
+            <span>{{ route.meta.section }}</span>
+            <span aria-hidden="true">/</span>
+          </template>
+          <template v-if="shell.crumb && route.meta.list">
+            <RouterLink :to="{ name: route.meta.list }">{{ route.meta.title }}</RouterLink>
+            <span aria-hidden="true">/</span>
+            <span class="here name">{{ shell.crumb }}</span>
+          </template>
+          <span v-else class="here">{{ route.meta.title }}</span>
+        </nav>
+        <TaskTray class="tasks" />
+      </header>
+      <main>
+        <RouterView />
+      </main>
+    </div>
+  </div>
   <RouterView v-else />
 </template>
 
 <style scoped>
+/* Signed in, but a second factor is to be added first: no way around. */
 .bar {
-  position: sticky;
-  top: 0;
-  z-index: 10;
   display: flex;
   align-items: center;
   gap: 28px;
@@ -103,32 +107,6 @@ async function signOut() {
   background: var(--bar);
   color: var(--bar-ink);
 }
-.mark {
-  text-decoration: none;
-}
-nav {
-  display: flex;
-  gap: 4px;
-  height: 100%;
-}
-nav a {
-  display: flex;
-  align-items: center;
-  padding: 0 12px;
-  color: rgb(227 232 236 / 68%);
-  font: 500 12px var(--font-label);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  text-decoration: none;
-  border-bottom: 2px solid transparent;
-}
-nav a:hover {
-  color: var(--bar-ink);
-}
-nav a.router-link-active {
-  color: var(--bar-ink);
-  border-bottom-color: var(--tape);
-}
 .right {
   display: flex;
   align-items: center;
@@ -136,18 +114,8 @@ nav a.router-link-active {
   margin-left: auto;
 }
 .me {
-  max-width: 160px;
-  overflow: hidden;
   color: var(--bar-ink);
   font-weight: 500;
-  text-decoration: none;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.me:hover,
-.me.router-link-active {
-  text-decoration: underline;
-  text-underline-offset: 4px;
 }
 .signout {
   border: 0;
@@ -161,37 +129,97 @@ nav a.router-link-active {
 }
 main.enroll {
   max-width: 560px;
-}
-main {
-  max-width: 1280px;
-  margin: 0 auto;
   padding: 28px 20px 64px;
 }
+
+/* The sidebar beside the page, which has the breadcrumb above it. */
+.shell {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  min-height: 100vh;
+}
+.shell > :deep(.sidebar) {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+.column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.head {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 0 32px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--panel);
+}
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+.crumbs a {
+  color: var(--muted);
+  text-decoration: none;
+}
+.crumbs a:hover {
+  color: var(--ink);
+}
+.here {
+  color: var(--ink);
+}
+/* A record's own name, as it is written. */
+.here.name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.tasks {
+  margin-left: auto;
+}
+main {
+  width: 100%;
+  max-width: 1280px;
+  padding: 28px 32px 64px;
+}
 @media (max-width: 760px) {
-  /* Two rows: brand and account controls, then navigation. */
-  .bar {
-    flex-wrap: wrap;
-    gap: 0 12px;
+  /* The sidebar above the page, its sections side by side. */
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .shell > :deep(.sidebar) {
+    position: static;
     height: auto;
-    padding: 8px 12px 0;
   }
-  nav {
-    order: 3;
-    width: 100%;
-    height: 40px;
+  .shell > :deep(.sidebar) nav {
+    flex-flow: row wrap;
+    gap: 12px 18px;
   }
-  nav a {
-    padding: 0 10px;
+  .shell > :deep(.sidebar) .group {
+    flex: 1 1 140px;
   }
-  nav {
-    overflow-x: auto;
+  .shell > :deep(.sidebar) .group.infra {
+    padding-top: 0;
+    border-top: 0;
   }
-  .tenant :deep(.label),
-  .me {
-    display: none;
+  .head,
+  main {
+    padding-inline: 16px;
   }
   main {
-    padding: 20px 16px 48px;
+    padding-block: 20px 48px;
   }
 }
 </style>
