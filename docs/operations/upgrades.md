@@ -20,7 +20,8 @@ Controllers keep the fields of VM definitions that newer controllers
 added when they write a definition back: replicas of two versions side by
 side do not undo each other's changes.
 
-0.5 does not upgrade earlier installations: install it afresh.
+0.5 does not upgrade earlier installations: install it afresh. 0.5 and
+0.6 do not start on a new, empty database; install 0.7 or later afresh.
 
 From 0.5 to 0.6:
 
@@ -41,8 +42,11 @@ From 0.5 to 0.6:
   0.6 installer and agent package bring them. Hosts without them say so
   (No TPM, No Secure Boot), and VMs that need them are not placed there.
 
-From 0.6.0:
+From 0.6 to 0.7:
 
+- A rolling upgrade: 0.6 controllers keep working beside 0.7 ones (its
+  one migration gives images a sleep setting, which they ignore). A VM
+  asleep on an upgraded host shows as unknown through a 0.6 controller.
 - Until a host's agent is upgraded, VMs started there may sleep whatever
   their setting (see [Sleep](sleep.md)), and one asleep shows as Paused
   and is not woken by starting it (`virsh dompmwakeup` on the host does).
