@@ -13,28 +13,35 @@ const stopped = computed(
   () => props.vm.status === 'ready' && props.vm.power === 'stopped' && props.vm.desired_power === 'stopped',
 )
 const LOCKED = 'Stop the VM to change this'
-const switching = ref(false)
 const error = ref('')
 
-async function patch(body: Schemas['UpdateVm']) {
+// Changes being saved, by the row they come from: only that row's control
+// shows it (a switch in its new position). They are sent one after another,
+// so each reply holds the ones before it.
+const pending = ref(new Map<string, boolean | undefined>())
+let saved: Promise<void> = Promise.resolve()
+function patch(label: string, body: Schemas['UpdateVm'], on?: boolean) {
+  if (pending.value.has(label)) return
   error.value = ''
-  switching.value = true
-  try {
-    emit('update', await ok(api.PATCH('/api/v1/vms/{id}', { params: { path: { id: props.vm.id } }, body })))
-  } catch (e) {
-    error.value = errorText(e)
-  } finally {
-    switching.value = false
-  }
+  pending.value.set(label, on)
+  saved = saved.then(async () => {
+    try {
+      emit('update', await ok(api.PATCH('/api/v1/vms/{id}', { params: { path: { id: props.vm.id } }, body })))
+    } catch (e) {
+      error.value = errorText(e)
+    } finally {
+      pending.value.delete(label)
+    }
+  })
 }
 
 // Taking a TPM away loses what it holds: asked twice.
 const removingTpm = ref(false)
 function pressTpm() {
-  if (!props.vm.tpm) return void patch({ tpm: true })
+  if (!props.vm.tpm) return void patch('TPM 2.0', { tpm: true })
   if (!removingTpm.value) return void (removingTpm.value = true)
   removingTpm.value = false
-  void patch({ tpm: false })
+  void patch('TPM 2.0', { tpm: false })
 }
 
 type Row =
@@ -63,7 +70,7 @@ const groups = computed(() => {
       label: 'Secure Boot',
       desc: 'Only signed boot loaders start. Its UEFI settings start anew at its next start.',
       on: vm.secure_boot,
-      toggle: () => void patch({ secure_boot: !vm.secure_boot }),
+      toggle: () => void patch('Secure Boot', { secure_boot: !vm.secure_boot }, !vm.secure_boot),
     })
   }
   security.push({
@@ -96,7 +103,7 @@ const groups = computed(() => {
           label: 'Allow live migration',
           desc: 'Off gives it the host’s CPU and disk caching.',
           on: vm.migratable,
-          toggle: () => void patch({ migratable: !vm.migratable }),
+          toggle: () => void patch('Allow live migration', { migratable: !vm.migratable }, !vm.migratable),
         },
         vm.migratable
           ? {
@@ -105,7 +112,7 @@ const groups = computed(() => {
               desc: 'Fit to cluster picks one every host of its cluster runs now, from its next start: it may see fewer CPU features.',
               value: vm.cpu_model ?? 'Its host’s, as is',
               action: 'Fit to cluster',
-              press: () => void patch({ fit_cpu: true }),
+              press: () => void patch('CPU model', { fit_cpu: true }),
             }
           : { kind: 'info', label: 'CPU model', desc: 'The host’s own, while live migration is off.', value: 'Host CPU' },
       ] as Row[],
@@ -120,14 +127,19 @@ const groups = computed(() => {
             ? 'The guest hands memory it frees back to the host, which can use it elsewhere.'
             : 'The guest keeps memory it frees: no faults to get it back, but the host cannot use it.',
           on: vm.free_page_reporting,
-          toggle: () => void patch({ free_page_reporting: !vm.free_page_reporting }),
+          toggle: () =>
+            void patch(
+              'Return free memory to the host',
+              { free_page_reporting: !vm.free_page_reporting },
+              !vm.free_page_reporting,
+            ),
         },
         {
           kind: 'switch',
           label: 'Allow sleep',
           desc: 'The guest may suspend when idle, as desktops do; Wake wakes it.',
           on: vm.sleep,
-          toggle: () => void patch({ sleep: !vm.sleep }),
+          toggle: () => void patch('Allow sleep', { sleep: !vm.sleep }, !vm.sleep),
         },
       ] as Row[],
     },
@@ -139,7 +151,7 @@ const groups = computed(() => {
           label: 'Template',
           desc: 'VMs are cloned from a template; it never starts.',
           action: vm.template ? 'Make it a VM' : 'Make template',
-          press: () => void patch({ template: !vm.template }),
+          press: () => void patch('Template', { template: !vm.template }),
         },
         {
           kind: 'button',
@@ -156,7 +168,9 @@ const groups = computed(() => {
   ]
 })
 
-const locked = (r: Row) => r.kind !== 'info' && !(r.kind === 'button' && r.always) && (!stopped.value || switching.value)
+const locked = (r: Row) => r.kind !== 'info' && !(r.kind === 'button' && r.always) && !stopped.value
+const saving = (r: Row) => pending.value.has(r.label)
+const shown = (r: Row & { kind: 'switch' }) => pending.value.get(r.label) ?? r.on
 </script>
 
 <template>
@@ -187,8 +201,9 @@ const locked = (r: Row) => r.kind !== 'info' && !(r.kind === 'button' && r.alway
             type="button"
             role="switch"
             class="switch"
-            :aria-checked="r.on"
+            :aria-checked="shown(r)"
             :aria-label="r.label"
+            :aria-busy="saving(r) || undefined"
             :disabled="locked(r)"
             :title="stopped ? undefined : LOCKED"
             @click="r.toggle()"
@@ -200,7 +215,7 @@ const locked = (r: Row) => r.kind !== 'info' && !(r.kind === 'button' && r.alway
             type="button"
             class="btn"
             :class="{ danger: r.danger }"
-            :disabled="locked(r) || r.disabled"
+            :disabled="locked(r) || saving(r) || r.disabled"
             :title="r.always || stopped ? undefined : LOCKED"
             @click="r.press()"
             @blur="r.blur?.()"
