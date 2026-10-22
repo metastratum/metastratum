@@ -172,7 +172,13 @@ EOF
 create_vm() { # create_vm <line>
   read -r name ip mac vcpus mem disk role <<<"$1"
   if virsh dominfo "$name" >/dev/null 2>&1; then
-    log "$name already exists"
+    # Shut off after the machine running the lab restarted, say.
+    if [[ $(virsh domstate "$name") == "shut off" ]]; then
+      log "starting $name"
+      virsh start "$name" >/dev/null
+    else
+      log "$name already exists"
+    fi
     return
   fi
   log "creating $name ($role, $ip)"
@@ -258,7 +264,7 @@ wait_ready() {
       die "$name has no internet access through NAT. If Docker runs on this host, allow libvirt bridges:
   sudo iptables -I DOCKER-USER -i virbr+ -j ACCEPT
   sudo iptables -I DOCKER-USER -o virbr+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-then re-create the lab: $0 down && $0 up"
+then run $0 up again."
     log "waiting for cloud-init on $name"
     ssh_vm "$name" cloud-init status --wait >/dev/null 2>&1 ||
       die "cloud-init failed on $name: $0 ssh $name sudo cloud-init status --long"
