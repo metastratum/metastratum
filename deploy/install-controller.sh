@@ -41,7 +41,6 @@
 #                         servers need are written for you to install there
 #   --ovn-southbound REMOTES  their southbound databases (default: the same
 #                         hosts, port 6642)
-#   --no-image            do not add the Debian 13 cloud image
 #   --version VERSION     metastratum release to install (default: the latest)
 #   --packages DIR        install metastratum from the packages in DIR (as
 #                         built by deploy/packaging/build.sh) instead
@@ -59,7 +58,7 @@ ROLE=controller
 API=http://127.0.0.1:7820
 IMAGE_URL=https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
 
-address="" domain="" proxy=1 ext_cidr=10.250.250.0/24 dns="" image=1 version="" packages="" assume_yes=0
+address="" domain="" proxy=1 ext_cidr=10.250.250.0/24 dns="" version="" packages="" assume_yes=0
 ovn_nb="" ovn_sb="" force=0 https_port=443
 
 while [[ $# -gt 0 ]]; do
@@ -72,7 +71,8 @@ while [[ $# -gt 0 ]]; do
     --dns) dns=${2:?}; shift ;;
     --ovn-northbound) ovn_nb=${2:?}; shift ;;
     --ovn-southbound) ovn_sb=${2:?}; shift ;;
-    --no-image) image=0 ;;
+    # Earlier installers added an image; adding one now waits for a host.
+    --no-image) ;;
     --force) force=1 ;;
     --version) version=${2#v}; shift ;;
     --packages) packages=$(cd "${2:?}" && pwd); shift ;;
@@ -763,13 +763,14 @@ api() { # api METHOD PATH [JSON]
   curl -fsS -b "$jar" -X "$1" -H 'content-type: application/json' ${3:+--data "$3"} "$API/api/v1$2"
 }
 
-# Through the API: the external network the hosts NAT, the provider's
-# default VPC on it, and an image.
+# Through the API: the external network the hosts NAT, and the provider's
+# default VPC on it. Not an image: one is kept by a host, and none has
+# joined yet.
 provision() {
   [[ -e $STATE/provisioned ]] && return
   if [[ -z $admin_password ]]; then
     [[ -r $admin_password_file ]] || {
-      warn "the external network and the image were not set up: run again with MST_ADMIN_PASSWORD set"
+      warn "the external network was not set up: run again with MST_ADMIN_PASSWORD set"
       return
     }
     admin_password=$(cat "$admin_password_file")
@@ -795,11 +796,6 @@ provision() {
     else
       api PATCH "/vpcs/$vpc" "$(jq -n --arg e "$ext" '{external_network_id: $e}')" >/dev/null
     fi
-  fi
-  if ((image)) && ! api GET /images | jq -e '.[] | select(.name == "debian-13")' >/dev/null; then
-    log "adding the Debian 13 cloud image"
-    api POST /images "$(jq -n --arg u "$IMAGE_URL" \
-      '{name: "debian-13", source_url: $u, format: "qcow2", shared: true}')" >/dev/null
   fi
   touch "$STATE/provisioned"
 }
@@ -843,6 +839,9 @@ this controller by itself; elsewhere give it a join token from here
 (mst-controller join-token --cluster default, or Infrastructure → Hosts):
 
   MST_JOIN_TOKEN=... install-agent.sh --controller https://$address:7821
+
+Then add an image for VMs (Images → Add image), for example
+$IMAGE_URL
 
 Keep copies of $CONF/controller.toml and master.key somewhere safe.
 Check the installation with: mst-controller doctor
