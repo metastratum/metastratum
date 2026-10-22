@@ -263,6 +263,13 @@ async fn tasks_are_claimed_by_kind(pool: PgPool) {
     assert_eq!(only.unwrap().id, download.id);
 }
 
+#[sqlx::test(migrations = false)]
+async fn a_new_database_is_migrated(pool: PgPool) {
+    mst_db::migrate(&pool).await.unwrap();
+    // And again, as every controller does at its start.
+    mst_db::migrate(&pool).await.unwrap();
+}
+
 #[sqlx::test(migrator = "mst_db::MIGRATOR")]
 async fn migrations_from_newer_controllers_are_tolerated(pool: PgPool) {
     sqlx::query(

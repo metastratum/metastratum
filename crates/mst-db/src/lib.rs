@@ -73,16 +73,20 @@ const FIRST_MIGRATION: i64 = 20261019000001;
 /// alone, so an older replica can still restart until it is replaced.
 pub async fn migrate(pool: &PgPool) -> Result<()> {
     // 0.5 starts the schema afresh (its first migration is all of it);
-    // migrations older than that are 0.4's or earlier.
-    let made_before: Option<bool> = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM _sqlx_migrations WHERE version < $1)
-         WHERE to_regclass('_sqlx_migrations') IS NOT NULL",
-    )
-    .bind(FIRST_MIGRATION)
-    .fetch_optional(pool)
-    .await?;
-    if made_before == Some(true) {
-        return Err(Error::TooOld);
+    // migrations older than that are 0.4's or earlier. A new database has
+    // no migrations table yet, and a query naming it would not even parse.
+    let migrated: bool = sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NOT NULL")
+        .fetch_one(pool)
+        .await?;
+    if migrated {
+        let made_before: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM _sqlx_migrations WHERE version < $1)")
+                .bind(FIRST_MIGRATION)
+                .fetch_one(pool)
+                .await?;
+        if made_before {
+            return Err(Error::TooOld);
+        }
     }
     let mut migrator = sqlx::migrate!("../../migrations");
     migrator.set_ignore_missing(true);
