@@ -146,10 +146,13 @@ export ROOT LOGS
 
 among() { [[ " ${*:2} " == *" $1 "* ]]; }
 first=() together=() last=()
+# In FIRST's order: storage makes the NFS pool the others after it use (on a
+# new lab they skip without it, and libtest hides why).
+for s in "${FIRST[@]}"; do among "$s" "${SUITES[@]}" && first+=("$s"); done
 for s in "${SLOW[@]}"; do among "$s" "${SUITES[@]}" && together+=("$s"); done
 for s in "${SUITES[@]}"; do
   if among "$s" "${FIRST[@]}"; then
-    first+=("$s")
+    :
   elif among "$s" "${LAST[@]}"; then
     last+=("$s")
   elif ! among "$s" "${SLOW[@]}"; then
