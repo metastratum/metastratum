@@ -128,9 +128,22 @@ async fn scenario(api: &Api, run: &str, edition: &Edition, image: &Value) -> any
     assert_eq!(v["power"], "running", "{v}");
 
     if let Some(whoami) = edition.sac_whoami {
-        // Signed in with its password.
-        let mut serial = api.console(&id, "serial").await?;
-        serial.sac_run(account, PW, "whoami", whoami).await?;
+        // Signed in with its password. Its account is there with it while
+        // Windows still specializes, which restarts it once more: a sign-in
+        // then is cut off, or refused until it is up again. So, tried until
+        // it holds.
+        let deadline = std::time::Instant::now() + Duration::from_secs(900);
+        loop {
+            let mut serial = api.console(&id, "serial").await?;
+            match serial.sac_run(account, PW, "whoami", whoami).await {
+                Ok(_) => break,
+                Err(e) if std::time::Instant::now() < deadline => {
+                    eprintln!("signing in again: {e:#}");
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
     Ok(())
 }
