@@ -172,6 +172,14 @@ EOF
 create_vm() { # create_vm <line>
   read -r name ip mac vcpus mem disk role <<<"$1"
   if virsh dominfo "$name" >/dev/null 2>&1; then
+    if ! virsh dumpxml --inactive "$name" | grep -q "<cpu mode='host-passthrough'[^>]*migratable='off'"; then
+      log "giving $name an invariant TSC (restarts $name)"
+      virt-xml "$name" --edit --cpu host-passthrough,migratable=off >/dev/null 2>&1
+      if [[ $(virsh domstate "$name") != "shut off" ]]; then
+        virsh shutdown "$name" >/dev/null
+        for _ in $(seq 60); do [[ $(virsh domstate "$name") == "shut off" ]] && break; sleep 2; done
+      fi
+    fi
     # Shut off after the machine running the lab restarted, say.
     if [[ $(virsh domstate "$name") == "shut off" ]]; then
       log "starting $name"
@@ -199,9 +207,14 @@ create_vm() { # create_vm <line>
 
   local extra=()
   [[ $role == host ]] && extra+=(--network "network=mst-ext,mac=$ext_mac,model=virtio")
+  # Not migratable: the lab VMs then see an invariant TSC. Without one their
+  # kernels find the vCPUs' TSCs out of step and mark them unstable, and the
+  # VMs on the hosts lose their stable clock: Windows guests, which read
+  # theirs constantly, run much slower (a Windows 11 first boot took 18
+  # minutes with one, over half an hour without).
   virt-install --noautoconsole --import \
     --name "$name" --vcpus "$vcpus" --memory "$mem" \
-    --cpu host-passthrough --osinfo debian13 \
+    --cpu host-passthrough,migratable=off --osinfo debian13 \
     --boot uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no \
     --disk "vol=$POOL/$vol,bus=virtio" \
     --disk "vol=$POOL/$seed,device=cdrom" \
